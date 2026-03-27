@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { Toaster } from 'sonner';
 import AppLogo from '@/components/ui/AppLogo';
 import { Eye, EyeOff, Mail, Lock, Truck, Package, BarChart3, Shield, LogIn, AlertCircle, Monitor, Smartphone, Tablet,  } from 'lucide-react';
+import { createClient } from '@/lib/supabase/client';
 
 interface LoginForm {
   email: string;
@@ -18,6 +19,7 @@ interface StoredEmployee {
   id: string;
   name: string;
   username: string;
+  email?: string;
   password: string;
   roleId: string;
   status: 'active' | 'inactive';
@@ -78,20 +80,31 @@ export default function LoginPage() {
   const {
     register,
     handleSubmit,
-    setValue,
     formState: { errors },
   } = useForm<LoginForm>({
     defaultValues: { role: 'manager', remember: false },
   });
 
+  const redirectAfterLogin = (role: string) => {
+    const roleRedirects: Record<string, string> = {
+      'manager': '/dashboard',
+      'data_entry': '/shipping',
+      'shipping': '/shipping',
+      'supervisor': '/shipping',
+    };
+    return roleRedirects[role] ?? '/dashboard';
+  };
+
   const onSubmit = async (data: LoginForm) => {
     setIsLoading(true);
     setLoginError('');
-    await new Promise((r) => setTimeout(r, 1200));
 
-    // Check base credentials first
+    const inputValue = data.email.trim();
+    const inputPassword = data.password;
+
+    // ── Step 1: Check base credentials (static list) ──────────────────────────
     const validBase = BASE_CREDENTIALS.find(
-      (c) => c.email === data.email && c.password === data.password
+      (c) => c.email === inputValue && c.password === inputPassword
     );
 
     if (validBase) {
@@ -103,35 +116,69 @@ export default function LoginPage() {
         }));
       }
       toast.success(`مرحباً! تم تسجيل الدخول كـ ${validBase.label} — ${deviceType}`);
-      const roleRedirects: Record<string, string> = {
-        'manager': '/dashboard',
-        'data_entry': '/shipping',
-        'shipping': '/shipping',
-        'supervisor': '/shipping',
-      };
-      const redirectTo = roleRedirects[validBase.role] ?? '/dashboard';
-      setTimeout(() => { window.location.href = redirectTo; }, 800);
+      setTimeout(() => { window.location.href = redirectAfterLogin(validBase.role); }, 800);
       setIsLoading(false);
       return;
     }
 
-    // Check employees added via the roles page (stored in localStorage)
-    let employeeMatch: { name: string; role: string; label: string } | null = null;
+    // ── Step 2: Try Supabase Auth (for employees registered via roles page) ───
+    try {
+      const supabase = createClient();
+      if (supabase) {
+        // Build email: if input looks like an email use it directly, otherwise build from username
+        const loginEmail = inputValue.includes('@')
+          ? inputValue
+          : `${inputValue}@turathmart.internal`;
+
+        const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+          email: loginEmail,
+          password: inputPassword,
+        });
+
+        if (!authError && authData?.user) {
+          // Get role from user metadata or localStorage employees
+          const userMeta = authData.user.user_metadata;
+          const roleId = userMeta?.role_id || '';
+          const mappedRole = ROLE_ID_TO_ROLE[roleId] || userMeta?.app_role || 'data_entry';
+          const userName = userMeta?.full_name || userMeta?.name || inputValue;
+
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('current_user', JSON.stringify({
+              email: loginEmail,
+              name: userName,
+              role: mappedRole,
+            }));
+          }
+          toast.success(`مرحباً ${userName}! تم تسجيل الدخول — ${deviceType}`);
+          setTimeout(() => { window.location.href = redirectAfterLogin(mappedRole); }, 800);
+          setIsLoading(false);
+          return;
+        }
+      }
+    } catch {
+      // Supabase unavailable, fall through to localStorage
+    }
+
+    // ── Step 3: Check employees in localStorage (fallback) ───────────────────
+    let employeeMatch: { name: string; role: string } | null = null;
     if (typeof window !== 'undefined') {
       try {
         const stored = localStorage.getItem('turath_employees');
         if (stored) {
           const employees: StoredEmployee[] = JSON.parse(stored);
-          // Try login by username (email field used as username) or email
           const emp = employees.find(
             (e) =>
               e.status === 'active' &&
-              (e.username === data.email || e.username === data.email.split('@')[0]) &&
-              e.password === data.password
+              e.password === inputPassword &&
+              (
+                e.username === inputValue ||
+                e.username === inputValue.split('@')[0] ||
+                (e.email && e.email === inputValue)
+              )
           );
           if (emp) {
             const mappedRole = ROLE_ID_TO_ROLE[emp.roleId] || 'data_entry';
-            employeeMatch = { name: emp.name, role: mappedRole, label: emp.name };
+            employeeMatch = { name: emp.name, role: mappedRole };
           }
         }
       } catch {}
@@ -140,20 +187,13 @@ export default function LoginPage() {
     if (employeeMatch) {
       if (typeof window !== 'undefined') {
         localStorage.setItem('current_user', JSON.stringify({
-          email: data.email,
+          email: inputValue,
           name: employeeMatch.name,
           role: employeeMatch.role,
         }));
       }
       toast.success(`مرحباً ${employeeMatch.name}! تم تسجيل الدخول — ${deviceType}`);
-      const roleRedirects: Record<string, string> = {
-        'manager': '/dashboard',
-        'data_entry': '/shipping',
-        'shipping': '/shipping',
-        'supervisor': '/shipping',
-      };
-      const redirectTo = roleRedirects[employeeMatch.role] ?? '/dashboard';
-      setTimeout(() => { window.location.href = redirectTo; }, 800);
+      setTimeout(() => { window.location.href = redirectAfterLogin(employeeMatch!.role); }, 800);
       setIsLoading(false);
       return;
     }

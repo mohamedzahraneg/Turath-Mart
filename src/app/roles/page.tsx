@@ -2,6 +2,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import AppLayout from '@/components/AppLayout';
 import { ShieldCheck, Plus, Edit2, Trash2, X, Save, Check, Users, Eye, EyeOff, Key, UserPlus, Camera, Upload, Monitor, Smartphone, Tablet, LogIn, LogOut, Calendar, Clock, Search, CheckCircle, XCircle, ChevronDown, ChevronUp, Lock, Unlock } from 'lucide-react';
+import { createClient } from '@/lib/supabase/client';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface Permission {
@@ -590,28 +591,32 @@ function UserPermissionsPanel({ user, role }: { user: AppUser; role: Role | unde
 export default function RolesPage() {
   const [roles, setRoles] = useState<Role[]>(initialRoles);
 
-  // Load employees from localStorage on mount (persisted data takes priority)
-  // Also restore avatars from separate storage
-  const [employees, setEmployees] = useState<Employee[]>(() => {
-    const loaded = loadFromStorage<Employee>(LS_EMPLOYEES, defaultEmployees);
-    // Restore avatars from separate key
-    if (typeof window !== 'undefined') {
-      const avatars = loadAvatars();
-      return loaded.map(e => ({ ...e, avatar: avatars[e.id] || '' }));
-    }
-    return loaded;
-  });
+  // Fix hydration: start with defaults on both server and client, then load from localStorage in useEffect
+  const [employees, setEmployees] = useState<Employee[]>(defaultEmployees);
+  const [appUsers, setAppUsers] = useState<AppUser[]>(defaultUsers);
+  const [hydrated, setHydrated] = useState(false);
 
-  // Load users from localStorage on mount
-  const [appUsers, setAppUsers] = useState<AppUser[]>(() => loadFromStorage<AppUser>(LS_USERS, defaultUsers));
-
-  // On first mount: ensure default employees are persisted so login page can find them
+  // Load persisted data from localStorage after hydration
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const stored = localStorage.getItem(LS_EMPLOYEES);
-    if (!stored || stored === '[]') {
+
+    // Ensure defaults are seeded if nothing stored
+    const storedEmp = localStorage.getItem(LS_EMPLOYEES);
+    if (!storedEmp || storedEmp === '[]') {
       saveEmployeesToStorage(defaultEmployees);
     }
+
+    // Load employees + avatars
+    const loadedEmps = loadFromStorage<Employee>(LS_EMPLOYEES, defaultEmployees);
+    const avatars = loadAvatars();
+    const empsWithAvatars = loadedEmps.map(e => ({ ...e, avatar: avatars[e.id] || '' }));
+    setEmployees(empsWithAvatars);
+
+    // Load users
+    const loadedUsers = loadFromStorage<AppUser>(LS_USERS, defaultUsers);
+    setAppUsers(loadedUsers);
+
+    setHydrated(true);
   }, []);
 
   const [editRole, setEditRole] = useState<Role | null | undefined>(undefined);
@@ -639,6 +644,8 @@ export default function RolesPage() {
       removeAvatar(emp.id);
     }
 
+    const isNew = !employees.find(e => e.id === emp.id);
+
     setEmployees(prev => {
       const exists = prev.find(e => e.id === emp.id);
       const finalEmp = exists
@@ -651,7 +658,6 @@ export default function RolesPage() {
     // Sync AppUser: update existing or create new
     setAppUsers(prev => {
       const existingUser = prev.find(u => {
-        // Match by linked employee id stored in email field as fallback, or by name
         return u.email === `emp:${emp.id}` || (u.name === emp.name && u.email.startsWith('emp:'));
       });
 
@@ -693,6 +699,37 @@ export default function RolesPage() {
       saveUsersToStorage(updatedUsers);
       return updatedUsers;
     });
+
+    // Register new employee in Supabase Auth so they can log in via Supabase
+    if (isNew && emp.password) {
+      try {
+        const supabase = createClient();
+        if (supabase) {
+          // Use username@turathmart.internal as email for Supabase Auth
+          const authEmail = `${emp.username}@turathmart.internal`;
+          supabase.auth.signUp({
+            email: authEmail,
+            password: emp.password,
+            options: {
+              data: {
+                full_name: emp.name,
+                name: emp.name,
+                role_id: emp.roleId,
+                app_role: (() => {
+                  const map: Record<string, string> = { r1: 'manager', r2: 'supervisor', r3: 'supervisor', r4: 'shipping', r5: 'supervisor', r6: 'data_entry' };
+                  return map[emp.roleId] || 'data_entry';
+                })(),
+                username: emp.username,
+              },
+            },
+          }).catch(() => {
+            // Supabase signup failed silently — localStorage login still works
+          });
+        }
+      } catch {
+        // Supabase unavailable — localStorage login still works
+      }
+    }
 
     setEditMember(undefined);
   };

@@ -25,7 +25,7 @@ export const ROLE_DEFAULT_ROUTE: Record<UserRole, string> = {
 const AuthContext = createContext<any>({
   hasAccess: () => true,
   currentRole: 'manager' as UserRole,
-  loading: true,
+  loading: false,
 });
 
 export const useAuth = () => {
@@ -39,9 +39,8 @@ export const useAuth = () => {
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [user, setUser] = useState<any>(null);
   const [session, setSession] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [currentRole, setCurrentRole] = useState<UserRole>('manager');
-  const supabase = createClient();
 
   useEffect(() => {
     // Load role from localStorage
@@ -55,23 +54,32 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       }
     }
 
-    // Get initial session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      setLoading(false);
-    });
+    // Try to initialize Supabase session (non-blocking)
+    try {
+      const supabase = createClient();
+      if (!supabase) {
+        setLoading(false);
+        return;
+      }
 
-    // Listen for auth changes
-    const {
-      data: { subscription }
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      setLoading(false);
-    });
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        setSession(session);
+        setUser(session?.user ?? null);
+        setLoading(false);
+      }).catch(() => {
+        setLoading(false);
+      });
 
-    return () => subscription.unsubscribe();
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+        setSession(session);
+        setUser(session?.user ?? null);
+        setLoading(false);
+      });
+
+      return () => subscription.unsubscribe();
+    } catch {
+      setLoading(false);
+    }
   }, []);
 
   // Check if current role can access a given path
@@ -82,13 +90,15 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   // Email/Password Sign Up
   const signUp = async (email: string, password: string, metadata = {}) => {
+    const supabase = createClient();
+    if (!supabase) throw new Error('Supabase not available');
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
         data: {
-          full_name: metadata?.fullName || '',
-          avatar_url: metadata?.avatarUrl || ''
+          full_name: (metadata as any)?.fullName || '',
+          avatar_url: (metadata as any)?.avatarUrl || ''
         },
         emailRedirectTo: `${window.location.origin}/auth/callback`
       }
@@ -99,25 +109,38 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   // Email/Password Sign In
   const signIn = async (email: string, password: string) => {
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password
-    });
+    const supabase = createClient();
+    if (!supabase) throw new Error('Supabase not available');
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw error;
     return data;
   };
 
   // Sign Out
   const signOut = async () => {
-    const { error } = await supabase.auth.signOut();
-    if (error) throw error;
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('current_user');
+    }
+    try {
+      const supabase = createClient();
+      if (supabase) {
+        const { error } = await supabase.auth.signOut();
+        if (error) throw error;
+      }
+    } catch {}
   };
 
   // Get Current User
   const getCurrentUser = async () => {
-    const { data: { user }, error } = await supabase.auth.getUser();
-    if (error) throw error;
-    return user;
+    try {
+      const supabase = createClient();
+      if (!supabase) return null;
+      const { data: { user }, error } = await supabase.auth.getUser();
+      if (error) throw error;
+      return user;
+    } catch {
+      return null;
+    }
   };
 
   // Check if Email is Verified
@@ -128,13 +151,19 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   // Get User Profile from Database
   const getUserProfile = async () => {
     if (!user) return null;
-    const { data, error } = await supabase
-      .from('user_profiles')
-      .select('*')
-      .eq('id', user.id)
-      .single();
-    if (error) throw error;
-    return data;
+    try {
+      const supabase = createClient();
+      if (!supabase) return null;
+      const { data, error } = await supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
+      if (error) throw error;
+      return data;
+    } catch {
+      return null;
+    }
   };
 
   const value = {
