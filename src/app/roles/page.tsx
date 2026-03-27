@@ -1,8 +1,9 @@
 'use client';
 import React, { useState, useRef } from 'react';
 import AppLayout from '@/components/AppLayout';
-import { ShieldCheck, Plus, Edit2, Trash2, X, Save, Check, Users, Eye, EyeOff, Key, UserPlus, Camera, Upload } from 'lucide-react';
+import { ShieldCheck, Plus, Edit2, Trash2, X, Save, Check, Users, Eye, EyeOff, Key, UserPlus, Camera, Upload, Monitor, Smartphone, Tablet, LogIn, LogOut, Calendar, Clock, Search, CheckCircle, XCircle, ChevronDown, ChevronUp } from 'lucide-react';
 
+// ─── Types ─────────────────────────────────────────────────────────────────────
 interface Permission {
   id: string;
   label: string;
@@ -29,6 +30,32 @@ interface Employee {
   avatar?: string;
 }
 
+interface SessionLog {
+  id: string;
+  userId: string;
+  type: 'login' | 'logout';
+  device: 'كمبيوتر' | 'موبايل' | 'تابلت';
+  timestamp: string; // ISO string
+  day: string;
+  date: string;
+  time: string;
+}
+
+interface AppUser {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  status: 'active' | 'inactive';
+  avatar: string;
+  loginCount: number;
+  logoutCount: number;
+  lastDevice?: string;
+  lastLogin?: string;
+  sessions: SessionLog[];
+}
+
+// ─── Permissions ───────────────────────────────────────────────────────────────
 const allPermissions: Permission[] = [
   { id: 'view_dashboard', label: 'عرض لوحة التحكم', group: 'لوحة التحكم' },
   { id: 'view_orders', label: 'عرض الأوردرات', group: 'الأوردرات' },
@@ -53,55 +80,14 @@ const allPermissions: Permission[] = [
 
 const permGroups = ['لوحة التحكم', 'الأوردرات', 'الشحن', 'المخزون', 'التقارير', 'المستخدمون', 'خدمة العملاء', 'الإعدادات'];
 
+// ─── Initial Data ──────────────────────────────────────────────────────────────
 const initialRoles: Role[] = [
-  {
-    id: 'r1',
-    name: 'مدير النظام',
-    description: 'صلاحيات كاملة على جميع أقسام النظام',
-    color: 'purple',
-    permissions: allPermissions.map(p => p.id),
-    usersCount: 1,
-  },
-  {
-    id: 'r2',
-    name: 'مشرف النظام',
-    description: 'إشراف على النظام وإدارة المستخدمين والتقارير',
-    color: 'indigo',
-    permissions: ['view_dashboard', 'view_orders', 'edit_orders', 'update_status', 'view_shipping', 'manage_shipping', 'view_inventory', 'view_reports', 'export_reports', 'manage_users'],
-    usersCount: 1,
-  },
-  {
-    id: 'r3',
-    name: 'مشرف شحن',
-    description: 'إدارة عمليات الشحن وتعيين المناديب وتحديث الحالات',
-    color: 'blue',
-    permissions: ['view_dashboard', 'view_orders', 'create_orders', 'edit_orders', 'update_status', 'view_shipping', 'manage_shipping', 'assign_courier', 'view_inventory', 'view_reports'],
-    usersCount: 2,
-  },
-  {
-    id: 'r4',
-    name: 'مندوب شحن',
-    description: 'تنفيذ عمليات التوصيل وتحديث حالة الشحنات',
-    color: 'cyan',
-    permissions: ['view_orders', 'update_status', 'view_shipping'],
-    usersCount: 3,
-  },
-  {
-    id: 'r5',
-    name: 'مدير خدمة عملاء',
-    description: 'إدارة فريق خدمة العملاء والإشراف على الشكاوى',
-    color: 'green',
-    permissions: ['view_dashboard', 'view_orders', 'view_shipping', 'view_reports', 'export_reports', 'view_customers', 'manage_customers', 'customer_support'],
-    usersCount: 1,
-  },
-  {
-    id: 'r6',
-    name: 'خدمة عملاء',
-    description: 'التواصل مع العملاء ومتابعة الطلبات والشكاوى',
-    color: 'teal',
-    permissions: ['view_orders', 'view_shipping', 'view_customers', 'customer_support'],
-    usersCount: 2,
-  },
+  { id: 'r1', name: 'مدير النظام', description: 'صلاحيات كاملة على جميع أقسام النظام', color: 'purple', permissions: allPermissions.map(p => p.id), usersCount: 1 },
+  { id: 'r2', name: 'مشرف النظام', description: 'إشراف على النظام وإدارة المستخدمين والتقارير', color: 'indigo', permissions: ['view_dashboard', 'view_orders', 'edit_orders', 'update_status', 'view_shipping', 'manage_shipping', 'view_inventory', 'view_reports', 'export_reports', 'manage_users'], usersCount: 1 },
+  { id: 'r3', name: 'مشرف شحن', description: 'إدارة عمليات الشحن وتعيين المناديب وتحديث الحالات', color: 'blue', permissions: ['view_dashboard', 'view_orders', 'create_orders', 'edit_orders', 'update_status', 'view_shipping', 'manage_shipping', 'assign_courier', 'view_inventory', 'view_reports'], usersCount: 2 },
+  { id: 'r4', name: 'مندوب شحن', description: 'تنفيذ عمليات التوصيل وتحديث حالة الشحنات', color: 'cyan', permissions: ['view_orders', 'update_status', 'view_shipping'], usersCount: 3 },
+  { id: 'r5', name: 'مدير خدمة عملاء', description: 'إدارة فريق خدمة العملاء والإشراف على الشكاوى', color: 'green', permissions: ['view_dashboard', 'view_orders', 'view_shipping', 'view_reports', 'export_reports', 'view_customers', 'manage_customers', 'customer_support'], usersCount: 1 },
+  { id: 'r6', name: 'خدمة عملاء', description: 'التواصل مع العملاء ومتابعة الطلبات والشكاوى', color: 'teal', permissions: ['view_orders', 'view_shipping', 'view_customers', 'customer_support'], usersCount: 2 },
 ];
 
 const initialEmployees: Employee[] = [
@@ -109,6 +95,67 @@ const initialEmployees: Employee[] = [
   { id: 'e2', name: 'أحمد علي', username: 'ahmed.ali', password: 'Ahmed@2026', roleId: 'r3', status: 'active', createdAt: '15/01/2026', avatar: '' },
   { id: 'e3', name: 'سارة محمود', username: 'sara.m', password: 'Sara@2026', roleId: 'r5', status: 'active', createdAt: '20/01/2026', avatar: '' },
 ];
+
+const DAYS_AR = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+
+function formatSession(iso: string) {
+  const d = new Date(iso);
+  return {
+    day: DAYS_AR[d.getDay()],
+    date: d.toLocaleDateString('ar-SA', { year: 'numeric', month: 'long', day: 'numeric' }),
+    time: d.toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }),
+  };
+}
+
+const initialUsers: AppUser[] = [
+  {
+    id: 'u1', name: 'محمد الزهراني', email: 'manager@zahranship.com', role: 'مدير النظام', status: 'active', avatar: 'م', loginCount: 47, logoutCount: 46, lastDevice: 'كمبيوتر', lastLogin: '2026-03-27T09:32:14',
+    sessions: [
+      { id: 's1', userId: 'u1', type: 'login', device: 'كمبيوتر', timestamp: '2026-03-27T09:32:14', ...formatSession('2026-03-27T09:32:14') },
+      { id: 's2', userId: 'u1', type: 'logout', device: 'كمبيوتر', timestamp: '2026-03-27T14:10:00', ...formatSession('2026-03-27T14:10:00') },
+      { id: 's3', userId: 'u1', type: 'login', device: 'موبايل', timestamp: '2026-03-26T08:15:00', ...formatSession('2026-03-26T08:15:00') },
+      { id: 's4', userId: 'u1', type: 'logout', device: 'موبايل', timestamp: '2026-03-26T17:00:00', ...formatSession('2026-03-26T17:00:00') },
+    ],
+  },
+  {
+    id: 'u2', name: 'أحمد علي', email: 'ahmed@zahranship.com', role: 'مشرف شحن', status: 'active', avatar: 'أ', loginCount: 32, logoutCount: 31, lastDevice: 'موبايل', lastLogin: '2026-03-26T11:15:42',
+    sessions: [
+      { id: 's5', userId: 'u2', type: 'login', device: 'موبايل', timestamp: '2026-03-26T11:15:42', ...formatSession('2026-03-26T11:15:42') },
+      { id: 's6', userId: 'u2', type: 'logout', device: 'موبايل', timestamp: '2026-03-26T18:30:00', ...formatSession('2026-03-26T18:30:00') },
+      { id: 's7', userId: 'u2', type: 'login', device: 'كمبيوتر', timestamp: '2026-03-25T09:00:00', ...formatSession('2026-03-25T09:00:00') },
+    ],
+  },
+  {
+    id: 'u3', name: 'سارة محمود', email: 'sara@zahranship.com', role: 'مدير خدمة عملاء', status: 'active', avatar: 'س', loginCount: 28, logoutCount: 28, lastDevice: 'كمبيوتر', lastLogin: '2026-03-25T08:40:51',
+    sessions: [
+      { id: 's8', userId: 'u3', type: 'login', device: 'كمبيوتر', timestamp: '2026-03-25T08:40:51', ...formatSession('2026-03-25T08:40:51') },
+      { id: 's9', userId: 'u3', type: 'logout', device: 'كمبيوتر', timestamp: '2026-03-25T16:00:00', ...formatSession('2026-03-25T16:00:00') },
+    ],
+  },
+  {
+    id: 'u4', name: 'خالد عمر', email: 'khaled@zahranship.com', role: 'مندوب شحن', status: 'inactive', avatar: 'خ', loginCount: 15, logoutCount: 15, lastDevice: 'تابلت', lastLogin: '2026-03-20T14:22:05',
+    sessions: [
+      { id: 's10', userId: 'u4', type: 'login', device: 'تابلت', timestamp: '2026-03-20T14:22:05', ...formatSession('2026-03-20T14:22:05') },
+      { id: 's11', userId: 'u4', type: 'logout', device: 'تابلت', timestamp: '2026-03-20T19:00:00', ...formatSession('2026-03-20T19:00:00') },
+    ],
+  },
+  {
+    id: 'u5', name: 'فاطمة حسن', email: 'fatma@zahranship.com', role: 'خدمة عملاء', status: 'active', avatar: 'ف', loginCount: 22, logoutCount: 22, lastDevice: 'موبايل', lastLogin: '2026-03-27T13:40:07',
+    sessions: [
+      { id: 's12', userId: 'u5', type: 'login', device: 'موبايل', timestamp: '2026-03-27T13:40:07', ...formatSession('2026-03-27T13:40:07') },
+      { id: 's13', userId: 'u5', type: 'logout', device: 'موبايل', timestamp: '2026-03-27T20:00:00', ...formatSession('2026-03-27T20:00:00') },
+    ],
+  },
+];
+
+const roleColors: Record<string, string> = {
+  'مدير النظام': 'bg-purple-100 text-purple-700',
+  'مشرف النظام': 'bg-indigo-100 text-indigo-700',
+  'مشرف شحن': 'bg-blue-100 text-blue-700',
+  'مندوب شحن': 'bg-cyan-100 text-cyan-700',
+  'مدير خدمة عملاء': 'bg-green-100 text-green-700',
+  'خدمة عملاء': 'bg-teal-100 text-teal-700',
+};
 
 const colorMap: Record<string, { bg: string; text: string; border: string; avatar: string }> = {
   purple: { bg: 'bg-purple-50', text: 'text-purple-700', border: 'border-purple-200', avatar: 'bg-purple-500' },
@@ -121,12 +168,15 @@ const colorMap: Record<string, { bg: string; text: string; border: string; avata
   orange: { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200', avatar: 'bg-orange-500' },
 };
 
-// ─── Role Modal ────────────────────────────────────────────────────────────────
-interface RoleModalProps {
-  role: Role | null;
-  onClose: () => void;
-  onSave: (role: Role) => void;
+// ─── Device Icon ───────────────────────────────────────────────────────────────
+function DeviceIcon({ device, size = 14 }: { device?: string; size?: number }) {
+  if (device === 'موبايل') return <Smartphone size={size} />;
+  if (device === 'تابلت') return <Tablet size={size} />;
+  return <Monitor size={size} />;
 }
+
+// ─── Role Modal ────────────────────────────────────────────────────────────────
+interface RoleModalProps { role: Role | null; onClose: () => void; onSave: (role: Role) => void; }
 
 function RoleModal({ role, onClose, onSave }: RoleModalProps) {
   const [form, setForm] = useState<Role>(
@@ -134,23 +184,13 @@ function RoleModal({ role, onClose, onSave }: RoleModalProps) {
   );
 
   const togglePerm = (id: string) => {
-    setForm(prev => ({
-      ...prev,
-      permissions: prev.permissions.includes(id)
-        ? prev.permissions.filter(p => p !== id)
-        : [...prev.permissions, id],
-    }));
+    setForm(prev => ({ ...prev, permissions: prev.permissions.includes(id) ? prev.permissions.filter(p => p !== id) : [...prev.permissions, id] }));
   };
 
   const toggleGroup = (group: string) => {
     const groupPerms = allPermissions.filter(p => p.group === group).map(p => p.id);
     const allSelected = groupPerms.every(p => form.permissions.includes(p));
-    setForm(prev => ({
-      ...prev,
-      permissions: allSelected
-        ? prev.permissions.filter(p => !groupPerms.includes(p))
-        : [...new Set([...prev.permissions, ...groupPerms])],
-    }));
+    setForm(prev => ({ ...prev, permissions: allSelected ? prev.permissions.filter(p => !groupPerms.includes(p)) : [...new Set([...prev.permissions, ...groupPerms])] }));
   };
 
   return (
@@ -158,42 +198,25 @@ function RoleModal({ role, onClose, onSave }: RoleModalProps) {
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col">
         <div className="flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
           <h2 className="text-lg font-bold">{role ? 'تعديل دور' : 'إضافة دور جديد'}</h2>
-          <button onClick={onClose} className="p-2 hover:bg-[hsl(var(--muted))] rounded-xl transition-colors">
-            <X size={18} />
-          </button>
+          <button onClick={onClose} className="p-2 hover:bg-[hsl(var(--muted))] rounded-xl transition-colors"><X size={18} /></button>
         </div>
         <div className="p-5 space-y-4 overflow-y-auto flex-1">
           <div className="grid grid-cols-2 gap-4">
             <div className="col-span-2">
               <label className="block text-sm font-semibold mb-1.5">اسم الدور</label>
-              <input
-                type="text"
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-                className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30"
-              />
+              <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30" />
             </div>
             <div className="col-span-2">
               <label className="block text-sm font-semibold mb-1.5">الوصف</label>
-              <input
-                type="text"
-                value={form.description}
-                onChange={(e) => setForm({ ...form, description: e.target.value })}
-                className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30"
-              />
+              <input type="text" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30" />
             </div>
             <div>
               <label className="block text-sm font-semibold mb-1.5">اللون</label>
-              <select
-                value={form.color}
-                onChange={(e) => setForm({ ...form, color: e.target.value })}
-                className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30"
-              >
+              <select value={form.color} onChange={(e) => setForm({ ...form, color: e.target.value })} className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30">
                 {Object.keys(colorMap).map(c => <option key={c} value={c}>{c}</option>)}
               </select>
             </div>
           </div>
-
           <div>
             <p className="text-sm font-semibold mb-3">الصلاحيات ({form.permissions.length} / {allPermissions.length})</p>
             <div className="space-y-3">
@@ -202,10 +225,7 @@ function RoleModal({ role, onClose, onSave }: RoleModalProps) {
                 const allSelected = groupPerms.every(p => form.permissions.includes(p.id));
                 return (
                   <div key={group} className="border border-[hsl(var(--border))] rounded-xl overflow-hidden">
-                    <button
-                      onClick={() => toggleGroup(group)}
-                      className="w-full flex items-center justify-between px-4 py-2.5 bg-[hsl(var(--muted))]/50 hover:bg-[hsl(var(--muted))] transition-colors"
-                    >
+                    <button onClick={() => toggleGroup(group)} className="w-full flex items-center justify-between px-4 py-2.5 bg-[hsl(var(--muted))]/50 hover:bg-[hsl(var(--muted))] transition-colors">
                       <span className="text-sm font-semibold">{group}</span>
                       <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${allSelected ? 'bg-[hsl(var(--primary))] border-[hsl(var(--primary))]' : 'border-gray-300'}`}>
                         {allSelected && <Check size={12} className="text-white" />}
@@ -213,15 +233,7 @@ function RoleModal({ role, onClose, onSave }: RoleModalProps) {
                     </button>
                     <div className="p-3 grid grid-cols-2 gap-2">
                       {groupPerms.map(perm => (
-                        <button
-                          key={perm.id}
-                          onClick={() => togglePerm(perm.id)}
-                          className={`flex items-center gap-2 text-xs px-3 py-2 rounded-lg border transition-all text-right ${
-                            form.permissions.includes(perm.id)
-                              ? 'bg-[hsl(var(--primary))]/10 border-[hsl(var(--primary))]/30 text-[hsl(var(--primary))]'
-                              : 'border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted))]'
-                          }`}
-                        >
+                        <button key={perm.id} onClick={() => togglePerm(perm.id)} className={`flex items-center gap-2 text-xs px-3 py-2 rounded-lg border transition-all text-right ${form.permissions.includes(perm.id) ? 'bg-[hsl(var(--primary))]/10 border-[hsl(var(--primary))]/30 text-[hsl(var(--primary))]' : 'border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted))]'}`}>
                           <div className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${form.permissions.includes(perm.id) ? 'bg-[hsl(var(--primary))] border-[hsl(var(--primary))]' : 'border-gray-300'}`}>
                             {form.permissions.includes(perm.id) && <Check size={10} className="text-white" />}
                           </div>
@@ -236,16 +248,10 @@ function RoleModal({ role, onClose, onSave }: RoleModalProps) {
           </div>
         </div>
         <div className="flex gap-3 p-5 border-t border-[hsl(var(--border))]">
-          <button
-            onClick={() => onSave(form)}
-            className="flex-1 flex items-center justify-center gap-2 bg-[hsl(var(--primary))] text-white rounded-xl py-2.5 text-sm font-semibold hover:opacity-90 transition-opacity"
-          >
-            <Save size={16} />
-            حفظ
+          <button onClick={() => onSave(form)} className="flex-1 flex items-center justify-center gap-2 bg-[hsl(var(--primary))] text-white rounded-xl py-2.5 text-sm font-semibold hover:opacity-90 transition-opacity">
+            <Save size={16} />حفظ
           </button>
-          <button onClick={onClose} className="px-5 border border-[hsl(var(--border))] rounded-xl text-sm font-semibold hover:bg-[hsl(var(--muted))] transition-colors">
-            إلغاء
-          </button>
+          <button onClick={onClose} className="px-5 border border-[hsl(var(--border))] rounded-xl text-sm font-semibold hover:bg-[hsl(var(--muted))] transition-colors">إلغاء</button>
         </div>
       </div>
     </div>
@@ -253,25 +259,11 @@ function RoleModal({ role, onClose, onSave }: RoleModalProps) {
 }
 
 // ─── Employee Modal ────────────────────────────────────────────────────────────
-interface EmployeeModalProps {
-  employee: Employee | null;
-  roles: Role[];
-  onClose: () => void;
-  onSave: (emp: Employee) => void;
-}
+interface EmployeeModalProps { employee: Employee | null; roles: Role[]; onClose: () => void; onSave: (emp: Employee) => void; }
 
 function EmployeeModal({ employee, roles, onClose, onSave }: EmployeeModalProps) {
   const [form, setForm] = useState<Employee>(
-    employee || {
-      id: `e${Date.now()}`,
-      name: '',
-      username: '',
-      password: '',
-      roleId: roles[0]?.id || '',
-      status: 'active',
-      createdAt: new Date().toLocaleDateString('en-GB'),
-      avatar: '',
-    }
+    employee || { id: `e${Date.now()}`, name: '', username: '', password: '', roleId: roles[0]?.id || '', status: 'active', createdAt: new Date().toLocaleDateString('en-GB'), avatar: '' }
   );
   const [showPassword, setShowPassword] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -280,15 +272,9 @@ function EmployeeModal({ employee, roles, onClose, onSave }: EmployeeModalProps)
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 2 * 1024 * 1024) {
-      setErrors(prev => ({ ...prev, avatar: 'حجم الصورة يجب أن يكون أقل من 2MB' }));
-      return;
-    }
+    if (file.size > 2 * 1024 * 1024) { setErrors(prev => ({ ...prev, avatar: 'حجم الصورة يجب أن يكون أقل من 2MB' })); return; }
     const reader = new FileReader();
-    reader.onload = (ev) => {
-      setForm(prev => ({ ...prev, avatar: ev.target?.result as string }));
-      setErrors(prev => { const n = { ...prev }; delete n.avatar; return n; });
-    };
+    reader.onload = (ev) => { setForm(prev => ({ ...prev, avatar: ev.target?.result as string })); setErrors(prev => { const n = { ...prev }; delete n.avatar; return n; }); };
     reader.readAsDataURL(file);
   };
 
@@ -303,10 +289,6 @@ function EmployeeModal({ employee, roles, onClose, onSave }: EmployeeModalProps)
     return Object.keys(errs).length === 0;
   };
 
-  const handleSave = () => {
-    if (validate()) onSave(form);
-  };
-
   const roleColor = colorMap[roles.find(r => r.id === form.roleId)?.color || 'blue'] || colorMap.blue;
 
   return (
@@ -317,114 +299,55 @@ function EmployeeModal({ employee, roles, onClose, onSave }: EmployeeModalProps)
             <UserPlus size={20} className="text-[hsl(var(--primary))]" />
             <h2 className="text-lg font-bold">{employee ? 'تعديل موظف' : 'إضافة موظف جديد'}</h2>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-[hsl(var(--muted))] rounded-xl transition-colors">
-            <X size={18} />
-          </button>
+          <button onClick={onClose} className="p-2 hover:bg-[hsl(var(--muted))] rounded-xl transition-colors"><X size={18} /></button>
         </div>
         <div className="p-5 space-y-4 overflow-y-auto flex-1">
-          {/* Avatar Upload */}
           <div className="flex flex-col items-center gap-3">
             <div className="relative">
               <div className={`w-20 h-20 rounded-full overflow-hidden flex items-center justify-center text-white text-2xl font-bold ${form.avatar ? '' : roleColor.avatar}`}>
-                {form.avatar ? (
-                  <img src={form.avatar} alt="صورة المستخدم" className="w-full h-full object-cover" />
-                ) : (
-                  <span>{form.name ? form.name.charAt(0) : <Camera size={28} />}</span>
-                )}
+                {form.avatar ? <img src={form.avatar} alt="صورة المستخدم" className="w-full h-full object-cover" /> : <span>{form.name ? form.name.charAt(0) : <Camera size={28} />}</span>}
               </div>
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="absolute bottom-0 left-0 w-7 h-7 bg-[hsl(var(--primary))] text-white rounded-full flex items-center justify-center shadow-md hover:opacity-90 transition-opacity"
-              >
+              <button type="button" onClick={() => fileInputRef.current?.click()} className="absolute bottom-0 left-0 w-7 h-7 bg-[hsl(var(--primary))] text-white rounded-full flex items-center justify-center shadow-md hover:opacity-90 transition-opacity">
                 <Upload size={13} />
               </button>
             </div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={handleAvatarChange}
-            />
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="text-xs text-[hsl(var(--primary))] font-semibold hover:underline"
-            >
+            <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleAvatarChange} />
+            <button type="button" onClick={() => fileInputRef.current?.click()} className="text-xs text-[hsl(var(--primary))] font-semibold hover:underline">
               {form.avatar ? 'تغيير الصورة' : 'رفع صورة المستخدم'}
             </button>
             {errors.avatar && <p className="text-red-500 text-xs">{errors.avatar}</p>}
           </div>
-
           <div>
             <label className="block text-sm font-semibold mb-1.5">الاسم الكامل *</label>
-            <input
-              type="text"
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-              className={`w-full border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 ${errors.name ? 'border-red-400' : 'border-[hsl(var(--border))]'}`}
-              placeholder="الاسم الكامل للموظف"
-            />
+            <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={`w-full border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 ${errors.name ? 'border-red-400' : 'border-[hsl(var(--border))]'}`} placeholder="الاسم الكامل للموظف" />
             {errors.name && <p className="text-red-500 text-xs mt-1">{errors.name}</p>}
           </div>
-
           <div>
             <label className="block text-sm font-semibold mb-1.5">اسم المستخدم *</label>
-            <input
-              type="text"
-              value={form.username}
-              onChange={(e) => setForm({ ...form, username: e.target.value.toLowerCase().replace(/\s/g, '') })}
-              className={`w-full border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 ${errors.username ? 'border-red-400' : 'border-[hsl(var(--border))]'}`}
-              placeholder="مثال: ahmed.ali"
-              dir="ltr"
-            />
+            <input type="text" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value.toLowerCase().replace(/\s/g, '') })} className={`w-full border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 ${errors.username ? 'border-red-400' : 'border-[hsl(var(--border))]'}`} placeholder="مثال: ahmed.ali" dir="ltr" />
             {errors.username && <p className="text-red-500 text-xs mt-1">{errors.username}</p>}
           </div>
-
           <div>
-            <label className="block text-sm font-semibold mb-1.5">
-              {employee ? 'كلمة المرور الجديدة (اتركها فارغة للإبقاء على القديمة)' : 'كلمة المرور *'}
-            </label>
+            <label className="block text-sm font-semibold mb-1.5">{employee ? 'كلمة المرور الجديدة (اتركها فارغة للإبقاء على القديمة)' : 'كلمة المرور *'}</label>
             <div className="relative">
-              <input
-                type={showPassword ? 'text' : 'password'}
-                value={form.password}
-                onChange={(e) => setForm({ ...form, password: e.target.value })}
-                className={`w-full border rounded-xl px-3 py-2.5 pl-10 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 ${errors.password ? 'border-red-400' : 'border-[hsl(var(--border))]'}`}
-                placeholder="••••••••"
-                dir="ltr"
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"
-              >
+              <input type={showPassword ? 'text' : 'password'} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} className={`w-full border rounded-xl px-3 py-2.5 pl-10 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 ${errors.password ? 'border-red-400' : 'border-[hsl(var(--border))]'}`} placeholder="••••••••" dir="ltr" />
+              <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute left-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]">
                 {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
             {errors.password && <p className="text-red-500 text-xs mt-1">{errors.password}</p>}
           </div>
-
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-semibold mb-1.5">الدور الوظيفي *</label>
-              <select
-                value={form.roleId}
-                onChange={(e) => setForm({ ...form, roleId: e.target.value })}
-                className={`w-full border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 ${errors.roleId ? 'border-red-400' : 'border-[hsl(var(--border))]'}`}
-              >
+              <select value={form.roleId} onChange={(e) => setForm({ ...form, roleId: e.target.value })} className={`w-full border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 ${errors.roleId ? 'border-red-400' : 'border-[hsl(var(--border))]'}`}>
                 {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
               </select>
               {errors.roleId && <p className="text-red-500 text-xs mt-1">{errors.roleId}</p>}
             </div>
             <div>
               <label className="block text-sm font-semibold mb-1.5">الحالة</label>
-              <select
-                value={form.status}
-                onChange={(e) => setForm({ ...form, status: e.target.value as 'active' | 'inactive' })}
-                className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30"
-              >
+              <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as 'active' | 'inactive' })} className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30">
                 <option value="active">نشط</option>
                 <option value="inactive">غير نشط</option>
               </select>
@@ -432,16 +355,136 @@ function EmployeeModal({ employee, roles, onClose, onSave }: EmployeeModalProps)
           </div>
         </div>
         <div className="flex gap-3 p-5 border-t border-[hsl(var(--border))]">
-          <button
-            onClick={handleSave}
-            className="flex-1 flex items-center justify-center gap-2 bg-[hsl(var(--primary))] text-white rounded-xl py-2.5 text-sm font-semibold hover:opacity-90 transition-opacity"
-          >
-            <Save size={16} />
-            حفظ
+          <button onClick={() => { if (validate()) onSave(form); }} className="flex-1 flex items-center justify-center gap-2 bg-[hsl(var(--primary))] text-white rounded-xl py-2.5 text-sm font-semibold hover:opacity-90 transition-opacity">
+            <Save size={16} />حفظ
           </button>
-          <button onClick={onClose} className="px-5 border border-[hsl(var(--border))] rounded-xl text-sm font-semibold hover:bg-[hsl(var(--muted))] transition-colors">
-            إلغاء
+          <button onClick={onClose} className="px-5 border border-[hsl(var(--border))] rounded-xl text-sm font-semibold hover:bg-[hsl(var(--muted))] transition-colors">إلغاء</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── User Modal ────────────────────────────────────────────────────────────────
+interface UserModalProps { user: AppUser | null; onClose: () => void; onSave: (user: AppUser) => void; }
+
+function UserModal({ user, onClose, onSave }: UserModalProps) {
+  const allRoles = ['مدير النظام', 'مشرف النظام', 'مشرف شحن', 'مندوب شحن', 'مدير خدمة عملاء', 'خدمة عملاء'];
+  const [form, setForm] = useState<AppUser>(
+    user || { id: `u${Date.now()}`, name: '', email: '', role: 'مشرف شحن', status: 'active', avatar: '', loginCount: 0, logoutCount: 0, sessions: [] }
+  );
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" dir="rtl">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
+        <div className="flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
+          <h2 className="text-lg font-bold">{user ? 'تعديل مستخدم' : 'إضافة مستخدم جديد'}</h2>
+          <button onClick={onClose} className="p-2 hover:bg-[hsl(var(--muted))] rounded-xl transition-colors"><X size={18} /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div>
+            <label className="block text-sm font-semibold mb-1.5">الاسم الكامل</label>
+            <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value, avatar: e.target.value.trim().charAt(0) || '؟' })} className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30" placeholder="الاسم الكامل" />
+          </div>
+          <div>
+            <label className="block text-sm font-semibold mb-1.5">البريد الإلكتروني</label>
+            <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30" placeholder="example@zahranship.com" dir="ltr" />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-semibold mb-1.5">الدور الوظيفي</label>
+              <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30">
+                {allRoles.map(r => <option key={r}>{r}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-semibold mb-1.5">الحالة</label>
+              <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as 'active' | 'inactive' })} className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30">
+                <option value="active">نشط</option>
+                <option value="inactive">غير نشط</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div className="flex gap-3 p-5 border-t border-[hsl(var(--border))]">
+          <button onClick={() => onSave(form)} className="flex-1 flex items-center justify-center gap-2 bg-[hsl(var(--primary))] text-white rounded-xl py-2.5 text-sm font-semibold hover:opacity-90 transition-opacity">
+            <Save size={16} />حفظ
           </button>
+          <button onClick={onClose} className="px-5 border border-[hsl(var(--border))] rounded-xl text-sm font-semibold hover:bg-[hsl(var(--muted))] transition-colors">إلغاء</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Sessions Panel ────────────────────────────────────────────────────────────
+function SessionsPanel({ user, onClose }: { user: AppUser; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" dir="rtl">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
+        <div className="flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-[hsl(var(--primary))] flex items-center justify-center text-white font-bold">{user.avatar}</div>
+            <div>
+              <h2 className="text-base font-bold">{user.name}</h2>
+              <p className="text-xs text-[hsl(var(--muted-foreground))]">سجل الدخول والخروج</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-[hsl(var(--muted))] rounded-xl transition-colors"><X size={18} /></button>
+        </div>
+        <div className="p-4 grid grid-cols-3 gap-3 border-b border-[hsl(var(--border))]">
+          <div className="bg-green-50 rounded-xl p-3 text-center">
+            <p className="text-xl font-bold text-green-700">{user.loginCount}</p>
+            <p className="text-xs text-green-600 mt-0.5">مرات الدخول</p>
+          </div>
+          <div className="bg-red-50 rounded-xl p-3 text-center">
+            <p className="text-xl font-bold text-red-700">{user.logoutCount}</p>
+            <p className="text-xs text-red-600 mt-0.5">مرات الخروج</p>
+          </div>
+          <div className="bg-blue-50 rounded-xl p-3 text-center">
+            <div className="flex items-center justify-center gap-1 text-blue-700">
+              <DeviceIcon device={user.lastDevice} size={16} />
+              <p className="text-sm font-bold">{user.lastDevice || '—'}</p>
+            </div>
+            <p className="text-xs text-blue-600 mt-0.5">آخر جهاز</p>
+          </div>
+        </div>
+        <div className="overflow-y-auto flex-1">
+          <table className="w-full text-sm" dir="rtl">
+            <thead className="sticky top-0 bg-[hsl(var(--muted))]/80 backdrop-blur-sm">
+              <tr className="text-[hsl(var(--muted-foreground))] text-xs">
+                <th className="text-right px-4 py-3 font-semibold">النوع</th>
+                <th className="text-right px-4 py-3 font-semibold">الجهاز</th>
+                <th className="text-right px-4 py-3 font-semibold">اليوم</th>
+                <th className="text-right px-4 py-3 font-semibold">التاريخ</th>
+                <th className="text-right px-4 py-3 font-semibold">الوقت</th>
+              </tr>
+            </thead>
+            <tbody>
+              {user.sessions.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).map(s => (
+                <tr key={s.id} className="border-t border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/30 transition-colors">
+                  <td className="px-4 py-3">
+                    <span className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-semibold ${s.type === 'login' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+                      {s.type === 'login' ? <LogIn size={11} /> : <LogOut size={11} />}
+                      {s.type === 'login' ? 'دخول' : 'خروج'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="inline-flex items-center gap-1.5 text-xs text-[hsl(var(--foreground))]">
+                      <DeviceIcon device={s.device} size={13} />
+                      {s.device}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">{s.day}</td>
+                  <td className="px-4 py-3 text-xs text-[hsl(var(--foreground))]">{s.date}</td>
+                  <td className="px-4 py-3 text-xs font-mono text-[hsl(var(--foreground))]" dir="ltr">{s.time}</td>
+                </tr>
+              ))}
+              {user.sessions.length === 0 && (
+                <tr><td colSpan={5} className="px-4 py-8 text-center text-[hsl(var(--muted-foreground))] text-sm">لا يوجد سجل جلسات</td></tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -452,66 +495,62 @@ function EmployeeModal({ employee, roles, onClose, onSave }: EmployeeModalProps)
 export default function RolesPage() {
   const [roles, setRoles] = useState<Role[]>(initialRoles);
   const [employees, setEmployees] = useState<Employee[]>(initialEmployees);
+  const [appUsers, setAppUsers] = useState<AppUser[]>(initialUsers);
   const [editRole, setEditRole] = useState<Role | null | undefined>(undefined);
   const [editEmployee, setEditEmployee] = useState<Employee | null | undefined>(undefined);
-  const [activeTab, setActiveTab] = useState<'roles' | 'employees'>('roles');
+  const [editUser, setEditUser] = useState<AppUser | null | undefined>(undefined);
+  const [viewSessionsUser, setViewSessionsUser] = useState<AppUser | null>(null);
+  const [activeTab, setActiveTab] = useState<'roles' | 'employees' | 'users'>('roles');
   const [showPasswords, setShowPasswords] = useState<Set<string>>(new Set());
+  const [userSearch, setUserSearch] = useState('');
+  const [userFilter, setUserFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  const [expandedUser, setExpandedUser] = useState<string | null>(null);
 
   const handleSaveRole = (role: Role) => {
-    setRoles(prev => {
-      const exists = prev.find(r => r.id === role.id);
-      if (exists) return prev.map(r => r.id === role.id ? role : r);
-      return [...prev, role];
-    });
+    setRoles(prev => { const exists = prev.find(r => r.id === role.id); if (exists) return prev.map(r => r.id === role.id ? role : r); return [...prev, role]; });
     setEditRole(undefined);
   };
 
-  const handleDeleteRole = (id: string) => {
-    setRoles(prev => prev.filter(r => r.id !== id));
-  };
-
   const handleSaveEmployee = (emp: Employee) => {
-    setEmployees(prev => {
-      const exists = prev.find(e => e.id === emp.id);
-      if (exists) return prev.map(e => e.id === emp.id ? (emp.password ? emp : { ...emp, password: e.password }) : e);
-      return [...prev, emp];
-    });
+    setEmployees(prev => { const exists = prev.find(e => e.id === emp.id); if (exists) return prev.map(e => e.id === emp.id ? (emp.password ? emp : { ...emp, password: e.password }) : e); return [...prev, emp]; });
     setEditEmployee(undefined);
   };
 
-  const handleDeleteEmployee = (id: string) => {
-    setEmployees(prev => prev.filter(e => e.id !== id));
+  const handleSaveUser = (user: AppUser) => {
+    setAppUsers(prev => { const exists = prev.find(u => u.id === user.id); if (exists) return prev.map(u => u.id === user.id ? user : u); return [...prev, user]; });
+    setEditUser(undefined);
   };
 
   const toggleShowPassword = (id: string) => {
-    setShowPasswords(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
+    setShowPasswords(prev => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   };
 
   const getRoleName = (roleId: string) => roles.find(r => r.id === roleId)?.name || '—';
-  const getRoleColors = (roleId: string) => {
-    const role = roles.find(r => r.id === roleId);
-    return colorMap[role?.color || 'blue'] || colorMap.blue;
-  };
+  const getRoleColors = (roleId: string) => { const role = roles.find(r => r.id === roleId); return colorMap[role?.color || 'blue'] || colorMap.blue; };
+
+  const filteredUsers = appUsers.filter(u => {
+    const matchSearch = u.name.includes(userSearch) || u.email.includes(userSearch) || u.role.includes(userSearch);
+    const matchStatus = userFilter === 'all' || u.status === userFilter;
+    return matchSearch && matchStatus;
+  });
+
+  const activeUsersCount = appUsers.filter(u => u.status === 'active').length;
 
   return (
     <AppLayout currentPath="/roles">
-      <div className="space-y-6 fade-in">
+      <div className="space-y-6 fade-in" dir="rtl">
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">الأدوار والصلاحيات</h1>
-            <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">إدارة أدوار المستخدمين وتخصيص الصلاحيات لكل دور</p>
+            <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">الأدوار والصلاحيات والمستخدمون</h1>
+            <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">إدارة الأدوار والموظفين والمستخدمين وتتبع سجلات الدخول</p>
           </div>
           <button
-            onClick={() => activeTab === 'roles' ? setEditRole(null) : setEditEmployee(null)}
+            onClick={() => { if (activeTab === 'roles') setEditRole(null); else if (activeTab === 'employees') setEditEmployee(null); else setEditUser(null); }}
             className="flex items-center gap-2 px-4 py-2.5 bg-[hsl(var(--primary))] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
           >
             <Plus size={18} />
-            {activeTab === 'roles' ? 'إضافة دور' : 'إضافة موظف'}
+            {activeTab === 'roles' ? 'إضافة دور' : activeTab === 'employees' ? 'إضافة موظف' : 'إضافة مستخدم'}
           </button>
         </div>
 
@@ -526,8 +565,8 @@ export default function RolesPage() {
             <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">موظفون نشطون</p>
           </div>
           <div className="card-section p-4 text-center">
-            <p className="text-2xl font-bold text-[hsl(var(--foreground))]">{employees.length}</p>
-            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">إجمالي الموظفين</p>
+            <p className="text-2xl font-bold text-blue-600">{activeUsersCount}</p>
+            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">مستخدمون نشطون</p>
           </div>
           <div className="card-section p-4 text-center">
             <p className="text-2xl font-bold text-purple-600">{allPermissions.length}</p>
@@ -537,23 +576,22 @@ export default function RolesPage() {
 
         {/* Tabs */}
         <div className="flex bg-[hsl(var(--muted))] rounded-xl p-1 gap-1 w-fit">
-          <button
-            onClick={() => setActiveTab('roles')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${activeTab === 'roles' ? 'bg-white text-[hsl(var(--primary))] shadow-sm' : 'text-[hsl(var(--muted-foreground))]'}`}
-          >
-            <ShieldCheck size={16} />
-            الأدوار ({roles.length})
-          </button>
-          <button
-            onClick={() => setActiveTab('employees')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${activeTab === 'employees' ? 'bg-white text-[hsl(var(--primary))] shadow-sm' : 'text-[hsl(var(--muted-foreground))]'}`}
-          >
-            <Users size={16} />
-            الموظفون ({employees.length})
-          </button>
+          {[
+            { key: 'roles', label: `الأدوار (${roles.length})`, icon: <ShieldCheck size={15} /> },
+            { key: 'employees', label: `الموظفون (${employees.length})`, icon: <UserPlus size={15} /> },
+            { key: 'users', label: `المستخدمون (${appUsers.length})`, icon: <Users size={15} /> },
+          ].map(tab => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key as 'roles' | 'employees' | 'users')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${activeTab === tab.key ? 'bg-white text-[hsl(var(--primary))] shadow-sm' : 'text-[hsl(var(--muted-foreground))]'}`}
+            >
+              {tab.icon}{tab.label}
+            </button>
+          ))}
         </div>
 
-        {/* Roles Tab */}
+        {/* ── Roles Tab ── */}
         {activeTab === 'roles' && (
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">
             {roles.map(role => {
@@ -563,93 +601,40 @@ export default function RolesPage() {
                 <div key={role.id} className={`card-section p-5 border-2 ${colors.border} hover:shadow-md transition-shadow`}>
                   <div className="flex items-start justify-between mb-4">
                     <div className="flex items-center gap-3">
-                      <div className={`w-11 h-11 rounded-xl ${colors.bg} ${colors.text} flex items-center justify-center`}>
-                        <ShieldCheck size={22} />
-                      </div>
+                      <div className={`w-11 h-11 rounded-xl ${colors.bg} ${colors.text} flex items-center justify-center`}><ShieldCheck size={22} /></div>
                       <div>
                         <p className="font-bold text-[hsl(var(--foreground))]">{role.name}</p>
                         <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">{roleEmployees.length} موظف</p>
                       </div>
                     </div>
                     <div className="flex gap-1">
-                      <button
-                        onClick={() => setEditRole(role)}
-                        className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted))] transition-colors"
-                        title="تعديل الدور وصلاحياته"
-                      >
-                        <Edit2 size={14} />
-                      </button>
-                      <button
-                        onClick={() => handleDeleteRole(role.id)}
-                        className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
-                        title="حذف الدور"
-                      >
-                        <Trash2 size={14} />
-                      </button>
+                      <button onClick={() => setEditRole(role)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted))] transition-colors"><Edit2 size={14} /></button>
+                      <button onClick={() => setRoles(prev => prev.filter(r => r.id !== role.id))} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"><Trash2 size={14} /></button>
                     </div>
                   </div>
                   <p className="text-xs text-[hsl(var(--muted-foreground))] mb-3">{role.description}</p>
-
-                  {/* Permissions preview */}
                   <div className="flex flex-wrap gap-1.5 mb-3">
-                    {role.permissions.slice(0, 3).map(p => {
-                      const perm = allPermissions.find(ap => ap.id === p);
-                      return perm ? (
-                        <span key={p} className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${colors.bg} ${colors.text}`}>
-                          {perm.label}
-                        </span>
-                      ) : null;
-                    })}
-                    {role.permissions.length > 3 && (
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${colors.bg} ${colors.text}`}>
-                        +{role.permissions.length - 3} أخرى
-                      </span>
-                    )}
-                    {role.permissions.length === 0 && (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-gray-100 text-gray-500">
-                        لا توجد صلاحيات
-                      </span>
-                    )}
+                    {role.permissions.slice(0, 3).map(p => { const perm = allPermissions.find(ap => ap.id === p); return perm ? <span key={p} className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${colors.bg} ${colors.text}`}>{perm.label}</span> : null; })}
+                    {role.permissions.length > 3 && <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${colors.bg} ${colors.text}`}>+{role.permissions.length - 3} أخرى</span>}
+                    {role.permissions.length === 0 && <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-gray-100 text-gray-500">لا توجد صلاحيات</span>}
                   </div>
-
-                  {/* Employees avatars */}
                   {roleEmployees.length > 0 && (
-                    <div className="flex items-center gap-1 mb-3">
-                      <div className="flex -space-x-2 space-x-reverse">
-                        {roleEmployees.slice(0, 4).map(emp => (
-                          <div key={emp.id} className={`w-7 h-7 rounded-full border-2 border-white overflow-hidden flex items-center justify-center text-white text-xs font-bold ${colors.avatar}`}>
-                            {emp.avatar ? (
-                              <img src={emp.avatar} alt={emp.name} className="w-full h-full object-cover" />
-                            ) : (
-                              emp.name.charAt(0)
-                            )}
-                          </div>
-                        ))}
-                        {roleEmployees.length > 4 && (
-                          <div className="w-7 h-7 rounded-full border-2 border-white bg-gray-200 flex items-center justify-center text-gray-600 text-xs font-bold">
-                            +{roleEmployees.length - 4}
-                          </div>
-                        )}
-                      </div>
+                    <div className="flex -space-x-2 space-x-reverse mb-3">
+                      {roleEmployees.slice(0, 4).map(emp => (
+                        <div key={emp.id} className={`w-7 h-7 rounded-full border-2 border-white overflow-hidden flex items-center justify-center text-white text-xs font-bold ${colors.avatar}`}>
+                          {emp.avatar ? <img src={emp.avatar} alt={emp.name} className="w-full h-full object-cover" /> : <span>{emp.name.charAt(0)}</span>}
+                        </div>
+                      ))}
+                      {roleEmployees.length > 4 && <div className="w-7 h-7 rounded-full border-2 border-white bg-gray-200 flex items-center justify-center text-gray-600 text-xs font-bold">+{roleEmployees.length - 4}</div>}
                     </div>
                   )}
-
-                  <button
-                    onClick={() => setEditRole(role)}
-                    className={`w-full flex items-center justify-center gap-1.5 text-xs py-2 rounded-xl border ${colors.border} ${colors.text} hover:${colors.bg} transition-colors font-semibold`}
-                  >
-                    <ShieldCheck size={13} />
-                    تعديل الصلاحيات
+                  <button onClick={() => setEditRole(role)} className={`w-full flex items-center justify-center gap-1.5 text-xs py-2 rounded-xl border ${colors.border} ${colors.text} transition-colors font-semibold`}>
+                    <ShieldCheck size={13} />تعديل الصلاحيات
                   </button>
                 </div>
               );
             })}
-
-            {/* Add Role Card */}
-            <button
-              onClick={() => setEditRole(null)}
-              className="card-section p-5 border-2 border-dashed border-[hsl(var(--border))] hover:border-[hsl(var(--primary))]/50 hover:bg-[hsl(var(--primary))]/5 transition-all flex flex-col items-center justify-center gap-3 min-h-[180px] group"
-            >
+            <button onClick={() => setEditRole(null)} className="card-section p-5 border-2 border-dashed border-[hsl(var(--border))] hover:border-[hsl(var(--primary))]/50 hover:bg-[hsl(var(--primary))]/5 transition-all flex flex-col items-center justify-center gap-3 min-h-[180px] group">
               <div className="w-11 h-11 rounded-xl bg-[hsl(var(--muted))] group-hover:bg-[hsl(var(--primary))]/10 flex items-center justify-center transition-colors">
                 <Plus size={22} className="text-[hsl(var(--muted-foreground))] group-hover:text-[hsl(var(--primary))]" />
               </div>
@@ -658,11 +643,11 @@ export default function RolesPage() {
           </div>
         )}
 
-        {/* Employees Tab */}
+        {/* ── Employees Tab ── */}
         {activeTab === 'employees' && (
           <div className="card-section overflow-hidden">
             <div className="p-4 border-b border-[hsl(var(--border))]">
-              <p className="text-sm font-semibold text-[hsl(var(--foreground))]">قائمة الموظفين وبيانات الدخول</p>
+              <p className="text-sm font-semibold">قائمة الموظفين وبيانات الدخول</p>
               <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">يمكنك عرض وتعديل بيانات كل موظف وصورته الشخصية</p>
             </div>
             <div className="overflow-x-auto">
@@ -680,105 +665,193 @@ export default function RolesPage() {
                 </thead>
                 <tbody>
                   {employees.map(emp => {
-                    const roleColors = getRoleColors(emp.roleId);
+                    const rc = getRoleColors(emp.roleId);
                     const isShowingPass = showPasswords.has(emp.id);
                     return (
                       <tr key={emp.id} className="border-t border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/30 transition-colors">
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-3">
-                            <div className={`w-9 h-9 rounded-full overflow-hidden flex items-center justify-center text-white text-sm font-bold flex-shrink-0 ${emp.avatar ? '' : roleColors.avatar}`}>
-                              {emp.avatar ? (
-                                <img src={emp.avatar} alt={emp.name} className="w-full h-full object-cover" />
-                              ) : (
-                                <span>{emp.name.charAt(0)}</span>
-                              )}
+                            <div className={`w-9 h-9 rounded-full overflow-hidden flex items-center justify-center text-white text-sm font-bold flex-shrink-0 ${emp.avatar ? '' : rc.avatar}`}>
+                              {emp.avatar ? <img src={emp.avatar} alt={emp.name} className="w-full h-full object-cover" /> : <span>{emp.name.charAt(0)}</span>}
                             </div>
                             <span className="font-semibold">{emp.name}</span>
                           </div>
                         </td>
+                        <td className="px-4 py-3"><div className="flex items-center gap-1.5"><Key size={13} className="text-[hsl(var(--muted-foreground))]" /><span className="font-mono text-xs bg-[hsl(var(--muted))] px-2 py-1 rounded-lg">{emp.username}</span></div></td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1.5">
-                            <Key size={13} className="text-[hsl(var(--muted-foreground))]" />
-                            <span className="font-mono text-xs bg-[hsl(var(--muted))] px-2 py-1 rounded-lg">{emp.username}</span>
+                            <span className="font-mono text-xs bg-[hsl(var(--muted))] px-2 py-1 rounded-lg">{isShowingPass ? emp.password : '••••••••'}</span>
+                            <button onClick={() => toggleShowPassword(emp.id)} className="text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors">{isShowingPass ? <EyeOff size={14} /> : <Eye size={14} />}</button>
                           </div>
                         </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-mono text-xs bg-[hsl(var(--muted))] px-2 py-1 rounded-lg">
-                              {isShowingPass ? emp.password : '••••••••'}
-                            </span>
-                            <button
-                              onClick={() => toggleShowPassword(emp.id)}
-                              className="text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors"
-                            >
-                              {isShowingPass ? <EyeOff size={14} /> : <Eye size={14} />}
-                            </button>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className={`text-xs px-2.5 py-1 rounded-full font-semibold ${roleColors.bg} ${roleColors.text}`}>
-                            {getRoleName(emp.roleId)}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className={`text-xs px-2.5 py-1 rounded-full font-semibold ${emp.status === 'active' ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
-                            {emp.status === 'active' ? 'نشط' : 'غير نشط'}
-                          </span>
-                        </td>
+                        <td className="px-4 py-3"><span className={`text-xs px-2.5 py-1 rounded-full font-semibold ${rc.bg} ${rc.text}`}>{getRoleName(emp.roleId)}</span></td>
+                        <td className="px-4 py-3"><span className={`text-xs px-2.5 py-1 rounded-full font-semibold ${emp.status === 'active' ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-500'}`}>{emp.status === 'active' ? 'نشط' : 'غير نشط'}</span></td>
                         <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">{emp.createdAt}</td>
                         <td className="px-4 py-3">
                           <div className="flex gap-1">
-                            <button
-                              onClick={() => setEditEmployee(emp)}
-                              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted))] transition-colors"
-                              title="تعديل"
-                            >
-                              <Edit2 size={14} />
-                            </button>
-                            <button
-                              onClick={() => handleDeleteEmployee(emp.id)}
-                              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
-                              title="حذف"
-                            >
-                              <Trash2 size={14} />
-                            </button>
+                            <button onClick={() => setEditEmployee(emp)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted))] transition-colors"><Edit2 size={14} /></button>
+                            <button onClick={() => setEmployees(prev => prev.filter(e => e.id !== emp.id))} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"><Trash2 size={14} /></button>
                           </div>
                         </td>
                       </tr>
                     );
                   })}
-                  {employees.length === 0 && (
-                    <tr>
-                      <td colSpan={7} className="px-4 py-8 text-center text-[hsl(var(--muted-foreground))] text-sm">
-                        لا يوجد موظفون — اضغط "إضافة موظف" لإضافة أول موظف
-                      </td>
-                    </tr>
-                  )}
+                  {employees.length === 0 && <tr><td colSpan={7} className="px-4 py-8 text-center text-[hsl(var(--muted-foreground))] text-sm">لا يوجد موظفون</td></tr>}
                 </tbody>
               </table>
             </div>
           </div>
         )}
+
+        {/* ── Users Tab ── */}
+        {activeTab === 'users' && (
+          <div className="space-y-4">
+            {/* KPIs */}
+            <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+              {[
+                { label: 'إجمالي المستخدمين', value: appUsers.length, icon: <Users size={20} />, color: 'blue' },
+                { label: 'نشطون', value: activeUsersCount, icon: <CheckCircle size={20} />, color: 'green' },
+                { label: 'غير نشطين', value: appUsers.length - activeUsersCount, icon: <XCircle size={20} />, color: 'red' },
+                { label: 'إجمالي الدخول', value: appUsers.reduce((s, u) => s + u.loginCount, 0), icon: <LogIn size={20} />, color: 'purple' },
+              ].map((card, i) => (
+                <div key={i} className="kpi-card">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-3 ${card.color === 'blue' ? 'bg-blue-50 text-blue-600' : card.color === 'green' ? 'bg-green-50 text-green-600' : card.color === 'red' ? 'bg-red-50 text-red-600' : 'bg-purple-50 text-purple-600'}`}>{card.icon}</div>
+                  <p className="text-xs text-[hsl(var(--muted-foreground))] mb-1">{card.label}</p>
+                  <p className="text-2xl font-bold text-[hsl(var(--foreground))] font-mono">{card.value}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Search & Filter */}
+            <div className="card-section p-4 flex flex-col sm:flex-row gap-3">
+              <div className="relative flex-1">
+                <Search size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]" />
+                <input type="text" placeholder="بحث بالاسم أو البريد أو الدور..." value={userSearch} onChange={(e) => setUserSearch(e.target.value)} className="w-full pr-9 pl-4 py-2.5 border border-[hsl(var(--border))] rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30" />
+              </div>
+              <div className="flex bg-[hsl(var(--muted))] rounded-xl p-1 gap-1">
+                {[{ key: 'all', label: 'الكل' }, { key: 'active', label: 'نشط' }, { key: 'inactive', label: 'غير نشط' }].map(opt => (
+                  <button key={opt.key} onClick={() => setUserFilter(opt.key as 'all' | 'active' | 'inactive')} className={`text-xs px-3 py-1.5 rounded-lg font-semibold transition-all ${userFilter === opt.key ? 'bg-white text-[hsl(var(--primary))] shadow-sm' : 'text-[hsl(var(--muted-foreground))]'}`}>{opt.label}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Users Table */}
+            <div className="card-section overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm" dir="rtl">
+                  <thead>
+                    <tr className="bg-[hsl(var(--muted))]/50 text-[hsl(var(--muted-foreground))] text-xs">
+                      <th className="text-right px-4 py-3 font-semibold">المستخدم</th>
+                      <th className="text-right px-4 py-3 font-semibold">الدور</th>
+                      <th className="text-right px-4 py-3 font-semibold">الجهاز</th>
+                      <th className="text-right px-4 py-3 font-semibold">مرات الدخول</th>
+                      <th className="text-right px-4 py-3 font-semibold">مرات الخروج</th>
+                      <th className="text-right px-4 py-3 font-semibold">آخر دخول</th>
+                      <th className="text-right px-4 py-3 font-semibold">الحالة</th>
+                      <th className="text-right px-4 py-3 font-semibold">إجراءات</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredUsers.map(user => {
+                      const lastSession = user.sessions.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
+                      const isExpanded = expandedUser === user.id;
+                      return (
+                        <React.Fragment key={user.id}>
+                          <tr className="border-t border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/30 transition-colors">
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-3">
+                                <div className="w-9 h-9 rounded-full bg-[hsl(var(--primary))] flex items-center justify-center text-white text-sm font-bold flex-shrink-0">{user.avatar}</div>
+                                <div>
+                                  <p className="font-semibold text-[hsl(var(--foreground))]">{user.name}</p>
+                                  <p className="text-xs text-[hsl(var(--muted-foreground))]" dir="ltr">{user.email}</p>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`text-xs px-2.5 py-1 rounded-full font-semibold ${roleColors[user.role] || 'bg-gray-100 text-gray-600'}`}>{user.role}</span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className="inline-flex items-center gap-1.5 text-xs text-[hsl(var(--foreground))] bg-[hsl(var(--muted))] px-2.5 py-1 rounded-lg">
+                                <DeviceIcon device={user.lastDevice} size={13} />
+                                {user.lastDevice || '—'}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className="inline-flex items-center gap-1 text-xs font-bold text-green-700 bg-green-50 px-2.5 py-1 rounded-lg">
+                                <LogIn size={12} />{user.loginCount}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className="inline-flex items-center gap-1 text-xs font-bold text-red-700 bg-red-50 px-2.5 py-1 rounded-lg">
+                                <LogOut size={12} />{user.logoutCount}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3">
+                              {lastSession ? (
+                                <div className="text-xs">
+                                  <div className="flex items-center gap-1 text-[hsl(var(--foreground))]"><Calendar size={11} className="text-[hsl(var(--muted-foreground))]" />{lastSession.date}</div>
+                                  <div className="flex items-center gap-1 text-[hsl(var(--muted-foreground))] mt-0.5"><Clock size={11} /><span dir="ltr">{lastSession.time}</span><span className="mr-1">({lastSession.day})</span></div>
+                                </div>
+                              ) : <span className="text-xs text-[hsl(var(--muted-foreground))]">—</span>}
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`text-xs px-2.5 py-1 rounded-full font-semibold ${user.status === 'active' ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                                {user.status === 'active' ? 'نشط' : 'غير نشط'}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex gap-1">
+                                <button onClick={() => setExpandedUser(isExpanded ? null : user.id)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-blue-50 text-blue-600 transition-colors" title="عرض السجل">
+                                  {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                                </button>
+                                <button onClick={() => setViewSessionsUser(user)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted))] transition-colors" title="سجل الجلسات الكامل">
+                                  <Clock size={14} />
+                                </button>
+                                <button onClick={() => setEditUser(user)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted))] transition-colors" title="تعديل"><Edit2 size={14} /></button>
+                                <button onClick={() => setAppUsers(prev => prev.filter(u => u.id !== user.id))} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors" title="حذف"><Trash2 size={14} /></button>
+                              </div>
+                            </td>
+                          </tr>
+                          {/* Inline sessions preview */}
+                          {isExpanded && (
+                            <tr className="bg-[hsl(var(--muted))]/20">
+                              <td colSpan={8} className="px-6 py-3">
+                                <p className="text-xs font-semibold text-[hsl(var(--muted-foreground))] mb-2">آخر 5 جلسات:</p>
+                                <div className="flex flex-wrap gap-2">
+                                  {user.sessions.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).slice(0, 5).map(s => (
+                                    <div key={s.id} className={`flex items-center gap-2 text-xs px-3 py-1.5 rounded-xl border ${s.type === 'login' ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'}`}>
+                                      {s.type === 'login' ? <LogIn size={11} /> : <LogOut size={11} />}
+                                      <DeviceIcon device={s.device} size={11} />
+                                      <span>{s.device}</span>
+                                      <span className="text-[hsl(var(--muted-foreground))]">·</span>
+                                      <span>{s.day}</span>
+                                      <span className="text-[hsl(var(--muted-foreground))]">·</span>
+                                      <span>{s.date}</span>
+                                      <span className="text-[hsl(var(--muted-foreground))]">·</span>
+                                      <span dir="ltr">{s.time}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                    {filteredUsers.length === 0 && <tr><td colSpan={8} className="px-4 py-8 text-center text-[hsl(var(--muted-foreground))] text-sm">لا يوجد مستخدمون مطابقون</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Role Modal */}
-      {editRole !== undefined && (
-        <RoleModal
-          role={editRole}
-          onClose={() => setEditRole(undefined)}
-          onSave={handleSaveRole}
-        />
-      )}
-
-      {/* Employee Modal */}
-      {editEmployee !== undefined && (
-        <EmployeeModal
-          employee={editEmployee}
-          roles={roles}
-          onClose={() => setEditEmployee(undefined)}
-          onSave={handleSaveEmployee}
-        />
-      )}
+      {/* Modals */}
+      {editRole !== undefined && <RoleModal role={editRole} onClose={() => setEditRole(undefined)} onSave={handleSaveRole} />}
+      {editEmployee !== undefined && <EmployeeModal employee={editEmployee} roles={roles} onClose={() => setEditEmployee(undefined)} onSave={handleSaveEmployee} />}
+      {editUser !== undefined && <UserModal user={editUser} onClose={() => setEditUser(undefined)} onSave={handleSaveUser} />}
+      {viewSessionsUser && <SessionsPanel user={viewSessionsUser} onClose={() => setViewSessionsUser(null)} />}
     </AppLayout>
   );
 }
