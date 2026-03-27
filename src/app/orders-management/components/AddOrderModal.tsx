@@ -169,6 +169,8 @@ export default function AddOrderModal({ onClose }: Props) {
   const [currentDateTime, setCurrentDateTime] = useState({ date: '', time: '', day: '' });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [step, setStep] = useState(1);
+  const [orderSuccess, setOrderSuccess] = useState(false);
+  const [successOrderNum, setSuccessOrderNum] = useState('');
 
   // Form fields
   const [customerName, setCustomerName] = useState('');
@@ -384,9 +386,9 @@ export default function AddOrderModal({ onClose }: Props) {
     }
 
     await new Promise((r) => setTimeout(r, 800));
-    toast.success(`تم تسجيل الأوردر ${orderNum} بنجاح! (${deviceType})`);
     setIsSubmitting(false);
-    onClose();
+    setSuccessOrderNum(orderNum);
+    setOrderSuccess(true);
   };
 
   const warrantyOptions = loadLS<string[]>('settings_warranty', ['بدون ضمان', '3 أشهر', '6 أشهر', 'سنة', 'سنتان']);
@@ -395,6 +397,30 @@ export default function AddOrderModal({ onClose }: Props) {
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" dir="rtl">
       <Toaster position="top-center" richColors />
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+
+      {orderSuccess ? (
+        <div className="relative bg-white rounded-3xl shadow-modal w-full max-w-md p-10 flex flex-col items-center gap-6 fade-in text-center">
+          <div className="w-20 h-20 rounded-full bg-green-100 flex items-center justify-center">
+            <svg className="w-10 h-10 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <div>
+            <h2 className="text-2xl font-bold text-gray-800 mb-2">تم تسجيل الأوردر بنجاح! 🎉</h2>
+            <p className="text-gray-500 text-base mb-1">تم حفظ الطلب وإضافته إلى قائمة الأوردرات</p>
+            <div className="mt-3 bg-green-50 border border-green-200 rounded-xl px-6 py-3 inline-block">
+              <span className="text-green-700 font-semibold text-lg">رقم الأوردر: {successOrderNum}</span>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn-primary w-full justify-center mt-2"
+            onClick={onClose}
+          >
+            حسناً، إغلاق
+          </button>
+        </div>
+      ) : (
       <div className="relative bg-white rounded-3xl shadow-modal w-full max-w-3xl max-h-[92vh] flex flex-col fade-in">
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-[hsl(var(--border))]">
@@ -904,111 +930,10 @@ export default function AddOrderModal({ onClose }: Props) {
                 </div>
               </div>
             )}
-
-            {/* ── Step 3: Review ── */}
-            {step === 3 && (
-              <div className="space-y-4 fade-in">
-                <div className="flex items-center gap-2 mb-4">
-                  <FileText size={16} className="text-[hsl(var(--primary))]" />
-                  <h3 className="text-sm font-bold">مراجعة الأوردر قبل الحفظ</h3>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="bg-[hsl(var(--muted))]/40 rounded-xl p-4">
-                    <p className="text-xs font-bold text-[hsl(var(--muted-foreground))] uppercase tracking-wide mb-2">بيانات العميل</p>
-                    <div className="space-y-1.5 text-sm">
-                      <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">الاسم:</span><span className="font-semibold">{customerName || '—'}</span></div>
-                      <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">الموبايل:</span><span className="font-mono">{phone || '—'}</span></div>
-                      {phone2 && <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">موبايل 2:</span><span className="font-mono">{phone2}</span></div>}
-                      <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">المحافظة:</span><span className="font-semibold">{governorate}</span></div>
-                      <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">المنطقة:</span><span className="font-semibold">{district || '—'}</span></div>
-                      <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">العنوان:</span><span className="text-xs leading-relaxed">{address || '—'}</span></div>
-                    </div>
-                  </div>
-
-                  <div className="bg-[hsl(var(--muted))]/40 rounded-xl p-4">
-                    <p className="text-xs font-bold text-[hsl(var(--muted-foreground))] uppercase tracking-wide mb-2">الملخص المالي</p>
-                    <div className="space-y-1.5 text-sm">
-                      <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">المنتجات:</span><span className="font-mono">{subtotal.toLocaleString('en-US')} ج.م</span></div>
-                      <div className="flex justify-between">
-                        <span className="text-[hsl(var(--muted-foreground))]">{expressShipping ? 'شحن سريع:' : 'الشحن:'}</span>
-                        <span className={`font-mono ${expressShipping ? 'text-amber-700' : ''}`}>{shippingCost} ج.م</span>
-                      </div>
-                      {IS_ADMIN && extraShippingFee > 0 && (
-                        <div className="flex justify-between text-orange-700"><span>مصاريف إضافية:</span><span className="font-mono">+ {extraShippingFee.toLocaleString('en-US')} ج.م</span></div>
-                      )}
-                      <div className="border-t border-[hsl(var(--border))] pt-1.5 flex justify-between font-bold">
-                        <span>الإجمالي:</span>
-                        <span className="font-mono text-[hsl(var(--primary))] text-base">{grandTotal.toLocaleString('en-US')} ج.م</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="bg-[hsl(var(--muted))]/40 rounded-xl p-4">
-                  <p className="text-xs font-bold text-[hsl(var(--muted-foreground))] uppercase tracking-wide mb-3">المنتجات ({lines.length})</p>
-                  <div className="space-y-2">
-                    {lines.map((line, i) => {
-                      const productCard = productCards.find(p => p.value === line.productType);
-                      const hasRealImage = productCard?.image && (productCard.image.startsWith('data:') || productCard.image.startsWith('http') || productCard.image.startsWith('/'));
-                      return (
-                        <div key={`review-${line.id}`} className="flex items-center justify-between text-sm bg-white rounded-xl px-3 py-2 border border-[hsl(var(--border))]">
-                          <div className="flex items-center gap-2">
-                            {hasRealImage ? <img src={productCard!.image} alt={productCard?.label || ''} className="w-6 h-6 rounded object-cover" /> : <span>{productCard?.emoji || '📦'}</span>}
-                            {line.color && <span className="text-xs text-[hsl(var(--muted-foreground))]">({line.color})</span>}
-                            <span className="font-medium">
-                              {productCard?.label}{line.color ? ` (${line.color})` : ''}{line.includeFlashlight ? ' + كشاف' : ''}
-                            </span>
-                            {line.note && <span className="text-[10px] text-amber-600 italic">— {line.note}</span>}
-                          </div>
-                          <div className="flex items-center gap-3 text-[hsl(var(--muted-foreground))]">
-                            <span>x {line.quantity}</span>
-                            <span className="font-mono font-semibold text-[hsl(var(--foreground))]">
-                              {lineTotal(line).toLocaleString('en-US')} ج.م
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {notes && (
-                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm">
-                    <span className="font-semibold text-amber-700">ملاحظات: </span>
-                    <span>{notes}</span>
-                  </div>
-                )}
-
-                <div className="flex justify-between pt-2">
-                  <button type="button" className="btn-secondary" onClick={() => setStep(2)}>السابق</button>
-                  <button
-                    type="button"
-                    disabled={isSubmitting}
-                    className="btn-primary min-w-[160px] justify-center"
-                    onClick={handleSubmit}
-                  >
-                    {isSubmitting ? (
-                      <>
-                        <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                        </svg>
-                        <span>جاري الحفظ...</span>
-                      </>
-                    ) : (
-                      <>
-                        <FileText size={16} />
-                        <span>حفظ وإنشاء الفاتورة</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }
