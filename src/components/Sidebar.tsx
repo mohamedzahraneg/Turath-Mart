@@ -104,9 +104,9 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
             {!collapsed && (
               <div>
                 <span className="font-display text-lg font-bold text-[hsl(var(--primary))] block leading-tight">
-                  Zahranship
+                  تراث مارت
                 </span>
-                <span className="text-xs text-[hsl(var(--muted-foreground))]">نظام الشحن</span>
+                <span className="text-xs text-[hsl(var(--muted-foreground))]">Turath Mart</span>
               </div>
             )}
           </div>

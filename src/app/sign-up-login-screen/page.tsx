@@ -1,26 +1,11 @@
 'use client';
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import { Toaster } from 'sonner';
 import AppLogo from '@/components/ui/AppLogo';
-import {
-  Eye,
-  EyeOff,
-  Mail,
-  Lock,
-  Truck,
-  Package,
-  BarChart3,
-  Shield,
-  ChevronDown,
-  LogIn,
-  AlertCircle,
-  Monitor,
-  Smartphone,
-  Tablet,
-} from 'lucide-react';
+import { Eye, EyeOff, Mail, Lock, Truck, Package, BarChart3, Shield, LogIn, AlertCircle, Monitor, Smartphone, Tablet,  } from 'lucide-react';
 
 interface LoginForm {
   email: string;
@@ -29,19 +14,37 @@ interface LoginForm {
   remember: boolean;
 }
 
-const MOCK_CREDENTIALS = [
+interface StoredEmployee {
+  id: string;
+  name: string;
+  username: string;
+  password: string;
+  roleId: string;
+  status: 'active' | 'inactive';
+  createdAt: string;
+  avatar?: string;
+}
+
+const BASE_CREDENTIALS = [
+  { role: 'manager', email: 'manager@turathmart.com', password: 'Turath@2026', label: 'مدير النظام' },
+  { role: 'data_entry', email: 'staff@turathmart.com', password: 'Staff@2026', label: 'موظف إدخال بيانات' },
+  { role: 'shipping', email: 'driver@turathmart.com', password: 'Driver@2026', label: 'مندوب شحن' },
+  { role: 'supervisor', email: 'supervisor@turathmart.com', password: 'Super@2026', label: 'مشرف' },
+  // Legacy credentials for backward compatibility
   { role: 'manager', email: 'manager@zahranship.com', password: 'Zahran@2026', label: 'مدير النظام' },
   { role: 'data_entry', email: 'staff@zahranship.com', password: 'Staff@2026', label: 'موظف إدخال بيانات' },
   { role: 'shipping', email: 'driver@zahranship.com', password: 'Driver@2026', label: 'مندوب شحن' },
   { role: 'supervisor', email: 'supervisor@zahranship.com', password: 'Super@2026', label: 'مشرف' },
 ];
 
-const ROLES = [
-  { value: 'manager', label: 'مدير النظام' },
-  { value: 'data_entry', label: 'موظف إدخال بيانات' },
-  { value: 'shipping', label: 'مندوب شحن' },
-  { value: 'supervisor', label: 'مشرف (عرض فقط)' },
-];
+const ROLE_ID_TO_ROLE: Record<string, string> = {
+  r1: 'manager',
+  r2: 'supervisor',
+  r3: 'supervisor',
+  r4: 'shipping',
+  r5: 'supervisor',
+  r6: 'data_entry',
+};
 
 const STATS = [
   { icon: <Package size={22} />, value: '١٢,٤٨٧', label: 'أوردر محلّى' },
@@ -66,7 +69,11 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [loginError, setLoginError] = useState('');
-  const deviceType = getDeviceType();
+  const [deviceType, setDeviceType] = useState('كمبيوتر');
+
+  useEffect(() => {
+    setDeviceType(getDeviceType());
+  }, []);
 
   const {
     register,
@@ -82,47 +89,78 @@ export default function LoginPage() {
     setLoginError('');
     await new Promise((r) => setTimeout(r, 1200));
 
-    const valid = MOCK_CREDENTIALS.find(
+    // Check base credentials first
+    const validBase = BASE_CREDENTIALS.find(
       (c) => c.email === data.email && c.password === data.password
     );
 
-    if (valid) {
-      // Save user info including role to localStorage
+    if (validBase) {
       if (typeof window !== 'undefined') {
         localStorage.setItem('current_user', JSON.stringify({
-          email: valid.email,
-          name: valid.label,
-          role: valid.role,
+          email: validBase.email,
+          name: validBase.label,
+          role: validBase.role,
         }));
       }
-
-      toast.success(`مرحباً! تم تسجيل الدخول كـ ${valid.label} — ${deviceType}`);
-
-      // Redirect based on role
+      toast.success(`مرحباً! تم تسجيل الدخول كـ ${validBase.label} — ${deviceType}`);
       const roleRedirects: Record<string, string> = {
         'manager': '/dashboard',
         'data_entry': '/shipping',
         'shipping': '/shipping',
         'supervisor': '/shipping',
       };
-      const redirectTo = roleRedirects[valid.role] ?? '/dashboard';
-
-      setTimeout(() => {
-        window.location.href = redirectTo;
-      }, 800);
-    } else {
-      setLoginError(
-        `بيانات الدخول غير صحيحة. جرّب: manager@zahranship.com / Zahran@2026`
-      );
-      toast.error('فشل تسجيل الدخول — تحقق من البيانات');
+      const redirectTo = roleRedirects[validBase.role] ?? '/dashboard';
+      setTimeout(() => { window.location.href = redirectTo; }, 800);
+      setIsLoading(false);
+      return;
     }
-    setIsLoading(false);
-  };
 
-  const fillCredentials = (cred: typeof MOCK_CREDENTIALS[0]) => {
-    setValue('email', cred.email);
-    setValue('password', cred.password);
-    setValue('role', cred.role);
+    // Check employees added via the roles page (stored in localStorage)
+    let employeeMatch: { name: string; role: string; label: string } | null = null;
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem('turath_employees');
+        if (stored) {
+          const employees: StoredEmployee[] = JSON.parse(stored);
+          // Try login by username (email field used as username) or email
+          const emp = employees.find(
+            (e) =>
+              e.status === 'active' &&
+              (e.username === data.email || e.username === data.email.split('@')[0]) &&
+              e.password === data.password
+          );
+          if (emp) {
+            const mappedRole = ROLE_ID_TO_ROLE[emp.roleId] || 'data_entry';
+            employeeMatch = { name: emp.name, role: mappedRole, label: emp.name };
+          }
+        }
+      } catch {}
+    }
+
+    if (employeeMatch) {
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('current_user', JSON.stringify({
+          email: data.email,
+          name: employeeMatch.name,
+          role: employeeMatch.role,
+        }));
+      }
+      toast.success(`مرحباً ${employeeMatch.name}! تم تسجيل الدخول — ${deviceType}`);
+      const roleRedirects: Record<string, string> = {
+        'manager': '/dashboard',
+        'data_entry': '/shipping',
+        'shipping': '/shipping',
+        'supervisor': '/shipping',
+      };
+      const redirectTo = roleRedirects[employeeMatch.role] ?? '/dashboard';
+      setTimeout(() => { window.location.href = redirectTo; }, 800);
+      setIsLoading(false);
+      return;
+    }
+
+    setLoginError('بيانات الدخول غير صحيحة. تأكد من اسم المستخدم وكلمة المرور');
+    toast.error('فشل تسجيل الدخول — تحقق من البيانات');
+    setIsLoading(false);
   };
 
   return (
@@ -131,37 +169,35 @@ export default function LoginPage() {
 
       {/* Right: Brand Panel */}
       <div className="hidden lg:flex lg:w-[52%] relative overflow-hidden flex-col justify-between p-10"
-        style={{ background: 'linear-gradient(135deg, hsl(211,67%,18%) 0%, hsl(211,67%,32%) 60%, hsl(28,80%,45%) 100%)' }}>
+        style={{ background: 'linear-gradient(135deg, hsl(25,60%,20%) 0%, hsl(25,55%,35%) 60%, hsl(40,80%,45%) 100%)' }}>
 
-        {/* Background pattern */}
-        <div className="absolute inset-0 opacity-5">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <div
-              key={`pattern-row-${i + 1}`}
-              className="flex gap-8 mb-8"
-              style={{ marginTop: i === 0 ? '2rem' : undefined }}
-            >
-              {Array.from({ length: 6 }).map((_, j) => (
-                <Truck key={`pattern-icon-${i + 1}-${j + 1}`} size={40} className="text-white" />
-              ))}
-            </div>
-          ))}
+        {/* Islamic geometric background pattern */}
+        <div className="absolute inset-0 opacity-10">
+          <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <pattern id="islamic-star" x="0" y="0" width="80" height="80" patternUnits="userSpaceOnUse">
+                <polygon points="40,5 47,28 70,28 52,43 59,66 40,52 21,66 28,43 10,28 33,28" fill="none" stroke="white" strokeWidth="1.5"/>
+                <polygon points="40,15 44,28 58,28 47,36 51,50 40,42 29,50 33,36 22,28 36,28" fill="none" stroke="white" strokeWidth="0.8" opacity="0.5"/>
+              </pattern>
+            </defs>
+            <rect width="100%" height="100%" fill="url(#islamic-star)" />
+          </svg>
         </div>
 
         <div className="relative z-10">
           <div className="flex items-center gap-3 mb-12">
             <AppLogo size={48} />
             <div>
-              <h1 className="text-3xl font-bold text-white tracking-tight">Zahranship</h1>
-              <p className="text-blue-200 text-sm">نظام إدارة الشحن المتكامل</p>
+              <h1 className="text-3xl font-bold text-white tracking-tight">تراث مارت</h1>
+              <p className="text-amber-200 text-sm">Turath Mart — نظام الإدارة المتكامل</p>
             </div>
           </div>
 
           <h2 className="text-4xl font-bold text-white leading-relaxed mb-4">
-            إدارة شحنك<br />
-            <span className="text-[hsl(28,80%,72%)]">بكل احترافية</span>
+            إدارة نشاطك<br />
+            <span className="text-[hsl(40,80%,72%)]">بكل احترافية</span>
           </h2>
-          <p className="text-blue-200 text-lg leading-relaxed max-w-md">
+          <p className="text-amber-100 text-lg leading-relaxed max-w-md">
             منصة متكاملة لتسجيل الأوردرات، تتبع الشحن، إدارة المخزون، وتقارير مالية دقيقة — كل شيء في مكان واحد.
           </p>
         </div>
@@ -170,14 +206,14 @@ export default function LoginPage() {
         <div className="relative z-10 grid grid-cols-3 gap-4">
           {STATS.map((stat, i) => (
             <div key={`stat-${i + 1}`} className="bg-white/10 backdrop-blur-sm rounded-2xl p-4 border border-white/20">
-              <div className="text-[hsl(28,80%,72%)] mb-2">{stat.icon}</div>
+              <div className="text-[hsl(40,80%,72%)] mb-2">{stat.icon}</div>
               <p className="text-2xl font-bold text-white">{stat.value}</p>
-              <p className="text-blue-200 text-xs mt-1">{stat.label}</p>
+              <p className="text-amber-200 text-xs mt-1">{stat.label}</p>
             </div>
           ))}
         </div>
 
-        <div className="relative z-10 flex items-center gap-2 text-blue-200 text-sm">
+        <div className="relative z-10 flex items-center gap-2 text-amber-200 text-sm">
           <Shield size={16} />
           <span>بيانات محمية بتشفير SSL — خوادم آمنة</span>
         </div>
@@ -189,12 +225,12 @@ export default function LoginPage() {
           {/* Mobile logo */}
           <div className="flex items-center gap-2 mb-8 lg:hidden">
             <AppLogo size={36} />
-            <span className="font-bold text-xl text-[hsl(var(--primary))]">Zahranship</span>
+            <span className="font-bold text-xl text-[hsl(var(--primary))]">تراث مارت</span>
           </div>
 
           <div className="mb-8">
             <h2 className="text-2xl font-bold text-[hsl(var(--foreground))]">تسجيل الدخول</h2>
-            <p className="text-[hsl(var(--muted-foreground))] text-sm mt-1">أدخل بياناتك للوصول إلى النظام</p>
+            <p className="text-[hsl(var(--muted-foreground))] text-sm mt-1">أدخل بياناتك للوصول إلى نظام تراث مارت</p>
           </div>
 
           {/* Device indicator */}
@@ -212,20 +248,19 @@ export default function LoginPage() {
           )}
 
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-5" noValidate>
-            {/* Email */}
+            {/* Username / Email */}
             <div>
-              <label className="label-text" htmlFor="email">البريد الإلكتروني</label>
+              <label className="label-text" htmlFor="email">اسم المستخدم أو البريد الإلكتروني</label>
               <div className="relative">
                 <Mail size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]" />
                 <input
                   id="email"
-                  type="email"
+                  type="text"
                   className={`input-field pr-9 ${errors.email ? 'border-red-400 focus:ring-red-400' : ''}`}
-                  placeholder="example@zahranship.com"
-                  autoComplete="email"
+                  placeholder="اسم المستخدم أو البريد الإلكتروني"
+                  autoComplete="username"
                   {...register('email', {
-                    required: 'البريد الإلكتروني مطلوب',
-                    pattern: { value: /^[^\s@]+@[^\s@]+\.[^\s@]+$/, message: 'صيغة البريد غير صحيحة' },
+                    required: 'اسم المستخدم أو البريد الإلكتروني مطلوب',
                   })}
                 />
               </div>
@@ -250,9 +285,8 @@ export default function LoginPage() {
                 />
                 <button
                   type="button"
-                  className="absolute left-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors"
                   onClick={() => setShowPassword(!showPassword)}
-                  aria-label={showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors"
                 >
                   {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
@@ -260,89 +294,24 @@ export default function LoginPage() {
               {errors.password && <p className="text-red-500 text-xs mt-1">{errors.password.message}</p>}
             </div>
 
-            {/* Role */}
-            <div>
-              <label className="label-text" htmlFor="role">الدور الوظيفي</label>
-              <p className="text-xs text-[hsl(var(--muted-foreground))] mb-1.5">اختر دورك لتحديد الصلاحيات المناسبة</p>
-              <div className="relative">
-                <select
-                  id="role"
-                  className="input-field appearance-none pl-8"
-                  {...register('role', { required: 'الدور الوظيفي مطلوب' })}
-                >
-                  {ROLES.map((r) => (
-                    <option key={`role-${r.value}`} value={r.value}>{r.label}</option>
-                  ))}
-                </select>
-                <ChevronDown size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))] pointer-events-none" />
-              </div>
-              {errors.role && <p className="text-red-500 text-xs mt-1">{errors.role.message}</p>}
-            </div>
-
-            {/* Remember me */}
-            <div className="flex items-center justify-between">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  className="w-4 h-4 rounded border-[hsl(var(--border))] text-[hsl(var(--primary))] focus:ring-[hsl(var(--primary))]"
-                  {...register('remember')}
-                />
-                <span className="text-sm text-[hsl(var(--foreground))]">تذكرني</span>
-              </label>
-              <button type="button" className="text-sm text-[hsl(var(--primary))] hover:underline font-medium">
-                نسيت كلمة المرور؟
-              </button>
-            </div>
-
-            {/* Submit */}
             <button
               type="submit"
               disabled={isLoading}
-              className="btn-primary w-full justify-center py-3 text-base"
+              className="w-full flex items-center justify-center gap-2 bg-[hsl(var(--primary))] text-white rounded-xl py-3 font-semibold hover:opacity-90 transition-opacity disabled:opacity-60"
             >
               {isLoading ? (
-                <>
-                  <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  <span>جاري تسجيل الدخول...</span>
-                </>
+                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
               ) : (
                 <>
                   <LogIn size={18} />
-                  <span>تسجيل الدخول</span>
+                  تسجيل الدخول
                 </>
               )}
             </button>
           </form>
 
-          {/* Demo credentials */}
-          <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-xl">
-            <p className="text-xs font-semibold text-blue-700 mb-3 flex items-center gap-1">
-              <Shield size={12} />
-              بيانات تجريبية للاختبار — اضغط للملء التلقائي
-            </p>
-            <div className="space-y-2">
-              {MOCK_CREDENTIALS.map((cred, i) => (
-                <button
-                  key={`demo-cred-${i + 1}`}
-                  type="button"
-                  onClick={() => fillCredentials(cred)}
-                  className="w-full text-right flex items-center justify-between bg-white hover:bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 transition-colors group"
-                >
-                  <div>
-                    <p className="text-xs font-semibold text-[hsl(var(--foreground))] group-hover:text-blue-700 transition-colors">{cred.label}</p>
-                    <p className="text-xs text-[hsl(var(--muted-foreground))]">{cred.email}</p>
-                  </div>
-                  <span className="text-xs text-blue-600 font-mono bg-blue-50 px-2 py-0.5 rounded">{cred.password}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <p className="text-center text-xs text-[hsl(var(--muted-foreground))] mt-6">
-            © 2026 Zahranship — جميع الحقوق محفوظة
+          <p className="text-center text-xs text-[hsl(var(--muted-foreground))] mt-8">
+            تراث مارت — Turath Mart &copy; {new Date().getFullYear()}
           </p>
         </div>
       </div>

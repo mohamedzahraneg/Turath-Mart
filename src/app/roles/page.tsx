@@ -102,8 +102,8 @@ function formatSession(iso: string) {
   const d = new Date(iso);
   return {
     day: DAYS_AR[d.getDay()],
-    date: d.toLocaleDateString('ar-SA', { year: 'numeric', month: 'long', day: 'numeric' }),
-    time: d.toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }),
+    date: d.toLocaleDateString('en-GB', { year: 'numeric', month: '2-digit', day: '2-digit' }),
+    time: d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }),
   };
 }
 
@@ -570,7 +570,17 @@ export default function RolesPage() {
   };
 
   const handleSaveEmployee = (emp: Employee) => {
-    setEmployees(prev => { const exists = prev.find(e => e.id === emp.id); if (exists) return prev.map(e => e.id === emp.id ? (emp.password ? emp : { ...emp, password: e.password }) : e); return [...prev, emp]; });
+    setEmployees(prev => {
+      const exists = prev.find(e => e.id === emp.id);
+      const updated = exists
+        ? prev.map(e => e.id === emp.id ? (emp.password ? emp : { ...emp, password: e.password }) : e)
+        : [...prev, emp];
+      // Persist to localStorage so login page can authenticate employees
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('turath_employees', JSON.stringify(updated));
+      }
+      return updated;
+    });
     setEditEmployee(undefined);
   };
 
@@ -840,7 +850,7 @@ export default function RolesPage() {
                             </td>
                             <td className="px-4 py-3">
                               <div className="flex flex-col gap-1">
-                                <span className={`text-xs px-2.5 py-1 rounded-full font-semibold w-fit ${rc.bg} ${rc.text}`}>{getRoleName(user.roleId)}</span>
+                                <span className={`text-xs px-2.5 py-1 rounded-full font-semibold ${rc.bg} ${rc.text}`}>{getRoleName(user.roleId)}</span>
                                 {userRole && (
                                   <button
                                     onClick={() => setExpandedUserPerms(isPermsExpanded ? null : user.id)}

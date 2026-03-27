@@ -352,10 +352,22 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex items-center justify-center" dir="rtl">
-        <div className="text-center">
-          <div className="w-16 h-16 border-4 border-[hsl(211,67%,28%)] border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-          <p className="text-[hsl(var(--muted-foreground))] font-medium">جاري تحميل بيانات الشحنة...</p>
+      <div className="min-h-screen flex items-center justify-center" dir="rtl"
+        style={{ background: 'linear-gradient(135deg, hsl(25,55%,15%) 0%, hsl(25,50%,25%) 50%, hsl(35,60%,30%) 100%)' }}>
+        {/* Islamic pattern overlay */}
+        <div className="absolute inset-0 opacity-10 pointer-events-none">
+          <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <pattern id="islamic-bg-load" x="0" y="0" width="80" height="80" patternUnits="userSpaceOnUse">
+                <polygon points="40,5 47,28 70,28 52,43 59,66 40,52 21,66 28,43 10,28 33,28" fill="none" stroke="white" strokeWidth="1.5"/>
+              </pattern>
+            </defs>
+            <rect width="100%" height="100%" fill="url(#islamic-bg-load)" />
+          </svg>
+        </div>
+        <div className="text-center relative z-10">
+          <div className="w-16 h-16 border-4 border-amber-400 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+          <p className="text-amber-100 font-medium">جاري تحميل بيانات الشحنة...</p>
         </div>
       </div>
     );
@@ -363,15 +375,26 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
 
   if (notFound) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex items-center justify-center p-4" dir="rtl">
-        <div className="text-center max-w-sm">
-          <div className="w-20 h-20 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
-            <Package size={36} className="text-red-400" />
+      <div className="min-h-screen flex items-center justify-center p-4 relative" dir="rtl"
+        style={{ background: 'linear-gradient(135deg, hsl(25,55%,15%) 0%, hsl(25,50%,25%) 50%, hsl(35,60%,30%) 100%)' }}>
+        <div className="absolute inset-0 opacity-10 pointer-events-none">
+          <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <pattern id="islamic-bg-nf" x="0" y="0" width="80" height="80" patternUnits="userSpaceOnUse">
+                <polygon points="40,5 47,28 70,28 52,43 59,66 40,52 21,66 28,43 10,28 33,28" fill="none" stroke="white" strokeWidth="1.5"/>
+              </pattern>
+            </defs>
+            <rect width="100%" height="100%" fill="url(#islamic-bg-nf)" />
+          </svg>
+        </div>
+        <div className="text-center max-w-sm relative z-10">
+          <div className="w-20 h-20 bg-red-900/40 rounded-full flex items-center justify-center mx-auto mb-4 border border-red-400/30">
+            <Package size={36} className="text-red-300" />
           </div>
-          <h1 className="text-xl font-bold text-[hsl(var(--foreground))] mb-2">الشحنة غير موجودة</h1>
-          <p className="text-[hsl(var(--muted-foreground))] text-sm mb-1">لم يتم العثور على شحنة برقم:</p>
-          <p className="font-mono font-bold text-[hsl(211,67%,28%)] text-lg mb-4">{orderId}</p>
-          <p className="text-xs text-[hsl(var(--muted-foreground))]">تأكد من صحة رقم الطلب أو تواصل مع خدمة العملاء</p>
+          <h1 className="text-xl font-bold text-white mb-2">الشحنة غير موجودة</h1>
+          <p className="text-amber-200 text-sm mb-1">لم يتم العثور على شحنة برقم:</p>
+          <p className="font-mono font-bold text-amber-400 text-lg mb-4">{orderId}</p>
+          <p className="text-xs text-amber-200/70">تأكد من صحة رقم الطلب أو تواصل مع خدمة العملاء</p>
         </div>
       </div>
     );
@@ -384,24 +407,46 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
   const isDelivered = order.status === 'delivered';
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-slate-100" dir="rtl">
+    <div className="min-h-screen relative" dir="rtl">
+      {/* Islamic background */}
+      <div className="fixed inset-0 -z-10"
+        style={{ background: 'linear-gradient(160deg, hsl(25,55%,12%) 0%, hsl(28,50%,20%) 40%, hsl(35,55%,25%) 70%, hsl(25,45%,18%) 100%)' }}>
+        {/* Islamic geometric pattern overlay */}
+        <div className="absolute inset-0 opacity-[0.07]">
+          <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <pattern id="islamic-main" x="0" y="0" width="100" height="100" patternUnits="userSpaceOnUse">
+                <polygon points="50,6 58,34 86,34 64,52 72,80 50,63 28,80 28,52 14,34 42,34" fill="none" stroke="white" strokeWidth="1.5"/>
+                <polygon points="50,18 55,34 72,34 59,44 64,60 50,51 36,60 41,44 28,34 45,34" fill="none" stroke="white" strokeWidth="0.8" opacity="0.6"/>
+                <circle cx="50" cy="50" r="3" fill="white" opacity="0.4"/>
+              </pattern>
+            </defs>
+            <rect width="100%" height="100%" fill="url(#islamic-main)" />
+          </svg>
+        </div>
+        {/* Subtle radial glow */}
+        <div className="absolute inset-0 opacity-30"
+          style={{ background: 'radial-gradient(ellipse at 30% 20%, hsl(35,70%,35%) 0%, transparent 60%), radial-gradient(ellipse at 70% 80%, hsl(25,60%,25%) 0%, transparent 60%)' }} />
+      </div>
+
       {/* Header */}
-      <div className="bg-[hsl(211,67%,28%)] text-white">
+      <div style={{ background: 'linear-gradient(135deg, rgba(0,0,0,0.5) 0%, rgba(0,0,0,0.3) 100%)', backdropFilter: 'blur(12px)', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
         <div className="max-w-lg mx-auto px-4 py-5">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
-                <Truck size={20} className="text-white" />
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.2)' }}>
+                <Truck size={20} className="text-amber-300" />
               </div>
               <div>
-                <h1 className="font-bold text-lg leading-tight">Zahranship</h1>
-                <p className="text-blue-200 text-xs">تتبع شحنتك</p>
+                <h1 className="font-bold text-lg leading-tight text-white">تراث مارت</h1>
+                <p className="text-amber-300 text-xs">Turath Mart — تتبع شحنتك</p>
               </div>
             </div>
             <button
               onClick={loadOrder}
               disabled={refreshing}
-              className="flex items-center gap-1.5 bg-white/20 hover:bg-white/30 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
+              className="flex items-center gap-1.5 text-amber-200 text-xs px-3 py-1.5 rounded-lg transition-colors"
+              style={{ background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.2)' }}
             >
               <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
               تحديث
@@ -409,16 +454,16 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
           </div>
 
           {/* Order number */}
-          <div className="bg-white/10 rounded-2xl p-4">
-            <p className="text-blue-200 text-xs mb-1">رقم الطلب</p>
-            <p className="font-mono font-bold text-xl tracking-wide">{order.orderNum}</p>
-            <p className="text-blue-200 text-xs mt-1">{order.date} — {order.time}</p>
+          <div className="rounded-2xl p-4" style={{ background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.15)' }}>
+            <p className="text-amber-300 text-xs mb-1">رقم الطلب</p>
+            <p className="font-mono font-bold text-xl tracking-wide text-white">{order.orderNum}</p>
+            <p className="text-amber-200/70 text-xs mt-1">{order.date} — {order.time}</p>
           </div>
         </div>
       </div>
 
       {/* Current Status Banner */}
-      <div className="max-w-lg mx-auto px-4 -mt-2">
+      <div className="max-w-lg mx-auto px-4 mt-4">
         <div className={`${statusConfig.bg} ${statusConfig.border} border rounded-2xl p-4 shadow-sm`}>
           <div className="flex items-center gap-3">
             <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${statusConfig.bg} border ${statusConfig.border}`}>
@@ -582,10 +627,10 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
 
         {/* Last updated */}
         <div className="text-center pb-6">
-          <p className="text-xs text-[hsl(var(--muted-foreground))]">
-            آخر تحديث: {lastUpdated.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+          <p className="text-xs text-amber-200/60">
+            آخر تحديث: {lastUpdated.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })}
           </p>
-          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">يتحدث تلقائياً كل 30 ثانية</p>
+          <p className="text-xs text-amber-200/50 mt-1">يتحدث تلقائياً كل 30 ثانية</p>
         </div>
       </div>
     </div>
