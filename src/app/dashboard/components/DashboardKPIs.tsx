@@ -2,37 +2,19 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { RefreshCw, Download, TrendingUp, TrendingDown, Minus, Filter, X } from 'lucide-react';
 
-// ─── Mock data per period ──────────────────────────────────────────────────────
-const PERIOD_DATA: Record<string, {
-  totalOrders: number; shippingOrders: number; totalCollection: number;
-  netDeposit: number; pendingOrders: number; returnedOrders: number;
-  cashCollection: number; creditCollection: number; dailyDeposited: number;
-  dailyRemaining: number;
-}> = {
-  today: {
-    totalOrders: 47, shippingOrders: 18, totalCollection: 24350,
-    netDeposit: 21990, pendingOrders: 7, returnedOrders: 3,
-    cashCollection: 18200, creditCollection: 6150, dailyDeposited: 15000,
-    dailyRemaining: 9350,
-  },
-  yesterday: {
-    totalOrders: 42, shippingOrders: 15, totalCollection: 21800,
-    netDeposit: 19700, pendingOrders: 5, returnedOrders: 2,
-    cashCollection: 16000, creditCollection: 5800, dailyDeposited: 14000,
-    dailyRemaining: 7800,
-  },
-  week: {
-    totalOrders: 312, shippingOrders: 89, totalCollection: 156400,
-    netDeposit: 141800, pendingOrders: 23, returnedOrders: 14,
-    cashCollection: 112000, creditCollection: 44400, dailyDeposited: 98000,
-    dailyRemaining: 58400,
-  },
-  month: {
-    totalOrders: 1248, shippingOrders: 342, totalCollection: 624800,
-    netDeposit: 566600, pendingOrders: 87, returnedOrders: 52,
-    cashCollection: 448000, creditCollection: 176800, dailyDeposited: 390000,
-    dailyRemaining: 234800,
-  },
+// ─── Empty initial data per period ────────────────────────────────────────────
+const EMPTY_PERIOD_DATA = {
+  totalOrders: 0, shippingOrders: 0, totalCollection: 0,
+  netDeposit: 0, pendingOrders: 0, returnedOrders: 0,
+  cashCollection: 0, creditCollection: 0, dailyDeposited: 0,
+  dailyRemaining: 0,
+};
+
+const PERIOD_DATA: Record<string, typeof EMPTY_PERIOD_DATA> = {
+  today: { ...EMPTY_PERIOD_DATA },
+  yesterday: { ...EMPTY_PERIOD_DATA },
+  week: { ...EMPTY_PERIOD_DATA },
+  month: { ...EMPTY_PERIOD_DATA },
 };
 
 const PERIOD_LABELS: Record<string, string> = {
