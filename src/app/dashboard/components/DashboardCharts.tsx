@@ -1,36 +1,16 @@
 'use client';
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend
 } from 'recharts';
+import { createClient } from '@/lib/supabase/client';
 
-const weeklyData = [
-  { day: 'السبت', orders: 38, delivered: 31, returned: 2 },
-  { day: 'الأحد', orders: 52, delivered: 44, returned: 3 },
-  { day: 'الاثنين', orders: 61, delivered: 55, returned: 1 },
-  { day: 'الثلاثاء', orders: 45, delivered: 38, returned: 4 },
-  { day: 'الأربعاء', orders: 67, delivered: 60, returned: 2 },
-  { day: 'الخميس', orders: 58, delivered: 50, returned: 3 },
-  { day: 'الجمعة', orders: 47, delivered: 40, returned: 3 },
-];
+interface DayData { date: string; total: number; shipping: number }
+interface WeekDay { day: string; orders: number; delivered: number; returned: number }
+interface RegionData { region: string; orders: number; delivered: number; pending: number }
 
-const areaData = [
-  { date: '20 مارس', total: 38, shipping: 4500 },
-  { date: '21 مارس', total: 52, shipping: 6200 },
-  { date: '22 مارس', total: 61, shipping: 7300 },
-  { date: '23 مارس', total: 45, shipping: 5400 },
-  { date: '24 مارس', total: 67, shipping: 8100 },
-  { date: '25 مارس', total: 58, shipping: 7000 },
-  { date: '26 مارس', total: 47, shipping: 5600 },
-  { date: '27 مارس', total: 54, shipping: 6500 },
-];
-
-const regionData = [
-  { region: 'القاهرة', orders: 187, delivered: 162, pending: 18 },
-  { region: 'الجيزة', orders: 124, delivered: 108, pending: 12 },
-  { region: 'القليوبية', orders: 89, delivered: 74, pending: 11 },
-];
+const DAY_NAMES = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
 
 const CustomTooltipArea = ({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number; name: string; color: string }>; label?: string }) => {
   if (active && payload && payload.length) {
@@ -70,6 +50,89 @@ const CustomTooltipBar = ({ active, payload, label }: { active?: boolean; payloa
 
 export default function DashboardCharts() {
   const [activeChart, setActiveChart] = useState<'weekly' | 'daily'>('weekly');
+  const [areaData, setAreaData] = useState<DayData[]>([]);
+  const [weeklyData, setWeeklyData] = useState<WeekDay[]>([]);
+  const [regionData, setRegionData] = useState<RegionData[]>([]);
+
+  useEffect(() => {
+    const fetchChartData = async () => {
+      try {
+        const supabase = createClient();
+        const now = new Date();
+        const pad = (n: number) => n.toString().padStart(2, '0');
+        const fmtDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+        // Last 8 days
+        const start8 = new Date(now); start8.setDate(now.getDate() - 7);
+        const { data: orders } = await supabase
+          .from('zahranship_orders')
+          .select('date, status, total, region')
+          .gte('date', fmtDate(start8))
+          .lte('date', fmtDate(now));
+
+        if (!orders) return;
+
+        // Build area data (last 8 days)
+        const areaMap: Record<string, { total: number; shipping: number }> = {};
+        for (let i = 7; i >= 0; i--) {
+          const d = new Date(now); d.setDate(now.getDate() - i);
+          const key = fmtDate(d);
+          const label = `${pad(d.getDate())} ${['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر'][d.getMonth()]}`;
+          areaMap[key] = { total: 0, shipping: 0 };
+          (areaMap as Record<string, { total: number; shipping: number; label?: string }>)[key].label = label;
+        }
+        orders.forEach(o => {
+          if (areaMap[o.date]) {
+            areaMap[o.date].total += 1;
+            areaMap[o.date].shipping += Number(o.total || 0);
+          }
+        });
+        const areaArr = Object.entries(areaMap).map(([, v]) => ({
+          date: (v as { total: number; shipping: number; label?: string }).label || '',
+          total: v.total,
+          shipping: v.shipping,
+        }));
+        setAreaData(areaArr);
+
+        // Build weekly data (last 7 days by day name)
+        const weekMap: Record<string, { orders: number; delivered: number; returned: number }> = {};
+        for (let i = 6; i >= 0; i--) {
+          const d = new Date(now); d.setDate(now.getDate() - i);
+          const key = fmtDate(d);
+          weekMap[key] = { orders: 0, delivered: 0, returned: 0 };
+        }
+        orders.forEach(o => {
+          if (weekMap[o.date]) {
+            weekMap[o.date].orders += 1;
+            if (o.status === 'delivered') weekMap[o.date].delivered += 1;
+            if (o.status === 'returned') weekMap[o.date].returned += 1;
+          }
+        });
+        const weekArr = Object.entries(weekMap).map(([dateStr, v]) => {
+          const d = new Date(dateStr);
+          return { day: DAY_NAMES[d.getDay()], ...v };
+        });
+        setWeeklyData(weekArr);
+
+        // Build region data
+        const regionMap: Record<string, { orders: number; delivered: number; pending: number }> = {};
+        orders.forEach(o => {
+          const r = o.region || 'غير محدد';
+          if (!regionMap[r]) regionMap[r] = { orders: 0, delivered: 0, pending: 0 };
+          regionMap[r].orders += 1;
+          if (o.status === 'delivered') regionMap[r].delivered += 1;
+          if (['new', 'preparing', 'warehouse'].includes(o.status)) regionMap[r].pending += 1;
+        });
+        const regionArr = Object.entries(regionMap)
+          .map(([region, v]) => ({ region, ...v }))
+          .sort((a, b) => b.orders - a.orders)
+          .slice(0, 6);
+        setRegionData(regionArr);
+      } catch { /* silently fail */ }
+    };
+
+    fetchChartData();
+  }, []);
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
@@ -132,7 +195,7 @@ export default function DashboardCharts() {
       <div className="card-section p-5">
         <div className="mb-5">
           <h3 className="text-base font-bold text-[hsl(var(--foreground))]">توزيع المناطق</h3>
-          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">هذا الأسبوع</p>
+          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">آخر ٨ أيام</p>
         </div>
         <ResponsiveContainer width="100%" height={240}>
           <BarChart data={regionData} margin={{ top: 5, right: 5, left: -20, bottom: 5 }} layout="vertical">

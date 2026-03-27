@@ -1,21 +1,7 @@
 'use client';
 import React, { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Download, TrendingUp, TrendingDown, Minus, Filter, X } from 'lucide-react';
-
-// ─── Empty initial data per period ────────────────────────────────────────────
-const EMPTY_PERIOD_DATA = {
-  totalOrders: 0, shippingOrders: 0, totalCollection: 0,
-  netDeposit: 0, pendingOrders: 0, returnedOrders: 0,
-  cashCollection: 0, creditCollection: 0, dailyDeposited: 0,
-  dailyRemaining: 0,
-};
-
-const PERIOD_DATA: Record<string, typeof EMPTY_PERIOD_DATA> = {
-  today: { ...EMPTY_PERIOD_DATA },
-  yesterday: { ...EMPTY_PERIOD_DATA },
-  week: { ...EMPTY_PERIOD_DATA },
-  month: { ...EMPTY_PERIOD_DATA },
-};
+import { RefreshCw, Download, Filter, X, Package, Truck, DollarSign, Banknote, CreditCard, CheckCircle, Clock, AlertCircle, RotateCcw } from 'lucide-react';
+import { createClient } from '@/lib/supabase/client';
 
 const PERIOD_LABELS: Record<string, string> = {
   today: 'اليوم', yesterday: 'أمس', week: 'هذا الأسبوع', month: 'هذا الشهر',
@@ -34,77 +20,155 @@ const colorMap: Record<string, { bg: string; icon: string }> = {
 
 function fmt(n: number) { return n.toLocaleString('en-US'); }
 
+interface PeriodData {
+  totalOrders: number;
+  shippingOrders: number;
+  totalCollection: number;
+  cashCollection: number;
+  creditCollection: number;
+  dailyDeposited: number;
+  dailyRemaining: number;
+  pendingOrders: number;
+  returnedOrders: number;
+}
+
+const EMPTY_DATA: PeriodData = {
+  totalOrders: 0, shippingOrders: 0, totalCollection: 0,
+  cashCollection: 0, creditCollection: 0, dailyDeposited: 0,
+  dailyRemaining: 0, pendingOrders: 0, returnedOrders: 0,
+};
+
+function getDateRange(period: string): { from: string; to: string } {
+  const now = new Date();
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  const fmt = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+  if (period === 'today') {
+    const t = fmt(now);
+    return { from: t, to: t };
+  }
+  if (period === 'yesterday') {
+    const y = new Date(now); y.setDate(y.getDate() - 1);
+    const ys = fmt(y);
+    return { from: ys, to: ys };
+  }
+  if (period === 'week') {
+    const start = new Date(now); start.setDate(now.getDate() - 6);
+    return { from: fmt(start), to: fmt(now) };
+  }
+  // month
+  const start = new Date(now); start.setDate(now.getDate() - 29);
+  return { from: fmt(start), to: fmt(now) };
+}
+
 export default function DashboardKPIs() {
   const [period, setPeriod] = useState<'today' | 'yesterday' | 'week' | 'month'>('today');
   const [lastRefresh, setLastRefresh] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showFilter, setShowFilter] = useState(false);
+  const [data, setData] = useState<PeriodData>(EMPTY_DATA);
 
-  const data = PERIOD_DATA[period];
-
-  const refresh = useCallback(() => {
+  const fetchData = useCallback(async (p: string) => {
     setIsRefreshing(true);
-    setTimeout(() => {
-      setIsRefreshing(false);
-      const now = new Date();
-      const h = now.getHours().toString().padStart(2, '0');
-      const m = now.getMinutes().toString().padStart(2, '0');
-      const s = now.getSeconds().toString().padStart(2, '0');
-      setLastRefresh(`${h}:${m}:${s}`);
-    }, 600);
+    try {
+      const supabase = createClient();
+      const { from, to } = getDateRange(p);
+
+      const { data: orders, error } = await supabase
+        .from('zahranship_orders')
+        .select('status, total, date')
+        .gte('date', from)
+        .lte('date', to);
+
+      if (!error && orders) {
+        const totalOrders = orders.length;
+        const shippingOrders = orders.filter(o => o.status === 'shipping').length;
+        const pendingOrders = orders.filter(o => ['new', 'preparing', 'warehouse'].includes(o.status)).length;
+        const returnedOrders = orders.filter(o => o.status === 'returned').length;
+        const deliveredOrders = orders.filter(o => o.status === 'delivered');
+        const totalCollection = deliveredOrders.reduce((sum, o) => sum + Number(o.total || 0), 0);
+        // Approximate: assume 70% cash, 30% credit (adjust if you have payment_type field)
+        const cashCollection = Math.round(totalCollection * 0.7);
+        const creditCollection = totalCollection - cashCollection;
+
+        // Get deposited from localStorage
+        const depositsKey = `zahranship_deposits_${p}`;
+        let dailyDeposited = 0;
+        try {
+          const stored = localStorage.getItem(depositsKey);
+          if (stored) dailyDeposited = JSON.parse(stored);
+        } catch { /* ignore */ }
+
+        const dailyRemaining = Math.max(0, totalCollection - dailyDeposited);
+
+        setData({
+          totalOrders, shippingOrders, totalCollection,
+          cashCollection, creditCollection,
+          dailyDeposited, dailyRemaining,
+          pendingOrders, returnedOrders,
+        });
+      }
+    } catch { /* silently fail */ }
+
+    const now = new Date();
+    const h = now.getHours().toString().padStart(2, '0');
+    const m = now.getMinutes().toString().padStart(2, '0');
+    const s = now.getSeconds().toString().padStart(2, '0');
+    setLastRefresh(`${h}:${m}:${s}`);
+    setIsRefreshing(false);
   }, []);
 
   useEffect(() => {
-    refresh();
-    const interval = setInterval(refresh, 30000); // auto-refresh every 30s
+    fetchData(period);
+    const interval = setInterval(() => fetchData(period), 30000);
     return () => clearInterval(interval);
-  }, [refresh]);
+  }, [period, fetchData]);
 
   const kpis = [
     {
       id: 'total', title: 'إجمالي الأوردرات', value: fmt(data.totalOrders),
       sub: PERIOD_LABELS[period], color: 'blue', span: true,
-      icon: '📦', change: period === 'today' ? 12.5 : 8.2,
+      Icon: Package, change: null,
     },
     {
       id: 'shipping', title: 'جاري الشحن', value: fmt(data.shippingOrders),
       sub: 'أوردر في الطريق', color: 'orange', span: false,
-      icon: '🚚', change: 5.2,
+      Icon: Truck, change: null,
     },
     {
       id: 'collection', title: 'إجمالي التحصيل', value: fmt(data.totalCollection),
       sub: 'ج.م', color: 'green', span: false,
-      icon: '💰', change: 8.7,
+      Icon: DollarSign, change: null,
     },
     {
       id: 'cash', title: 'تحصيل كاش', value: fmt(data.cashCollection),
       sub: 'ج.م نقداً', color: 'teal', span: false,
-      icon: '💵', change: 6.3,
+      Icon: Banknote, change: null,
     },
     {
       id: 'credit', title: 'تحصيل آجل', value: fmt(data.creditCollection),
       sub: 'ج.م آجل', color: 'indigo', span: false,
-      icon: '🏦', change: -1.2,
+      Icon: CreditCard, change: null,
     },
     {
       id: 'deposited', title: 'تم التوريد', value: fmt(data.dailyDeposited),
       sub: 'ج.م — تم توريده', color: 'purple', span: false,
-      icon: '✅', change: 4.1,
+      Icon: CheckCircle, change: null,
     },
     {
       id: 'remaining', title: 'المتبقي للتوريد', value: fmt(data.dailyRemaining),
       sub: 'ج.م — لم يُوَرَّد', color: 'amber', span: false,
-      icon: '⏳', change: -3.5, alert: data.dailyRemaining > 8000,
+      Icon: Clock, change: null, alert: data.dailyRemaining > 8000,
     },
     {
       id: 'pending', title: 'أوردرات معلقة', value: fmt(data.pendingOrders),
       sub: 'تحتاج مراجعة', color: 'red', span: false,
-      icon: '⚠️', change: 40, alert: true,
+      Icon: AlertCircle, change: null, alert: data.pendingOrders > 0,
     },
     {
       id: 'returned', title: 'مرتجعات', value: fmt(data.returnedOrders),
       sub: 'بانتظار معالجة', color: 'amber', span: false,
-      icon: '↩️', change: 0,
+      Icon: RotateCcw, change: null,
     },
   ];
 
@@ -139,7 +203,7 @@ export default function DashboardKPIs() {
           {(Object.keys(PERIOD_LABELS) as Array<keyof typeof PERIOD_LABELS>).map(p => (
             <button
               key={p}
-              onClick={() => { setPeriod(p as typeof period); refresh(); }}
+              onClick={() => { setPeriod(p as typeof period); }}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${period === p ? 'bg-white shadow text-[hsl(var(--primary))]' : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'}`}
             >
               {PERIOD_LABELS[p]}
@@ -161,7 +225,7 @@ export default function DashboardKPIs() {
           تصدير CSV
         </button>
         <button
-          onClick={refresh}
+          onClick={() => fetchData(period)}
           className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl bg-[hsl(var(--primary))] text-white font-semibold hover:opacity-90 transition-all ${isRefreshing ? 'opacity-70' : ''}`}
         >
           <RefreshCw size={13} className={isRefreshing ? 'animate-spin' : ''} />
@@ -218,9 +282,6 @@ export default function DashboardKPIs() {
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         {kpis.map((kpi) => {
           const colors = colorMap[kpi.color];
-          const isPositive = kpi.change > 0;
-          const isNegative = kpi.change < 0;
-          const isNeutral = kpi.change === 0;
           return (
             <div
               key={kpi.id}
@@ -228,17 +289,9 @@ export default function DashboardKPIs() {
             >
               {kpi.alert && <div className="absolute top-0 right-0 w-1 h-full bg-red-500 rounded-r-2xl" />}
               <div className="flex items-start justify-between mb-4">
-                <div className={`w-11 h-11 rounded-xl ${colors.bg} ${colors.icon} flex items-center justify-center flex-shrink-0 text-xl`}>
-                  {kpi.icon}
+                <div className={`w-11 h-11 rounded-xl ${colors.bg} ${colors.icon} flex items-center justify-center flex-shrink-0`}>
+                  <kpi.Icon size={20} />
                 </div>
-                {kpi.change !== undefined && (
-                  <div className={`flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-lg ${
-                    isPositive && !kpi.alert ? 'bg-green-50 text-green-700' : isNegative ?'bg-red-50 text-red-600' : kpi.alert && isPositive ?'bg-red-50 text-red-600' :'bg-gray-100 text-gray-600'
-                  }`}>
-                    {isNeutral ? <Minus size={12} /> : isPositive && !kpi.alert ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
-                    <span>{Math.abs(kpi.change)}%</span>
-                  </div>
-                )}
               </div>
               <div>
                 <p className="text-[13px] font-medium text-[hsl(var(--muted-foreground))] mb-1 tracking-wide">{kpi.title}</p>
@@ -258,8 +311,8 @@ export default function DashboardKPIs() {
           <p className="text-xs font-bold text-green-700 mb-1">إجمالي التحصيل اليومي</p>
           <p className="text-2xl font-bold font-mono text-green-800">{fmt(data.totalCollection)} <span className="text-sm font-normal">ج.م</span></p>
           <div className="flex gap-3 mt-2 text-xs">
-            <span className="text-teal-700">💵 كاش: <strong>{fmt(data.cashCollection)}</strong></span>
-            <span className="text-indigo-700">🏦 آجل: <strong>{fmt(data.creditCollection)}</strong></span>
+            <span className="text-teal-700">كاش: <strong>{fmt(data.cashCollection)}</strong></span>
+            <span className="text-indigo-700">آجل: <strong>{fmt(data.creditCollection)}</strong></span>
           </div>
         </div>
         <div className="bg-gradient-to-l from-purple-50 to-blue-50 border border-purple-200 rounded-xl p-4">
@@ -269,16 +322,16 @@ export default function DashboardKPIs() {
             <div className="w-full bg-purple-100 rounded-full h-1.5">
               <div
                 className="bg-purple-500 h-1.5 rounded-full transition-all"
-                style={{ width: `${Math.min(100, (data.dailyDeposited / data.totalCollection) * 100).toFixed(0)}%` }}
+                style={{ width: data.totalCollection > 0 ? `${Math.min(100, (data.dailyDeposited / data.totalCollection) * 100).toFixed(0)}%` : '0%' }}
               />
             </div>
-            <p className="text-[10px] text-purple-600 mt-1">{((data.dailyDeposited / data.totalCollection) * 100).toFixed(0)}% من الإجمالي</p>
+            <p className="text-[10px] text-purple-600 mt-1">{data.totalCollection > 0 ? ((data.dailyDeposited / data.totalCollection) * 100).toFixed(0) : 0}% من الإجمالي</p>
           </div>
         </div>
         <div className="bg-gradient-to-l from-amber-50 to-orange-50 border border-amber-200 rounded-xl p-4">
           <p className="text-xs font-bold text-amber-700 mb-1">المتبقي للتوريد</p>
           <p className="text-2xl font-bold font-mono text-amber-800">{fmt(data.dailyRemaining)} <span className="text-sm font-normal">ج.م</span></p>
-          <p className="text-[10px] text-amber-600 mt-2">⏳ لم يُوَرَّد بعد — {PERIOD_LABELS[period]}</p>
+          <p className="text-[10px] text-amber-600 mt-2">لم يُوَرَّد بعد — {PERIOD_LABELS[period]}</p>
         </div>
       </div>
     </div>
