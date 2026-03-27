@@ -5,8 +5,7 @@ import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import { Toaster } from 'sonner';
 import AppLogo from '@/components/ui/AppLogo';
-import { Eye, EyeOff, Mail, Lock, Truck, Package, BarChart3, Shield, LogIn, AlertCircle, Monitor, Smartphone, Tablet,  } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
+import { Eye, EyeOff, Mail, Lock, Truck, Package, BarChart3, Shield, LogIn, AlertCircle, Monitor, Smartphone, Tablet } from 'lucide-react';
 
 interface LoginForm {
   email: string;
@@ -27,36 +26,87 @@ interface StoredEmployee {
   avatar?: string;
 }
 
-const BASE_CREDENTIALS = [
-  { role: 'manager', email: 'manager@turathmart.com', password: 'Turath@2026', label: 'مدير النظام' },
-  { role: 'data_entry', email: 'staff@turathmart.com', password: 'Staff@2026', label: 'موظف إدخال بيانات' },
-  { role: 'shipping', email: 'driver@turathmart.com', password: 'Driver@2026', label: 'مندوب شحن' },
-  { role: 'supervisor', email: 'supervisor@turathmart.com', password: 'Super@2026', label: 'مشرف' },
-  // Legacy credentials for backward compatibility
-  { role: 'manager', email: 'manager@zahranship.com', password: 'Zahran@2026', label: 'مدير النظام' },
-  { role: 'data_entry', email: 'staff@zahranship.com', password: 'Staff@2026', label: 'موظف إدخال بيانات' },
-  { role: 'shipping', email: 'driver@zahranship.com', password: 'Driver@2026', label: 'مندوب شحن' },
-  { role: 'supervisor', email: 'supervisor@zahranship.com', password: 'Super@2026', label: 'مشرف' },
-];
+interface StoredRole {
+  id: string;
+  name: string;
+  permissions: string[];
+  color?: string;
+}
 
-// Default employees seeded in roles page — used as login fallback
-const DEFAULT_EMPLOYEES_FALLBACK: StoredEmployee[] = [
+// Map role name → UserRole type for routing
+function getRoleTypeFromName(roleName: string): string {
+  const name = roleName.toLowerCase();
+  if (name.includes('مدير') && name.includes('نظام')) return 'manager';
+  if (name.includes('مدير')) return 'manager';
+  if (name.includes('مشرف')) return 'supervisor';
+  if (name.includes('شحن') && name.includes('مندوب')) return 'shipping';
+  if (name.includes('شحن')) return 'shipping';
+  if (name.includes('عملاء') || name.includes('خدمة')) return 'supervisor';
+  if (name.includes('بيانات') || name.includes('إدخال')) return 'data_entry';
+  return 'data_entry';
+}
+
+// Get default redirect route based on role permissions
+function getDefaultRouteForPermissions(permissions: string[]): string {
+  if (permissions.includes('view_dashboard')) return '/dashboard';
+  if (permissions.includes('view_orders')) return '/orders-management';
+  if (permissions.includes('view_shipping')) return '/shipping';
+  return '/shipping';
+}
+
+// Load roles from localStorage
+function loadStoredRoles(): StoredRole[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem('turath_roles');
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+// Load employees from localStorage
+function loadStoredEmployees(): StoredEmployee[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem('turath_employees');
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+// Default employees always available as fallback
+const DEFAULT_EMPLOYEES: StoredEmployee[] = [
   { id: 'e1', name: 'محمد الزهراني', username: 'admin', password: 'Admin@123', roleId: 'r1', status: 'active', createdAt: '01/01/2026' },
   { id: 'e2', name: 'أحمد علي', username: 'ahmed.ali', password: 'Ahmed@2026', roleId: 'r3', status: 'active', createdAt: '15/01/2026' },
   { id: 'e3', name: 'سارة محمود', username: 'sara.m', password: 'Sara@2026', roleId: 'r5', status: 'active', createdAt: '20/01/2026' },
 ];
 
-const ROLE_ID_TO_ROLE: Record<string, string> = {
-  r1: 'manager',
-  r2: 'supervisor',
-  r3: 'supervisor',
-  r4: 'shipping',
-  r5: 'supervisor',
-  r6: 'data_entry',
-  // Additional role IDs that may be created dynamically
-  r7: 'data_entry',
-  r8: 'shipping',
-};
+// Default roles always available as fallback
+const DEFAULT_ROLES: StoredRole[] = [
+  { id: 'r1', name: 'مدير النظام', permissions: ['view_dashboard','view_orders','create_orders','edit_orders','delete_orders','update_status','view_shipping','manage_shipping','assign_courier','view_inventory','edit_inventory','view_reports','export_reports','manage_users','manage_roles','view_customers','manage_customers','customer_support','system_settings'] },
+  { id: 'r2', name: 'مشرف النظام', permissions: ['view_dashboard','view_orders','edit_orders','update_status','view_shipping','manage_shipping','view_inventory','view_reports','export_reports','manage_users'] },
+  { id: 'r3', name: 'مشرف شحن', permissions: ['view_dashboard','view_orders','create_orders','edit_orders','update_status','view_shipping','manage_shipping','assign_courier','view_inventory','view_reports'] },
+  { id: 'r4', name: 'مندوب شحن', permissions: ['view_orders','update_status','view_shipping'] },
+  { id: 'r5', name: 'مدير خدمة عملاء', permissions: ['view_dashboard','view_orders','view_shipping','view_reports','export_reports','view_customers','manage_customers','customer_support'] },
+  { id: 'r6', name: 'خدمة عملاء', permissions: ['view_orders','view_shipping','view_customers','customer_support'] },
+];
+
+const BASE_CREDENTIALS = [
+  { role: 'manager', roleId: 'r1', email: 'manager@turathmart.com', password: 'Turath@2026', label: 'مدير النظام' },
+  { role: 'data_entry', roleId: 'r6', email: 'staff@turathmart.com', password: 'Staff@2026', label: 'موظف إدخال بيانات' },
+  { role: 'shipping', roleId: 'r4', email: 'driver@turathmart.com', password: 'Driver@2026', label: 'مندوب شحن' },
+  { role: 'supervisor', roleId: 'r2', email: 'supervisor@turathmart.com', password: 'Super@2026', label: 'مشرف' },
+  { role: 'manager', roleId: 'r1', email: 'manager@zahranship.com', password: 'Zahran@2026', label: 'مدير النظام' },
+  { role: 'data_entry', roleId: 'r6', email: 'staff@zahranship.com', password: 'Staff@2026', label: 'موظف إدخال بيانات' },
+  { role: 'shipping', roleId: 'r4', email: 'driver@zahranship.com', password: 'Driver@2026', label: 'مندوب شحن' },
+  { role: 'supervisor', roleId: 'r2', email: 'supervisor@zahranship.com', password: 'Super@2026', label: 'مشرف' },
+];
 
 const STATS = [
   { icon: <Package size={22} />, value: '١٢,٤٨٧', label: 'أوردر محلّى' },
@@ -95,14 +145,22 @@ export default function LoginPage() {
     defaultValues: { role: 'manager', remember: false },
   });
 
-  const redirectAfterLogin = (role: string) => {
-    const roleRedirects: Record<string, string> = {
-      'manager': '/dashboard',
-      'data_entry': '/shipping',
-      'shipping': '/shipping',
-      'supervisor': '/shipping',
+  const getRedirectForRole = (roleId: string, roleName: string): string => {
+    // Try to get redirect from stored role permissions
+    const storedRoles = loadStoredRoles();
+    const allRoles = storedRoles.length > 0 ? storedRoles : DEFAULT_ROLES;
+    const role = allRoles.find(r => r.id === roleId);
+    if (role) return getDefaultRouteForPermissions(role.permissions);
+
+    // Fallback by role type
+    const roleType = getRoleTypeFromName(roleName);
+    const fallbacks: Record<string, string> = {
+      manager: '/dashboard',
+      supervisor: '/dashboard',
+      data_entry: '/orders-management',
+      shipping: '/shipping',
     };
-    return roleRedirects[role] ?? '/dashboard';
+    return fallbacks[roleType] ?? '/shipping';
   };
 
   const onSubmit = async (data: LoginForm) => {
@@ -123,92 +181,55 @@ export default function LoginPage() {
           email: validBase.email,
           name: validBase.label,
           role: validBase.role,
+          roleId: validBase.roleId,
         }));
       }
       toast.success(`مرحباً! تم تسجيل الدخول كـ ${validBase.label} — ${deviceType}`);
-      setTimeout(() => { window.location.href = redirectAfterLogin(validBase.role); }, 800);
+      const redirect = getRedirectForRole(validBase.roleId, validBase.label);
+      setTimeout(() => { window.location.href = redirect; }, 800);
       setIsLoading(false);
       return;
     }
 
-    // ── Step 2: Try Supabase Auth (for employees registered via roles page) ───
-    try {
-      const supabase = createClient();
-      if (supabase) {
-        // Build email: if input looks like an email use it directly, otherwise build from username
-        const loginEmail = inputValue.includes('@')
-          ? inputValue
-          : `${inputValue}@turathmart.internal`;
+    // ── Step 2: Check employees in localStorage (primary for custom employees) ─
+    const storedEmployees = loadStoredEmployees();
+    const storedIds = new Set(storedEmployees.map((e: StoredEmployee) => e.id));
+    // Merge: stored employees take priority, add defaults not already stored
+    const mergedEmployees: StoredEmployee[] = [
+      ...storedEmployees,
+      ...DEFAULT_EMPLOYEES.filter(e => !storedIds.has(e.id)),
+    ];
 
-        const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-          email: loginEmail,
-          password: inputPassword,
-        });
+    const emp = mergedEmployees.find(
+      (e) =>
+        e.status === 'active' &&
+        e.password === inputPassword &&
+        (
+          e.username === inputValue ||
+          e.username === inputValue.split('@')[0] ||
+          (e.email && e.email === inputValue)
+        )
+    );
 
-        if (!authError && authData?.user) {
-          // Get role from user metadata or localStorage employees
-          const userMeta = authData.user.user_metadata;
-          const roleId = userMeta?.role_id || '';
-          const mappedRole = ROLE_ID_TO_ROLE[roleId] || userMeta?.app_role || 'data_entry';
-          const userName = userMeta?.full_name || userMeta?.name || inputValue;
+    if (emp) {
+      // Look up role from stored roles
+      const storedRoles = loadStoredRoles();
+      const allRoles = storedRoles.length > 0 ? storedRoles : DEFAULT_ROLES;
+      const empRole = allRoles.find(r => r.id === emp.roleId);
+      const roleType = empRole ? getRoleTypeFromName(empRole.name) : 'data_entry';
+      const roleName = empRole?.name || emp.roleId;
 
-          if (typeof window !== 'undefined') {
-            localStorage.setItem('current_user', JSON.stringify({
-              email: loginEmail,
-              name: userName,
-              role: mappedRole,
-            }));
-          }
-          toast.success(`مرحباً ${userName}! تم تسجيل الدخول — ${deviceType}`);
-          setTimeout(() => { window.location.href = redirectAfterLogin(mappedRole); }, 800);
-          setIsLoading(false);
-          return;
-        }
-      }
-    } catch {
-      // Supabase unavailable, fall through to localStorage
-    }
-
-    // ── Step 3: Check employees in localStorage (fallback) ───────────────────
-    let employeeMatch: { name: string; role: string } | null = null;
-    if (typeof window !== 'undefined') {
-      try {
-        const stored = localStorage.getItem('turath_employees');
-        // Merge stored employees with default fallback (stored takes priority)
-        const storedEmployees: StoredEmployee[] = stored ? JSON.parse(stored) : [];
-        // Build merged list: stored employees + any default employees not already in stored
-        const storedIds = new Set(storedEmployees.map(e => e.id));
-        const mergedEmployees = [
-          ...storedEmployees,
-          ...DEFAULT_EMPLOYEES_FALLBACK.filter(e => !storedIds.has(e.id)),
-        ];
-        const emp = mergedEmployees.find(
-          (e) =>
-            e.status === 'active' &&
-            e.password === inputPassword &&
-            (
-              e.username === inputValue ||
-              e.username === inputValue.split('@')[0] ||
-              (e.email && e.email === inputValue)
-            )
-        );
-        if (emp) {
-          const mappedRole = ROLE_ID_TO_ROLE[emp.roleId] || 'data_entry';
-          employeeMatch = { name: emp.name, role: mappedRole };
-        }
-      } catch {}
-    }
-
-    if (employeeMatch) {
       if (typeof window !== 'undefined') {
         localStorage.setItem('current_user', JSON.stringify({
           email: inputValue,
-          name: employeeMatch.name,
-          role: employeeMatch.role,
+          name: emp.name,
+          role: roleType,
+          roleId: emp.roleId,
         }));
       }
-      toast.success(`مرحباً ${employeeMatch.name}! تم تسجيل الدخول — ${deviceType}`);
-      setTimeout(() => { window.location.href = redirectAfterLogin(employeeMatch!.role); }, 800);
+      toast.success(`مرحباً ${emp.name}! تم تسجيل الدخول — ${deviceType}`);
+      const redirect = getRedirectForRole(emp.roleId, roleName);
+      setTimeout(() => { window.location.href = redirect; }, 800);
       setIsLoading(false);
       return;
     }

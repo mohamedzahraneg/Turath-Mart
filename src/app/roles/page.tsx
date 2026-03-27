@@ -164,6 +164,16 @@ const colorMap: Record<string, { bg: string; text: string; border: string; avata
 const LS_EMPLOYEES = 'turath_employees';
 const LS_USERS = 'turath_users';
 const LS_AVATARS = 'turath_avatars';
+const LS_ROLES = 'turath_roles';
+
+function saveRolesToStorage(roles: Role[]) {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(LS_ROLES, JSON.stringify(roles));
+  } catch {
+    // storage unavailable
+  }
+}
 
 function loadAvatars(): Record<string, string> {
   if (typeof window === 'undefined') return {};
@@ -606,6 +616,24 @@ export default function RolesPage() {
       saveEmployeesToStorage(defaultEmployees);
     }
 
+    // Load roles from localStorage (or use defaults)
+    const storedRolesRaw = localStorage.getItem(LS_ROLES);
+    if (storedRolesRaw) {
+      try {
+        const parsed = JSON.parse(storedRolesRaw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setRoles(parsed);
+        } else {
+          saveRolesToStorage(initialRoles);
+        }
+      } catch {
+        saveRolesToStorage(initialRoles);
+      }
+    } else {
+      // First time: seed defaults
+      saveRolesToStorage(initialRoles);
+    }
+
     // Load employees + avatars
     const loadedEmps = loadFromStorage<Employee>(LS_EMPLOYEES, defaultEmployees);
     const avatars = loadAvatars();
@@ -631,7 +659,12 @@ export default function RolesPage() {
   const [expandedUserPerms, setExpandedUserPerms] = useState<string | null>(null);
 
   const handleSaveRole = (role: Role) => {
-    setRoles(prev => { const exists = prev.find(r => r.id === role.id); if (exists) return prev.map(r => r.id === role.id ? role : r); return [...prev, role]; });
+    setRoles(prev => {
+      const exists = prev.find(r => r.id === role.id);
+      const updated = exists ? prev.map(r => r.id === role.id ? role : r) : [...prev, role];
+      saveRolesToStorage(updated);
+      return updated;
+    });
     setEditRole(undefined);
   };
 
@@ -835,12 +868,12 @@ export default function RolesPage() {
                       <div className={`w-11 h-11 rounded-xl ${colors.bg} ${colors.text} flex items-center justify-center`}><ShieldCheck size={22} /></div>
                       <div>
                         <p className="font-bold text-[hsl(var(--foreground))]">{role.name}</p>
-                        <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">{roleEmployees.length + roleUsers.length} مستخدم</p>
+                        <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">{roleEmployees.length + roleUsers.length} مستخدم</p>
                       </div>
                     </div>
                     <div className="flex gap-1">
                       <button onClick={() => setEditRole(role)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted))] transition-colors"><Edit2 size={14} /></button>
-                      <button onClick={() => setRoles(prev => prev.filter(r => r.id !== role.id))} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"><Trash2 size={14} /></button>
+                      <button onClick={() => setRoles(prev => { const updated = prev.filter(r => r.id !== role.id); saveRolesToStorage(updated); return updated; })} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"><Trash2 size={14} /></button>
                     </div>
                   </div>
                   <p className="text-xs text-[hsl(var(--muted-foreground))] mb-3">{role.description}</p>
@@ -1112,8 +1145,6 @@ export default function RolesPage() {
                                         <span>{s.device}</span>
                                         <span className="text-[hsl(var(--muted-foreground))]">·</span>
                                         <span>{s.day}</span>
-                                        <span className="text-[hsl(var(--muted-foreground))]">·</span>
-                                        <span>{s.date}</span>
                                         <span className="text-[hsl(var(--muted-foreground))]">·</span>
                                         <span dir="ltr">{s.time}</span>
                                       </div>
