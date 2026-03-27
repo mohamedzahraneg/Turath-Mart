@@ -162,6 +162,37 @@ const colorMap: Record<string, { bg: string; text: string; border: string; avata
 // ─── localStorage helpers ──────────────────────────────────────────────────────
 const LS_EMPLOYEES = 'turath_employees';
 const LS_USERS = 'turath_users';
+const LS_AVATARS = 'turath_avatars';
+
+function loadAvatars(): Record<string, string> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(LS_AVATARS);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveAvatar(empId: string, avatarData: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    const avatars = loadAvatars();
+    avatars[empId] = avatarData;
+    localStorage.setItem(LS_AVATARS, JSON.stringify(avatars));
+  } catch {
+    // storage unavailable
+  }
+}
+
+function removeAvatar(empId: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    const avatars = loadAvatars();
+    delete avatars[empId];
+    localStorage.setItem(LS_AVATARS, JSON.stringify(avatars));
+  } catch {}
+}
 
 function loadFromStorage<T>(key: string, fallback: T[]): T[] {
   if (typeof window === 'undefined') return fallback;
@@ -178,7 +209,7 @@ function loadFromStorage<T>(key: string, fallback: T[]): T[] {
 function saveEmployeesToStorage(employees: Employee[]) {
   if (typeof window === 'undefined') return;
   try {
-    // Strip avatar (base64) to avoid quota exceeded
+    // Strip avatar (base64) to avoid quota exceeded — avatars saved separately in LS_AVATARS
     const lightweight = employees.map(({ avatar, ...rest }) => ({ ...rest, avatar: '' }));
     localStorage.setItem(LS_EMPLOYEES, JSON.stringify(lightweight));
   } catch {
@@ -300,9 +331,10 @@ interface UnifiedMemberModalProps {
 }
 
 function UnifiedMemberModal({ employee, roles, onClose, onSave }: UnifiedMemberModalProps) {
+  const stableId = useRef(`e${Math.random().toString(36).slice(2)}`);
   const [form, setForm] = useState<Employee>(
     employee || {
-      id: `e${Date.now()}`,
+      id: stableId.current,
       name: '',
       username: '',
       password: '',
@@ -559,10 +591,28 @@ export default function RolesPage() {
   const [roles, setRoles] = useState<Role[]>(initialRoles);
 
   // Load employees from localStorage on mount (persisted data takes priority)
-  const [employees, setEmployees] = useState<Employee[]>(() => loadFromStorage<Employee>(LS_EMPLOYEES, defaultEmployees));
+  // Also restore avatars from separate storage
+  const [employees, setEmployees] = useState<Employee[]>(() => {
+    const loaded = loadFromStorage<Employee>(LS_EMPLOYEES, defaultEmployees);
+    // Restore avatars from separate key
+    if (typeof window !== 'undefined') {
+      const avatars = loadAvatars();
+      return loaded.map(e => ({ ...e, avatar: avatars[e.id] || '' }));
+    }
+    return loaded;
+  });
 
   // Load users from localStorage on mount
   const [appUsers, setAppUsers] = useState<AppUser[]>(() => loadFromStorage<AppUser>(LS_USERS, defaultUsers));
+
+  // On first mount: ensure default employees are persisted so login page can find them
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const stored = localStorage.getItem(LS_EMPLOYEES);
+    if (!stored || stored === '[]') {
+      saveEmployeesToStorage(defaultEmployees);
+    }
+  }, []);
 
   const [editRole, setEditRole] = useState<Role | null | undefined>(undefined);
   // unified modal: undefined = closed, null = new, Employee = edit
@@ -582,6 +632,13 @@ export default function RolesPage() {
 
   // Unified save: persists employee for login AND syncs AppUser for the users tab
   const handleSaveMember = (emp: Employee) => {
+    // Save avatar separately if present
+    if (emp.avatar) {
+      saveAvatar(emp.id, emp.avatar);
+    } else {
+      removeAvatar(emp.id);
+    }
+
     setEmployees(prev => {
       const exists = prev.find(e => e.id === emp.id);
       const finalEmp = exists
