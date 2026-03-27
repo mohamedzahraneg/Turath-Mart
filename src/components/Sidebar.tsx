@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import AppLogo from '@/components/ui/AppLogo';
+import { useAuth, ROLE_ALLOWED_ROUTES } from '@/contexts/AuthContext';
 import {
   LayoutDashboard,
   Package,
@@ -39,6 +40,13 @@ const navItems: NavItem[] = [
 
 const groups = ['رئيسي', 'إدارة', 'النظام'];
 
+const ROLE_LABELS: Record<string, string> = {
+  manager: 'مدير النظام',
+  data_entry: 'موظف إدخال بيانات',
+  shipping: 'مندوب شحن',
+  supervisor: 'مشرف',
+};
+
 interface SidebarProps {
   currentPath?: string;
 }
@@ -46,16 +54,35 @@ interface SidebarProps {
 export default function Sidebar({ currentPath = '' }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const { currentRole } = useAuth();
+
+  const allowedRoutes = ROLE_ALLOWED_ROUTES[currentRole] ?? [];
+
+  // Filter nav items to only those the current role can access
+  const visibleNavItems = navItems.filter((item) =>
+    allowedRoutes.some((route) => item.href === route || item.href.startsWith(route + '/'))
+  );
 
   const isActive = (href: string) => currentPath === href || currentPath.startsWith(href);
 
   const handleLogout = () => {
-    // Clear any stored session data
     if (typeof window !== 'undefined') {
       localStorage.removeItem('current_user');
       window.location.href = '/sign-up-login-screen';
     }
   };
+
+  // Get current user info from localStorage
+  let userName = 'المستخدم';
+  if (typeof window !== 'undefined') {
+    try {
+      const stored = localStorage.getItem('current_user');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        userName = parsed?.name || parsed?.email?.split('@')[0] || 'المستخدم';
+      }
+    } catch {}
+  }
 
   return (
     <>
@@ -117,7 +144,8 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
         {/* Nav */}
         <nav className="flex-1 overflow-y-auto py-4 px-3 scrollbar-thin">
           {groups.map((group) => {
-            const items = navItems.filter((item) => item.group === group);
+            const items = visibleNavItems.filter((item) => item.group === group);
+            if (items.length === 0) return null;
             return (
               <div key={`group-${group}`} className="mb-4">
                 {!collapsed && (
@@ -172,11 +200,11 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
           {!collapsed && (
             <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[hsl(var(--muted))] mt-2">
               <div className="w-8 h-8 rounded-full bg-[hsl(var(--primary))] flex items-center justify-center text-white text-sm font-bold flex-shrink-0">
-                م
+                {userName.charAt(0)}
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold truncate">محمد الزهراني</p>
-                <p className="text-xs text-[hsl(var(--muted-foreground))] truncate">مدير النظام</p>
+                <p className="text-sm font-semibold truncate">{userName}</p>
+                <p className="text-xs text-[hsl(var(--muted-foreground))] truncate">{ROLE_LABELS[currentRole] ?? currentRole}</p>
               </div>
               <button onClick={handleLogout} className="text-[hsl(var(--muted-foreground))] hover:text-red-500 transition-colors" aria-label="تسجيل الخروج">
                 <LogOut size={16} />

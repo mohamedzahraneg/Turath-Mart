@@ -30,7 +30,7 @@ interface LoginForm {
 }
 
 const MOCK_CREDENTIALS = [
-  { role: 'مدير', email: 'manager@zahranship.com', password: 'Zahran@2026', label: 'مدير النظام' },
+  { role: 'manager', email: 'manager@zahranship.com', password: 'Zahran@2026', label: 'مدير النظام' },
   { role: 'data_entry', email: 'staff@zahranship.com', password: 'Staff@2026', label: 'موظف إدخال بيانات' },
   { role: 'shipping', email: 'driver@zahranship.com', password: 'Driver@2026', label: 'مندوب شحن' },
   { role: 'supervisor', email: 'supervisor@zahranship.com', password: 'Super@2026', label: 'مشرف' },
@@ -87,9 +87,28 @@ export default function LoginPage() {
     );
 
     if (valid) {
+      // Save user info including role to localStorage
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('current_user', JSON.stringify({
+          email: valid.email,
+          name: valid.label,
+          role: valid.role,
+        }));
+      }
+
       toast.success(`مرحباً! تم تسجيل الدخول كـ ${valid.label} — ${deviceType}`);
+
+      // Redirect based on role
+      const roleRedirects: Record<string, string> = {
+        'manager': '/dashboard',
+        'data_entry': '/shipping',
+        'shipping': '/shipping',
+        'supervisor': '/shipping',
+      };
+      const redirectTo = roleRedirects[valid.role] ?? '/dashboard';
+
       setTimeout(() => {
-        window.location.href = '/dashboard';
+        window.location.href = redirectTo;
       }, 800);
     } else {
       setLoginError(
