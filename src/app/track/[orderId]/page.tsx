@@ -303,8 +303,8 @@ function StarRating({ rating }: { rating: number }) {
   );
 }
 
-export default function TrackingPage({ params }: { params: { orderId: string } }) {
-  const orderId = params.orderId;
+export default function TrackingPage({ params }: { params: Promise<{ orderId: string }> }) {
+  const { orderId } = React.use(params);
   const [order, setOrder] = useState<TrackingOrder | null>(null);
   const [history, setHistory] = useState<{ status: string; label: string; time: string; date: string; note: string }[]>([]);
   const [loading, setLoading] = useState(true);
