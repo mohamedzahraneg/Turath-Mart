@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { Toaster } from 'sonner';
-import { X, Trash2, Package, User, MapPin, Phone, FileText, Zap, Calculator, ChevronDown, DollarSign, Image as ImageIcon, Plus, Minus } from 'lucide-react';
+import { X, Trash2, Package, User, MapPin, Phone, FileText, Zap, Calculator, ChevronDown, DollarSign, Plus, Minus } from 'lucide-react';
 
 interface ProductItem {
   productType: string;
@@ -10,7 +10,6 @@ interface ProductItem {
   quantity: number;
   unitPrice: number;
   note: string;
-  // For chair/quran multi-select with individual prices
   chairPrice?: number;
   quranPrice?: number;
   flashlightPrice?: number;
@@ -97,6 +96,39 @@ function generateOrderNumber() {
   return `ZSH-${year}-${seq.toString().padStart(4, '0')}`;
 }
 
+// Load settings from localStorage
+function loadLS<T>(key: string, fallback: T): T {
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+interface InventoryItem {
+  id: string;
+  name: string;
+  sku: string;
+  available: number;
+  price: number;
+  category: string;
+  images?: string[];
+  colors?: string[];
+}
+
+interface ProductCard {
+  value: string;
+  label: string;
+  basePrice: number;
+  emoji: string;
+  hasColor: boolean;
+  image?: string;
+  isInventory?: boolean;
+  colors?: string[];
+}
+
 interface Props {
   onClose: () => void;
 }
@@ -105,7 +137,7 @@ interface Props {
 interface OrderLine {
   id: string;
   productType: string;
-  color: string; // for holder
+  color: string;
   quantity: number;
   unitPrice: number;
   includeFlashlight: boolean;
@@ -113,14 +145,13 @@ interface OrderLine {
   note: string;
 }
 
-function createLine(productType: string): OrderLine {
-  const def = PRODUCT_TYPES.find(p => p.value === productType);
+function createLine(productType: string, basePrice: number): OrderLine {
   return {
     id: `line-${Date.now()}-${Math.random()}`,
     productType,
-    color: productType === 'holder' ? 'brown' : '',
+    color: '',
     quantity: 1,
-    unitPrice: def?.basePrice || 0,
+    unitPrice: basePrice,
     includeFlashlight: false,
     flashlightPrice: 150,
     note: '',
@@ -152,16 +183,63 @@ export default function AddOrderModal({ onClose }: Props) {
   const [warranty, setWarranty] = useState('بدون ضمان');
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  // Order lines (multi-select, same product can appear multiple times with different colors)
+  // Order lines
   const [lines, setLines] = useState<OrderLine[]>([]);
 
-  // Product images (admin-uploaded)
-  const [productImages, setProductImages] = useState<Record<string, string>>(() => {
-    const init: Record<string, string> = {};
-    PRODUCT_TYPES.forEach(p => { init[p.value] = p.emoji; });
-    return init;
-  });
-  const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  // All product cards (default + inventory items)
+  const [productCards, setProductCards] = useState<ProductCard[]>([]);
+
+  // Load products from settings + inventory on mount
+  useEffect(() => {
+    // Load product images/prices from settings
+    const settingsProducts = loadLS<Array<{ value: string; label: string; basePrice: number; emoji: string; hasColor: boolean; image?: string; enabled?: boolean }>>('settings_products', PRODUCT_TYPES.map(p => ({ ...p, enabled: true })));
+
+    // Load inventory items
+    const inventoryItems = loadLS<InventoryItem[]>('zahranship_inventory', []);
+
+    // Build product cards from settings products (enabled ones)
+    const defaultCards: ProductCard[] = settingsProducts
+      .filter(p => p.enabled !== false)
+      .map(p => ({
+        value: p.value,
+        label: p.label,
+        basePrice: p.basePrice,
+        emoji: p.emoji,
+        hasColor: p.hasColor,
+        image: p.image,
+      }));
+
+    // Build product cards from inventory items (not already in default)
+    const defaultValues = new Set(defaultCards.map(c => c.value));
+    const inventoryCards: ProductCard[] = inventoryItems
+      .filter(item => item.available > 0 && !defaultValues.has(item.id))
+      .map(item => ({
+        value: item.id,
+        label: item.name,
+        basePrice: item.price,
+        emoji: '📦',
+        hasColor: (item.colors?.length || 0) > 0,
+        image: item.images?.[0],
+        isInventory: true,
+        colors: item.colors,
+      }));
+
+    setProductCards([...defaultCards, ...inventoryCards]);
+
+    // Load disabled districts
+    const disabledDistricts = loadLS<string[]>('settings_disabled_districts', []);
+    ADMIN_SETTINGS.DISABLED_DISTRICTS.length = 0;
+    disabledDistricts.forEach(d => ADMIN_SETTINGS.DISABLED_DISTRICTS.push(d));
+
+    // Load shipping settings
+    const shippingSettings = loadLS<{ defaultShippingCost?: string; expressShippingCost?: string }>('settings_shipping', {});
+    if (shippingSettings.defaultShippingCost) {
+      ADMIN_SETTINGS.SHIPPING_FEE = Number(shippingSettings.defaultShippingCost);
+    }
+    if (shippingSettings.expressShippingCost) {
+      ADMIN_SETTINGS.EXPRESS_FEE = Number(shippingSettings.expressShippingCost);
+    }
+  }, []);
 
   useEffect(() => {
     const updateTime = () => {
@@ -191,8 +269,15 @@ export default function AddOrderModal({ onClose }: Props) {
   const subtotal = lines.reduce((s, l) => s + lineTotal(l), 0);
   const grandTotal = subtotal + shippingCost + extraFeeAmount;
 
-  const addLine = (productType: string) => {
-    setLines(prev => [...prev, createLine(productType)]);
+  const addLine = (productCard: ProductCard) => {
+    const line = createLine(productCard.value, productCard.basePrice);
+    // Set default color if product has colors
+    if (productCard.hasColor && productCard.colors && productCard.colors.length > 0) {
+      line.color = productCard.colors[0];
+    } else if (productCard.value === 'holder') {
+      line.color = 'brown';
+    }
+    setLines(prev => [...prev, line]);
   };
 
   const removeLine = (id: string) => {
@@ -201,19 +286,6 @@ export default function AddOrderModal({ onClose }: Props) {
 
   const updateLine = (id: string, patch: Partial<OrderLine>) => {
     setLines(prev => prev.map(l => l.id === id ? { ...l, ...patch } : l));
-  };
-
-  const handleImageUpload = (productValue: string, e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      if (ev.target?.result) {
-        setProductImages(prev => ({ ...prev, [productValue]: ev.target!.result as string }));
-        toast.success('تم رفع الصورة بنجاح');
-      }
-    };
-    reader.readAsDataURL(file);
   };
 
   const validateStep1 = () => {
@@ -244,12 +316,7 @@ export default function AddOrderModal({ onClose }: Props) {
     onClose();
   };
 
-  const warrantyOptions = (() => {
-    try {
-      const saved = typeof window !== 'undefined' ? localStorage.getItem('settings_warranty') : null;
-      return saved ? JSON.parse(saved) : ['بدون ضمان', '3 أشهر', '6 أشهر', 'سنة', 'سنتان'];
-    } catch { return ['بدون ضمان', '3 أشهر', '6 أشهر', 'سنة', 'سنتان']; }
-  })();
+  const warrantyOptions = loadLS<string[]>('settings_warranty', ['بدون ضمان', '3 أشهر', '6 أشهر', 'سنة', 'سنتان']);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" dir="rtl">
@@ -441,54 +508,41 @@ export default function AddOrderModal({ onClose }: Props) {
 
                 {/* Product image cards — click to add a new line */}
                 <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
-                  {PRODUCT_TYPES.map((product) => {
-                    const imgSrc = productImages[product.value];
-                    const isEmoji = !imgSrc?.startsWith('data:');
+                  {productCards.map((product) => {
+                    const hasRealImage = product.image && (product.image.startsWith('data:') || product.image.startsWith('http') || product.image.startsWith('/'));
                     const count = lines.filter(l => l.productType === product.value).length;
                     return (
                       <div key={`product-card-${product.value}`} className="relative group">
                         <button
                           type="button"
-                          onClick={() => addLine(product.value)}
+                          onClick={() => addLine(product)}
                           className={`w-full aspect-square rounded-2xl border-2 flex flex-col items-center justify-center gap-1 transition-all relative overflow-hidden ${count > 0 ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/5 shadow-md' : 'border-[hsl(var(--border))] hover:border-[hsl(var(--primary))]/50 hover:shadow-sm bg-white'}`}
                         >
-                          {isEmoji ? (
-                            <span className="text-3xl">{imgSrc}</span>
+                          {hasRealImage ? (
+                            <img src={product.image} alt={product.label} className="w-full h-full object-cover absolute inset-0" />
                           ) : (
-                            <img src={imgSrc} alt={product.label} className="w-full h-full object-cover absolute inset-0" />
+                            <span className="text-3xl">{product.emoji}</span>
                           )}
                           {count > 0 && (
-                            <div className="absolute top-1 left-1 w-5 h-5 bg-[hsl(var(--primary))] rounded-full flex items-center justify-center">
+                            <div className="absolute top-1 left-1 w-5 h-5 bg-[hsl(var(--primary))] rounded-full flex items-center justify-center z-10">
                               <span className="text-white text-[10px] font-bold">{count}</span>
                             </div>
                           )}
-                          <span className={`text-[10px] font-bold mt-1 relative z-10 ${isEmoji ? 'text-[hsl(var(--foreground))]' : 'text-white bg-black/50 px-1 rounded absolute bottom-1'}`}>
+                          <span className={`text-[10px] font-bold mt-1 relative z-10 ${hasRealImage ? 'text-white bg-black/50 px-1 rounded absolute bottom-1' : 'text-[hsl(var(--foreground))]'}`}>
                             {product.label}
                           </span>
-                          <span className="text-[9px] text-[hsl(var(--muted-foreground))] relative z-10">+ إضافة</span>
+                          {!hasRealImage && <span className="text-[9px] text-[hsl(var(--muted-foreground))] relative z-10">+ إضافة</span>}
                         </button>
-                        {/* Admin image upload */}
-                        {IS_ADMIN && (
-                          <button
-                            type="button"
-                            onClick={() => fileInputRefs.current[product.value]?.click()}
-                            className="absolute -top-1 -right-1 w-6 h-6 bg-purple-600 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-md z-20"
-                            title="رفع صورة"
-                          >
-                            <ImageIcon size={10} />
-                          </button>
-                        )}
-                        <input
-                          ref={el => { fileInputRefs.current[product.value] = el; }}
-                          type="file"
-                          accept="image/*"
-                          className="hidden"
-                          onChange={(e) => handleImageUpload(product.value, e)}
-                        />
                       </div>
                     );
                   })}
                 </div>
+
+                {productCards.length === 0 && (
+                  <div className="text-center py-4 text-[hsl(var(--muted-foreground))] text-sm">
+                    جاري تحميل المنتجات...
+                  </div>
+                )}
 
                 {lines.length === 0 && (
                   <div className="text-center py-6 text-[hsl(var(--muted-foreground))] text-sm border-2 border-dashed border-[hsl(var(--border))] rounded-2xl">
@@ -499,29 +553,32 @@ export default function AddOrderModal({ onClose }: Props) {
                 {/* Lines detail */}
                 <div className="space-y-3">
                   {lines.map((line, index) => {
-                    const productDef = PRODUCT_TYPES.find(p => p.value === line.productType);
-                    const imgSrc = productImages[line.productType];
-                    const isEmoji = !imgSrc?.startsWith('data:');
+                    const productCard = productCards.find(p => p.value === line.productType);
+                    const hasRealImage = productCard?.image && (productCard.image.startsWith('data:') || productCard.image.startsWith('http') || productCard.image.startsWith('/'));
                     const isHolder = line.productType === 'holder';
                     const isFlashlight = line.productType === 'flashlight';
+                    // Colors: use inventory colors if available, else use HOLDER_COLORS for holder
+                    const availableColors = productCard?.colors && productCard.colors.length > 0
+                      ? productCard.colors.map(c => ({ value: c, label: c, hex: '#888' }))
+                      : isHolder ? HOLDER_COLORS : [];
+                    const hasColors = availableColors.length > 0;
 
                     return (
                       <div key={line.id} className="border border-[hsl(var(--border))] rounded-2xl p-4 relative bg-[hsl(var(--muted))]/20">
                         {/* Line header */}
                         <div className="flex items-center justify-between mb-3">
                           <div className="flex items-center gap-2">
-                            {isEmoji ? (
-                              <span className="text-xl">{imgSrc}</span>
+                            {hasRealImage ? (
+                              <img src={productCard!.image} alt={productCard?.label || ''} className="w-8 h-8 rounded-lg object-cover" />
                             ) : (
-                              <img src={imgSrc} alt={productDef?.label || ''} className="w-8 h-8 rounded-lg object-cover" />
+                              <span className="text-xl">{productCard?.emoji || '📦'}</span>
                             )}
                             <span className="text-xs font-bold text-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10 px-2 py-1 rounded-lg">
-                              {productDef?.label} #{index + 1}
+                              {productCard?.label} #{index + 1}
                             </span>
-                            {/* Duplicate same product with same color hint */}
                             <button
                               type="button"
-                              onClick={() => addLine(line.productType)}
+                              onClick={() => productCard && addLine(productCard)}
                               className="text-[10px] text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--primary))] flex items-center gap-0.5 transition-colors"
                               title="إضافة نفس المنتج مرة أخرى"
                             >
@@ -539,12 +596,12 @@ export default function AddOrderModal({ onClose }: Props) {
                         </div>
 
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                          {/* Color picker for holder */}
-                          {isHolder && (
+                          {/* Color picker */}
+                          {hasColors && (
                             <div className="sm:col-span-2">
                               <label className="label-text">اللون *</label>
                               <div className="flex gap-2 flex-wrap">
-                                {HOLDER_COLORS.map((color) => (
+                                {availableColors.map((color) => (
                                   <button
                                     key={`color-${line.id}-${color.value}`}
                                     type="button"
@@ -587,7 +644,7 @@ export default function AddOrderModal({ onClose }: Props) {
                             </div>
                           </div>
 
-                          {/* Unit price — always editable */}
+                          {/* Unit price */}
                           <div>
                             <label className="label-text">سعر الوحدة (ج.م) *</label>
                             <input
@@ -629,7 +686,6 @@ export default function AddOrderModal({ onClose }: Props) {
                             </div>
                           )}
 
-                          {/* Standalone flashlight — price editable */}
                           {isFlashlight && (
                             <div className="sm:col-span-2 bg-amber-50 border border-amber-200 rounded-xl p-3">
                               <p className="text-xs text-amber-700 font-semibold">💡 سعر الكشاف قابل للتعديل أعلاه</p>
@@ -820,17 +876,15 @@ export default function AddOrderModal({ onClose }: Props) {
                   <p className="text-xs font-bold text-[hsl(var(--muted-foreground))] uppercase tracking-wide mb-3">المنتجات ({lines.length})</p>
                   <div className="space-y-2">
                     {lines.map((line, i) => {
-                      const productDef = PRODUCT_TYPES.find(p => p.value === line.productType);
-                      const colorDef = HOLDER_COLORS.find(c => c.value === line.color);
-                      const imgSrc = productImages[line.productType];
-                      const isEmoji = !imgSrc?.startsWith('data:');
+                      const productCard = productCards.find(p => p.value === line.productType);
+                      const hasRealImage = productCard?.image && (productCard.image.startsWith('data:') || productCard.image.startsWith('http') || productCard.image.startsWith('/'));
                       return (
                         <div key={`review-${line.id}`} className="flex items-center justify-between text-sm bg-white rounded-xl px-3 py-2 border border-[hsl(var(--border))]">
                           <div className="flex items-center gap-2">
-                            {isEmoji ? <span>{imgSrc}</span> : <img src={imgSrc} alt={productDef?.label || ''} className="w-6 h-6 rounded object-cover" />}
-                            {colorDef && <span className="w-3 h-3 rounded-full border border-gray-300 flex-shrink-0" style={{ backgroundColor: colorDef.hex }} />}
+                            {hasRealImage ? <img src={productCard!.image} alt={productCard?.label || ''} className="w-6 h-6 rounded object-cover" /> : <span>{productCard?.emoji || '📦'}</span>}
+                            {line.color && <span className="text-xs text-[hsl(var(--muted-foreground))]">({line.color})</span>}
                             <span className="font-medium">
-                              {productDef?.label}{colorDef ? ` (${colorDef.label})` : ''}{line.includeFlashlight ? ' + كشاف' : ''}
+                              {productCard?.label}{line.color ? ` (${line.color})` : ''}{line.includeFlashlight ? ' + كشاف' : ''}
                             </span>
                             {line.note && <span className="text-[10px] text-amber-600 italic">— {line.note}</span>}
                           </div>

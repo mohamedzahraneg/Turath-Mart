@@ -49,6 +49,14 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
 
   const isActive = (href: string) => currentPath === href || currentPath.startsWith(href);
 
+  const handleLogout = () => {
+    // Clear any stored session data
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('current_user');
+      window.location.href = '/sign-up-login-screen';
+    }
+  };
+
   return (
     <>
       {/* Mobile overlay */}
@@ -170,14 +178,14 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
                 <p className="text-sm font-semibold truncate">محمد الزهراني</p>
                 <p className="text-xs text-[hsl(var(--muted-foreground))] truncate">مدير النظام</p>
               </div>
-              <button className="text-[hsl(var(--muted-foreground))] hover:text-red-500 transition-colors" aria-label="تسجيل الخروج">
+              <button onClick={handleLogout} className="text-[hsl(var(--muted-foreground))] hover:text-red-500 transition-colors" aria-label="تسجيل الخروج">
                 <LogOut size={16} />
               </button>
             </div>
           )}
 
           {collapsed && (
-            <button className="sidebar-item sidebar-item-inactive w-full justify-center" title="تسجيل الخروج">
+            <button onClick={handleLogout} className="sidebar-item sidebar-item-inactive w-full justify-center" title="تسجيل الخروج">
               <LogOut size={18} />
             </button>
           )}

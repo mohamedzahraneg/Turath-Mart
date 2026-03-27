@@ -1,9 +1,9 @@
 'use client';
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import AppLayout from '@/components/AppLayout';
 import {
   Warehouse, AlertTriangle, CheckCircle, Plus, Search,
-  Edit2, Trash2, TrendingDown, Package, X, Save, Image as ImageIcon, ChevronLeft, ChevronRight
+  Edit2, Trash2, TrendingDown, Package, X, Save, Image as ImageIcon, ChevronLeft, ChevronRight, RefreshCw
 } from 'lucide-react';
 
 interface InventoryItem {
@@ -16,35 +16,99 @@ interface InventoryItem {
   price: number;
   category: string;
   images?: string[];
+  colors?: string[];
 }
 
-const initialInventory: InventoryItem[] = [
-  { id: 'inv-1', name: 'حامل مصحف بني', sku: 'HMB-001', available: 45, withdrawn: 120, minStock: 20, price: 300, category: 'حوامل', images: [] },
-  { id: 'inv-2', name: 'حامل مصحف أسود', sku: 'HMA-002', available: 8, withdrawn: 92, minStock: 20, price: 300, category: 'حوامل', images: [] },
-  { id: 'inv-3', name: 'حامل مصحف أبيض', sku: 'HMW-003', available: 32, withdrawn: 68, minStock: 20, price: 300, category: 'حوامل', images: [] },
-  { id: 'inv-4', name: 'حامل مصحف ذهبي', sku: 'HMG-004', available: 5, withdrawn: 75, minStock: 20, price: 350, category: 'حوامل', images: [] },
-  { id: 'inv-5', name: 'كشاف', sku: 'KSH-005', available: 67, withdrawn: 133, minStock: 30, price: 150, category: 'إكسسوارات', images: [] },
-  { id: 'inv-6', name: 'كرسي', sku: 'KRS-006', available: 18, withdrawn: 42, minStock: 10, price: 500, category: 'أثاث', images: [] },
-  { id: 'inv-7', name: 'مصحف', sku: 'MSH-007', available: 95, withdrawn: 205, minStock: 50, price: 200, category: 'كتب', images: [] },
-  { id: 'inv-8', name: 'كعبة', sku: 'KAB-008', available: 3, withdrawn: 47, minStock: 10, price: 450, category: 'ديكور', images: [] },
+const INITIAL_INVENTORY: InventoryItem[] = [
+  { id: 'inv-1', name: 'حامل مصحف بني', sku: 'HMB-001', available: 45, withdrawn: 120, minStock: 20, price: 300, category: 'حوامل', images: [], colors: ['بني'] },
+  { id: 'inv-2', name: 'حامل مصحف أسود', sku: 'HMA-002', available: 8, withdrawn: 92, minStock: 20, price: 300, category: 'حوامل', images: [], colors: ['أسود'] },
+  { id: 'inv-3', name: 'حامل مصحف أبيض', sku: 'HMW-003', available: 32, withdrawn: 68, minStock: 20, price: 300, category: 'حوامل', images: [], colors: ['أبيض'] },
+  { id: 'inv-4', name: 'حامل مصحف ذهبي', sku: 'HMG-004', available: 5, withdrawn: 75, minStock: 20, price: 350, category: 'حوامل', images: [], colors: ['ذهبي'] },
+  { id: 'inv-5', name: 'كشاف', sku: 'KSH-005', available: 67, withdrawn: 133, minStock: 30, price: 150, category: 'إكسسوارات', images: [], colors: [] },
+  { id: 'inv-6', name: 'كرسي', sku: 'KRS-006', available: 18, withdrawn: 42, minStock: 10, price: 500, category: 'أثاث', images: [], colors: [] },
+  { id: 'inv-7', name: 'مصحف', sku: 'MSH-007', available: 95, withdrawn: 205, minStock: 50, price: 200, category: 'كتب', images: [], colors: [] },
+  { id: 'inv-8', name: 'كعبة', sku: 'KAB-008', available: 3, withdrawn: 47, minStock: 10, price: 450, category: 'ديكور', images: [], colors: [] },
 ];
 
 const categories = ['الكل', 'حوامل', 'إكسسوارات', 'أثاث', 'كتب', 'ديكور'];
+
+const LS_KEY = 'zahranship_inventory';
+
+function loadInventory(): InventoryItem[] {
+  if (typeof window === 'undefined') return INITIAL_INVENTORY;
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    return raw ? JSON.parse(raw) : INITIAL_INVENTORY;
+  } catch {
+    return INITIAL_INVENTORY;
+  }
+}
+
+function saveInventory(items: InventoryItem[]) {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(LS_KEY, JSON.stringify(items));
+}
+
+// Auto-generate SKU from name
+function generateSKU(name: string, existingItems: InventoryItem[]): string {
+  if (!name.trim()) return '';
+  // Take first 3 chars of each word, uppercase
+  const words = name.trim().split(/\s+/);
+  let prefix = words.map(w => {
+    // Convert Arabic to transliteration prefix
+    const firstChar = w.charAt(0);
+    return firstChar.toUpperCase();
+  }).join('').slice(0, 3).toUpperCase();
+
+  // If prefix is Arabic chars, use a numeric approach
+  const isArabic = /[\u0600-\u06FF]/.test(prefix);
+  if (isArabic) {
+    // Use category-based prefix
+    prefix = 'ITM';
+  }
+
+  // Find next sequence number
+  const seq = existingItems.length + 1;
+  const candidate = `${prefix}-${seq.toString().padStart(3, '0')}`;
+
+  // Ensure uniqueness
+  const existing = new Set(existingItems.map(i => i.sku));
+  if (!existing.has(candidate)) return candidate;
+
+  // Try incrementing
+  for (let i = seq + 1; i < seq + 100; i++) {
+    const alt = `${prefix}-${i.toString().padStart(3, '0')}`;
+    if (!existing.has(alt)) return alt;
+  }
+  return `${prefix}-${Date.now().toString().slice(-4)}`;
+}
 
 interface EditModalProps {
   item: InventoryItem | null;
   onClose: () => void;
   onSave: (item: InventoryItem) => void;
+  allItems: InventoryItem[];
 }
 
-function EditModal({ item, onClose, onSave }: EditModalProps) {
+function EditModal({ item, onClose, onSave, allItems }: EditModalProps) {
+  const isNew = !item;
   const [form, setForm] = useState<InventoryItem>(
     item
-      ? { ...item, images: item.images || [] }
-      : { id: `inv-${Date.now()}`, name: '', sku: '', available: 0, withdrawn: 0, minStock: 10, price: 0, category: 'حوامل', images: [] }
+      ? { ...item, images: item.images || [], colors: item.colors || [] }
+      : { id: `inv-${Date.now()}`, name: '', sku: '', available: 0, withdrawn: 0, minStock: 10, price: 0, category: 'حوامل', images: [], colors: [] }
   );
+  const [skuManuallyEdited, setSkuManuallyEdited] = useState(!isNew);
   const [previewIndex, setPreviewIndex] = useState(0);
+  const [newColor, setNewColor] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Auto-generate SKU when name changes (only for new items and not manually edited)
+  useEffect(() => {
+    if (isNew && !skuManuallyEdited && form.name) {
+      const autoSku = generateSKU(form.name, allItems.filter(i => i.id !== form.id));
+      setForm(prev => ({ ...prev, sku: autoSku }));
+    }
+  }, [form.name, isNew, skuManuallyEdited, allItems, form.id]);
 
   const handleImagesUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
@@ -63,7 +127,6 @@ function EditModal({ item, onClose, onSave }: EditModalProps) {
         images: [...(prev.images || []), ...results],
       }));
     });
-    // reset input so same files can be re-selected
     e.target.value = '';
   };
 
@@ -74,6 +137,18 @@ function EditModal({ item, onClose, onSave }: EditModalProps) {
       if (previewIndex >= imgs.length) setPreviewIndex(Math.max(0, imgs.length - 1));
       return { ...prev, images: imgs };
     });
+  };
+
+  const addColor = () => {
+    const trimmed = newColor.trim();
+    if (trimmed && !(form.colors || []).includes(trimmed)) {
+      setForm(prev => ({ ...prev, colors: [...(prev.colors || []), trimmed] }));
+      setNewColor('');
+    }
+  };
+
+  const removeColor = (color: string) => {
+    setForm(prev => ({ ...prev, colors: (prev.colors || []).filter(c => c !== color) }));
   };
 
   const images = form.images || [];
@@ -187,14 +262,41 @@ function EditModal({ item, onClose, onSave }: EditModalProps) {
                 placeholder="اسم المنتج"
               />
             </div>
-            <div>
-              <label className="block text-sm font-semibold mb-1.5">كود الصنف (SKU)</label>
-              <input
-                type="text"
-                value={form.sku}
-                onChange={(e) => setForm({ ...form, sku: e.target.value })}
-                className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30"
-              />
+            <div className="col-span-2">
+              <label className="block text-sm font-semibold mb-1.5">
+                كود الصنف (SKU)
+                {isNew && !skuManuallyEdited && (
+                  <span className="mr-2 text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-normal">تلقائي</span>
+                )}
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={form.sku}
+                  onChange={(e) => {
+                    setSkuManuallyEdited(true);
+                    setForm({ ...form, sku: e.target.value });
+                  }}
+                  className="flex-1 border border-[hsl(var(--border))] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 font-mono"
+                  placeholder="مثال: HMB-001"
+                />
+                {isNew && skuManuallyEdited && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSkuManuallyEdited(false);
+                      const autoSku = generateSKU(form.name, allItems.filter(i => i.id !== form.id));
+                      setForm(prev => ({ ...prev, sku: autoSku }));
+                    }}
+                    className="px-3 py-2 border border-[hsl(var(--border))] rounded-xl text-xs font-semibold hover:bg-[hsl(var(--muted))] transition-colors flex items-center gap-1"
+                    title="إعادة توليد الكود تلقائياً"
+                  >
+                    <RefreshCw size={13} />
+                    تلقائي
+                  </button>
+                )}
+              </div>
+              <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1">يتولد تلقائياً من اسم الصنف — يمكنك تعديله يدوياً</p>
             </div>
             <div>
               <label className="block text-sm font-semibold mb-1.5">الفئة</label>
@@ -234,6 +336,49 @@ function EditModal({ item, onClose, onSave }: EditModalProps) {
               />
             </div>
           </div>
+
+          {/* Colors section */}
+          <div>
+            <label className="block text-sm font-semibold mb-2">
+              الألوان المتاحة
+              <span className="mr-2 text-[10px] text-[hsl(var(--muted-foreground))] font-normal">يمكن إضافة أكثر من لون</span>
+            </label>
+            {(form.colors || []).length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-3">
+                {(form.colors || []).map((color) => (
+                  <div key={color} className="flex items-center gap-1.5 bg-[hsl(var(--primary))]/10 border border-[hsl(var(--primary))]/30 text-[hsl(var(--primary))] text-xs px-3 py-1.5 rounded-xl font-semibold">
+                    <span>{color}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeColor(color)}
+                      className="text-[hsl(var(--primary))]/60 hover:text-red-500 transition-colors"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={newColor}
+                onChange={(e) => setNewColor(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addColor())}
+                placeholder="أضف لون (مثال: أحمر، أزرق، أخضر)"
+                className="flex-1 border border-[hsl(var(--border))] rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30"
+              />
+              <button
+                type="button"
+                onClick={addColor}
+                className="px-4 py-2 bg-[hsl(var(--primary))] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity flex items-center gap-1"
+              >
+                <Plus size={14} />
+                إضافة
+              </button>
+            </div>
+            <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1">الألوان ستظهر كخيارات عند إضافة الأوردر</p>
+          </div>
         </div>
         <div className="flex gap-3 p-5 border-t border-[hsl(var(--border))]">
           <button
@@ -253,10 +398,15 @@ function EditModal({ item, onClose, onSave }: EditModalProps) {
 }
 
 export default function InventoryPage() {
-  const [inventory, setInventory] = useState<InventoryItem[]>(initialInventory);
+  const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState('الكل');
   const [editItem, setEditItem] = useState<InventoryItem | null | undefined>(undefined);
+
+  // Load from localStorage on mount
+  useEffect(() => {
+    setInventory(loadInventory());
+  }, []);
 
   const lowStockCount = inventory.filter(i => i.available <= i.minStock).length;
 
@@ -269,14 +419,19 @@ export default function InventoryPage() {
   const handleSave = (item: InventoryItem) => {
     setInventory(prev => {
       const exists = prev.find(i => i.id === item.id);
-      if (exists) return prev.map(i => i.id === item.id ? item : i);
-      return [...prev, item];
+      const updated = exists ? prev.map(i => i.id === item.id ? item : i) : [...prev, item];
+      saveInventory(updated);
+      return updated;
     });
     setEditItem(undefined);
   };
 
   const handleDelete = (id: string) => {
-    setInventory(prev => prev.filter(i => i.id !== id));
+    setInventory(prev => {
+      const updated = prev.filter(i => i.id !== id);
+      saveInventory(updated);
+      return updated;
+    });
   };
 
   return (
@@ -364,6 +519,7 @@ export default function InventoryPage() {
                   <th className="text-right px-4 py-3 font-semibold text-[hsl(var(--muted-foreground))]">الصنف</th>
                   <th className="text-right px-4 py-3 font-semibold text-[hsl(var(--muted-foreground))]">الكود</th>
                   <th className="text-right px-4 py-3 font-semibold text-[hsl(var(--muted-foreground))]">الفئة</th>
+                  <th className="text-right px-4 py-3 font-semibold text-[hsl(var(--muted-foreground))]">الألوان</th>
                   <th className="text-right px-4 py-3 font-semibold text-[hsl(var(--muted-foreground))]">المتاح</th>
                   <th className="text-right px-4 py-3 font-semibold text-[hsl(var(--muted-foreground))]">المسحوب</th>
                   <th className="text-right px-4 py-3 font-semibold text-[hsl(var(--muted-foreground))]">السعر</th>
@@ -374,7 +530,7 @@ export default function InventoryPage() {
               <tbody className="divide-y divide-[hsl(var(--border))]">
                 {filtered.map((item) => {
                   const isLow = item.available <= item.minStock;
-                  const pct = Math.round((item.available / (item.available + item.withdrawn)) * 100);
+                  const pct = item.available + item.withdrawn > 0 ? Math.round((item.available / (item.available + item.withdrawn)) * 100) : 0;
                   const firstImage = item.images?.[0];
                   return (
                     <tr key={item.id} className={`hover:bg-[hsl(var(--muted))]/30 transition-colors ${isLow ? 'bg-red-50/30' : ''}`}>
@@ -398,6 +554,20 @@ export default function InventoryPage() {
                       <td className="px-4 py-3 text-[hsl(var(--muted-foreground))] font-mono text-xs">{item.sku}</td>
                       <td className="px-4 py-3">
                         <span className="px-2 py-1 bg-[hsl(var(--muted))] rounded-lg text-xs font-medium">{item.category}</span>
+                      </td>
+                      <td className="px-4 py-3">
+                        {(item.colors || []).length > 0 ? (
+                          <div className="flex flex-wrap gap-1">
+                            {(item.colors || []).slice(0, 3).map(c => (
+                              <span key={c} className="text-[10px] bg-blue-50 text-blue-700 border border-blue-200 px-1.5 py-0.5 rounded-md font-medium">{c}</span>
+                            ))}
+                            {(item.colors || []).length > 3 && (
+                              <span className="text-[10px] text-[hsl(var(--muted-foreground))]">+{(item.colors || []).length - 3}</span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-[10px] text-[hsl(var(--muted-foreground))]">—</span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
@@ -454,7 +624,7 @@ export default function InventoryPage() {
       </div>
 
       {editItem !== undefined && (
-        <EditModal item={editItem} onClose={() => setEditItem(undefined)} onSave={handleSave} />
+        <EditModal item={editItem} onClose={() => setEditItem(undefined)} onSave={handleSave} allItems={inventory} />
       )}
     </AppLayout>
   );

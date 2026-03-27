@@ -95,6 +95,11 @@ function ShippingTab() {
   const [saved, setSaved] = useState(false);
   const handleSave = () => {
     saveLS('settings_shipping', settings);
+    // Update ADMIN_SETTINGS in memory for AddOrderModal
+    if (typeof window !== 'undefined') {
+      const event = new CustomEvent('shipping-settings-updated', { detail: settings });
+      window.dispatchEvent(event);
+    }
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
