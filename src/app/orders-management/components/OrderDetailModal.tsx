@@ -1,8 +1,9 @@
 'use client';
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { toast } from 'sonner';
 import { Toaster } from 'sonner';
-import { X, User, Phone, MapPin, Package, FileText, MessageCircle, Mail, Printer, CheckCircle, Shield, Monitor, Smartphone, Tablet, Link, Copy, Clock } from 'lucide-react';
+import { X, User, Phone, MapPin, Package, FileText, MessageCircle, Mail, Printer, CheckCircle, Shield, Monitor, Smartphone, Tablet, Link, Copy, Clock, History } from 'lucide-react';
+import AuditLogModal, { getAuditLogs, AuditEntry } from './AuditLogModal';
 
 interface OrderLine {
   productType: string;
@@ -82,6 +83,7 @@ const TABS = [
   { id: 'tab-details', label: 'تفاصيل الأوردر' },
   { id: 'tab-tracking', label: 'رابط التتبع' },
   { id: 'tab-history', label: 'سجل الحالات' },
+  { id: 'tab-audit', label: 'سجل التعديلات' },
   { id: 'tab-notifications', label: 'سجل الإشعارات' },
   { id: 'tab-invoice', label: 'الفاتورة' },
 ];
@@ -121,25 +123,51 @@ interface Props {
 
 export default function OrderDetailModal({ order, onClose }: Props) {
   const [activeTab, setActiveTab] = useState('tab-details');
-  const statusInfo = STATUS_BADGE_MAP[order.status] || STATUS_BADGE_MAP['new'];
-  const extraFee = order.extraShippingFee || 0;
-  const shippingLabel = order.expressShipping ? 'شحن سريع' : 'تكلفة الشحن';
-  const trackingLink = getTrackingLink(order.orderNum);
+  const [showAuditModal, setShowAuditModal] = useState(false);
+  const [auditLogs, setAuditLogs] = useState<AuditEntry[]>([]);
+  const [liveOrder, setLiveOrder] = useState(order);
+
+  // Load audit logs and listen for real-time updates
+  useEffect(() => {
+    const loadAudit = () => setAuditLogs(getAuditLogs(order.id));
+    loadAudit();
+
+    const handleAudit = () => loadAudit();
+    const handleOrders = () => {
+      try {
+        const saved = JSON.parse(localStorage.getItem('zahranship_orders') || '[]');
+        const updated = saved.find((o: { id: string }) => o.id === order.id);
+        if (updated) setLiveOrder(updated);
+      } catch {}
+    };
+
+    window.addEventListener('zahranship_audit_updated', handleAudit);
+    window.addEventListener('zahranship_orders_updated', handleOrders);
+    return () => {
+      window.removeEventListener('zahranship_audit_updated', handleAudit);
+      window.removeEventListener('zahranship_orders_updated', handleOrders);
+    };
+  }, [order.id]);
+
+  const statusInfo = STATUS_BADGE_MAP[liveOrder.status] || STATUS_BADGE_MAP['new'];
+  const extraFee = liveOrder.extraShippingFee || 0;
+  const shippingLabel = liveOrder.expressShipping ? 'شحن سريع' : 'تكلفة الشحن';
+  const trackingLink = getTrackingLink(liveOrder.orderNum);
 
   const buildWAMessage = () => {
     const template = getWATemplate() || DEFAULT_WA_TEMPLATE;
     return template
-      .replace('{customerName}', order.customer)
-      .replace('{orderNum}', order.orderNum)
-      .replace('{total}', order.total.toLocaleString('en-US'))
+      .replace('{customerName}', liveOrder.customer)
+      .replace('{orderNum}', liveOrder.orderNum)
+      .replace('{total}', liveOrder.total.toLocaleString('en-US'))
       .replace('{trackingLink}', trackingLink)
-      .replace('{delegate}', order.delegate || 'المندوب')
+      .replace('{delegate}', liveOrder.delegate || 'المندوب')
       .replace('{status}', statusInfo.label);
   };
 
   const handleSendWhatsApp = () => {
     const msg = encodeURIComponent(buildWAMessage());
-    window.open(`https://wa.me/2${order.phone}?text=${msg}`, '_blank');
+    window.open(`https://wa.me/2${liveOrder.phone}?text=${msg}`, '_blank');
     toast.success('تم فتح واتساب مع رابط التتبع');
   };
 
@@ -159,12 +187,12 @@ export default function OrderDetailModal({ order, onClose }: Props) {
       toast.error('يرجى السماح بالنوافذ المنبثقة في إعدادات المتصفح');
       return;
     }
-    const warrantyRow = order.warranty && order.warranty !== 'بدون ضمان'
-      ? `<tr><td colspan="3">فترة الضمان</td><td>—</td><td>${order.warranty}</td></tr>`
+    const warrantyRow = liveOrder.warranty && liveOrder.warranty !== 'بدون ضمان'
+      ? `<tr><td colspan="3">فترة الضمان</td><td>—</td><td>${liveOrder.warranty}</td></tr>`
       : '';
 
-    const productRows = order.lines && order.lines.length > 0
-      ? order.lines.map(line => {
+    const productRows = liveOrder.lines && liveOrder.lines.length > 0
+      ? liveOrder.lines.map(line => {
           const hasImg = line.image && (line.image.startsWith('data:') || line.image.startsWith('http') || line.image.startsWith('/'));
           const imgHtml = hasImg
             ? `<img src="${line.image}" alt="${line.label}" style="width:40px;height:40px;object-fit:cover;border-radius:6px;border:1px solid #e5e7eb;" />`
@@ -184,14 +212,14 @@ export default function OrderDetailModal({ order, onClose }: Props) {
             <td>${line.total.toLocaleString('en-US')} ج.م</td>
           </tr>`;
         }).join('')
-      : `<tr><td>${order.products}</td><td>${order.quantity}</td><td>—</td><td>${order.subtotal.toLocaleString('en-US')} ج.م</td></tr>`;
+      : `<tr><td>${liveOrder.products}</td><td>${liveOrder.quantity}</td><td>—</td><td>${liveOrder.subtotal.toLocaleString('en-US')} ج.م</td></tr>`;
 
     win.document.write(`
       <!DOCTYPE html>
       <html dir="rtl" lang="ar">
       <head>
         <meta charset="UTF-8" />
-        <title>فاتورة - ${order.orderNum}</title>
+        <title>فاتورة - ${liveOrder.orderNum}</title>
         <style>
           * { margin: 0; padding: 0; box-sizing: border-box; }
           body { font-family: 'Segoe UI', Tahoma, Arial, sans-serif; direction: rtl; background: #fff; color: #1a1a1a; }
@@ -229,15 +257,15 @@ export default function OrderDetailModal({ order, onClose }: Props) {
           </div>
           <div class="inv-body">
             <div class="inv-meta">
-              <div><p>رقم الفاتورة</p><p>${order.orderNum}</p></div>
-              <div><p>تاريخ الإصدار</p><p>${order.day} ${order.date}</p></div>
-              <div><p>الوقت</p><p>${order.time}</p></div>
+              <div><p>رقم الفاتورة</p><p>${liveOrder.orderNum}</p></div>
+              <div><p>تاريخ الإصدار</p><p>${liveOrder.day} ${liveOrder.date}</p></div>
+              <div><p>الوقت</p><p>${liveOrder.time}</p></div>
             </div>
             <div class="customer-info">
               <p class="section-title">بيانات العميل</p>
-              <p class="name">${order.customer}</p>
-              <p>${order.phone}${order.phone2 ? ' / ' + order.phone2 : ''}</p>
-              <p>${order.region}${order.district ? ' - ' + order.district : ''} — ${order.address}</p>
+              <p class="name">${liveOrder.customer}</p>
+              <p>${liveOrder.phone}${liveOrder.phone2 ? ' / ' + liveOrder.phone2 : ''}</p>
+              <p>${liveOrder.region}${liveOrder.district ? ' - ' + liveOrder.district : ''} — ${liveOrder.address}</p>
             </div>
             <div class="tracking-box">
               <p>رابط تتبع الشحنة:</p>
@@ -248,13 +276,13 @@ export default function OrderDetailModal({ order, onClose }: Props) {
               <thead><tr><th>المنتج</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr></thead>
               <tbody>
                 ${productRows}
-                <tr><td>${shippingLabel}</td><td>—</td><td>—</td><td>${order.shippingFee.toLocaleString('en-US')} ج.م</td></tr>
+                <tr><td>${shippingLabel}</td><td>—</td><td>—</td><td>${liveOrder.shippingFee.toLocaleString('en-US')} ج.م</td></tr>
                 ${extraFee > 0 ? `<tr><td>مصاريف شحن إضافية</td><td>—</td><td>—</td><td>${extraFee.toLocaleString('en-US')} ج.م</td></tr>` : ''}
                 ${warrantyRow}
-                <tr class="total-row"><td colspan="3"><strong>الإجمالي الكلي</strong></td><td><strong>${order.total.toLocaleString('en-US')} ج.م</strong></td></tr>
+                <tr class="total-row"><td colspan="3"><strong>الإجمالي الكلي</strong></td><td><strong>${liveOrder.total.toLocaleString('en-US')} ج.م</strong></td></tr>
               </tbody>
             </table>
-            ${order.notes ? `<p style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px;font-size:13px;"><strong>ملاحظات:</strong> ${order.notes}</p>` : ''}
+            ${liveOrder.notes ? `<p style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px;font-size:13px;"><strong>ملاحظات:</strong> ${liveOrder.notes}</p>` : ''}
             <div class="footer">شكرا لثقتك في Zahranship — للاستفسار: info@zahranship.com</div>
           </div>
         </div>
@@ -279,10 +307,10 @@ export default function OrderDetailModal({ order, onClose }: Props) {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="text-base font-bold text-[hsl(var(--foreground))]">{order.orderNum}</h3>
+                <h3 className="text-base font-bold text-[hsl(var(--foreground))]">{liveOrder.orderNum}</h3>
                 <span className={`badge ${statusInfo.cls}`}>{statusInfo.label}</span>
               </div>
-              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 font-mono">{order.day} {order.date} — {order.time}</p>
+              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 font-mono">{liveOrder.day} {liveOrder.date} — {liveOrder.time}</p>
             </div>
           </div>
           <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))] transition-colors" aria-label="إغلاق">
@@ -319,6 +347,9 @@ export default function OrderDetailModal({ order, onClose }: Props) {
               className={`px-4 py-3 text-sm font-semibold border-b-2 transition-colors whitespace-nowrap ${activeTab === tab.id ? 'border-[hsl(var(--primary))] text-[hsl(var(--primary))]' : 'border-transparent text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'}`}
             >
               {tab.label}
+              {tab.id === 'tab-audit' && auditLogs.length > 0 && (
+                <span className="mr-1.5 bg-amber-100 text-amber-700 text-[10px] font-bold px-1.5 py-0.5 rounded-full">{auditLogs.length}</span>
+              )}
             </button>
           ))}
         </div>
@@ -336,25 +367,25 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <div>
                     <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-0.5">الاسم</p>
-                    <p className="font-semibold">{order.customer}</p>
+                    <p className="font-semibold">{liveOrder.customer}</p>
                   </div>
                   <div>
                     <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-0.5">المنطقة</p>
-                    <p className="font-semibold">{order.region}{order.district ? ` - ${order.district}` : ''}</p>
+                    <p className="font-semibold">{liveOrder.region}{liveOrder.district ? ` - ${liveOrder.district}` : ''}</p>
                   </div>
                   <div>
                     <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-0.5 flex items-center gap-1"><Phone size={10} /> الموبايل</p>
-                    <p className="font-mono font-semibold">{order.phone}</p>
+                    <p className="font-mono font-semibold">{liveOrder.phone}</p>
                   </div>
-                  {order.phone2 && (
+                  {liveOrder.phone2 && (
                     <div>
                       <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-0.5">موبايل إضافي</p>
-                      <p className="font-mono">{order.phone2}</p>
+                      <p className="font-mono">{liveOrder.phone2}</p>
                     </div>
                   )}
                   <div className="col-span-2">
                     <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-0.5 flex items-center gap-1"><MapPin size={10} /> العنوان</p>
-                    <p className="leading-relaxed">{order.address}</p>
+                    <p className="leading-relaxed">{liveOrder.address}</p>
                   </div>
                 </div>
               </div>
@@ -364,9 +395,9 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                   <Package size={15} className="text-[hsl(var(--primary))]" />
                   <h4 className="text-sm font-bold">المنتجات</h4>
                 </div>
-                {order.lines && order.lines.length > 0 ? (
+                {liveOrder.lines && liveOrder.lines.length > 0 ? (
                   <div className="space-y-2">
-                    {order.lines.map((line, idx) => {
+                    {liveOrder.lines.map((line, idx) => {
                       const hasImg = line.image && (line.image.startsWith('data:') || line.image.startsWith('http') || line.image.startsWith('/'));
                       return (
                         <div key={`detail-line-${idx}`} className="flex items-center gap-3 bg-[hsl(var(--muted))]/40 rounded-xl p-3 border border-[hsl(var(--border))]">
@@ -394,21 +425,21 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                         </div>
                       );
                     })}
-                    {order.warranty && order.warranty !== 'بدون ضمان' && (
+                    {liveOrder.warranty && liveOrder.warranty !== 'بدون ضمان' && (
                       <div className="flex items-center gap-1.5 mt-2 text-xs text-green-700 bg-green-50 border border-green-200 rounded-lg px-2 py-1 w-fit">
                         <Clock size={11} />
-                        <span>فترة الضمان: <strong>{order.warranty}</strong></span>
+                        <span>فترة الضمان: <strong>{liveOrder.warranty}</strong></span>
                       </div>
                     )}
                   </div>
                 ) : (
                   <div className="bg-[hsl(var(--muted))]/40 rounded-xl p-3">
-                    <p className="text-sm font-medium">{order.products}</p>
-                    <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">إجمالي الكمية: {order.quantity} قطعة</p>
-                    {order.warranty && order.warranty !== 'بدون ضمان' && (
+                    <p className="text-sm font-medium">{liveOrder.products}</p>
+                    <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">إجمالي الكمية: {liveOrder.quantity} قطعة</p>
+                    {liveOrder.warranty && liveOrder.warranty !== 'بدون ضمان' && (
                       <div className="flex items-center gap-1.5 mt-2 text-xs text-green-700 bg-green-50 border border-green-200 rounded-lg px-2 py-1 w-fit">
                         <Clock size={11} />
-                        <span>فترة الضمان: <strong>{order.warranty}</strong></span>
+                        <span>فترة الضمان: <strong>{liveOrder.warranty}</strong></span>
                       </div>
                     )}
                   </div>
@@ -423,14 +454,14 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between py-1.5 border-b border-[hsl(var(--border))]">
                     <span className="text-[hsl(var(--muted-foreground))]">المنتجات:</span>
-                    <span className="font-mono font-semibold">{order.subtotal.toLocaleString('en-US')} ج.م</span>
+                    <span className="font-mono font-semibold">{liveOrder.subtotal.toLocaleString('en-US')} ج.م</span>
                   </div>
                   <div className="flex justify-between py-1.5 border-b border-[hsl(var(--border))]">
                     <span className="text-[hsl(var(--muted-foreground))]">
                       {shippingLabel}:
-                      {order.expressShipping && <span className="text-[10px] text-amber-600 mr-1">(بدلاً من الشحن الافتراضي)</span>}
+                      {liveOrder.expressShipping && <span className="text-[10px] text-amber-600 mr-1">(بدلاً من الشحن الافتراضي)</span>}
                     </span>
-                    <span className={`font-mono ${order.expressShipping ? 'text-amber-700 font-semibold' : ''}`}>{order.shippingFee.toLocaleString('en-US')} ج.م</span>
+                    <span className={`font-mono ${liveOrder.expressShipping ? 'text-amber-700 font-semibold' : ''}`}>{liveOrder.shippingFee.toLocaleString('en-US')} ج.م</span>
                   </div>
                   {IS_ADMIN && extraFee > 0 && (
                     <div className="flex justify-between py-1.5 border-b border-[hsl(var(--border))] text-orange-700">
@@ -440,7 +471,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                   )}
                   <div className="flex justify-between py-1.5">
                     <span className="font-bold">الإجمالي الكلي:</span>
-                    <span className="font-mono font-bold text-lg text-[hsl(var(--primary))]">{order.total.toLocaleString('en-US')} ج.م</span>
+                    <span className="font-mono font-bold text-lg text-[hsl(var(--primary))]">{liveOrder.total.toLocaleString('en-US')} ج.م</span>
                   </div>
                 </div>
               </div>
@@ -454,31 +485,31 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
                     <div className="bg-white rounded-lg p-2.5 border border-amber-100">
                       <p className="text-[hsl(var(--muted-foreground))] mb-1">المسجِّل</p>
-                      <p className="font-semibold">{order.createdBy}</p>
+                      <p className="font-semibold">{liveOrder.createdBy}</p>
                     </div>
                     <div className="bg-white rounded-lg p-2.5 border border-amber-100">
                       <p className="text-[hsl(var(--muted-foreground))] mb-1">IP الجهاز</p>
-                      <p className="font-mono">{order.ip || order.createdByIp || '—'}</p>
+                      <p className="font-mono">{liveOrder.ip || liveOrder.createdByIp || '—'}</p>
                     </div>
                     <div className="bg-white rounded-lg p-2.5 border border-amber-100">
                       <p className="text-[hsl(var(--muted-foreground))] mb-1 flex items-center gap-1"><MapPin size={10} /> الموقع</p>
-                      <p className="font-semibold">{order.createdByLocation || 'القاهرة، مصر'}</p>
+                      <p className="font-semibold">{liveOrder.createdByLocation || 'القاهرة، مصر'}</p>
                     </div>
                     <div className="bg-white rounded-lg p-2.5 border border-amber-100">
                       <p className="text-[hsl(var(--muted-foreground))] mb-1 flex items-center gap-1"><Monitor size={10} /> الجهاز</p>
                       <p className="font-semibold flex items-center gap-1">
-                        <DeviceIcon device={order.createdByDevice} />
-                        {order.createdByDevice || 'كمبيوتر'}
+                        <DeviceIcon device={liveOrder.createdByDevice} />
+                        {liveOrder.createdByDevice || 'كمبيوتر'}
                       </p>
                     </div>
                   </div>
                 </div>
               )}
 
-              {order.notes && (
+              {liveOrder.notes && (
                 <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
                   <p className="text-xs font-bold text-amber-700 mb-1">ملاحظات</p>
-                  <p className="text-sm text-[hsl(var(--foreground))]">{order.notes}</p>
+                  <p className="text-sm text-[hsl(var(--foreground))]">{liveOrder.notes}</p>
                 </div>
               )}
             </div>
@@ -514,7 +545,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <div className="bg-[hsl(var(--muted))]/40 rounded-xl p-3">
                     <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">اسم المندوب</p>
-                    <p className="font-semibold">{order.delegate || 'لم يُعيَّن بعد'}</p>
+                    <p className="font-semibold">{liveOrder.delegate || 'لم يُعيَّن بعد'}</p>
                   </div>
                   <div className="bg-[hsl(var(--muted))]/40 rounded-xl p-3">
                     <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">حالة التوصيل</p>
@@ -522,8 +553,8 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                   </div>
                   <div className="col-span-2 bg-[hsl(var(--muted))]/40 rounded-xl p-3">
                     <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1 flex items-center gap-1"><MapPin size={10} /> موقع المندوب الحالي</p>
-                    <p className="text-sm font-medium">{order.region}{order.district ? ` — ${order.district}` : ''}</p>
-                    <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">آخر تحديث: {order.time} — {order.date}</p>
+                    <p className="text-sm font-medium">{liveOrder.region}{liveOrder.district ? ` — ${liveOrder.district}` : ''}</p>
+                    <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">آخر تحديث: {liveOrder.time} — {liveOrder.date}</p>
                   </div>
                 </div>
               </div>
@@ -629,20 +660,20 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                   <div className="flex justify-between text-sm border-b border-[hsl(var(--border))] pb-4">
                     <div>
                       <p className="text-[hsl(var(--muted-foreground))] text-xs mb-1">رقم الفاتورة</p>
-                      <p className="font-mono font-bold text-[hsl(var(--primary))]">{order.orderNum}</p>
+                      <p className="font-mono font-bold text-[hsl(var(--primary))]">{liveOrder.orderNum}</p>
                     </div>
                     <div className="text-left">
                       <p className="text-[hsl(var(--muted-foreground))] text-xs mb-1">تاريخ الإصدار</p>
-                      <p className="font-semibold">{order.day} {order.date}</p>
-                      <p className="text-xs font-mono text-[hsl(var(--muted-foreground))]">{order.time}</p>
+                      <p className="font-semibold">{liveOrder.day} {liveOrder.date}</p>
+                      <p className="text-xs font-mono text-[hsl(var(--muted-foreground))]">{liveOrder.time}</p>
                     </div>
                   </div>
 
                   <div className="text-sm">
                     <p className="text-[hsl(var(--muted-foreground))] text-xs mb-2 font-bold uppercase tracking-wide">بيانات العميل</p>
-                    <p className="font-bold text-base">{order.customer}</p>
-                    <p className="font-mono text-[hsl(var(--muted-foreground))]">{order.phone}</p>
-                    <p className="text-[hsl(var(--muted-foreground))] mt-1">{order.region}{order.district ? ` - ${order.district}` : ''} — {order.address}</p>
+                    <p className="font-bold text-base">{liveOrder.customer}</p>
+                    <p className="font-mono text-[hsl(var(--muted-foreground))]">{liveOrder.phone}</p>
+                    <p className="text-[hsl(var(--muted-foreground))] mt-1">{liveOrder.region}{liveOrder.district ? ` - ${liveOrder.district}` : ''} — {liveOrder.address}</p>
                   </div>
 
                   {/* Tracking link in invoice */}
@@ -660,8 +691,8 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                         <span className="col-span-2 text-center">السعر</span>
                         <span className="col-span-3 text-left">الإجمالي</span>
                       </div>
-                      {order.lines && order.lines.length > 0 ? (
-                        order.lines.map((line, idx) => {
+                      {liveOrder.lines && liveOrder.lines.length > 0 ? (
+                        liveOrder.lines.map((line, idx) => {
                           const hasImg = line.image && (line.image.startsWith('data:') || line.image.startsWith('http') || line.image.startsWith('/'));
                           return (
                             <div key={`inv-line-${idx}`} className="border-t border-[hsl(var(--border))]">
@@ -690,17 +721,17 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                         })
                       ) : (
                         <div className="grid grid-cols-12 gap-2 px-4 py-3 text-sm border-t border-[hsl(var(--border))]">
-                          <span className="col-span-5">{order.products}</span>
-                          <span className="col-span-2 text-center">{order.quantity}</span>
+                          <span className="col-span-5">{liveOrder.products}</span>
+                          <span className="col-span-2 text-center">{liveOrder.quantity}</span>
                           <span className="col-span-2 text-center">—</span>
-                          <span className="col-span-3 text-left font-mono">{order.subtotal.toLocaleString('en-US')} ج.م</span>
+                          <span className="col-span-3 text-left font-mono">{liveOrder.subtotal.toLocaleString('en-US')} ج.م</span>
                         </div>
                       )}
                       <div className="grid grid-cols-12 gap-2 px-4 py-3 text-sm border-t border-[hsl(var(--border))]">
-                        <span className={`col-span-5 text-[hsl(var(--muted-foreground))] ${order.expressShipping ? 'text-amber-700 font-semibold' : ''}`}>{shippingLabel}</span>
+                        <span className={`col-span-5 text-[hsl(var(--muted-foreground))] ${liveOrder.expressShipping ? 'text-amber-700 font-semibold' : ''}`}>{shippingLabel}</span>
                         <span className="col-span-2 text-center">—</span>
                         <span className="col-span-2 text-center">—</span>
-                        <span className="col-span-3 text-left font-mono">{order.shippingFee.toLocaleString('en-US')} ج.م</span>
+                        <span className="col-span-3 text-left font-mono">{liveOrder.shippingFee.toLocaleString('en-US')} ج.م</span>
                       </div>
                       {IS_ADMIN && extraFee > 0 && (
                         <div className="grid grid-cols-12 gap-2 px-4 py-3 text-sm border-t border-[hsl(var(--border))] text-orange-700">
@@ -711,12 +742,12 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                         </div>
                       )}
                       {/* Warranty row */}
-                      {order.warranty && order.warranty !== 'بدون ضمان' && (
+                      {liveOrder.warranty && liveOrder.warranty !== 'بدون ضمان' && (
                         <div className="grid grid-cols-12 gap-2 px-4 py-3 text-sm border-t border-[hsl(var(--border))] bg-green-50">
                           <span className="col-span-5 text-green-700 font-semibold flex items-center gap-1"><Clock size={12} /> فترة الضمان</span>
                           <span className="col-span-2 text-center">—</span>
                           <span className="col-span-2 text-center">—</span>
-                          <span className="col-span-3 text-left font-semibold text-green-700">{order.warranty}</span>
+                          <span className="col-span-3 text-left font-semibold text-green-700">{liveOrder.warranty}</span>
                         </div>
                       )}
                     </div>
@@ -724,7 +755,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
 
                   <div className="bg-[hsl(var(--primary))]/5 border border-[hsl(var(--primary))]/20 rounded-xl p-4 flex justify-between items-center">
                     <span className="font-bold text-lg">الإجمالي الكلي</span>
-                    <span className="font-mono font-bold text-2xl text-[hsl(var(--primary))]">{order.total.toLocaleString('en-US')} ج.م</span>
+                    <span className="font-mono font-bold text-2xl text-[hsl(var(--primary))]">{liveOrder.total.toLocaleString('en-US')} ج.م</span>
                   </div>
 
                   <p className="text-center text-xs text-[hsl(var(--muted-foreground))] pt-2">
@@ -745,8 +776,93 @@ export default function OrderDetailModal({ order, onClose }: Props) {
               </div>
             </div>
           )}
+
+          {/* Audit Log Tab */}
+          {activeTab === 'tab-audit' && (
+            <div className="space-y-3 fade-in">
+              <div className="flex items-center justify-between mb-4">
+                <p className="text-sm text-[hsl(var(--muted-foreground))]">سجل كامل لجميع التعديلات مع اسم من عدّل</p>
+                <button
+                  onClick={() => setShowAuditModal(true)}
+                  className="flex items-center gap-1.5 text-xs bg-amber-50 border border-amber-200 text-amber-700 px-3 py-1.5 rounded-xl font-semibold hover:bg-amber-100 transition-colors"
+                >
+                  <History size={13} />
+                  عرض كامل
+                </button>
+              </div>
+              {auditLogs.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-10 gap-3">
+                  <div className="w-12 h-12 bg-[hsl(var(--muted))] rounded-2xl flex items-center justify-center">
+                    <Clock size={24} className="text-[hsl(var(--muted-foreground))]" />
+                  </div>
+                  <p className="text-sm font-semibold text-[hsl(var(--foreground))]">لا توجد تعديلات مسجلة</p>
+                  <p className="text-xs text-[hsl(var(--muted-foreground))] text-center">ستظهر هنا جميع التعديلات عند تحديث الحالة أو تعديل الأوردر</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {auditLogs.slice(0, 10).map((log) => {
+                    const d = new Date(log.createdAt);
+                    const dateStr = d.toLocaleDateString('ar-EG', { day: '2-digit', month: '2-digit', year: 'numeric' });
+                    const timeStr = d.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                    const actionColors: Record<string, string> = {
+                      status_change: 'bg-blue-50 border-blue-200',
+                      order_created: 'bg-green-50 border-green-200',
+                      order_edited: 'bg-amber-50 border-amber-200',
+                      order_deleted: 'bg-red-50 border-red-200',
+                    };
+                    const actionLabels: Record<string, string> = {
+                      status_change: 'تغيير الحالة',
+                      order_created: 'إنشاء الأوردر',
+                      order_edited: 'تعديل الأوردر',
+                      order_deleted: 'حذف الأوردر',
+                    };
+                    const statusLabels: Record<string, string> = {
+                      new: 'جديد', preparing: 'جاري التجهيز', warehouse: 'في المستودع',
+                      shipping: 'جاري الشحن', delivered: 'تم التسليم', cancelled: 'ملغي', returned: 'مرتجع',
+                    };
+                    return (
+                      <div key={log.id} className={`border rounded-xl p-3 ${actionColors[log.action] || 'bg-gray-50 border-gray-200'}`}>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/60 text-[hsl(var(--foreground))]">{actionLabels[log.action] || log.action}</span>
+                              {log.action === 'status_change' && log.newValue && (
+                                <span className={`badge ${STATUS_BADGE_MAP[log.newValue]?.cls || 'status-new'} text-[10px]`}>{statusLabels[log.newValue] || log.newValue}</span>
+                              )}
+                            </div>
+                            <p className="text-xs font-semibold text-[hsl(var(--foreground))]">{log.changedBy}</p>
+                            <p className="text-[11px] text-[hsl(var(--muted-foreground))]">
+                              {log.changedByRole === 'manager' ? 'مدير' : log.changedByRole === 'supervisor' ? 'مشرف شحن' : log.changedByRole === 'shipping' ? 'مندوب' : log.changedByRole}
+                            </p>
+                            {log.note && <p className="text-xs mt-1 italic opacity-80">"{log.note}"</p>}
+                          </div>
+                          <div className="text-left flex-shrink-0">
+                            <p className="text-[10px] font-mono opacity-70">{dateStr}</p>
+                            <p className="text-[10px] font-mono opacity-70">{timeStr}</p>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {auditLogs.length > 10 && (
+                    <button onClick={() => setShowAuditModal(true)} className="w-full text-xs text-[hsl(var(--primary))] font-semibold py-2 hover:underline">
+                      عرض {auditLogs.length - 10} تعديل إضافي...
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
+
+      {showAuditModal && (
+        <AuditLogModal
+          orderId={order.id}
+          orderNum={order.orderNum}
+          onClose={() => setShowAuditModal(false)}
+        />
+      )}
     </div>
   );
 }

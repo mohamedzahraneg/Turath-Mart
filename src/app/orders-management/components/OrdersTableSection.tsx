@@ -1,8 +1,9 @@
 'use client';
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { Search, ChevronDown, ChevronUp, Eye, Edit2, Trash2, FileText, ChevronRight, ChevronLeft, CheckSquare, TrendingUp, DollarSign, Truck, ArrowDownCircle } from 'lucide-react';
+import { Search, ChevronDown, ChevronUp, Eye, Trash2, FileText, ChevronRight, ChevronLeft, CheckSquare, TrendingUp, DollarSign, Truck, ArrowDownCircle, History, Zap } from 'lucide-react';
 import StatusUpdateModal from './StatusUpdateModal';
 import OrderDetailModal from './OrderDetailModal';
+import AuditLogModal from './AuditLogModal';
 
 interface Order {
   id: string;
@@ -169,10 +170,13 @@ export default function OrdersTableSection() {
   const [perPage, setPerPage] = useState(8);
   const [statusModal, setStatusModal] = useState<{ order: Order } | null>(null);
   const [detailModal, setDetailModal] = useState<{ order: Order } | null>(null);
+  const [auditModal, setAuditModal] = useState<{ order: Order } | null>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showDelegateStats, setShowDelegateStats] = useState(false);
   const [selectedDelegate, setSelectedDelegate] = useState('علي محمود');
   const [allOrders, setAllOrders] = useState<Order[]>(MOCK_ORDERS);
+  const [liveUpdateCount, setLiveUpdateCount] = useState(0);
+  const [lastUpdateTime, setLastUpdateTime] = useState<string | null>(null);
 
   const loadOrders = useCallback(() => {
     try {
@@ -192,7 +196,11 @@ export default function OrdersTableSection() {
 
   useEffect(() => {
     loadOrders();
-    const handleUpdate = () => loadOrders();
+    const handleUpdate = () => {
+      loadOrders();
+      setLiveUpdateCount(prev => prev + 1);
+      setLastUpdateTime(new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    };
     window.addEventListener('zahranship_orders_updated', handleUpdate);
     window.addEventListener('storage', handleUpdate);
     return () => {
@@ -274,6 +282,18 @@ export default function OrdersTableSection() {
   return (
     <>
       <div className="card-section overflow-hidden">
+        {/* Live updates indicator */}
+        {liveUpdateCount > 0 && (
+          <div className="flex items-center gap-2 px-4 py-2 bg-green-50 border-b border-green-200 fade-in">
+            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+            <Zap size={13} className="text-green-600" />
+            <span className="text-xs text-green-700 font-semibold">تحديث لحظي نشط</span>
+            {lastUpdateTime && (
+              <span className="text-xs text-green-600 mr-auto">آخر تحديث: {lastUpdateTime}</span>
+            )}
+          </div>
+        )}
+
         {/* Delegate Stats Panel */}
         <div className="border-b border-[hsl(var(--border))]">
           <button
@@ -586,8 +606,8 @@ export default function OrdersTableSection() {
                           <button onClick={() => setDetailModal({ order })} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-blue-600 transition-colors" title="عرض التفاصيل">
                             <Eye size={14} />
                           </button>
-                          <button className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-amber-50 text-amber-600 transition-colors" title="تعديل الأوردر">
-                            <Edit2 size={14} />
+                          <button onClick={() => setAuditModal({ order })} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-amber-50 text-amber-600 transition-colors" title="سجل التعديلات">
+                            <History size={14} />
                           </button>
                           <button onClick={() => setDetailModal({ order })} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-green-50 text-green-600 transition-colors" title="عرض الفاتورة PDF">
                             <FileText size={14} />
@@ -631,6 +651,7 @@ export default function OrdersTableSection() {
 
       {statusModal && <StatusUpdateModal order={statusModal.order} onClose={() => setStatusModal(null)} />}
       {detailModal && <OrderDetailModal order={detailModal.order} onClose={() => setDetailModal(null)} />}
+      {auditModal && <AuditLogModal orderId={auditModal.order.id} orderNum={auditModal.order.orderNum} onClose={() => setAuditModal(null)} />}
     </>
   );
 }
