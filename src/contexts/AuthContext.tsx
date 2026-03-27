@@ -22,7 +22,11 @@ export const ROLE_DEFAULT_ROUTE: Record<UserRole, string> = {
   supervisor: '/shipping',
 };
 
-const AuthContext = createContext<any>({});
+const AuthContext = createContext<any>({
+  hasAccess: () => true,
+  currentRole: 'manager' as UserRole,
+  loading: true,
+});
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
