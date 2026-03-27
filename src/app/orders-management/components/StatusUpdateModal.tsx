@@ -1,0 +1,209 @@
+'use client';
+import React, { useState } from 'react';
+import { useForm } from 'react-hook-form';
+import { toast } from 'sonner';
+import { Toaster } from 'sonner';
+import { X, Clock, AlertTriangle, CheckCircle, MapPin } from 'lucide-react';
+
+interface Order {
+  id: string;
+  orderNum: string;
+  customer: string;
+  status: string;
+}
+
+interface StatusFormData {
+  newStatus: string;
+  note: string;
+  reason: string;
+}
+
+const STATUS_OPTIONS = [
+  { value: 'new', label: 'جديد', color: 'blue' },
+  { value: 'preparing', label: 'جاري التجهيز للشحن', color: 'amber' },
+  { value: 'warehouse', label: 'جاري تسليمه في المستودع', color: 'purple' },
+  { value: 'shipping', label: 'جاري الشحن', color: 'orange' },
+  { value: 'delivered', label: 'تم التسليم', color: 'green' },
+  { value: 'cancelled', label: 'ملغي', color: 'red' },
+  { value: 'returned', label: 'مرتجع', color: 'gray' },
+];
+
+const STATUS_HISTORY = [
+  { id: 'hist-001', status: 'new', label: 'جديد', date: '٢٧/٠٣/٢٠٢٦', time: '٠٩:٣٢', day: 'الجمعة', by: 'محمد حسن', note: '' },
+  { id: 'hist-002', status: 'preparing', label: 'جاري التجهيز', date: '٢٧/٠٣/٢٠٢٦', time: '١١:٠٠', day: 'الجمعة', by: 'أحمد السيد (مدير)', note: 'تم تجهيز الطلب وجاهز للتسليم' },
+];
+
+const STATUS_BADGE_MAP: Record<string, string> = {
+  new: 'status-new',
+  preparing: 'status-preparing',
+  warehouse: 'status-warehouse',
+  shipping: 'status-shipping',
+  delivered: 'status-delivered',
+  cancelled: 'status-cancelled',
+  returned: 'status-returned',
+};
+
+interface Props {
+  order: Order;
+  onClose: () => void;
+}
+
+export default function StatusUpdateModal({ order, onClose }: Props) {
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const { register, handleSubmit, watch, formState: { errors } } = useForm<StatusFormData>({
+    defaultValues: { newStatus: order.status, note: '', reason: '' },
+  });
+
+  const watchStatus = watch('newStatus');
+  const isDestructive = watchStatus === 'cancelled' || watchStatus === 'returned';
+
+  const onSubmit = async (data: StatusFormData) => {
+    setIsSubmitting(true);
+    // TODO: PATCH /api/orders/:id/status — update status + log history entry with user, timestamp, location
+    await new Promise((r) => setTimeout(r, 1000));
+    const statusLabel = STATUS_OPTIONS.find((s) => s.value === data.newStatus)?.label || data.newStatus;
+    toast.success(`تم تحديث حالة الأوردر ${order.orderNum} إلى: ${statusLabel}`);
+    setIsSubmitting(false);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" dir="rtl">
+      <Toaster position="top-center" richColors />
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-3xl shadow-modal w-full max-w-lg fade-in">
+        {/* Header */}
+        <div className="flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
+          <div>
+            <h3 className="text-base font-bold text-[hsl(var(--foreground))]">تحديث حالة الأوردر</h3>
+            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
+              <span className="font-mono font-semibold text-[hsl(var(--primary))]">{order.orderNum}</span>
+              {' — '}{order.customer}
+            </p>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))] transition-colors" aria-label="إغلاق">
+            <X size={16} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit(onSubmit)} className="p-5 space-y-4">
+          {/* Status selector */}
+          <div>
+            <label className="label-text">الحالة الجديدة *</label>
+            <div className="grid grid-cols-2 gap-2 mt-1.5">
+              {STATUS_OPTIONS.map((s) => (
+                <label
+                  key={`status-opt-${s.value}`}
+                  className={`flex items-center gap-2 p-3 rounded-xl border cursor-pointer transition-all ${watchStatus === s.value ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/5' : 'border-[hsl(var(--border))] hover:border-gray-400'}`}
+                >
+                  <input
+                    type="radio"
+                    value={s.value}
+                    className="w-3.5 h-3.5 text-[hsl(var(--primary))]"
+                    {...register('newStatus', { required: true })}
+                  />
+                  <span className={`badge ${STATUS_BADGE_MAP[s.value]} text-[11px]`}>{s.label}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* Reason — required for cancelled/returned */}
+          {isDestructive && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-4 fade-in">
+              <div className="flex items-center gap-2 mb-2">
+                <AlertTriangle size={15} className="text-red-500" />
+                <label className="text-sm font-bold text-red-700" htmlFor="reason">
+                  سبب {watchStatus === 'cancelled' ? 'الإلغاء' : 'الإرجاع'} *
+                </label>
+              </div>
+              <textarea
+                id="reason"
+                rows={3}
+                className={`input-field resize-none border-red-300 focus:ring-red-400 ${errors.reason ? 'border-red-500' : ''}`}
+                placeholder={watchStatus === 'cancelled' ? 'اذكر سبب إلغاء الأوردر...' : 'اذكر سبب إرجاع الأوردر...'}
+                {...register('reason', {
+                  required: isDestructive ? 'يجب ذكر السبب عند الإلغاء أو الإرجاع' : false,
+                  minLength: { value: 10, message: 'السبب قصير جداً' },
+                })}
+              />
+              {errors.reason && <p className="text-red-600 text-xs mt-1">{errors.reason.message}</p>}
+            </div>
+          )}
+
+          {/* Note */}
+          <div>
+            <label className="label-text" htmlFor="statusNote">ملاحظة على هذا التحديث</label>
+            <p className="text-xs text-[hsl(var(--muted-foreground))] mb-1.5">ستظهر في سجل الحالات للمسجِّل والمدير</p>
+            <textarea
+              id="statusNote"
+              rows={2}
+              className="input-field resize-none"
+              placeholder="أضف ملاحظة اختيارية..."
+              {...register('note')}
+            />
+          </div>
+
+          {/* Location note for delivery */}
+          {watchStatus === 'delivered' && (
+            <div className="bg-green-50 border border-green-200 rounded-xl p-3 fade-in">
+              <div className="flex items-center gap-2 text-green-700 text-sm">
+                <MapPin size={14} />
+                <span className="font-semibold">سيتم تسجيل موقع التسليم تلقائياً</span>
+              </div>
+              <p className="text-xs text-green-600 mt-1">يجب التأكد من توقيع العميل أو OTP أو صورة البطاقة</p>
+            </div>
+          )}
+
+          {/* Status history */}
+          <div>
+            <p className="text-xs font-bold text-[hsl(var(--muted-foreground))] uppercase tracking-wide mb-2 flex items-center gap-1">
+              <Clock size={11} />
+              سجل الحالات السابقة
+            </p>
+            <div className="space-y-2 max-h-36 overflow-y-auto scrollbar-thin">
+              {STATUS_HISTORY.map((h) => (
+                <div key={h.id} className="flex items-start gap-3 text-xs bg-[hsl(var(--muted))]/40 rounded-xl p-2.5">
+                  <CheckCircle size={13} className="text-green-500 mt-0.5 flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`badge ${STATUS_BADGE_MAP[h.status]} text-[10px]`}>{h.label}</span>
+                      <span className="text-[hsl(var(--muted-foreground))]">{h.day} {h.date} — {h.time}</span>
+                    </div>
+                    <p className="text-[hsl(var(--muted-foreground))] mt-0.5">بواسطة: <span className="font-semibold text-[hsl(var(--foreground))]">{h.by}</span></p>
+                    {h.note && <p className="text-[hsl(var(--foreground))] mt-0.5 italic">"{h.note}"</p>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="flex gap-3 pt-2">
+            <button type="button" className="btn-secondary flex-1 justify-center" onClick={onClose}>
+              إلغاء
+            </button>
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className={`flex-1 justify-center ${isDestructive ? 'btn-danger' : 'btn-primary'}`}
+            >
+              {isSubmitting ? (
+                <>
+                  <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <span>جاري التحديث...</span>
+                </>
+              ) : (
+                <span>تأكيد التحديث</span>
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
