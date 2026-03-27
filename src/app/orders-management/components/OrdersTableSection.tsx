@@ -4,6 +4,7 @@ import { Search, ChevronDown, ChevronUp, Eye, Trash2, FileText, ChevronRight, Ch
 import StatusUpdateModal from './StatusUpdateModal';
 import OrderDetailModal from './OrderDetailModal';
 import AuditLogModal from './AuditLogModal';
+import { createClient } from '@/lib/supabase/client';
 
 interface Order {
   id: string;
@@ -178,14 +179,68 @@ export default function OrdersTableSection() {
   const [liveUpdateCount, setLiveUpdateCount] = useState(0);
   const [lastUpdateTime, setLastUpdateTime] = useState<string | null>(null);
 
-  const loadOrders = useCallback(() => {
+  const loadOrders = useCallback(async () => {
     try {
+      // 1. Load from localStorage
       const saved = JSON.parse(localStorage.getItem('zahranship_orders') || '[]') as Order[];
-      if (saved.length > 0) {
-        // Merge: saved orders first, then mock orders that don't conflict by id
-        const savedIds = new Set(saved.map(o => o.id));
-        const uniqueMock = MOCK_ORDERS.filter(o => !savedIds.has(o.id));
-        setAllOrders([...saved, ...uniqueMock]);
+
+      // 2. Load from Supabase
+      let supabaseOrders: Order[] = [];
+      try {
+        const supabase = createClient();
+        const { data } = await supabase
+          .from('zahranship_orders')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (data && data.length > 0) {
+          supabaseOrders = data.map((row) => ({
+            id: row.id,
+            orderNum: row.order_num,
+            createdBy: row.created_by || '',
+            createdByDevice: row.created_by_device || '',
+            customer: row.customer,
+            phone: row.phone,
+            phone2: row.phone2 || undefined,
+            region: row.region,
+            district: row.district || undefined,
+            address: row.address,
+            products: row.products,
+            quantity: row.quantity,
+            subtotal: row.subtotal,
+            shippingFee: row.shipping_fee,
+            extraShippingFee: row.extra_shipping_fee || undefined,
+            expressShipping: row.express_shipping || undefined,
+            total: row.total,
+            status: row.status,
+            date: row.date,
+            time: row.time,
+            day: row.day || '',
+            notes: row.notes || undefined,
+            ip: row.ip || '',
+            delegateName: row.delegate_name || undefined,
+          }));
+        }
+      } catch {
+        // Supabase fetch failed, continue with localStorage only
+      }
+
+      // 3. Merge: Supabase + localStorage take priority over MOCK_ORDERS
+      const realOrderIds = new Set([
+        ...supabaseOrders.map((o) => o.id),
+        ...saved.map((o) => o.id),
+      ]);
+
+      // Build merged map: supabase first, then localStorage overrides (for status updates)
+      const mergedMap = new Map<string, Order>();
+      supabaseOrders.forEach((o) => mergedMap.set(o.id, o));
+      saved.forEach((o) => mergedMap.set(o.id, o)); // localStorage overrides supabase for latest status
+
+      const realOrders = Array.from(mergedMap.values());
+      const uniqueMock = MOCK_ORDERS.filter((o) => !realOrderIds.has(o.id));
+
+      if (realOrders.length > 0) {
+        setAllOrders([...realOrders, ...uniqueMock]);
       } else {
         setAllOrders(MOCK_ORDERS);
       }
@@ -203,9 +258,16 @@ export default function OrdersTableSection() {
     };
     window.addEventListener('zahranship_orders_updated', handleUpdate);
     window.addEventListener('storage', handleUpdate);
+
+    // Poll Supabase every 15 seconds for new orders from other sessions
+    const interval = setInterval(() => {
+      loadOrders();
+    }, 15000);
+
     return () => {
       window.removeEventListener('zahranship_orders_updated', handleUpdate);
       window.removeEventListener('storage', handleUpdate);
+      clearInterval(interval);
     };
   }, [loadOrders]);
 
