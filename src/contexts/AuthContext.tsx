@@ -3,10 +3,9 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { createClient } from '../lib/supabase/client';
 
-// Role definitions (used only as fallback type)
 export type UserRole = 'manager' | 'data_entry' | 'shipping' | 'supervisor' | string;
 
-// Permission → route mapping: which permissions unlock which routes
+// Permission → route mapping
 const PERMISSION_ROUTE_MAP: Record<string, string[]> = {
   view_dashboard: ['/dashboard'],
   view_orders: ['/orders-management'],
@@ -29,48 +28,90 @@ const PERMISSION_ROUTE_MAP: Record<string, string[]> = {
   system_settings: ['/settings'],
 };
 
-// Fallback route map for legacy role strings (if no roleId stored)
-export const ROLE_ALLOWED_ROUTES: Record<string, string[]> = {
-  manager: ['/dashboard', '/orders-management', '/shipping', '/inventory', '/reports', '/users', '/roles', '/settings', '/track', '/crm'],
-  data_entry: ['/orders-management', '/shipping', '/track'],
-  shipping: ['/shipping', '/track'],
-  supervisor: ['/dashboard', '/orders-management', '/shipping', '/track', '/reports'],
-};
+// All permissions list (full access)
+const ALL_PERMISSIONS = Object.keys(PERMISSION_ROUTE_MAP);
 
-// Default redirect after login per role
-export const ROLE_DEFAULT_ROUTE: Record<string, string> = {
-  manager: '/dashboard',
-  data_entry: '/orders-management',
-  shipping: '/shipping',
-  supervisor: '/shipping',
-};
+// Default roles — always available as fallback when localStorage is empty
+const DEFAULT_ROLES: Array<{ id: string; name: string; permissions: string[] }> = [
+  { id: 'r1', name: 'مدير النظام', permissions: ALL_PERMISSIONS },
+  { id: 'r2', name: 'مشرف النظام', permissions: ['view_dashboard', 'view_orders', 'edit_orders', 'update_status', 'view_shipping', 'manage_shipping', 'view_inventory', 'view_reports', 'export_reports', 'manage_users'] },
+  { id: 'r3', name: 'مشرف شحن', permissions: ['view_dashboard', 'view_orders', 'create_orders', 'edit_orders', 'update_status', 'view_shipping', 'manage_shipping', 'assign_courier', 'view_inventory', 'view_reports'] },
+  { id: 'r4', name: 'مندوب شحن', permissions: ['view_orders', 'update_status', 'view_shipping'] },
+  { id: 'r5', name: 'مدير خدمة عملاء', permissions: ['view_dashboard', 'view_orders', 'view_shipping', 'view_reports', 'export_reports', 'view_customers', 'manage_customers', 'customer_support'] },
+  { id: 'r6', name: 'خدمة عملاء', permissions: ['view_orders', 'view_shipping', 'view_customers', 'customer_support'] },
+];
 
-// Load roles from localStorage
-function loadStoredRoles(): Array<{ id: string; permissions: string[] }> {
-  if (typeof window === 'undefined') return [];
+// Default redirect per first available permission
+const PERMISSION_DEFAULT_ROUTE_PRIORITY = [
+  'view_dashboard',
+  'view_orders',
+  'view_shipping',
+  'view_reports',
+  'view_inventory',
+  'view_customers',
+  'manage_users',
+  'system_settings',
+];
+
+export function getDefaultRouteForPermissions(permissions: string[]): string {
+  for (const perm of PERMISSION_DEFAULT_ROUTE_PRIORITY) {
+    if (permissions.includes(perm)) {
+      return PERMISSION_ROUTE_MAP[perm]?.[0] ?? '/shipping';
+    }
+  }
+  return '/shipping';
+}
+
+// Load roles from localStorage, merge with defaults
+function loadRoles(): Array<{ id: string; name: string; permissions: string[] }> {
+  if (typeof window === 'undefined') return DEFAULT_ROLES;
   try {
     const raw = localStorage.getItem('turath_roles');
-    if (!raw) return [];
+    if (!raw) return DEFAULT_ROLES;
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed) || parsed.length === 0) return DEFAULT_ROLES;
+    // Merge: stored roles take priority, add defaults not in stored
+    const storedIds = new Set(parsed.map((r: any) => r.id));
+    const merged = [...parsed, ...DEFAULT_ROLES.filter(r => !storedIds.has(r.id))];
+    return merged;
   } catch {
-    return [];
+    return DEFAULT_ROLES;
   }
 }
 
-// Get allowed routes for a roleId based on its permissions
-function getAllowedRoutesForRoleId(roleId: string): string[] | null {
-  const roles = loadStoredRoles();
+// Get permissions for a roleId
+export function getPermissionsForRoleId(roleId: string): string[] {
+  const roles = loadRoles();
   const role = roles.find(r => r.id === roleId);
-  if (!role) return null;
+  return role?.permissions ?? [];
+}
 
+// Get allowed routes for a roleId
+function getAllowedRoutesForRoleId(roleId: string): string[] {
+  const permissions = getPermissionsForRoleId(roleId);
   const routes = new Set<string>(['/track']); // track always allowed
-  for (const perm of role.permissions) {
-    const permRoutes = PERMISSION_ROUTE_MAP[perm] || [];
+  for (const perm of permissions) {
+    const permRoutes = PERMISSION_ROUTE_MAP[perm] ?? [];
     permRoutes.forEach(r => routes.add(r));
   }
   return Array.from(routes);
 }
+
+// Check if a roleId has full/manager-level access
+function isManagerRole(roleId: string): boolean {
+  if (roleId === 'r1') return true;
+  const permissions = getPermissionsForRoleId(roleId);
+  // Has system_settings = admin-level
+  return permissions.includes('system_settings') && permissions.includes('manage_roles');
+}
+
+// Legacy export for AppLayout redirect
+export const ROLE_DEFAULT_ROUTE: Record<string, string> = {
+  manager: '/dashboard',
+  data_entry: '/orders-management',
+  shipping: '/shipping',
+  supervisor: '/dashboard',
+};
 
 const AuthContext = createContext<any>({
   hasAccess: () => true,
@@ -102,9 +143,14 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         const stored = localStorage.getItem('current_user');
         if (stored) {
           const parsed = JSON.parse(stored);
-          if (parsed?.role) {
-            setCurrentRole(parsed.role as string);
-            setCurrentRoleId(parsed.roleId || null);
+          if (parsed?.roleId) {
+            setCurrentRoleId(parsed.roleId);
+            // Determine role type from roleId
+            const roleType = isManagerRole(parsed.roleId) ? 'manager' : (parsed.role || 'data_entry');
+            setCurrentRole(roleType);
+          } else if (parsed?.role) {
+            setCurrentRole(parsed.role);
+            setCurrentRoleId(null);
           } else {
             setCurrentRole(null);
             setCurrentRoleId(null);
@@ -142,26 +188,31 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     }
   }, []);
 
-  // Check if current role can access a given path
+  // Check if current user can access a given path
   const hasAccess = (path: string): boolean => {
     if (roleLoading) return true;
-    if (currentRole === null) return false;
+    if (currentRole === null && currentRoleId === null) return false;
 
-    // Manager ALWAYS has full access — no restrictions whatsoever
+    // Manager (r1 or system_settings+manage_roles) has FULL access
     if (currentRole === 'manager') return true;
+    if (currentRoleId && isManagerRole(currentRoleId)) return true;
 
-    // Try permission-based access using roleId
+    // Permission-based access using roleId
     if (currentRoleId) {
       const allowedRoutes = getAllowedRoutesForRoleId(currentRoleId);
-      if (allowedRoutes) {
-        return allowedRoutes.some(route =>
-          path === route || path.startsWith(route + '/') || path.startsWith(route + '?')
-        );
-      }
+      return allowedRoutes.some(route =>
+        path === route || path.startsWith(route + '/') || path.startsWith(route + '?')
+      );
     }
 
-    // Fallback: use legacy role string map
-    const allowed = ROLE_ALLOWED_ROUTES[currentRole] ?? [];
+    // Fallback: if only legacy role string, allow basic access
+    const legacyMap: Record<string, string[]> = {
+      manager: ['/dashboard', '/orders-management', '/shipping', '/inventory', '/reports', '/users', '/roles', '/settings', '/track', '/crm'],
+      supervisor: ['/dashboard', '/orders-management', '/shipping', '/track', '/reports'],
+      data_entry: ['/orders-management', '/shipping', '/track'],
+      shipping: ['/shipping', '/track'],
+    };
+    const allowed = legacyMap[currentRole ?? ''] ?? [];
     return allowed.some(route =>
       path === route || path.startsWith(route + '/') || path.startsWith(route + '?')
     );
@@ -253,8 +304,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     signOut,
     getCurrentUser,
     isEmailVerified,
-    getUserProfile
+    getUserProfile,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
+
+export default AuthContext;

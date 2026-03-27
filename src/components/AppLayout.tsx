@@ -3,7 +3,7 @@
 import React, { useEffect } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import Sidebar from './Sidebar';
-import { useAuth, ROLE_DEFAULT_ROUTE } from '@/contexts/AuthContext';
+import { useAuth, getDefaultRouteForPermissions, getPermissionsForRoleId } from '@/contexts/AuthContext';
 
 interface AppLayoutProps {
   children: React.ReactNode;
@@ -11,7 +11,7 @@ interface AppLayoutProps {
 }
 
 export default function AppLayout({ children, currentPath = '' }: AppLayoutProps) {
-  const { currentRole, hasAccess, roleLoading } = useAuth();
+  const { currentRole, currentRoleId, hasAccess, roleLoading } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
 
@@ -24,19 +24,23 @@ export default function AppLayout({ children, currentPath = '' }: AppLayoutProps
     // Wait until role is loaded from localStorage before enforcing access
     if (roleLoading) return;
     // If no role (not logged in), redirect to login
-    if (currentRole === null) {
+    if (currentRole === null && currentRoleId === null) {
       router.replace('/sign-up-login-screen');
       return;
     }
 
-    // Manager has FULL access — skip all route guards entirely
+    // Manager has FULL access — skip all route guards
     if (currentRole === 'manager') return;
 
     if (!hasAccess(activePath)) {
-      // Redirect to the default route for this role
-      router.replace(ROLE_DEFAULT_ROUTE[currentRole] ?? '/shipping');
+      // Redirect to the default route based on permissions
+      const permissions = currentRoleId ? getPermissionsForRoleId(currentRoleId) : [];
+      const defaultRoute = permissions.length > 0
+        ? getDefaultRouteForPermissions(permissions)
+        : '/shipping';
+      router.replace(defaultRoute);
     }
-  }, [activePath, currentRole, hasAccess, roleLoading, router]);
+  }, [activePath, currentRole, currentRoleId, hasAccess, roleLoading, router]);
 
   return (
     <div className="flex min-h-screen bg-[hsl(210,20%,97%)]" dir="rtl">

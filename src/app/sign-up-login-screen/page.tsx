@@ -6,11 +6,11 @@ import { toast } from 'sonner';
 import { Toaster } from 'sonner';
 import AppLogo from '@/components/ui/AppLogo';
 import { Eye, EyeOff, Mail, Lock, Truck, Package, BarChart3, Shield, LogIn, AlertCircle, Monitor, Smartphone, Tablet } from 'lucide-react';
+import { getDefaultRouteForPermissions, getPermissionsForRoleId } from '@/contexts/AuthContext';
 
 interface LoginForm {
   email: string;
   password: string;
-  role: string;
   remember: boolean;
 }
 
@@ -33,53 +33,6 @@ interface StoredRole {
   color?: string;
 }
 
-// Map role name → UserRole type for routing
-function getRoleTypeFromName(roleName: string): string {
-  const name = roleName.toLowerCase();
-  if (name.includes('مدير') && name.includes('نظام')) return 'manager';
-  if (name.includes('مدير')) return 'manager';
-  if (name.includes('مشرف')) return 'supervisor';
-  if (name.includes('شحن') && name.includes('مندوب')) return 'shipping';
-  if (name.includes('شحن')) return 'shipping';
-  if (name.includes('عملاء') || name.includes('خدمة')) return 'supervisor';
-  if (name.includes('بيانات') || name.includes('إدخال')) return 'data_entry';
-  return 'data_entry';
-}
-
-// Get default redirect route based on role permissions
-function getDefaultRouteForPermissions(permissions: string[]): string {
-  if (permissions.includes('view_dashboard')) return '/dashboard';
-  if (permissions.includes('view_orders')) return '/orders-management';
-  if (permissions.includes('view_shipping')) return '/shipping';
-  return '/shipping';
-}
-
-// Load roles from localStorage
-function loadStoredRoles(): StoredRole[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const raw = localStorage.getItem('turath_roles');
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-// Load employees from localStorage
-function loadStoredEmployees(): StoredEmployee[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const raw = localStorage.getItem('turath_employees');
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
 // Default employees always available as fallback
 const DEFAULT_EMPLOYEES: StoredEmployee[] = [
   { id: 'e1', name: 'محمد الزهراني', username: 'admin', password: 'Admin@123', roleId: 'r1', status: 'active', createdAt: '01/01/2026' },
@@ -97,15 +50,16 @@ const DEFAULT_ROLES: StoredRole[] = [
   { id: 'r6', name: 'خدمة عملاء', permissions: ['view_orders','view_shipping','view_customers','customer_support'] },
 ];
 
+// Static base credentials (email-based login)
 const BASE_CREDENTIALS = [
-  { role: 'manager', roleId: 'r1', email: 'manager@turathmart.com', password: 'Turath@2026', label: 'مدير النظام' },
-  { role: 'data_entry', roleId: 'r6', email: 'staff@turathmart.com', password: 'Staff@2026', label: 'موظف إدخال بيانات' },
-  { role: 'shipping', roleId: 'r4', email: 'driver@turathmart.com', password: 'Driver@2026', label: 'مندوب شحن' },
-  { role: 'supervisor', roleId: 'r2', email: 'supervisor@turathmart.com', password: 'Super@2026', label: 'مشرف' },
-  { role: 'manager', roleId: 'r1', email: 'manager@zahranship.com', password: 'Zahran@2026', label: 'مدير النظام' },
-  { role: 'data_entry', roleId: 'r6', email: 'staff@zahranship.com', password: 'Staff@2026', label: 'موظف إدخال بيانات' },
-  { role: 'shipping', roleId: 'r4', email: 'driver@zahranship.com', password: 'Driver@2026', label: 'مندوب شحن' },
-  { role: 'supervisor', roleId: 'r2', email: 'supervisor@zahranship.com', password: 'Super@2026', label: 'مشرف' },
+  { roleId: 'r1', email: 'manager@turathmart.com', password: 'Turath@2026', label: 'مدير النظام' },
+  { roleId: 'r6', email: 'staff@turathmart.com', password: 'Staff@2026', label: 'خدمة عملاء' },
+  { roleId: 'r4', email: 'driver@turathmart.com', password: 'Driver@2026', label: 'مندوب شحن' },
+  { roleId: 'r2', email: 'supervisor@turathmart.com', password: 'Super@2026', label: 'مشرف النظام' },
+  { roleId: 'r1', email: 'manager@zahranship.com', password: 'Zahran@2026', label: 'مدير النظام' },
+  { roleId: 'r6', email: 'staff@zahranship.com', password: 'Staff@2026', label: 'خدمة عملاء' },
+  { roleId: 'r4', email: 'driver@zahranship.com', password: 'Driver@2026', label: 'مندوب شحن' },
+  { roleId: 'r2', email: 'supervisor@zahranship.com', password: 'Super@2026', label: 'مشرف النظام' },
 ];
 
 const STATS = [
@@ -127,6 +81,50 @@ function DeviceIcon({ device }: { device: string }) {
   return <Monitor size={14} className="text-[hsl(var(--muted-foreground))]" />;
 }
 
+// Load roles from localStorage, merge with defaults
+function loadAllRoles(): StoredRole[] {
+  if (typeof window === 'undefined') return DEFAULT_ROLES;
+  try {
+    const raw = localStorage.getItem('turath_roles');
+    if (!raw) return DEFAULT_ROLES;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) return DEFAULT_ROLES;
+    const storedIds = new Set(parsed.map((r: StoredRole) => r.id));
+    return [...parsed, ...DEFAULT_ROLES.filter(r => !storedIds.has(r.id))];
+  } catch {
+    return DEFAULT_ROLES;
+  }
+}
+
+// Load employees from localStorage, merge with defaults
+function loadAllEmployees(): StoredEmployee[] {
+  if (typeof window === 'undefined') return DEFAULT_EMPLOYEES;
+  try {
+    const raw = localStorage.getItem('turath_employees');
+    if (!raw) return DEFAULT_EMPLOYEES;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return DEFAULT_EMPLOYEES;
+    const storedIds = new Set(parsed.map((e: StoredEmployee) => e.id));
+    return [...parsed, ...DEFAULT_EMPLOYEES.filter(e => !storedIds.has(e.id))];
+  } catch {
+    return DEFAULT_EMPLOYEES;
+  }
+}
+
+// Determine role type string from roleId (for legacy routing)
+function getRoleTypeFromId(roleId: string): string {
+  if (roleId === 'r1') return 'manager';
+  const roles = loadAllRoles();
+  const role = roles.find(r => r.id === roleId);
+  if (!role) return 'data_entry';
+  const perms = role.permissions;
+  if (perms.includes('system_settings') && perms.includes('manage_roles')) return 'manager';
+  if (perms.includes('view_dashboard') && perms.includes('manage_users')) return 'supervisor';
+  if (perms.includes('view_shipping') && !perms.includes('view_dashboard')) return 'shipping';
+  if (perms.includes('view_dashboard')) return 'supervisor';
+  return 'data_entry';
+}
+
 export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -142,26 +140,8 @@ export default function LoginPage() {
     handleSubmit,
     formState: { errors },
   } = useForm<LoginForm>({
-    defaultValues: { role: 'manager', remember: false },
+    defaultValues: { remember: false },
   });
-
-  const getRedirectForRole = (roleId: string, roleName: string): string => {
-    // Try to get redirect from stored role permissions
-    const storedRoles = loadStoredRoles();
-    const allRoles = storedRoles.length > 0 ? storedRoles : DEFAULT_ROLES;
-    const role = allRoles.find(r => r.id === roleId);
-    if (role) return getDefaultRouteForPermissions(role.permissions);
-
-    // Fallback by role type
-    const roleType = getRoleTypeFromName(roleName);
-    const fallbacks: Record<string, string> = {
-      manager: '/dashboard',
-      supervisor: '/dashboard',
-      data_entry: '/orders-management',
-      shipping: '/shipping',
-    };
-    return fallbacks[roleType] ?? '/shipping';
-  };
 
   const onSubmit = async (data: LoginForm) => {
     setIsLoading(true);
@@ -170,37 +150,34 @@ export default function LoginPage() {
     const inputValue = data.email.trim();
     const inputPassword = data.password;
 
-    // ── Step 1: Check base credentials (static list) ──────────────────────────
+    // ── Step 1: Check base credentials (email-based static list) ──────────────
     const validBase = BASE_CREDENTIALS.find(
       (c) => c.email === inputValue && c.password === inputPassword
     );
 
     if (validBase) {
+      const roleType = getRoleTypeFromId(validBase.roleId);
+      const permissions = getPermissionsForRoleId(validBase.roleId);
+      const redirect = getDefaultRouteForPermissions(permissions);
+
       if (typeof window !== 'undefined') {
         localStorage.setItem('current_user', JSON.stringify({
           email: validBase.email,
           name: validBase.label,
-          role: validBase.role,
+          role: roleType,
           roleId: validBase.roleId,
         }));
       }
       toast.success(`مرحباً! تم تسجيل الدخول كـ ${validBase.label} — ${deviceType}`);
-      const redirect = getRedirectForRole(validBase.roleId, validBase.label);
       setTimeout(() => { window.location.href = redirect; }, 800);
       setIsLoading(false);
       return;
     }
 
-    // ── Step 2: Check employees in localStorage (primary for custom employees) ─
-    const storedEmployees = loadStoredEmployees();
-    const storedIds = new Set(storedEmployees.map((e: StoredEmployee) => e.id));
-    // Merge: stored employees take priority, add defaults not already stored
-    const mergedEmployees: StoredEmployee[] = [
-      ...storedEmployees,
-      ...DEFAULT_EMPLOYEES.filter(e => !storedIds.has(e.id)),
-    ];
+    // ── Step 2: Check employees (username or email) ────────────────────────────
+    const allEmployees = loadAllEmployees();
 
-    const emp = mergedEmployees.find(
+    const emp = allEmployees.find(
       (e) =>
         e.status === 'active' &&
         e.password === inputPassword &&
@@ -212,12 +189,9 @@ export default function LoginPage() {
     );
 
     if (emp) {
-      // Look up role from stored roles
-      const storedRoles = loadStoredRoles();
-      const allRoles = storedRoles.length > 0 ? storedRoles : DEFAULT_ROLES;
-      const empRole = allRoles.find(r => r.id === emp.roleId);
-      const roleType = empRole ? getRoleTypeFromName(empRole.name) : 'data_entry';
-      const roleName = empRole?.name || emp.roleId;
+      const roleType = getRoleTypeFromId(emp.roleId);
+      const permissions = getPermissionsForRoleId(emp.roleId);
+      const redirect = getDefaultRouteForPermissions(permissions);
 
       if (typeof window !== 'undefined') {
         localStorage.setItem('current_user', JSON.stringify({
@@ -228,7 +202,6 @@ export default function LoginPage() {
         }));
       }
       toast.success(`مرحباً ${emp.name}! تم تسجيل الدخول — ${deviceType}`);
-      const redirect = getRedirectForRole(emp.roleId, roleName);
       setTimeout(() => { window.location.href = redirect; }, 800);
       setIsLoading(false);
       return;
