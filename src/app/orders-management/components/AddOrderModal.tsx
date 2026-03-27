@@ -1,9 +1,9 @@
 'use client';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useForm, useFieldArray } from 'react-hook-form';
 import { toast } from 'sonner';
 import { Toaster } from 'sonner';
-import { X, Plus, Trash2, Package, User, MapPin, Phone, FileText, Zap, Calculator, ChevronDown, DollarSign } from 'lucide-react';
+import { X, Trash2, Package, User, MapPin, Phone, FileText, Zap, Calculator, ChevronDown, DollarSign, Image as ImageIcon, Check } from 'lucide-react';
 
 interface ProductItem {
   productType: string;
@@ -28,11 +28,11 @@ interface OrderFormData {
 }
 
 export const PRODUCT_TYPES = [
-  { value: 'holder', label: 'حامل مصحف', basePrice: 300, image: '📿', hasColor: true },
-  { value: 'flashlight', label: 'كشاف', basePrice: 150, image: '🔦', hasColor: false },
-  { value: 'chair', label: 'كرسي', basePrice: 600, image: '🪑', hasColor: false },
-  { value: 'quran', label: 'مصحف', basePrice: 140, image: '📖', hasColor: false },
-  { value: 'kaaba', label: 'كعبة', basePrice: 450, image: '🕋', hasColor: false },
+  { value: 'holder', label: 'حامل مصحف', basePrice: 300, image: '/assets/images/no_image.png', emoji: '📿', hasColor: true },
+  { value: 'flashlight', label: 'كشاف', basePrice: 150, image: '/assets/images/no_image.png', emoji: '🔦', hasColor: false },
+  { value: 'chair', label: 'كرسي', basePrice: 600, image: '/assets/images/no_image.png', emoji: '🪑', hasColor: false },
+  { value: 'quran', label: 'مصحف', basePrice: 140, image: '/assets/images/no_image.png', emoji: '📖', hasColor: false },
+  { value: 'kaaba', label: 'كعبة', basePrice: 450, image: '/assets/images/no_image.png', emoji: '🕋', hasColor: false },
 ];
 
 export const HOLDER_COLORS = [
@@ -78,6 +78,17 @@ export const ADMIN_SETTINGS = {
   DISABLED_DISTRICTS: [] as string[], // Admin can disable specific districts
 };
 
+// Simulated current user role — in real app from auth context
+const CURRENT_USER_ROLE: 'admin' | 'supervisor' | 'customer_service' | 'delegate' = 'customer_service';
+const IS_ADMIN = CURRENT_USER_ROLE === 'admin';
+
+function getDeviceType(): string {
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+  if (/tablet|ipad|playbook|silk/i.test(ua)) return 'تابلت';
+  if (/mobile|iphone|ipod|android|blackberry|opera mini|iemobile/i.test(ua)) return 'موبايل';
+  return 'كمبيوتر';
+}
+
 function generateOrderNumber() {
   const now = new Date();
   const year = now.getFullYear();
@@ -95,20 +106,33 @@ export default function AddOrderModal({ onClose }: Props) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [subtotal, setSubtotal] = useState(0);
   const [step, setStep] = useState(1);
+  // Product image upload state (admin only)
+  const [productImages, setProductImages] = useState<Record<string, string>>(() => {
+    const init: Record<string, string> = {};
+    PRODUCT_TYPES.forEach(p => { init[p.value] = p.emoji; });
+    return init;
+  });
+  const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   useEffect(() => {
-    const now = new Date();
-    const days = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
-    const d = now.getDate().toString().padStart(2, '0');
-    const m = (now.getMonth() + 1).toString().padStart(2, '0');
-    const y = now.getFullYear();
-    const h = now.getHours().toString().padStart(2, '0');
-    const min = now.getMinutes().toString().padStart(2, '0');
-    setCurrentDateTime({
-      date: `${d}/${m}/${y}`,
-      time: `${h}:${min}`,
-      day: days[now.getDay()],
-    });
+    const updateTime = () => {
+      const now = new Date();
+      const days = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+      const d = now.getDate().toString().padStart(2, '0');
+      const m = (now.getMonth() + 1).toString().padStart(2, '0');
+      const y = now.getFullYear();
+      const h = now.getHours().toString().padStart(2, '0');
+      const min = now.getMinutes().toString().padStart(2, '0');
+      const sec = now.getSeconds().toString().padStart(2, '0');
+      setCurrentDateTime({
+        date: `${d}/${m}/${y}`,
+        time: `${h}:${min}:${sec}`,
+        day: days[now.getDay()],
+      });
+    };
+    updateTime();
+    const interval = setInterval(updateTime, 1000);
+    return () => clearInterval(interval);
   }, []);
 
   const {
@@ -137,7 +161,7 @@ export default function AddOrderModal({ onClose }: Props) {
   useEffect(() => {
     const total = watchProducts?.reduce((sum, p) => {
       const base = (p.unitPrice * p.quantity) || 0;
-      const flash = p.withFlashlight ? (ADMIN_SETTINGS.EXPRESS_FEE * p.quantity) : 0;
+      const flash = p.withFlashlight ? (150 * p.quantity) : 0;
       return sum + base + flash;
     }, 0) || 0;
     setSubtotal(total);
@@ -151,13 +175,16 @@ export default function AddOrderModal({ onClose }: Props) {
   const availableDistricts = (GOVERNORATES_DISTRICTS[watchGovernorate] || [])
     .filter(d => !ADMIN_SETTINGS.DISABLED_DISTRICTS.includes(d));
 
-  const totalShipping = ADMIN_SETTINGS.SHIPPING_FEE + (watchExpress ? ADMIN_SETTINGS.EXPRESS_FEE : 0) + Number(watchExtraFee || 0);
-  const grandTotal = subtotal + totalShipping;
+  // Express shipping REPLACES default shipping fee (not added on top)
+  const shippingCost = watchExpress ? ADMIN_SETTINGS.EXPRESS_FEE : ADMIN_SETTINGS.SHIPPING_FEE;
+  const extraFeeAmount = IS_ADMIN ? Number(watchExtraFee || 0) : 0;
+  const grandTotal = subtotal + shippingCost + extraFeeAmount;
 
   const onSubmit = async (data: OrderFormData) => {
     setIsSubmitting(true);
+    const deviceType = getDeviceType();
     await new Promise((r) => setTimeout(r, 1500));
-    toast.success(`تم تسجيل الأوردر ${orderNum} بنجاح!`);
+    toast.success(`تم تسجيل الأوردر ${orderNum} بنجاح! (${deviceType})`);
     setIsSubmitting(false);
     onClose();
   };
@@ -173,6 +200,19 @@ export default function AddOrderModal({ onClose }: Props) {
       if (!product.hasColor) setValue(`products.${index}.color`, undefined);
       else setValue(`products.${index}.color`, 'brown');
     }
+  };
+
+  const handleImageUpload = (productValue: string, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      if (ev.target?.result) {
+        setProductImages(prev => ({ ...prev, [productValue]: ev.target!.result as string }));
+        toast.success('تم رفع الصورة بنجاح');
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   return (
@@ -218,7 +258,7 @@ export default function AddOrderModal({ onClose }: Props) {
           ))}
         </div>
 
-        {/* Order number only — IP/registrar hidden from form */}
+        {/* Order info bar */}
         <div className="px-6 pt-4 pb-0">
           <div className="flex items-center gap-4 bg-blue-50 border border-blue-100 rounded-xl p-3">
             <div>
@@ -227,7 +267,11 @@ export default function AddOrderModal({ onClose }: Props) {
             </div>
             <div>
               <p className="text-[10px] font-semibold text-blue-600 mb-0.5">التاريخ والوقت</p>
-              <p className="text-xs">{currentDateTime.day} {currentDateTime.date} — {currentDateTime.time}</p>
+              <p className="text-xs font-mono">{currentDateTime.day} {currentDateTime.date} — {currentDateTime.time}</p>
+            </div>
+            <div className="mr-auto">
+              <p className="text-[10px] font-semibold text-blue-600 mb-0.5">الجهاز</p>
+              <p className="text-xs">{getDeviceType()}</p>
             </div>
           </div>
         </div>
@@ -355,63 +399,108 @@ export default function AddOrderModal({ onClose }: Props) {
             {/* Step 2: Products */}
             {step === 2 && (
               <div className="space-y-4 fade-in">
-                <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
                     <Package size={16} className="text-[hsl(var(--primary))]" />
-                    <h3 className="text-sm font-bold text-[hsl(var(--foreground))]">المنتجات والأسعار</h3>
+                    <h3 className="text-sm font-bold text-[hsl(var(--foreground))]">اختر المنتجات</h3>
                   </div>
-                  <button type="button" className="btn-secondary text-xs" onClick={addProduct}>
-                    <Plus size={14} />
-                    إضافة منتج
-                  </button>
+                  {IS_ADMIN && (
+                    <span className="text-[10px] bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-semibold">أدمن: يمكنك رفع صور المنتجات</span>
+                  )}
                 </div>
 
+                {/* Product image cards grid — customer service selects from here */}
+                <div className="grid grid-cols-3 sm:grid-cols-5 gap-3 mb-4">
+                  {PRODUCT_TYPES.map((product) => {
+                    const isSelected = watchProducts?.some(p => p.productType === product.value);
+                    const imgSrc = productImages[product.value];
+                    const isEmoji = !imgSrc?.startsWith('data:') && !imgSrc?.startsWith('/assets/images/no_image');
+                    return (
+                      <div key={`product-card-${product.value}`} className="relative group">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!isSelected) {
+                              append({ productType: product.value, color: product.hasColor ? 'brown' : undefined, withFlashlight: false, quantity: 1, unitPrice: product.basePrice, note: '' });
+                            }
+                          }}
+                          className={`w-full aspect-square rounded-2xl border-2 flex flex-col items-center justify-center gap-1 transition-all relative overflow-hidden ${isSelected ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/5 shadow-md' : 'border-[hsl(var(--border))] hover:border-[hsl(var(--primary))]/50 hover:shadow-sm bg-white'}`}
+                        >
+                          {isEmoji ? (
+                            <span className="text-3xl">{imgSrc}</span>
+                          ) : (
+                            <img src={imgSrc} alt={product.label} className="w-full h-full object-cover absolute inset-0" />
+                          )}
+                          {isSelected && (
+                            <div className="absolute top-1 left-1 w-5 h-5 bg-[hsl(var(--primary))] rounded-full flex items-center justify-center">
+                              <Check size={11} className="text-white" />
+                            </div>
+                          )}
+                          <span className={`text-[10px] font-bold mt-1 relative z-10 ${isEmoji ? 'text-[hsl(var(--foreground))]' : 'text-white bg-black/50 px-1 rounded absolute bottom-1'}`}>{product.label}</span>
+                        </button>
+                        {/* Admin image upload button */}
+                        {IS_ADMIN && (
+                          <button
+                            type="button"
+                            onClick={() => fileInputRefs.current[product.value]?.click()}
+                            className="absolute -top-1 -right-1 w-6 h-6 bg-purple-600 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-md z-20"
+                            title="رفع صورة"
+                          >
+                            <ImageIcon size={10} />
+                          </button>
+                        )}
+                        <input
+                          ref={el => { fileInputRefs.current[product.value] = el; }}
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => handleImageUpload(product.value, e)}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {fields.length === 0 && (
+                  <div className="text-center py-6 text-[hsl(var(--muted-foreground))] text-sm border-2 border-dashed border-[hsl(var(--border))] rounded-2xl">
+                    اضغط على صورة المنتج أعلاه لإضافته
+                  </div>
+                )}
+
+                {/* Selected products detail */}
                 <div className="space-y-4">
                   {fields.map((field, index) => {
                     const productType = watch(`products.${index}.productType`);
                     const productDef = PRODUCT_TYPES.find(p => p.value === productType);
                     const isHolder = productType === 'holder';
-                    const isFlashlight = productType === 'flashlight';
+                    const imgSrc = productImages[productType];
+                    const isEmoji = !imgSrc?.startsWith('data:') && !imgSrc?.startsWith('/assets/images/no_image');
                     return (
                       <div key={field.id} className="border border-[hsl(var(--border))] rounded-2xl p-4 relative bg-[hsl(var(--muted))]/20">
                         <div className="flex items-center justify-between mb-3">
                           <div className="flex items-center gap-2">
-                            <span className="text-xl">{productDef?.image || '📦'}</span>
+                            {isEmoji ? (
+                              <span className="text-xl">{imgSrc}</span>
+                            ) : (
+                              <img src={imgSrc} alt={productDef?.label || ''} className="w-8 h-8 rounded-lg object-cover" />
+                            )}
                             <span className="text-xs font-bold text-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10 px-2 py-1 rounded-lg">
-                              منتج #{index + 1}
+                              {productDef?.label} #{index + 1}
                             </span>
                           </div>
-                          {fields.length > 1 && (
-                            <button
-                              type="button"
-                              onClick={() => remove(index)}
-                              className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
-                              title="حذف هذا المنتج"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            onClick={() => remove(index)}
+                            className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
+                            title="حذف هذا المنتج"
+                          >
+                            <Trash2 size={14} />
+                          </button>
                         </div>
 
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                          <div>
-                            <label className="label-text">نوع المنتج *</label>
-                            <div className="relative">
-                              <select
-                                className="input-field appearance-none pl-8"
-                                {...register(`products.${index}.productType`, { required: true })}
-                                onChange={(e) => {
-                                  register(`products.${index}.productType`).onChange(e);
-                                  handleProductTypeChange(index, e.target.value);
-                                }}
-                              >
-                                {PRODUCT_TYPES.map((p) => (
-                                  <option key={`product-type-${p.value}`} value={p.value}>{p.image} {p.label}</option>
-                                ))}
-                              </select>
-                              <ChevronDown size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))] pointer-events-none" />
-                            </div>
-                          </div>
+                          {/* Product type selector (hidden, managed by cards above) */}
+                          <input type="hidden" {...register(`products.${index}.productType`)} />
 
                           {isHolder && (
                             <div>
@@ -469,12 +558,7 @@ export default function AddOrderModal({ onClose }: Props) {
                           </div>
 
                           <div>
-                            <label className="label-text">
-                              سعر الوحدة (ج.م) *
-                              {(isFlashlight || productType === 'chair' || productType === 'quran') && (
-                                <span className="text-[10px] text-blue-500 mr-1">(قابل للتعديل)</span>
-                              )}
-                            </label>
+                            <label className="label-text">سعر الوحدة (ج.م) *</label>
                             <input
                               type="number"
                               min={0}
@@ -513,7 +597,7 @@ export default function AddOrderModal({ onClose }: Props) {
                   })}
                 </div>
 
-                {/* Express shipping */}
+                {/* Express shipping — REPLACES default shipping */}
                 <div className="border border-amber-200 bg-amber-50 rounded-2xl p-4">
                   <label className="flex items-start gap-3 cursor-pointer">
                     <input
@@ -525,33 +609,37 @@ export default function AddOrderModal({ onClose }: Props) {
                       <div className="flex items-center gap-2">
                         <Zap size={16} className="text-amber-600" />
                         <span className="text-sm font-bold text-[hsl(var(--foreground))]">شحن سريع</span>
-                        <span className="badge bg-amber-100 text-amber-700 border border-amber-200">+ {ADMIN_SETTINGS.EXPRESS_FEE} ج.م</span>
+                        <span className="badge bg-amber-100 text-amber-700 border border-amber-200">{ADMIN_SETTINGS.EXPRESS_FEE} ج.م</span>
                       </div>
-                      <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">تسليم خلال 24 ساعة</p>
+                      <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">
+                        تسليم خلال 24 ساعة — <span className="text-amber-700 font-semibold">يستبدل تكلفة الشحن الافتراضية ({ADMIN_SETTINGS.SHIPPING_FEE} ج.م)</span>
+                      </p>
                     </div>
                   </label>
                 </div>
 
-                {/* Extra shipping fee — admin only */}
-                <div className="border border-orange-200 bg-orange-50 rounded-2xl p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <DollarSign size={16} className="text-orange-600" />
-                    <span className="text-sm font-bold text-[hsl(var(--foreground))]">مصاريف شحن إضافية</span>
-                    <span className="text-[10px] bg-orange-100 text-orange-700 border border-orange-200 px-2 py-0.5 rounded-full font-semibold">للأدمن فقط</span>
+                {/* Extra shipping fee — ADMIN ONLY, hidden from customer service */}
+                {IS_ADMIN && (
+                  <div className="border border-orange-200 bg-orange-50 rounded-2xl p-4">
+                    <div className="flex items-center gap-2 mb-2">
+                      <DollarSign size={16} className="text-orange-600" />
+                      <span className="text-sm font-bold text-[hsl(var(--foreground))]">مصاريف شحن إضافية</span>
+                      <span className="text-[10px] bg-orange-100 text-orange-700 border border-orange-200 px-2 py-0.5 rounded-full font-semibold">للأدمن فقط</span>
+                    </div>
+                    <p className="text-xs text-[hsl(var(--muted-foreground))] mb-3">تُضاف على الفاتورة وتُخصم من عهدة المندوب</p>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="number"
+                        min={0}
+                        dir="ltr"
+                        className="input-field w-32 text-center font-mono"
+                        placeholder="0"
+                        {...register('extraShippingFee', { min: 0, valueAsNumber: true })}
+                      />
+                      <span className="text-sm text-[hsl(var(--muted-foreground))]">ج.م</span>
+                    </div>
                   </div>
-                  <p className="text-xs text-[hsl(var(--muted-foreground))] mb-3">أضف مصاريف شحن إضافية خاصة بهذا الأوردر (مناطق بعيدة، طوابق، إلخ)</p>
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="number"
-                      min={0}
-                      dir="ltr"
-                      className="input-field w-32 text-center font-mono"
-                      placeholder="0"
-                      {...register('extraShippingFee', { min: 0, valueAsNumber: true })}
-                    />
-                    <span className="text-sm text-[hsl(var(--muted-foreground))]">ج.م</span>
-                  </div>
-                </div>
+                )}
 
                 {/* General notes */}
                 <div>
@@ -580,18 +668,17 @@ export default function AddOrderModal({ onClose }: Props) {
                       <span className="font-mono font-semibold">{subtotal.toLocaleString('en-US')} ج.م</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-[hsl(var(--muted-foreground))]">تكلفة الشحن:</span>
-                      <span className="font-mono font-semibold">{ADMIN_SETTINGS.SHIPPING_FEE} ج.م</span>
+                      <span className="text-[hsl(var(--muted-foreground))]">
+                        {watchExpress ? 'شحن سريع:' : 'تكلفة الشحن:'}
+                      </span>
+                      <span className={`font-mono font-semibold ${watchExpress ? 'text-amber-700' : ''}`}>
+                        {shippingCost} ج.م
+                        {watchExpress && <span className="text-[10px] mr-1 text-amber-600">(بدلاً من {ADMIN_SETTINGS.SHIPPING_FEE} ج.م)</span>}
+                      </span>
                     </div>
-                    {watchExpress && (
-                      <div className="flex justify-between text-amber-700">
-                        <span>شحن سريع:</span>
-                        <span className="font-mono font-semibold">+ {ADMIN_SETTINGS.EXPRESS_FEE} ج.م</span>
-                      </div>
-                    )}
-                    {Number(watchExtraFee) > 0 && (
+                    {IS_ADMIN && Number(watchExtraFee) > 0 && (
                       <div className="flex justify-between text-orange-700">
-                        <span>مصاريف شحن إضافية:</span>
+                        <span>مصاريف شحن إضافية (أدمن):</span>
                         <span className="font-mono font-semibold">+ {Number(watchExtraFee).toLocaleString('en-US')} ج.م</span>
                       </div>
                     )}
@@ -636,9 +723,11 @@ export default function AddOrderModal({ onClose }: Props) {
                     <p className="text-xs font-bold text-[hsl(var(--muted-foreground))] uppercase tracking-wide mb-2">الملخص المالي</p>
                     <div className="space-y-1.5 text-sm">
                       <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">المنتجات:</span><span className="font-mono">{subtotal.toLocaleString('en-US')} ج.م</span></div>
-                      <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">الشحن:</span><span className="font-mono">{ADMIN_SETTINGS.SHIPPING_FEE} ج.م</span></div>
-                      {watchExpress && <div className="flex justify-between text-amber-700"><span>شحن سريع:</span><span className="font-mono">+ {ADMIN_SETTINGS.EXPRESS_FEE} ج.م</span></div>}
-                      {Number(watchExtraFee) > 0 && <div className="flex justify-between text-orange-700"><span>مصاريف إضافية:</span><span className="font-mono">+ {Number(watchExtraFee).toLocaleString('en-US')} ج.م</span></div>}
+                      <div className="flex justify-between">
+                        <span className="text-[hsl(var(--muted-foreground))]">{watchExpress ? 'شحن سريع:' : 'الشحن:'}</span>
+                        <span className={`font-mono ${watchExpress ? 'text-amber-700' : ''}`}>{shippingCost} ج.م</span>
+                      </div>
+                      {IS_ADMIN && Number(watchExtraFee) > 0 && <div className="flex justify-between text-orange-700"><span>مصاريف إضافية:</span><span className="font-mono">+ {Number(watchExtraFee).toLocaleString('en-US')} ج.م</span></div>}
                       <div className="border-t border-[hsl(var(--border))] pt-1.5 flex justify-between font-bold">
                         <span>الإجمالي:</span>
                         <span className="font-mono text-[hsl(var(--primary))] text-base">{grandTotal.toLocaleString('en-US')} ج.م</span>
@@ -653,14 +742,17 @@ export default function AddOrderModal({ onClose }: Props) {
                     {watchProducts?.map((p, i) => {
                       const productDef = PRODUCT_TYPES.find((pt) => pt.value === p.productType);
                       const colorDef = HOLDER_COLORS.find((c) => c.value === p.color);
+                      const imgSrc = productImages[p.productType];
+                      const isEmoji = !imgSrc?.startsWith('data:') && !imgSrc?.startsWith('/assets/images/no_image');
                       return (
                         <div key={`review-product-${i + 1}`} className="flex items-center justify-between text-sm bg-white rounded-xl px-3 py-2 border border-[hsl(var(--border))]">
                           <div className="flex items-center gap-2">
-                            <span>{productDef?.image}</span>
+                            {isEmoji ? <span>{imgSrc}</span> : <img src={imgSrc} alt={productDef?.label || ''} className="w-6 h-6 rounded object-cover" />}
                             {colorDef && <span className="w-3 h-3 rounded-full border border-gray-300 flex-shrink-0" style={{ backgroundColor: colorDef.hex }} />}
                             <span className="font-medium">
                               {productDef?.label} {colorDef ? `(${colorDef.label})` : ''} {p.withFlashlight ? '+ كشاف' : ''}
                             </span>
+                            {p.note && <span className="text-[10px] text-amber-600 italic">— {p.note}</span>}
                           </div>
                           <div className="flex items-center gap-3 text-[hsl(var(--muted-foreground))]">
                             <span>x {p.quantity}</span>

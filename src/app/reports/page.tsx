@@ -113,12 +113,38 @@ export default function ReportsPage() {
   const [activePeriod, setActivePeriod] = useState('6months');
   const [regionFilter, setRegionFilter] = useState('الكل');
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
 
   const monthlyData = useMemo(() => {
+    // If date range is set, filter by date range
+    if (dateFrom || dateTo) {
+      return ALL_DATA.filter(d => {
+        // Map month names to approximate dates for filtering
+        const monthMap: Record<string, number> = {
+          'أكتوبر': 9, 'نوفمبر': 10, 'ديسمبر': 11,
+          'يناير': 0, 'فبراير': 1, 'مارس': 2,
+        };
+        const monthIdx = monthMap[d.month];
+        const year = monthIdx >= 9 ? 2025 : 2026;
+        const monthDate = new Date(year, monthIdx, 1);
+        let match = true;
+        if (dateFrom) {
+          const from = new Date(dateFrom);
+          from.setDate(1);
+          if (monthDate < from) match = false;
+        }
+        if (dateTo && match) {
+          const to = new Date(dateTo);
+          if (monthDate > to) match = false;
+        }
+        return match;
+      });
+    }
     const p = PERIOD_OPTIONS.find(p => p.key === activePeriod);
     const months = p?.months || 6;
     return ALL_DATA.slice(-months);
-  }, [activePeriod]);
+  }, [activePeriod, dateFrom, dateTo]);
 
   const totalOrders = monthlyData.reduce((s, d) => s + d.orders, 0);
   const totalDelivered = monthlyData.reduce((s, d) => s + d.delivered, 0);
@@ -188,6 +214,46 @@ export default function ReportsPage() {
                 </div>
               )}
             </div>
+          </div>
+        </div>
+
+        {/* Date range filter */}
+        <div className="card-section p-4">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-xs font-semibold text-[hsl(var(--muted-foreground))]">فلتر التاريخ:</span>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-[hsl(var(--muted-foreground))]">من</label>
+              <input
+                type="date"
+                className="input-field w-auto text-sm py-1.5"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+                dir="ltr"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-[hsl(var(--muted-foreground))]">إلى</label>
+              <input
+                type="date"
+                className="input-field w-auto text-sm py-1.5"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+                dir="ltr"
+              />
+            </div>
+            {(dateFrom || dateTo) && (
+              <button
+                className="text-xs text-red-500 hover:underline"
+                onClick={() => { setDateFrom(''); setDateTo(''); }}
+              >
+                مسح الفلتر
+              </button>
+            )}
+            {(dateFrom || dateTo) && (
+              <span className="text-xs bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))] px-2 py-1 rounded-lg font-semibold">
+                {monthlyData.length} شهر في النتائج
+              </span>
+            )}
           </div>
         </div>
 

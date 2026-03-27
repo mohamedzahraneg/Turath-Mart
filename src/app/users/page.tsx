@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import AppLayout from '@/components/AppLayout';
 import {
   Users, Plus, Search, Edit2, Trash2, X, Save,
-  CheckCircle, XCircle, Shield, User
+  CheckCircle, XCircle, Shield, User, Monitor, Smartphone, Tablet
 } from 'lucide-react';
 
 interface AppUser {
@@ -13,16 +13,18 @@ interface AppUser {
   role: string;
   status: 'active' | 'inactive';
   lastLogin: string;
+  lastLoginTime?: string;
+  lastDevice?: string;
   avatar: string;
 }
 
 const initialUsers: AppUser[] = [
-  { id: 'u1', name: 'محمد الزهراني', email: 'manager@zahranship.com', role: 'مدير النظام', status: 'active', lastLogin: '27 مارس 2026', avatar: 'م' },
-  { id: 'u2', name: 'أحمد علي', email: 'ahmed@zahranship.com', role: 'مشرف شحن', status: 'active', lastLogin: '26 مارس 2026', avatar: 'أ' },
-  { id: 'u3', name: 'سارة محمود', email: 'sara@zahranship.com', role: 'موظف مبيعات', status: 'active', lastLogin: '25 مارس 2026', avatar: 'س' },
-  { id: 'u4', name: 'خالد عمر', email: 'khaled@zahranship.com', role: 'موظف مخزون', status: 'inactive', lastLogin: '20 مارس 2026', avatar: 'خ' },
-  { id: 'u5', name: 'فاطمة حسن', email: 'fatma@zahranship.com', role: 'موظف مبيعات', status: 'active', lastLogin: '27 مارس 2026', avatar: 'ف' },
-  { id: 'u6', name: 'عمر يوسف', email: 'omar@zahranship.com', role: 'مشرف شحن', status: 'inactive', lastLogin: '15 مارس 2026', avatar: 'ع' },
+  { id: 'u1', name: 'محمد الزهراني', email: 'manager@zahranship.com', role: 'مدير النظام', status: 'active', lastLogin: '27 مارس 2026', lastLoginTime: '09:32:14', lastDevice: 'كمبيوتر', avatar: 'م' },
+  { id: 'u2', name: 'أحمد علي', email: 'ahmed@zahranship.com', role: 'مشرف شحن', status: 'active', lastLogin: '26 مارس 2026', lastLoginTime: '11:15:42', lastDevice: 'موبايل', avatar: 'أ' },
+  { id: 'u3', name: 'سارة محمود', email: 'sara@zahranship.com', role: 'موظف مبيعات', status: 'active', lastLogin: '25 مارس 2026', lastLoginTime: '08:40:51', lastDevice: 'كمبيوتر', avatar: 'س' },
+  { id: 'u4', name: 'خالد عمر', email: 'khaled@zahranship.com', role: 'موظف مخزون', status: 'inactive', lastLogin: '20 مارس 2026', lastLoginTime: '14:22:05', lastDevice: 'تابلت', avatar: 'خ' },
+  { id: 'u5', name: 'فاطمة حسن', email: 'fatma@zahranship.com', role: 'موظف مبيعات', status: 'active', lastLogin: '27 مارس 2026', lastLoginTime: '13:40:07', lastDevice: 'موبايل', avatar: 'ف' },
+  { id: 'u6', name: 'عمر يوسف', email: 'omar@zahranship.com', role: 'مشرف شحن', status: 'inactive', lastLogin: '15 مارس 2026', lastLoginTime: '10:05:33', lastDevice: 'كمبيوتر', avatar: 'ع' },
 ];
 
 const roles = ['مدير النظام', 'مشرف شحن', 'موظف مبيعات', 'موظف مخزون', 'محاسب'];
@@ -34,6 +36,18 @@ const roleColors: Record<string, string> = {
   'موظف مخزون': 'bg-amber-100 text-amber-700',
   'محاسب': 'bg-orange-100 text-orange-700',
 };
+
+// Roles that can see device info
+const PRIVILEGED_ROLES = ['مدير النظام', 'مشرف شحن'];
+const CURRENT_USER_ROLE = 'مدير النظام'; // simulated
+const CAN_SEE_DEVICE = PRIVILEGED_ROLES.includes(CURRENT_USER_ROLE);
+
+function DeviceIcon({ device }: { device?: string }) {
+  if (!device) return <Monitor size={12} />;
+  if (device === 'موبايل') return <Smartphone size={12} />;
+  if (device === 'تابلت') return <Tablet size={12} />;
+  return <Monitor size={12} />;
+}
 
 interface UserModalProps {
   user: AppUser | null;
@@ -161,7 +175,6 @@ export default function UsersPage() {
   return (
     <AppLayout currentPath="/users">
       <div className="space-y-6 fade-in">
-        {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">إدارة المستخدمين</h1>
@@ -176,7 +189,6 @@ export default function UsersPage() {
           </button>
         </div>
 
-        {/* Summary */}
         <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
           {[
             { label: 'إجمالي المستخدمين', value: users.length, icon: <Users size={20} />, color: 'blue' },
@@ -198,7 +210,6 @@ export default function UsersPage() {
           ))}
         </div>
 
-        {/* Filters */}
         <div className="card-section p-4 flex flex-col sm:flex-row gap-3">
           <div className="relative flex-1">
             <Search size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]" />
@@ -223,7 +234,6 @@ export default function UsersPage() {
           </div>
         </div>
 
-        {/* Users Grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
           {filtered.map(user => (
             <div key={user.id} className="card-section p-5 hover:shadow-md transition-shadow">
@@ -255,7 +265,19 @@ export default function UsersPage() {
                   {user.status === 'active' ? 'نشط' : 'غير نشط'}
                 </span>
               </div>
-              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-3">آخر دخول: {user.lastLogin}</p>
+              <div className="mt-3 pt-3 border-t border-[hsl(var(--border))] space-y-1">
+                <p className="text-xs text-[hsl(var(--muted-foreground))]">
+                  آخر دخول: {user.lastLogin}
+                  {user.lastLoginTime && <span className="font-mono mr-1">{user.lastLoginTime}</span>}
+                </p>
+                {/* Device info — only for admin/supervisor/manager */}
+                {CAN_SEE_DEVICE && user.lastDevice && (
+                  <p className="text-xs text-[hsl(var(--muted-foreground))] flex items-center gap-1">
+                    <DeviceIcon device={user.lastDevice} />
+                    <span>الجهاز: <span className="font-semibold text-[hsl(var(--foreground))]">{user.lastDevice}</span></span>
+                  </p>
+                )}
+              </div>
             </div>
           ))}
           {filtered.length === 0 && (

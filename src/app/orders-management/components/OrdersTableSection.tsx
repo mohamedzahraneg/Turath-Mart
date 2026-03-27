@@ -1,6 +1,6 @@
 'use client';
 import React, { useState, useMemo } from 'react';
-import { Search, ChevronDown, ChevronUp, Eye, Edit2, Trash2, FileText, ChevronRight, ChevronLeft, CheckSquare } from 'lucide-react';
+import { Search, ChevronDown, ChevronUp, Eye, Edit2, Trash2, FileText, ChevronRight, ChevronLeft, CheckSquare, TrendingUp, DollarSign, Truck, ArrowDownCircle } from 'lucide-react';
 import StatusUpdateModal from './StatusUpdateModal';
 import OrderDetailModal from './OrderDetailModal';
 
@@ -10,6 +10,7 @@ interface Order {
   createdBy: string;
   createdByIp?: string;
   createdByLocation?: string;
+  createdByDevice?: string;
   customer: string;
   phone: string;
   phone2?: string;
@@ -21,6 +22,7 @@ interface Order {
   subtotal: number;
   shippingFee: number;
   extraShippingFee?: number;
+  expressShipping?: boolean;
   total: number;
   status: string;
   date: string;
@@ -28,6 +30,7 @@ interface Order {
   day: string;
   notes?: string;
   ip: string;
+  delegateName?: string;
 }
 
 const STATUS_MAP: Record<string, { label: string; cls: string }> = {
@@ -43,28 +46,50 @@ const STATUS_MAP: Record<string, { label: string; cls: string }> = {
 const REGIONS = ['الكل', 'القاهرة', 'الجيزة', 'القليوبية'];
 
 const MOCK_ORDERS: Order[] = [
-  { id: 'order-001', orderNum: 'ZSH-2026-0047', createdBy: 'محمد حسن', ip: '197.32.45.112', createdByLocation: 'القاهرة، مصر', customer: 'أحمد محمود السيد', phone: '01012345678', phone2: '01198765432', region: 'القاهرة', district: 'مدينة نصر', address: 'شارع عباس العقاد، عمارة 5 شقة 12', products: 'حامل مصحف بني x 2', quantity: 2, subtotal: 600, shippingFee: 50, total: 650, status: 'shipping', date: '27/03/2026', time: '09:32', day: 'الجمعة', notes: 'العميل يريد التسليم في الصباح' },
-  { id: 'order-002', orderNum: 'ZSH-2026-0046', createdBy: 'سارة أحمد', ip: '197.32.45.113', createdByLocation: 'الجيزة، مصر', customer: 'فاطمة علي حسن', phone: '01123456789', region: 'الجيزة', district: 'الدقي', address: 'شارع التحرير، برج المنار ط3', products: 'كعبة x 1 + مصحف x 2', quantity: 3, subtotal: 840, shippingFee: 50, total: 890, status: 'delivered', date: '27/03/2026', time: '09:15', day: 'الجمعة' },
-  { id: 'order-003', orderNum: 'ZSH-2026-0045', createdBy: 'محمد حسن', ip: '197.32.45.114', createdByLocation: 'القاهرة، مصر', customer: 'محمد عبد الرحمن', phone: '01234567890', region: 'القليوبية', district: 'شبرا الخيمة', address: 'شارع النيل، مبنى رقم 14', products: 'حامل مصحف ذهبي x 1', quantity: 1, subtotal: 330, shippingFee: 50, total: 380, status: 'new', date: '27/03/2026', time: '08:55', day: 'الجمعة' },
-  { id: 'order-004', orderNum: 'ZSH-2026-0044', createdBy: 'أميرة محمود', ip: '197.32.45.115', createdByLocation: 'القاهرة، مصر', customer: 'سارة إبراهيم خليل', phone: '01056789012', region: 'القاهرة', district: 'المعادي', address: 'شارع 9، فيلا 23', products: 'كشاف x 3', quantity: 3, subtotal: 450, shippingFee: 50, extraShippingFee: 30, total: 530, status: 'preparing', date: '27/03/2026', time: '08:40', day: 'الجمعة' },
-  { id: 'order-005', orderNum: 'ZSH-2026-0043', createdBy: 'سارة أحمد', ip: '197.32.45.116', createdByLocation: 'الجيزة، مصر', customer: 'عمر حامد الشريف', phone: '01198765432', region: 'الجيزة', district: 'فيصل', address: 'شارع البحر الأعظم، عمارة 7', products: 'حامل مصحف أسود x 1 + كشاف x 1', quantity: 2, subtotal: 470, shippingFee: 50, total: 520, status: 'warehouse', date: '26/03/2026', time: '16:20', day: 'الخميس' },
-  { id: 'order-006', orderNum: 'ZSH-2026-0042', createdBy: 'محمد حسن', ip: '197.32.45.117', createdByLocation: 'القاهرة، مصر', customer: 'نور الدين مصطفى', phone: '01067891234', region: 'القاهرة', district: 'هليوبوليس (مصر الجديدة)', address: 'شارع النزهة، شقة 45', products: 'كرسي x 2', quantity: 2, subtotal: 1150, shippingFee: 50, total: 1200, status: 'returned', date: '26/03/2026', time: '15:50', day: 'الخميس', notes: 'العميل رفض الاستلام' },
-  { id: 'order-007', orderNum: 'ZSH-2026-0041', createdBy: 'أميرة محمود', ip: '197.32.45.118', createdByLocation: 'القليوبية، مصر', customer: 'هدى رمضان أحمد', phone: '01145678901', region: 'القليوبية', district: 'قليوب', address: 'شارع السكة الحديد، عمارة 2', products: 'مصحف x 5', quantity: 5, subtotal: 700, shippingFee: 50, total: 750, status: 'cancelled', date: '26/03/2026', time: '14:30', day: 'الخميس', notes: 'إلغاء بطلب العميل' },
-  { id: 'order-008', orderNum: 'ZSH-2026-0040', createdBy: 'سارة أحمد', ip: '197.32.45.119', createdByLocation: 'القاهرة، مصر', customer: 'خالد عبد العزيز', phone: '01012223344', region: 'القاهرة', district: 'مصر الجديدة', address: 'شارع الثورة، عمارة 10', products: 'حامل مصحف أبيض x 2 + مصحف x 1', quantity: 3, subtotal: 760, shippingFee: 50, total: 810, status: 'delivered', date: '25/03/2026', time: '11:20', day: 'الأربعاء' },
-  { id: 'order-009', orderNum: 'ZSH-2026-0039', createdBy: 'محمد حسن', ip: '197.32.45.120', createdByLocation: 'الجيزة، مصر', customer: 'ريم حسام الدين', phone: '01534567890', region: 'الجيزة', district: 'إمبابة', address: 'شارع طه حسين، رقم 33', products: 'كعبة x 1', quantity: 1, subtotal: 450, shippingFee: 50, total: 500, status: 'shipping', date: '25/03/2026', time: '10:05', day: 'الأربعاء' },
-  { id: 'order-010', orderNum: 'ZSH-2026-0038', createdBy: 'أميرة محمود', ip: '197.32.45.121', createdByLocation: 'القليوبية، مصر', customer: 'طارق سعيد منصور', phone: '01267891234', region: 'القليوبية', district: 'الخانكة', address: 'شارع المحطة، مبنى 5', products: 'حامل مصحف صدف x 1 + كشاف x 1', quantity: 2, subtotal: 560, shippingFee: 50, total: 610, status: 'preparing', date: '25/03/2026', time: '09:45', day: 'الأربعاء' },
+  { id: 'order-001', orderNum: 'ZSH-2026-0047', createdBy: 'محمد حسن', ip: '197.32.45.112', createdByLocation: 'القاهرة، مصر', createdByDevice: 'كمبيوتر', customer: 'أحمد محمود السيد', phone: '01012345678', phone2: '01198765432', region: 'القاهرة', district: 'مدينة نصر', address: 'شارع عباس العقاد، عمارة 5 شقة 12', products: 'حامل مصحف بني x 2', quantity: 2, subtotal: 600, shippingFee: 50, total: 650, status: 'shipping', date: '27/03/2026', time: '09:32:14', day: 'الجمعة', notes: 'العميل يريد التسليم في الصباح', delegateName: 'علي محمود' },
+  { id: 'order-002', orderNum: 'ZSH-2026-0046', createdBy: 'سارة أحمد', ip: '197.32.45.113', createdByLocation: 'الجيزة، مصر', createdByDevice: 'موبايل', customer: 'فاطمة علي حسن', phone: '01123456789', region: 'الجيزة', district: 'الدقي', address: 'شارع التحرير، برج المنار ط3', products: 'كعبة x 1 + مصحف x 2', quantity: 3, subtotal: 840, shippingFee: 50, total: 890, status: 'delivered', date: '27/03/2026', time: '09:15:33', day: 'الجمعة', delegateName: 'علي محمود' },
+  { id: 'order-003', orderNum: 'ZSH-2026-0045', createdBy: 'محمد حسن', ip: '197.32.45.114', createdByLocation: 'القاهرة، مصر', createdByDevice: 'كمبيوتر', customer: 'محمد عبد الرحمن', phone: '01234567890', region: 'القليوبية', district: 'شبرا الخيمة', address: 'شارع النيل، مبنى رقم 14', products: 'حامل مصحف ذهبي x 1', quantity: 1, subtotal: 330, shippingFee: 50, total: 380, status: 'new', date: '27/03/2026', time: '08:55:07', day: 'الجمعة', delegateName: 'خالد سعيد' },
+  { id: 'order-004', orderNum: 'ZSH-2026-0044', createdBy: 'أميرة محمود', ip: '197.32.45.115', createdByLocation: 'القاهرة، مصر', createdByDevice: 'تابلت', customer: 'سارة إبراهيم خليل', phone: '01056789012', region: 'القاهرة', district: 'المعادي', address: 'شارع 9، فيلا 23', products: 'كشاف x 3', quantity: 3, subtotal: 450, shippingFee: 50, extraShippingFee: 30, total: 530, status: 'preparing', date: '27/03/2026', time: '08:40:51', day: 'الجمعة', delegateName: 'علي محمود' },
+  { id: 'order-005', orderNum: 'ZSH-2026-0043', createdBy: 'سارة أحمد', ip: '197.32.45.116', createdByLocation: 'الجيزة، مصر', createdByDevice: 'موبايل', customer: 'عمر حامد الشريف', phone: '01198765432', region: 'الجيزة', district: 'فيصل', address: 'شارع البحر الأعظم، عمارة 7', products: 'حامل مصحف أسود x 1 + كشاف x 1', quantity: 2, subtotal: 470, shippingFee: 100, expressShipping: true, total: 570, status: 'warehouse', date: '26/03/2026', time: '16:20:44', day: 'الخميس', delegateName: 'خالد سعيد' },
+  { id: 'order-006', orderNum: 'ZSH-2026-0042', createdBy: 'محمد حسن', ip: '197.32.45.117', createdByLocation: 'القاهرة، مصر', createdByDevice: 'كمبيوتر', customer: 'نور الدين مصطفى', phone: '01067891234', region: 'القاهرة', district: 'هليوبوليس (مصر الجديدة)', address: 'شارع النزهة، شقة 45', products: 'كرسي x 2', quantity: 2, subtotal: 1150, shippingFee: 50, total: 1200, status: 'returned', date: '26/03/2026', time: '15:50:19', day: 'الخميس', notes: 'العميل رفض الاستلام', delegateName: 'علي محمود' },
+  { id: 'order-007', orderNum: 'ZSH-2026-0041', createdBy: 'أميرة محمود', ip: '197.32.45.118', createdByLocation: 'القليوبية، مصر', createdByDevice: 'موبايل', customer: 'هدى رمضان أحمد', phone: '01145678901', region: 'القليوبية', district: 'قليوب', address: 'شارع السكة الحديد، عمارة 2', products: 'مصحف x 5', quantity: 5, subtotal: 700, shippingFee: 50, total: 750, status: 'cancelled', date: '26/03/2026', time: '14:30:02', day: 'الخميس', notes: 'إلغاء بطلب العميل', delegateName: 'خالد سعيد' },
+  { id: 'order-008', orderNum: 'ZSH-2026-0040', createdBy: 'سارة أحمد', ip: '197.32.45.119', createdByLocation: 'القاهرة، مصر', createdByDevice: 'كمبيوتر', customer: 'خالد عبد العزيز', phone: '01012223344', region: 'القاهرة', district: 'مصر الجديدة', address: 'شارع الثورة، عمارة 10', products: 'حامل مصحف أبيض x 2 + مصحف x 1', quantity: 3, subtotal: 760, shippingFee: 50, total: 810, status: 'delivered', date: '25/03/2026', time: '11:20:38', day: 'الأربعاء', delegateName: 'علي محمود' },
+  { id: 'order-009', orderNum: 'ZSH-2026-0039', createdBy: 'محمد حسن', ip: '197.32.45.120', createdByLocation: 'الجيزة، مصر', createdByDevice: 'موبايل', customer: 'ريم حسام الدين', phone: '01534567890', region: 'الجيزة', district: 'إمبابة', address: 'شارع طه حسين، رقم 33', products: 'كعبة x 1', quantity: 1, subtotal: 450, shippingFee: 50, total: 500, status: 'shipping', date: '25/03/2026', time: '10:05:55', day: 'الأربعاء', delegateName: 'خالد سعيد' },
+  { id: 'order-010', orderNum: 'ZSH-2026-0038', createdBy: 'أميرة محمود', ip: '197.32.45.121', createdByLocation: 'القليوبية، مصر', createdByDevice: 'تابلت', customer: 'طارق سعيد منصور', phone: '01267891234', region: 'القليوبية', district: 'الخانكة', address: 'شارع المحطة، مبنى 5', products: 'حامل مصحف صدف x 1 + كشاف x 1', quantity: 2, subtotal: 560, shippingFee: 50, total: 610, status: 'preparing', date: '25/03/2026', time: '09:45:11', day: 'الأربعاء', delegateName: 'علي محمود' },
 ];
+
+// Mock cash deposits per delegate
+const MOCK_DEPOSITS: Record<string, { deposited: number; deposits: { amount: number; date: string; note: string }[] }> = {
+  'علي محمود': {
+    deposited: 1500,
+    deposits: [
+      { amount: 1000, date: '26/03/2026', note: 'توريد نقدي' },
+      { amount: 500, date: '27/03/2026', note: 'توريد جزئي' },
+    ]
+  },
+  'خالد سعيد': {
+    deposited: 800,
+    deposits: [
+      { amount: 800, date: '26/03/2026', note: 'توريد نقدي' },
+    ]
+  },
+};
 
 type SortField = 'orderNum' | 'customer' | 'region' | 'total' | 'status' | 'date';
 type SortDir = 'asc' | 'desc';
 
-// Export to CSV/Excel
+// Parse date string DD/MM/YYYY to comparable value
+function parseDateStr(dateStr: string): Date {
+  const [d, m, y] = dateStr.split('/').map(Number);
+  return new Date(y, m - 1, d);
+}
+
 function exportToCSV(orders: Order[]) {
-  const headers = ['رقم الأوردر', 'العميل', 'الموبايل', 'المنطقة', 'المنطقة الفرعية', 'المنتجات', 'الكمية', 'المنتجات (ج.م)', 'الشحن (ج.م)', 'الإجمالي (ج.م)', 'الحالة', 'التاريخ', 'الوقت', 'المسجل'];
+  const headers = ['رقم الأوردر', 'العميل', 'الموبايل', 'المنطقة', 'المنطقة الفرعية', 'المنتجات', 'الكمية', 'المنتجات (ج.م)', 'الشحن (ج.م)', 'الإجمالي (ج.م)', 'الحالة', 'التاريخ', 'الوقت', 'المسجل', 'المندوب'];
   const rows = orders.map(o => [
     o.orderNum, o.customer, o.phone, o.region, o.district || '', o.products,
     o.quantity, o.subtotal, o.shippingFee, o.total,
-    STATUS_MAP[o.status]?.label || o.status, o.date, o.time, o.createdBy
+    STATUS_MAP[o.status]?.label || o.status, o.date, o.time, o.createdBy, o.delegateName || ''
   ]);
   const csvContent = '\uFEFF' + [headers, ...rows].map(r => r.map(c => `"${c}"`).join(',')).join('\n');
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -76,10 +101,12 @@ function exportToCSV(orders: Order[]) {
   URL.revokeObjectURL(url);
 }
 
-// Export to PDF via print
 function exportToPDF(orders: Order[]) {
   const win = window.open('', '_blank', 'width=1000,height=700');
-  if (!win) return;
+  if (!win) {
+    alert('يرجى السماح بالنوافذ المنبثقة في إعدادات المتصفح');
+    return;
+  }
   const rows = orders.map(o => `
     <tr>
       <td>${o.orderNum}</td>
@@ -90,7 +117,7 @@ function exportToPDF(orders: Order[]) {
       <td>${o.quantity}</td>
       <td>${o.total.toLocaleString('en-US')} ج.م</td>
       <td>${STATUS_MAP[o.status]?.label || o.status}</td>
-      <td>${o.date}</td>
+      <td>${o.date} ${o.time}</td>
     </tr>
   `).join('');
   win.document.write(`
@@ -110,10 +137,10 @@ function exportToPDF(orders: Order[]) {
       <h1>Zahranship — تقرير الأوردرات</h1>
       <p class="sub">تاريخ التصدير: ${new Date().toLocaleDateString('en-US')} — إجمالي: ${orders.length} أوردر</p>
       <table>
-        <thead><tr><th>رقم الأوردر</th><th>العميل</th><th>الموبايل</th><th>المنطقة</th><th>المنتجات</th><th>الكمية</th><th>الإجمالي</th><th>الحالة</th><th>التاريخ</th></tr></thead>
+        <thead><tr><th>رقم الأوردر</th><th>العميل</th><th>الموبايل</th><th>المنطقة</th><th>المنتجات</th><th>الكمية</th><th>الإجمالي</th><th>الحالة</th><th>التاريخ والوقت</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
-      <script>window.onload=function(){window.print();window.close();}<\/script>
+      <script>window.onload=function(){window.print();}<\/script>
     </body></html>
   `);
   win.document.close();
@@ -133,6 +160,8 @@ export default function OrdersTableSection() {
   const [statusModal, setStatusModal] = useState<{ order: Order } | null>(null);
   const [detailModal, setDetailModal] = useState<{ order: Order } | null>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [showDelegateStats, setShowDelegateStats] = useState(false);
+  const [selectedDelegate, setSelectedDelegate] = useState('علي محمود');
 
   const handleSort = (field: SortField) => {
     if (sortField === field) setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
@@ -144,7 +173,21 @@ export default function OrdersTableSection() {
       const matchSearch = !search || o.customer.includes(search) || o.orderNum.includes(search) || o.phone.includes(search);
       const matchRegion = regionFilter === 'الكل' || o.region === regionFilter;
       const matchStatus = statusFilter === 'الكل' || o.status === statusFilter;
-      return matchSearch && matchRegion && matchStatus;
+      // Date filter
+      let matchDate = true;
+      if (dateFrom || dateTo) {
+        const orderDate = parseDateStr(o.date);
+        if (dateFrom) {
+          const from = new Date(dateFrom);
+          if (orderDate < from) matchDate = false;
+        }
+        if (dateTo && matchDate) {
+          const to = new Date(dateTo);
+          to.setHours(23, 59, 59);
+          if (orderDate > to) matchDate = false;
+        }
+      }
+      return matchSearch && matchRegion && matchStatus && matchDate;
     }).sort((a, b) => {
       let cmp = 0;
       if (sortField === 'orderNum') cmp = a.orderNum.localeCompare(b.orderNum);
@@ -152,10 +195,10 @@ export default function OrdersTableSection() {
       else if (sortField === 'region') cmp = a.region.localeCompare(b.region);
       else if (sortField === 'total') cmp = a.total - b.total;
       else if (sortField === 'status') cmp = a.status.localeCompare(b.status);
-      else if (sortField === 'date') cmp = a.date.localeCompare(b.date);
+      else if (sortField === 'date') cmp = parseDateStr(a.date).getTime() - parseDateStr(b.date).getTime();
       return sortDir === 'asc' ? cmp : -cmp;
     });
-  }, [search, regionFilter, statusFilter, sortField, sortDir]);
+  }, [search, regionFilter, statusFilter, dateFrom, dateTo, sortField, sortDir]);
 
   const totalPages = Math.ceil(filtered.length / perPage);
   const paginated = filtered.slice((page - 1) * perPage, page * perPage);
@@ -178,9 +221,114 @@ export default function OrdersTableSection() {
 
   const statusOptions = ['الكل', ...Object.keys(STATUS_MAP)];
 
+  // Delegate stats calculation
+  const delegates = [...new Set(MOCK_ORDERS.map(o => o.delegateName).filter(Boolean))] as string[];
+  const delegateOrders = MOCK_ORDERS.filter(o => o.delegateName === selectedDelegate && ['shipping', 'delivered'].includes(o.status));
+  const delegateTotalOrders = delegateOrders.length;
+  const delegateTotalValue = delegateOrders.reduce((s, o) => s + o.total, 0);
+  const delegateShippingIncome = delegateOrders.reduce((s, o) => s + o.shippingFee, 0);
+  const delegateExtraFees = delegateOrders.reduce((s, o) => s + (o.extraShippingFee || 0), 0);
+  const delegateNetIncome = delegateShippingIncome - delegateExtraFees;
+  const depositInfo = MOCK_DEPOSITS[selectedDelegate] || { deposited: 0, deposits: [] };
+  const delegateAmountDue = delegateTotalValue - depositInfo.deposited;
+
   return (
     <>
       <div className="card-section overflow-hidden">
+        {/* Delegate Stats Panel */}
+        <div className="border-b border-[hsl(var(--border))]">
+          <button
+            onClick={() => setShowDelegateStats(!showDelegateStats)}
+            className="w-full flex items-center justify-between px-4 py-3 hover:bg-[hsl(var(--muted))]/30 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <Truck size={16} className="text-[hsl(var(--primary))]" />
+              <span className="text-sm font-bold text-[hsl(var(--foreground))]">إحصائيات المندوبين والتوريدات</span>
+            </div>
+            <ChevronDown size={16} className={`text-[hsl(var(--muted-foreground))] transition-transform ${showDelegateStats ? 'rotate-180' : ''}`} />
+          </button>
+
+          {showDelegateStats && (
+            <div className="px-4 pb-4 space-y-4 fade-in">
+              {/* Delegate selector */}
+              <div className="flex items-center gap-3 flex-wrap">
+                <span className="text-xs font-semibold text-[hsl(var(--muted-foreground))]">المندوب:</span>
+                <div className="flex gap-2 flex-wrap">
+                  {delegates.map(d => (
+                    <button
+                      key={d}
+                      onClick={() => setSelectedDelegate(d)}
+                      className={`text-xs px-3 py-1.5 rounded-xl font-semibold transition-all border ${selectedDelegate === d ? 'bg-[hsl(var(--primary))] text-white border-[hsl(var(--primary))]' : 'border-[hsl(var(--border))] hover:border-[hsl(var(--primary))]/50'}`}
+                    >
+                      {d}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Stats cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="bg-blue-50 border border-blue-100 rounded-xl p-3">
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <Truck size={13} className="text-blue-600" />
+                    <p className="text-[11px] font-semibold text-blue-700">اوردرات مشحونة</p>
+                  </div>
+                  <p className="text-xl font-bold font-mono text-blue-800">{delegateTotalOrders}</p>
+                </div>
+                <div className="bg-green-50 border border-green-100 rounded-xl p-3">
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <DollarSign size={13} className="text-green-600" />
+                    <p className="text-[11px] font-semibold text-green-700">إجمالي القيمة</p>
+                  </div>
+                  <p className="text-xl font-bold font-mono text-green-800">{delegateTotalValue.toLocaleString('en-US')} <span className="text-xs">ج.م</span></p>
+                </div>
+                <div className="bg-purple-50 border border-purple-100 rounded-xl p-3">
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <TrendingUp size={13} className="text-purple-600" />
+                    <p className="text-[11px] font-semibold text-purple-700">صافي دخل الشحن</p>
+                  </div>
+                  <p className="text-xl font-bold font-mono text-purple-800">{delegateNetIncome.toLocaleString('en-US')} <span className="text-xs">ج.م</span></p>
+                  {delegateExtraFees > 0 && <p className="text-[10px] text-orange-600 mt-0.5">بعد خصم {delegateExtraFees} ج.م مصاريف إضافية</p>}
+                </div>
+                <div className="bg-red-50 border border-red-100 rounded-xl p-3">
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <ArrowDownCircle size={13} className="text-red-600" />
+                    <p className="text-[11px] font-semibold text-red-700">المطلوب توريده</p>
+                  </div>
+                  <p className="text-xl font-bold font-mono text-red-800">{delegateAmountDue.toLocaleString('en-US')} <span className="text-xs">ج.م</span></p>
+                </div>
+              </div>
+
+              {/* Cash deposits section */}
+              <div className="border border-[hsl(var(--border))] rounded-xl p-3">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <ArrowDownCircle size={14} className="text-[hsl(var(--primary))]" />
+                    <span className="text-sm font-bold">التوريدات النقدية — {selectedDelegate}</span>
+                  </div>
+                  <div className="flex gap-3 text-xs">
+                    <span className="bg-green-50 text-green-700 px-2 py-1 rounded-lg font-semibold">تم توريده: {depositInfo.deposited.toLocaleString('en-US')} ج.م</span>
+                    <span className="bg-red-50 text-red-700 px-2 py-1 rounded-lg font-semibold">المتبقي: {delegateAmountDue.toLocaleString('en-US')} ج.م</span>
+                  </div>
+                </div>
+                {depositInfo.deposits.length === 0 ? (
+                  <p className="text-xs text-[hsl(var(--muted-foreground))] text-center py-2">لا توجد توريدات مسجلة</p>
+                ) : (
+                  <div className="space-y-2">
+                    {depositInfo.deposits.map((dep, i) => (
+                      <div key={`dep-${i}`} className="flex items-center justify-between text-xs bg-[hsl(var(--muted))]/30 rounded-lg px-3 py-2">
+                        <span className="font-semibold">{dep.note}</span>
+                        <span className="text-[hsl(var(--muted-foreground))]">{dep.date}</span>
+                        <span className="font-mono font-bold text-green-700">+ {dep.amount.toLocaleString('en-US')} ج.م</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* Filters */}
         <div className="p-4 border-b border-[hsl(var(--border))] space-y-3">
           <div className="flex flex-col sm:flex-row gap-3">
@@ -203,21 +351,59 @@ export default function OrdersTableSection() {
                   <option key={`status-filter-${s}`} value={s}>{s === 'الكل' ? 'كل الحالات' : STATUS_MAP[s]?.label || s}</option>
                 ))}
               </select>
+              {/* Export */}
+              <div className="relative">
+                <button
+                  className="flex items-center gap-1.5 px-3 py-2 bg-[hsl(var(--primary))] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
+                  onClick={() => setShowExportMenu(!showExportMenu)}
+                >
+                  <FileText size={14} />
+                  تصدير
+                </button>
+                {showExportMenu && (
+                  <div className="absolute left-0 top-full mt-1 bg-white border border-[hsl(var(--border))] rounded-xl shadow-lg z-20 min-w-[160px] overflow-hidden">
+                    <button
+                      className="w-full flex items-center gap-2 px-4 py-2.5 text-sm hover:bg-[hsl(var(--muted))] transition-colors text-right"
+                      onClick={() => { exportToCSV(filtered); setShowExportMenu(false); }}
+                    >
+                      📊 تصدير Excel (CSV)
+                    </button>
+                    <button
+                      className="w-full flex items-center gap-2 px-4 py-2.5 text-sm hover:bg-[hsl(var(--muted))] transition-colors text-right border-t border-[hsl(var(--border))]"
+                      onClick={() => { exportToPDF(filtered); setShowExportMenu(false); }}
+                    >
+                      📄 تصدير PDF
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-          {/* Date range filter */}
+          {/* Date range filter — ACTIVE */}
           <div className="flex items-center gap-3 flex-wrap">
             <span className="text-xs text-[hsl(var(--muted-foreground))] font-semibold">فلتر التاريخ:</span>
             <div className="flex items-center gap-2">
               <label className="text-xs text-[hsl(var(--muted-foreground))]">من</label>
-              <input type="date" className="input-field w-auto text-sm py-1.5" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} dir="ltr" />
+              <input
+                type="date"
+                className="input-field w-auto text-sm py-1.5"
+                value={dateFrom}
+                onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
+                dir="ltr"
+              />
             </div>
             <div className="flex items-center gap-2">
               <label className="text-xs text-[hsl(var(--muted-foreground))]">إلى</label>
-              <input type="date" className="input-field w-auto text-sm py-1.5" value={dateTo} onChange={(e) => setDateTo(e.target.value)} dir="ltr" />
+              <input
+                type="date"
+                className="input-field w-auto text-sm py-1.5"
+                value={dateTo}
+                onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
+                dir="ltr"
+              />
             </div>
             {(dateFrom || dateTo) && (
-              <button className="text-xs text-red-500 hover:underline" onClick={() => { setDateFrom(''); setDateTo(''); }}>مسح</button>
+              <button className="text-xs text-red-500 hover:underline" onClick={() => { setDateFrom(''); setDateTo(''); setPage(1); }}>مسح</button>
             )}
             <span className="text-xs text-[hsl(var(--muted-foreground))] mr-auto">{filtered.length} نتيجة</span>
           </div>
@@ -330,7 +516,9 @@ export default function OrdersTableSection() {
                       <td className="table-cell">
                         <div>
                           <p className="font-bold font-mono text-sm">{order.total.toLocaleString('en-US')} ج.م</p>
-                          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">شحن: {order.shippingFee} ج.م{order.extraShippingFee ? ` + ${order.extraShippingFee}` : ''}</p>
+                          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
+                            {order.expressShipping ? 'شحن سريع' : 'شحن'}: {order.shippingFee} ج.م
+                          </p>
                         </div>
                       </td>
                       <td className="table-cell">
@@ -341,7 +529,7 @@ export default function OrdersTableSection() {
                       <td className="table-cell">
                         <div>
                           <p className="text-xs font-medium">{order.date}</p>
-                          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">{order.day} — {order.time}</p>
+                          <p className="text-[10px] text-[hsl(var(--muted-foreground))] font-mono">{order.time}</p>
                         </div>
                       </td>
                       <td className="table-cell">
@@ -386,8 +574,8 @@ export default function OrdersTableSection() {
                 <button key={`page-btn-${pageNum}`} className={`w-8 h-8 flex items-center justify-center rounded-lg border text-sm font-semibold transition-colors ${page === pageNum ? 'bg-[hsl(var(--primary))] text-white border-[hsl(var(--primary))]' : 'border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]'}`} onClick={() => setPage(pageNum)}>{pageNum}</button>
               );
             })}
-            <button className="w-8 h-8 flex items-center justify-center rounded-lg border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" onClick={() => setPage(page + 1)} disabled={page === totalPages} aria-label="الصفحة التالية"><ChevronLeft size={14} /></button>
-            <button className="w-8 h-8 flex items-center justify-center rounded-lg border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" onClick={() => setPage(totalPages)} disabled={page === totalPages} aria-label="الصفحة الأخيرة"><ChevronLeft size={14} /></button>
+            <button className="w-8 h-8 flex items-center justify-center rounded-lg border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" onClick={() => setPage(page + 1)} disabled={page === totalPages || totalPages === 0} aria-label="الصفحة التالية"><ChevronLeft size={14} /></button>
+            <button className="w-8 h-8 flex items-center justify-center rounded-lg border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" onClick={() => setPage(totalPages)} disabled={page === totalPages || totalPages === 0} aria-label="الصفحة الأخيرة"><ChevronLeft size={14} /></button>
           </div>
         </div>
       </div>

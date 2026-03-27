@@ -17,6 +17,9 @@ import {
   ChevronDown,
   LogIn,
   AlertCircle,
+  Monitor,
+  Smartphone,
+  Tablet,
 } from 'lucide-react';
 
 interface LoginForm {
@@ -46,10 +49,24 @@ const STATS = [
   { icon: <BarChart3 size={22} />, value: '٣ مناطق', label: 'تغطية القاهرة الكبرى' },
 ];
 
+function getDeviceType(): string {
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+  if (/tablet|ipad|playbook|silk/i.test(ua)) return 'تابلت';
+  if (/mobile|iphone|ipod|android|blackberry|opera mini|iemobile/i.test(ua)) return 'موبايل';
+  return 'كمبيوتر';
+}
+
+function DeviceIcon({ device }: { device: string }) {
+  if (device === 'موبايل') return <Smartphone size={14} className="text-[hsl(var(--muted-foreground))]" />;
+  if (device === 'تابلت') return <Tablet size={14} className="text-[hsl(var(--muted-foreground))]" />;
+  return <Monitor size={14} className="text-[hsl(var(--muted-foreground))]" />;
+}
+
 export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [loginError, setLoginError] = useState('');
+  const deviceType = getDeviceType();
 
   const {
     register,
@@ -63,7 +80,6 @@ export default function LoginPage() {
   const onSubmit = async (data: LoginForm) => {
     setIsLoading(true);
     setLoginError('');
-    // TODO: Connect to Laravel backend POST /api/auth/login
     await new Promise((r) => setTimeout(r, 1200));
 
     const valid = MOCK_CREDENTIALS.find(
@@ -71,7 +87,7 @@ export default function LoginPage() {
     );
 
     if (valid) {
-      toast.success(`مرحباً! تم تسجيل الدخول كـ ${valid.label}`);
+      toast.success(`مرحباً! تم تسجيل الدخول كـ ${valid.label} — ${deviceType}`);
       setTimeout(() => {
         window.location.href = '/dashboard';
       }, 800);
@@ -160,6 +176,12 @@ export default function LoginPage() {
           <div className="mb-8">
             <h2 className="text-2xl font-bold text-[hsl(var(--foreground))]">تسجيل الدخول</h2>
             <p className="text-[hsl(var(--muted-foreground))] text-sm mt-1">أدخل بياناتك للوصول إلى النظام</p>
+          </div>
+
+          {/* Device indicator */}
+          <div className="flex items-center gap-2 bg-[hsl(var(--muted))]/50 rounded-xl px-3 py-2 mb-4 text-xs text-[hsl(var(--muted-foreground))]">
+            <DeviceIcon device={deviceType} />
+            <span>الجهاز الحالي: <span className="font-semibold text-[hsl(var(--foreground))]">{deviceType}</span></span>
           </div>
 
           {/* Error */}
