@@ -354,6 +354,22 @@ export default function AddOrderModal({ onClose }: Props) {
       notes: notes || undefined,
       warranty,
       ip: '—',
+      lines: lines.map(l => {
+        const card = productCards.find(p => p.value === l.productType);
+        return {
+          productType: l.productType,
+          label: card?.label || l.productType,
+          image: card?.image || null,
+          emoji: card?.emoji || '📦',
+          color: l.color || null,
+          quantity: l.quantity,
+          unitPrice: l.unitPrice,
+          includeFlashlight: l.includeFlashlight,
+          flashlightPrice: l.flashlightPrice,
+          note: l.note || null,
+          total: lineTotal(l),
+        };
+      }),
     };
 
     // Save to localStorage

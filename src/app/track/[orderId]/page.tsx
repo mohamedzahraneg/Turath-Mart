@@ -22,6 +22,19 @@ interface TrackingOrder {
   delegateRating?: number;
   eta?: string;
   deliveryNotes?: string;
+  lines?: {
+    productType: string;
+    label: string;
+    image?: string | null;
+    emoji?: string;
+    color?: string | null;
+    quantity: number;
+    unitPrice: number;
+    includeFlashlight?: boolean;
+    flashlightPrice?: number;
+    note?: string | null;
+    total: number;
+  }[];
 }
 
 interface StatusStep {
@@ -626,10 +639,26 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
   const loadOrder = useCallback(() => {
     setRefreshing(true);
     setTimeout(() => {
-      const found = MOCK_TRACKING_DATA[orderId];
+      // First try localStorage orders
+      let found: TrackingOrder | null = null;
+      let foundHistory: { status: string; label: string; time: string; date: string; note: string }[] = [];
+      try {
+        const stored = JSON.parse(localStorage.getItem('zahranship_orders') || '[]');
+        const match = stored.find((o: TrackingOrder & { orderNum: string }) => o.orderNum === orderId);
+        if (match) {
+          found = match as TrackingOrder;
+        }
+      } catch {}
+
+      // Fallback to mock data
+      if (!found) {
+        found = MOCK_TRACKING_DATA[orderId] || null;
+        foundHistory = MOCK_STATUS_HISTORY[orderId] || [];
+      }
+
       if (found) {
         setOrder(found);
-        setHistory(MOCK_STATUS_HISTORY[orderId] || []);
+        setHistory(foundHistory);
         setNotFound(false);
       } else {
         setNotFound(true);
@@ -905,9 +934,42 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
             </div>
             <div className="flex items-start gap-2">
               <Package size={13} className="text-[hsl(var(--muted-foreground))] mt-0.5 flex-shrink-0" />
-              <div>
-                <p className="text-xs text-[hsl(var(--muted-foreground))]">المنتجات</p>
-                <p className="text-sm font-semibold text-[hsl(var(--foreground))]">{order.products}</p>
+              <div className="flex-1">
+                <p className="text-xs text-[hsl(var(--muted-foreground))] mb-1.5">المنتجات</p>
+                {order.lines && order.lines.length > 0 ? (
+                  <div className="space-y-2">
+                    {order.lines.map((line, idx) => {
+                      const hasImg = line.image && (line.image.startsWith('data:') || line.image.startsWith('http') || line.image.startsWith('/'));
+                      return (
+                        <div key={`track-line-${idx}`} className="flex items-center gap-3 bg-[hsl(var(--muted))]/30 rounded-xl p-2.5 border border-[hsl(var(--border))]">
+                          <div className="w-11 h-11 rounded-xl overflow-hidden flex-shrink-0 bg-white border border-[hsl(var(--border))] flex items-center justify-center">
+                            {hasImg ? (
+                              <img src={line.image!} alt={line.label} className="w-full h-full object-cover" />
+                            ) : (
+                              <span className="text-xl">{line.emoji || '📦'}</span>
+                            )}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-semibold text-[hsl(var(--foreground))] leading-tight">
+                              {line.label}{line.color ? ` — ${line.color}` : ''}{line.includeFlashlight ? ' + كشاف' : ''}
+                            </p>
+                            {line.note && (
+                              <p className="text-xs text-amber-600 italic mt-0.5">ملاحظة: {line.note}</p>
+                            )}
+                            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
+                              {line.quantity} × {line.unitPrice.toLocaleString('en-US')} ج.م
+                            </p>
+                          </div>
+                          <div className="text-left flex-shrink-0">
+                            <p className="text-sm font-bold font-mono text-[hsl(211,67%,28%)]">{line.total.toLocaleString('en-US')} ج.م</p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-sm font-semibold text-[hsl(var(--foreground))]">{order.products}</p>
+                )}
               </div>
             </div>
             <div className="flex items-center justify-between pt-2 border-t border-[hsl(var(--border))]">

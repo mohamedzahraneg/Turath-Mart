@@ -4,6 +4,20 @@ import { toast } from 'sonner';
 import { Toaster } from 'sonner';
 import { X, User, Phone, MapPin, Package, FileText, MessageCircle, Mail, Printer, CheckCircle, Shield, Monitor, Smartphone, Tablet, Link, Copy, Clock } from 'lucide-react';
 
+interface OrderLine {
+  productType: string;
+  label: string;
+  image?: string | null;
+  emoji?: string;
+  color?: string | null;
+  quantity: number;
+  unitPrice: number;
+  includeFlashlight?: boolean;
+  flashlightPrice?: number;
+  note?: string | null;
+  total: number;
+}
+
 interface Order {
   id: string;
   orderNum: string;
@@ -32,6 +46,7 @@ interface Order {
   ip: string;
   warranty?: string;
   delegate?: string;
+  lines?: OrderLine[];
 }
 
 // Simulated current user role — in real app comes from auth context
@@ -145,8 +160,32 @@ export default function OrderDetailModal({ order, onClose }: Props) {
       return;
     }
     const warrantyRow = order.warranty && order.warranty !== 'بدون ضمان'
-      ? `<tr><td>فترة الضمان</td><td>—</td><td>${order.warranty}</td></tr>`
+      ? `<tr><td colspan="3">فترة الضمان</td><td>—</td><td>${order.warranty}</td></tr>`
       : '';
+
+    const productRows = order.lines && order.lines.length > 0
+      ? order.lines.map(line => {
+          const hasImg = line.image && (line.image.startsWith('data:') || line.image.startsWith('http') || line.image.startsWith('/'));
+          const imgHtml = hasImg
+            ? `<img src="${line.image}" alt="${line.label}" style="width:40px;height:40px;object-fit:cover;border-radius:6px;border:1px solid #e5e7eb;" />`
+            : `<span style="font-size:24px;">${line.emoji || '📦'}</span>`;
+          const noteHtml = line.note ? `<br/><span style="font-size:11px;color:#d97706;font-style:italic;">ملاحظة: ${line.note}</span>` : '';
+          const colorHtml = line.color ? ` (${line.color})` : '';
+          const flashHtml = line.includeFlashlight ? ' + كشاف' : '';
+          return `<tr>
+            <td style="display:flex;align-items:center;gap:10px;padding:10px 12px;">
+              ${imgHtml}
+              <div>
+                <strong>${line.label}${colorHtml}${flashHtml}</strong>${noteHtml}
+              </div>
+            </td>
+            <td>${line.quantity}</td>
+            <td>${line.unitPrice.toLocaleString('en-US')} ج.م</td>
+            <td>${line.total.toLocaleString('en-US')} ج.م</td>
+          </tr>`;
+        }).join('')
+      : `<tr><td>${order.products}</td><td>${order.quantity}</td><td>—</td><td>${order.subtotal.toLocaleString('en-US')} ج.م</td></tr>`;
+
     win.document.write(`
       <!DOCTYPE html>
       <html dir="rtl" lang="ar">
@@ -170,7 +209,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
           .customer-info .name { font-size: 18px; font-weight: 700; }
           table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
           th { background: #f3f4f6; padding: 10px 12px; text-align: right; font-size: 12px; font-weight: 700; color: #374151; }
-          td { padding: 10px 12px; border-bottom: 1px solid #f3f4f6; font-size: 13px; }
+          td { padding: 10px 12px; border-bottom: 1px solid #f3f4f6; font-size: 13px; vertical-align: middle; }
           .total-row { background: #eff6ff; }
           .total-row td { font-weight: 700; font-size: 16px; color: #1e3a5f; }
           .warranty-row { background: #f0fdf4; }
@@ -206,13 +245,13 @@ export default function OrderDetailModal({ order, onClose }: Props) {
             </div>
             <p class="section-title">المنتجات</p>
             <table>
-              <thead><tr><th>المنتج</th><th>الكمية</th><th>الإجمالي</th></tr></thead>
+              <thead><tr><th>المنتج</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr></thead>
               <tbody>
-                <tr><td>${order.products}</td><td>${order.quantity}</td><td>${order.subtotal.toLocaleString('en-US')} ج.م</td></tr>
-                <tr><td>${shippingLabel}</td><td>—</td><td>${order.shippingFee.toLocaleString('en-US')} ج.م</td></tr>
-                ${extraFee > 0 ? `<tr><td>مصاريف شحن إضافية</td><td>—</td><td>${extraFee.toLocaleString('en-US')} ج.م</td></tr>` : ''}
+                ${productRows}
+                <tr><td>${shippingLabel}</td><td>—</td><td>—</td><td>${order.shippingFee.toLocaleString('en-US')} ج.م</td></tr>
+                ${extraFee > 0 ? `<tr><td>مصاريف شحن إضافية</td><td>—</td><td>—</td><td>${extraFee.toLocaleString('en-US')} ج.م</td></tr>` : ''}
                 ${warrantyRow}
-                <tr class="total-row"><td colspan="2"><strong>الإجمالي الكلي</strong></td><td><strong>${order.total.toLocaleString('en-US')} ج.م</strong></td></tr>
+                <tr class="total-row"><td colspan="3"><strong>الإجمالي الكلي</strong></td><td><strong>${order.total.toLocaleString('en-US')} ج.م</strong></td></tr>
               </tbody>
             </table>
             ${order.notes ? `<p style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px;font-size:13px;"><strong>ملاحظات:</strong> ${order.notes}</p>` : ''}
@@ -325,16 +364,55 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                   <Package size={15} className="text-[hsl(var(--primary))]" />
                   <h4 className="text-sm font-bold">المنتجات</h4>
                 </div>
-                <div className="bg-[hsl(var(--muted))]/40 rounded-xl p-3">
-                  <p className="text-sm font-medium">{order.products}</p>
-                  <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">إجمالي الكمية: {order.quantity} قطعة</p>
-                  {order.warranty && order.warranty !== 'بدون ضمان' && (
-                    <div className="flex items-center gap-1.5 mt-2 text-xs text-green-700 bg-green-50 border border-green-200 rounded-lg px-2 py-1 w-fit">
-                      <Clock size={11} />
-                      <span>فترة الضمان: <strong>{order.warranty}</strong></span>
-                    </div>
-                  )}
-                </div>
+                {order.lines && order.lines.length > 0 ? (
+                  <div className="space-y-2">
+                    {order.lines.map((line, idx) => {
+                      const hasImg = line.image && (line.image.startsWith('data:') || line.image.startsWith('http') || line.image.startsWith('/'));
+                      return (
+                        <div key={`detail-line-${idx}`} className="flex items-center gap-3 bg-[hsl(var(--muted))]/40 rounded-xl p-3 border border-[hsl(var(--border))]">
+                          <div className="w-12 h-12 rounded-xl overflow-hidden flex-shrink-0 bg-white border border-[hsl(var(--border))] flex items-center justify-center">
+                            {hasImg ? (
+                              <img src={line.image!} alt={line.label} className="w-full h-full object-cover" />
+                            ) : (
+                              <span className="text-2xl">{line.emoji || '📦'}</span>
+                            )}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-semibold text-[hsl(var(--foreground))] truncate">
+                              {line.label}{line.color ? ` — ${line.color}` : ''}{line.includeFlashlight ? ' + كشاف' : ''}
+                            </p>
+                            {line.note && (
+                              <p className="text-xs text-amber-600 italic mt-0.5">ملاحظة: {line.note}</p>
+                            )}
+                            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
+                              {line.quantity} × {line.unitPrice.toLocaleString('en-US')} ج.م
+                            </p>
+                          </div>
+                          <div className="text-left flex-shrink-0">
+                            <p className="text-sm font-bold font-mono text-[hsl(var(--primary))]">{line.total.toLocaleString('en-US')} ج.م</p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {order.warranty && order.warranty !== 'بدون ضمان' && (
+                      <div className="flex items-center gap-1.5 mt-2 text-xs text-green-700 bg-green-50 border border-green-200 rounded-lg px-2 py-1 w-fit">
+                        <Clock size={11} />
+                        <span>فترة الضمان: <strong>{order.warranty}</strong></span>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="bg-[hsl(var(--muted))]/40 rounded-xl p-3">
+                    <p className="text-sm font-medium">{order.products}</p>
+                    <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">إجمالي الكمية: {order.quantity} قطعة</p>
+                    {order.warranty && order.warranty !== 'بدون ضمان' && (
+                      <div className="flex items-center gap-1.5 mt-2 text-xs text-green-700 bg-green-50 border border-green-200 rounded-lg px-2 py-1 w-fit">
+                        <Clock size={11} />
+                        <span>فترة الضمان: <strong>{order.warranty}</strong></span>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="card-section p-4">
@@ -576,34 +654,69 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                   <div>
                     <p className="text-[hsl(var(--muted-foreground))] text-xs mb-2 font-bold uppercase tracking-wide">المنتجات</p>
                     <div className="bg-[hsl(var(--muted))]/40 rounded-xl overflow-hidden">
-                      <div className="grid grid-cols-3 gap-4 px-4 py-2 bg-[hsl(var(--muted))] text-xs font-bold text-[hsl(var(--muted-foreground))]">
-                        <span>المنتج</span>
-                        <span className="text-center">الكمية</span>
-                        <span className="text-left">الإجمالي</span>
+                      <div className="grid grid-cols-12 gap-2 px-4 py-2 bg-[hsl(var(--muted))] text-xs font-bold text-[hsl(var(--muted-foreground))]">
+                        <span className="col-span-5">المنتج</span>
+                        <span className="col-span-2 text-center">الكمية</span>
+                        <span className="col-span-2 text-center">السعر</span>
+                        <span className="col-span-3 text-left">الإجمالي</span>
                       </div>
-                      <div className="grid grid-cols-3 gap-4 px-4 py-3 text-sm border-t border-[hsl(var(--border))]">
-                        <span>{order.products}</span>
-                        <span className="text-center">{order.quantity}</span>
-                        <span className="text-left font-mono">{order.subtotal.toLocaleString('en-US')} ج.م</span>
-                      </div>
-                      <div className="grid grid-cols-3 gap-4 px-4 py-3 text-sm border-t border-[hsl(var(--border))]">
-                        <span className={`text-[hsl(var(--muted-foreground))] ${order.expressShipping ? 'text-amber-700 font-semibold' : ''}`}>{shippingLabel}</span>
-                        <span className="text-center">—</span>
-                        <span className="text-left font-mono">{order.shippingFee.toLocaleString('en-US')} ج.م</span>
+                      {order.lines && order.lines.length > 0 ? (
+                        order.lines.map((line, idx) => {
+                          const hasImg = line.image && (line.image.startsWith('data:') || line.image.startsWith('http') || line.image.startsWith('/'));
+                          return (
+                            <div key={`inv-line-${idx}`} className="border-t border-[hsl(var(--border))]">
+                              <div className="grid grid-cols-12 gap-2 px-4 py-3 text-sm items-center">
+                                <div className="col-span-5 flex items-center gap-2">
+                                  <div className="w-9 h-9 rounded-lg overflow-hidden flex-shrink-0 bg-white border border-[hsl(var(--border))] flex items-center justify-center">
+                                    {hasImg ? (
+                                      <img src={line.image!} alt={line.label} className="w-full h-full object-cover" />
+                                    ) : (
+                                      <span className="text-lg">{line.emoji || '📦'}</span>
+                                    )}
+                                  </div>
+                                  <div className="min-w-0">
+                                    <p className="font-medium text-xs leading-tight truncate">
+                                      {line.label}{line.color ? ` (${line.color})` : ''}{line.includeFlashlight ? ' + كشاف' : ''}
+                                    </p>
+                                    {line.note && <p className="text-[10px] text-amber-600 italic truncate">ملاحظة: {line.note}</p>}
+                                  </div>
+                                </div>
+                                <span className="col-span-2 text-center">{line.quantity}</span>
+                                <span className="col-span-2 text-center font-mono text-xs">{line.unitPrice.toLocaleString('en-US')}</span>
+                                <span className="col-span-3 text-left font-mono font-semibold">{line.total.toLocaleString('en-US')} ج.م</span>
+                              </div>
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div className="grid grid-cols-12 gap-2 px-4 py-3 text-sm border-t border-[hsl(var(--border))]">
+                          <span className="col-span-5">{order.products}</span>
+                          <span className="col-span-2 text-center">{order.quantity}</span>
+                          <span className="col-span-2 text-center">—</span>
+                          <span className="col-span-3 text-left font-mono">{order.subtotal.toLocaleString('en-US')} ج.م</span>
+                        </div>
+                      )}
+                      <div className="grid grid-cols-12 gap-2 px-4 py-3 text-sm border-t border-[hsl(var(--border))]">
+                        <span className={`col-span-5 text-[hsl(var(--muted-foreground))] ${order.expressShipping ? 'text-amber-700 font-semibold' : ''}`}>{shippingLabel}</span>
+                        <span className="col-span-2 text-center">—</span>
+                        <span className="col-span-2 text-center">—</span>
+                        <span className="col-span-3 text-left font-mono">{order.shippingFee.toLocaleString('en-US')} ج.م</span>
                       </div>
                       {IS_ADMIN && extraFee > 0 && (
-                        <div className="grid grid-cols-3 gap-4 px-4 py-3 text-sm border-t border-[hsl(var(--border))] text-orange-700">
-                          <span>مصاريف شحن إضافية</span>
-                          <span className="text-center">—</span>
-                          <span className="text-left font-mono">{extraFee.toLocaleString('en-US')} ج.م</span>
+                        <div className="grid grid-cols-12 gap-2 px-4 py-3 text-sm border-t border-[hsl(var(--border))] text-orange-700">
+                          <span className="col-span-5">مصاريف شحن إضافية</span>
+                          <span className="col-span-2 text-center">—</span>
+                          <span className="col-span-2 text-center">—</span>
+                          <span className="col-span-3 text-left font-mono">{extraFee.toLocaleString('en-US')} ج.م</span>
                         </div>
                       )}
                       {/* Warranty row */}
                       {order.warranty && order.warranty !== 'بدون ضمان' && (
-                        <div className="grid grid-cols-3 gap-4 px-4 py-3 text-sm border-t border-[hsl(var(--border))] bg-green-50">
-                          <span className="text-green-700 font-semibold flex items-center gap-1"><Clock size={12} /> فترة الضمان</span>
-                          <span className="text-center">—</span>
-                          <span className="text-left font-semibold text-green-700">{order.warranty}</span>
+                        <div className="grid grid-cols-12 gap-2 px-4 py-3 text-sm border-t border-[hsl(var(--border))] bg-green-50">
+                          <span className="col-span-5 text-green-700 font-semibold flex items-center gap-1"><Clock size={12} /> فترة الضمان</span>
+                          <span className="col-span-2 text-center">—</span>
+                          <span className="col-span-2 text-center">—</span>
+                          <span className="col-span-3 text-left font-semibold text-green-700">{order.warranty}</span>
                         </div>
                       )}
                     </div>
