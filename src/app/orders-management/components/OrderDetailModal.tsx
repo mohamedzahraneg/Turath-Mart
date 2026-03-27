@@ -2,21 +2,25 @@
 import React, { useState } from 'react';
 import { toast } from 'sonner';
 import { Toaster } from 'sonner';
-import { X, User, Phone, MapPin, Package, FileText, MessageCircle, Mail, Printer, CheckCircle } from 'lucide-react';
+import { X, User, Phone, MapPin, Package, FileText, MessageCircle, Mail, Printer, CheckCircle, Shield } from 'lucide-react';
 
 interface Order {
   id: string;
   orderNum: string;
   createdBy: string;
+  createdByIp?: string;
+  createdByLocation?: string;
   customer: string;
   phone: string;
   phone2?: string;
   region: string;
+  district?: string;
   address: string;
   products: string;
   quantity: number;
   subtotal: number;
   shippingFee: number;
+  extraShippingFee?: number;
   total: number;
   status: string;
   date: string;
@@ -25,6 +29,10 @@ interface Order {
   notes?: string;
   ip: string;
 }
+
+// Simulated current user role — in real app comes from auth context
+const CURRENT_USER_ROLE: 'admin' | 'supervisor' | 'delegate' | 'staff' = 'admin';
+const CAN_SEE_SENSITIVE = ['admin', 'supervisor', 'delegate'].includes(CURRENT_USER_ROLE);
 
 const STATUS_BADGE_MAP: Record<string, { label: string; cls: string }> = {
   new: { label: 'جديد', cls: 'status-new' },
@@ -37,9 +45,9 @@ const STATUS_BADGE_MAP: Record<string, { label: string; cls: string }> = {
 };
 
 const MOCK_STATUS_HISTORY = [
-  { id: 'dh-001', status: 'new', label: 'جديد', date: '٢٧/٠٣/٢٠٢٦', time: '٠٩:٣٢', day: 'الجمعة', by: 'محمد حسن', note: 'تم تسجيل الأوردر' },
-  { id: 'dh-002', status: 'preparing', label: 'جاري التجهيز', date: '٢٧/٠٣/٢٠٢٦', time: '١١:١٥', day: 'الجمعة', by: 'أحمد السيد (مدير)', note: 'تم تجهيز الطلب' },
-  { id: 'dh-003', status: 'shipping', label: 'جاري الشحن', date: '٢٧/٠٣/٢٠٢٦', time: '١٣:٤٠', day: 'الجمعة', by: 'علي محمود (مندوب)', note: 'الطلب في الطريق' },
+  { id: 'dh-001', status: 'new', label: 'جديد', date: '27/03/2026', time: '09:32', day: 'الجمعة', by: 'محمد حسن', note: 'تم تسجيل الأوردر' },
+  { id: 'dh-002', status: 'preparing', label: 'جاري التجهيز', date: '27/03/2026', time: '11:15', day: 'الجمعة', by: 'أحمد السيد (مدير)', note: 'تم تجهيز الطلب' },
+  { id: 'dh-003', status: 'shipping', label: 'جاري الشحن', date: '27/03/2026', time: '13:40', day: 'الجمعة', by: 'علي محمود (مندوب)', note: 'الطلب في الطريق' },
 ];
 
 const TABS = [
@@ -56,22 +64,94 @@ interface Props {
 export default function OrderDetailModal({ order, onClose }: Props) {
   const [activeTab, setActiveTab] = useState('tab-details');
   const statusInfo = STATUS_BADGE_MAP[order.status] || STATUS_BADGE_MAP['new'];
+  const extraFee = order.extraShippingFee || 0;
 
   const handleSendWhatsApp = () => {
-    // TODO: Integrate WhatsApp Business API POST /api/orders/:id/send-whatsapp
-    const msg = encodeURIComponent(`مرحباً ${order.customer}، تم استلام طلبك رقم ${order.orderNum} بإجمالي ${order.total} ج.م. سيتم التواصل معك قريباً. شكراً لثقتك في Zahranship`);
+    const msg = encodeURIComponent(`مرحبا ${order.customer}، تم استلام طلبك رقم ${order.orderNum} بإجمالي ${order.total.toLocaleString('en-US')} ج.م. سيتم التواصل معك قريبا. شكرا لثقتك في Zahranship`);
     window.open(`https://wa.me/2${order.phone}?text=${msg}`, '_blank');
     toast.success('تم فتح واتساب لإرسال الرسالة');
   };
 
   const handleSendEmail = () => {
-    // TODO: POST /api/orders/:id/send-invoice-email
     toast.success('تم إرسال الفاتورة بالبريد الإلكتروني');
   };
 
   const handlePrintInvoice = () => {
-    // TODO: GET /api/orders/:id/invoice-pdf — generate and open PDF
-    toast.success('جاري تحضير الفاتورة للطباعة...');
+    const printContent = document.getElementById('invoice-print-area');
+    if (!printContent) return;
+    const win = window.open('', '_blank', 'width=800,height=600');
+    if (!win) {
+      toast.error('يرجى السماح بالنوافذ المنبثقة');
+      return;
+    }
+    win.document.write(`
+      <!DOCTYPE html>
+      <html dir="rtl" lang="ar">
+      <head>
+        <meta charset="UTF-8" />
+        <title>فاتورة - ${order.orderNum}</title>
+        <style>
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          body { font-family: 'Segoe UI', Tahoma, Arial, sans-serif; direction: rtl; background: #fff; color: #1a1a1a; }
+          .invoice-wrap { max-width: 700px; margin: 0 auto; padding: 20px; }
+          .inv-header { background: #1e3a5f; color: white; padding: 24px; text-align: center; border-radius: 12px 12px 0 0; }
+          .inv-header h1 { font-size: 26px; font-weight: 800; }
+          .inv-header p { font-size: 13px; opacity: 0.8; margin-top: 4px; }
+          .inv-body { border: 2px solid #e5e7eb; border-top: none; border-radius: 0 0 12px 12px; padding: 24px; }
+          .inv-meta { display: flex; justify-content: space-between; border-bottom: 1px solid #e5e7eb; padding-bottom: 16px; margin-bottom: 16px; }
+          .inv-meta div p:first-child { font-size: 11px; color: #6b7280; margin-bottom: 4px; }
+          .inv-meta div p:last-child { font-weight: 700; font-size: 14px; }
+          .section-title { font-size: 11px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+          .customer-info { margin-bottom: 16px; }
+          .customer-info p { font-size: 14px; margin-bottom: 4px; }
+          .customer-info .name { font-size: 18px; font-weight: 700; }
+          table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
+          th { background: #f3f4f6; padding: 10px 12px; text-align: right; font-size: 12px; font-weight: 700; color: #374151; }
+          td { padding: 10px 12px; border-bottom: 1px solid #f3f4f6; font-size: 13px; }
+          .total-row { background: #eff6ff; }
+          .total-row td { font-weight: 700; font-size: 16px; color: #1e3a5f; }
+          .footer { text-align: center; font-size: 12px; color: #9ca3af; margin-top: 20px; padding-top: 16px; border-top: 1px solid #e5e7eb; }
+          @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+        </style>
+      </head>
+      <body>
+        <div class="invoice-wrap">
+          <div class="inv-header">
+            <h1>Zahranship</h1>
+            <p>فاتورة ضريبية مبسطة</p>
+          </div>
+          <div class="inv-body">
+            <div class="inv-meta">
+              <div><p>رقم الفاتورة</p><p>${order.orderNum}</p></div>
+              <div><p>تاريخ الإصدار</p><p>${order.day} ${order.date}</p></div>
+              <div><p>الوقت</p><p>${order.time}</p></div>
+            </div>
+            <div class="customer-info">
+              <p class="section-title">بيانات العميل</p>
+              <p class="name">${order.customer}</p>
+              <p>${order.phone}${order.phone2 ? ' / ' + order.phone2 : ''}</p>
+              <p>${order.region}${order.district ? ' - ' + order.district : ''} — ${order.address}</p>
+            </div>
+            <p class="section-title">المنتجات</p>
+            <table>
+              <thead><tr><th>المنتج</th><th>الكمية</th><th>الإجمالي</th></tr></thead>
+              <tbody>
+                <tr><td>${order.products}</td><td>${order.quantity}</td><td>${order.subtotal.toLocaleString('en-US')} ج.م</td></tr>
+                <tr><td>تكلفة الشحن</td><td>—</td><td>${order.shippingFee.toLocaleString('en-US')} ج.م</td></tr>
+                ${extraFee > 0 ? `<tr><td>مصاريف شحن إضافية</td><td>—</td><td>${extraFee.toLocaleString('en-US')} ج.م</td></tr>` : ''}
+                <tr class="total-row"><td colspan="2"><strong>الإجمالي الكلي</strong></td><td><strong>${order.total.toLocaleString('en-US')} ج.م</strong></td></tr>
+              </tbody>
+            </table>
+            ${order.notes ? `<p style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px;font-size:13px;"><strong>ملاحظات:</strong> ${order.notes}</p>` : ''}
+            <div class="footer">شكرا لثقتك في Zahranship — للاستفسار: info@zahranship.com</div>
+          </div>
+        </div>
+        <script>window.onload = function(){ window.print(); window.close(); }</script>
+      </body>
+      </html>
+    `);
+    win.document.close();
+    toast.success('جاري فتح نافذة الطباعة / PDF...');
   };
 
   return (
@@ -99,7 +179,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
         </div>
 
         {/* Quick actions */}
-        <div className="flex gap-2 px-5 py-3 bg-[hsl(var(--muted))]/30 border-b border-[hsl(var(--border))]">
+        <div className="flex gap-2 px-5 py-3 bg-[hsl(var(--muted))]/30 border-b border-[hsl(var(--border))] flex-wrap">
           <button onClick={handleSendWhatsApp} className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 text-white text-xs px-3 py-1.5 rounded-xl font-semibold transition-colors">
             <MessageCircle size={13} />
             إرسال واتساب
@@ -110,7 +190,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
           </button>
           <button onClick={handlePrintInvoice} className="flex items-center gap-1.5 btn-secondary text-xs py-1.5">
             <Printer size={13} />
-            طباعة الفاتورة
+            طباعة / PDF
           </button>
         </div>
 
@@ -144,7 +224,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                   </div>
                   <div>
                     <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-0.5">المنطقة</p>
-                    <p className="font-semibold">{order.region}</p>
+                    <p className="font-semibold">{order.region}{order.district ? ` - ${order.district}` : ''}</p>
                   </div>
                   <div>
                     <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-0.5 flex items-center gap-1"><Phone size={10} /> الموبايل</p>
@@ -184,30 +264,48 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between py-1.5 border-b border-[hsl(var(--border))]">
                     <span className="text-[hsl(var(--muted-foreground))]">المنتجات:</span>
-                    <span className="font-mono font-semibold">{order.subtotal.toLocaleString('ar-EG')} ج.م</span>
+                    <span className="font-mono font-semibold">{order.subtotal.toLocaleString('en-US')} ج.م</span>
                   </div>
                   <div className="flex justify-between py-1.5 border-b border-[hsl(var(--border))]">
                     <span className="text-[hsl(var(--muted-foreground))]">تكلفة الشحن:</span>
-                    <span className="font-mono">{order.shippingFee} ج.م</span>
+                    <span className="font-mono">{order.shippingFee.toLocaleString('en-US')} ج.م</span>
                   </div>
+                  {extraFee > 0 && (
+                    <div className="flex justify-between py-1.5 border-b border-[hsl(var(--border))] text-orange-700">
+                      <span>مصاريف شحن إضافية:</span>
+                      <span className="font-mono">+ {extraFee.toLocaleString('en-US')} ج.م</span>
+                    </div>
+                  )}
                   <div className="flex justify-between py-1.5">
                     <span className="font-bold">الإجمالي الكلي:</span>
-                    <span className="font-mono font-bold text-lg text-[hsl(var(--primary))]">{order.total.toLocaleString('ar-EG')} ج.م</span>
+                    <span className="font-mono font-bold text-lg text-[hsl(var(--primary))]">{order.total.toLocaleString('en-US')} ج.م</span>
                   </div>
                 </div>
               </div>
 
-              {/* Meta */}
-              <div className="grid grid-cols-2 gap-3 text-xs">
-                <div className="bg-[hsl(var(--muted))]/40 rounded-xl p-3">
-                  <p className="text-[hsl(var(--muted-foreground))] mb-1">المسجِّل</p>
-                  <p className="font-semibold">{order.createdBy}</p>
+              {/* Sensitive info — only for admin/supervisor/delegate */}
+              {CAN_SEE_SENSITIVE && (
+                <div className="border border-amber-200 bg-amber-50 rounded-xl p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Shield size={14} className="text-amber-600" />
+                    <h4 className="text-sm font-bold text-amber-800">معلومات التسجيل (للمفوضين فقط)</h4>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                    <div className="bg-white rounded-lg p-2.5 border border-amber-100">
+                      <p className="text-[hsl(var(--muted-foreground))] mb-1">المسجِّل</p>
+                      <p className="font-semibold">{order.createdBy}</p>
+                    </div>
+                    <div className="bg-white rounded-lg p-2.5 border border-amber-100">
+                      <p className="text-[hsl(var(--muted-foreground))] mb-1">IP الجهاز</p>
+                      <p className="font-mono">{order.ip || order.createdByIp || '—'}</p>
+                    </div>
+                    <div className="bg-white rounded-lg p-2.5 border border-amber-100">
+                      <p className="text-[hsl(var(--muted-foreground))] mb-1 flex items-center gap-1"><MapPin size={10} /> موقع المسجِّل</p>
+                      <p className="font-semibold">{order.createdByLocation || 'القاهرة، مصر'}</p>
+                    </div>
+                  </div>
                 </div>
-                <div className="bg-[hsl(var(--muted))]/40 rounded-xl p-3">
-                  <p className="text-[hsl(var(--muted-foreground))] mb-1">IP الجهاز</p>
-                  <p className="font-mono">{order.ip}</p>
-                </div>
-              </div>
+              )}
 
               {order.notes && (
                 <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
@@ -220,9 +318,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
 
           {activeTab === 'tab-history' && (
             <div className="space-y-3 fade-in">
-              <p className="text-sm text-[hsl(var(--muted-foreground))] mb-4">
-                سجل كامل لجميع تحديثات الحالة مع التوقيت والمسؤول
-              </p>
+              <p className="text-sm text-[hsl(var(--muted-foreground))] mb-4">سجل كامل لجميع تحديثات الحالة مع التوقيت والمسؤول</p>
               <div className="relative">
                 <div className="absolute right-4 top-0 bottom-0 w-0.5 bg-[hsl(var(--border))]" />
                 <div className="space-y-4">
@@ -249,15 +345,13 @@ export default function OrderDetailModal({ order, onClose }: Props) {
           {activeTab === 'tab-invoice' && (
             <div className="fade-in">
               {/* Invoice preview */}
-              <div className="border-2 border-[hsl(var(--border))] rounded-2xl overflow-hidden">
-                {/* Invoice header */}
+              <div id="invoice-print-area" className="border-2 border-[hsl(var(--border))] rounded-2xl overflow-hidden">
                 <div className="bg-[hsl(var(--primary))] text-white p-6 text-center">
                   <h2 className="text-2xl font-bold">Zahranship</h2>
                   <p className="text-blue-200 text-sm mt-1">فاتورة ضريبية مبسطة</p>
                 </div>
 
                 <div className="p-6 space-y-4">
-                  {/* Invoice meta */}
                   <div className="flex justify-between text-sm border-b border-[hsl(var(--border))] pb-4">
                     <div>
                       <p className="text-[hsl(var(--muted-foreground))] text-xs mb-1">رقم الفاتورة</p>
@@ -269,15 +363,13 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                     </div>
                   </div>
 
-                  {/* Customer */}
                   <div className="text-sm">
                     <p className="text-[hsl(var(--muted-foreground))] text-xs mb-2 font-bold uppercase tracking-wide">بيانات العميل</p>
                     <p className="font-bold text-base">{order.customer}</p>
                     <p className="font-mono text-[hsl(var(--muted-foreground))]">{order.phone}</p>
-                    <p className="text-[hsl(var(--muted-foreground))] mt-1">{order.region} — {order.address}</p>
+                    <p className="text-[hsl(var(--muted-foreground))] mt-1">{order.region}{order.district ? ` - ${order.district}` : ''} — {order.address}</p>
                   </div>
 
-                  {/* Items */}
                   <div>
                     <p className="text-[hsl(var(--muted-foreground))] text-xs mb-2 font-bold uppercase tracking-wide">المنتجات</p>
                     <div className="bg-[hsl(var(--muted))]/40 rounded-xl overflow-hidden">
@@ -289,25 +381,30 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                       <div className="grid grid-cols-3 gap-4 px-4 py-3 text-sm border-t border-[hsl(var(--border))]">
                         <span>{order.products}</span>
                         <span className="text-center">{order.quantity}</span>
-                        <span className="text-left font-mono">{order.subtotal.toLocaleString('ar-EG')} ج.م</span>
+                        <span className="text-left font-mono">{order.subtotal.toLocaleString('en-US')} ج.م</span>
                       </div>
                       <div className="grid grid-cols-3 gap-4 px-4 py-3 text-sm border-t border-[hsl(var(--border))]">
                         <span className="text-[hsl(var(--muted-foreground))]">تكلفة الشحن</span>
                         <span className="text-center">—</span>
-                        <span className="text-left font-mono">{order.shippingFee} ج.م</span>
+                        <span className="text-left font-mono">{order.shippingFee.toLocaleString('en-US')} ج.م</span>
                       </div>
+                      {extraFee > 0 && (
+                        <div className="grid grid-cols-3 gap-4 px-4 py-3 text-sm border-t border-[hsl(var(--border))] text-orange-700">
+                          <span>مصاريف شحن إضافية</span>
+                          <span className="text-center">—</span>
+                          <span className="text-left font-mono">{extraFee.toLocaleString('en-US')} ج.م</span>
+                        </div>
+                      )}
                     </div>
                   </div>
 
-                  {/* Total */}
                   <div className="bg-[hsl(var(--primary))]/5 border border-[hsl(var(--primary))]/20 rounded-xl p-4 flex justify-between items-center">
                     <span className="font-bold text-lg">الإجمالي الكلي</span>
-                    <span className="font-mono font-bold text-2xl text-[hsl(var(--primary))]">{order.total.toLocaleString('ar-EG')} ج.م</span>
+                    <span className="font-mono font-bold text-2xl text-[hsl(var(--primary))]">{order.total.toLocaleString('en-US')} ج.م</span>
                   </div>
 
-                  {/* Footer */}
                   <p className="text-center text-xs text-[hsl(var(--muted-foreground))] pt-2">
-                    شكراً لثقتك في Zahranship — للاستفسار: info@zahranship.com
+                    شكرا لثقتك في Zahranship — للاستفسار: info@zahranship.com
                   </p>
                 </div>
               </div>

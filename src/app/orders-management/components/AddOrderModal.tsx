@@ -3,10 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { useForm, useFieldArray } from 'react-hook-form';
 import { toast } from 'sonner';
 import { Toaster } from 'sonner';
-import {
-  X, Plus, Trash2, Package, User, MapPin, Phone,
-  FileText, Zap, Calculator, ChevronDown
-} from 'lucide-react';
+import { X, Plus, Trash2, Package, User, MapPin, Phone, FileText, Zap, Calculator, ChevronDown, DollarSign } from 'lucide-react';
 
 interface ProductItem {
   productType: string;
@@ -21,22 +18,24 @@ interface OrderFormData {
   customerName: string;
   phone: string;
   phone2: string;
-  region: string;
+  governorate: string;
+  district: string;
   address: string;
   products: ProductItem[];
   expressShipping: boolean;
+  extraShippingFee: number;
   notes: string;
 }
 
-const PRODUCT_TYPES = [
-  { value: 'holder', label: 'حامل مصحف', basePrice: 300 },
-  { value: 'flashlight', label: 'كشاف', basePrice: 150 },
-  { value: 'chair', label: 'كرسي', basePrice: 600 },
-  { value: 'quran', label: 'مصحف', basePrice: 140 },
-  { value: 'kaaba', label: 'كعبة', basePrice: 450 },
+export const PRODUCT_TYPES = [
+  { value: 'holder', label: 'حامل مصحف', basePrice: 300, image: '📿', hasColor: true },
+  { value: 'flashlight', label: 'كشاف', basePrice: 150, image: '🔦', hasColor: false },
+  { value: 'chair', label: 'كرسي', basePrice: 600, image: '🪑', hasColor: false },
+  { value: 'quran', label: 'مصحف', basePrice: 140, image: '📖', hasColor: false },
+  { value: 'kaaba', label: 'كعبة', basePrice: 450, image: '🕋', hasColor: false },
 ];
 
-const HOLDER_COLORS = [
+export const HOLDER_COLORS = [
   { value: 'brown', label: 'بني', hex: '#8B4513' },
   { value: 'black', label: 'أسود', hex: '#1a1a1a' },
   { value: 'white', label: 'أبيض', hex: '#f5f5f5' },
@@ -44,11 +43,40 @@ const HOLDER_COLORS = [
   { value: 'pearl', label: 'صدف', hex: '#EAE0C8' },
 ];
 
-const REGIONS = ['القاهرة', 'الجيزة', 'القليوبية'];
+export const GOVERNORATES_DISTRICTS: Record<string, string[]> = {
+  'القاهرة': [
+    'مدينة نصر', 'المعادي', 'هليوبوليس (مصر الجديدة)', 'الزيتون', 'شبرا', 'المطرية',
+    'عين شمس', 'النزهة', 'المرج', 'الأميرية', 'السيدة زينب', 'الخليفة',
+    'مصر القديمة', 'حلوان', 'المقطم', 'التجمع الأول', 'التجمع الخامس',
+    'القاهرة الجديدة', 'الرحاب', 'مدينتي', 'بدر', 'العبور', 'الشروق',
+    'الزمالك', 'جاردن سيتي', 'الدقي (القاهرة)', 'بولاق', 'الوايلي',
+    'عابدين', 'الأزبكية', 'الموسكي', 'الجمالية', 'الدرب الأحمر',
+    'منشأة ناصر', 'دار السلام', 'طره', 'المعصرة', 'بشتيل',
+  ],
+  'الجيزة': [
+    'الدقي', 'العجوزة', 'المهندسين', 'إمبابة', 'بولاق الدكرور',
+    'فيصل', 'الهرم', 'العمرانية', 'أوسيم', 'كرداسة', 'أبو النمرس',
+    'الحوامدية', 'البدرشين', 'الصف', 'أطفيح', 'المنيب',
+    'الشيخ زايد', '6 أكتوبر', 'الحي الأول', 'الحي الثاني',
+    'الحي الثالث', 'الحي الرابع', 'الحي الخامس', 'الحي السادس',
+    'الحي السابع', 'الحي الثامن', 'الحي التاسع', 'الحي العاشر',
+    'الحي الحادي عشر', 'الحي الثاني عشر', 'الحي الثالث عشر',
+    'الواحات البحرية', 'سقارة', 'أبو رواش',
+  ],
+  'القليوبية': [
+    'شبرا الخيمة', 'قليوب', 'بنها', 'طوخ', 'قها', 'الخانكة',
+    'الخصوص', 'كفر شكر', 'تلا', 'منوف', 'شبين الكوم',
+    'أبو زعبل', 'الجيزة (القليوبية)', 'مسطرد', 'العبور',
+    'الإبراهيمية', 'الزاوية الحمراء', 'شبرا مصر',
+  ],
+};
 
-// Shipping fee — set by admin only, not visible to data entry staff
-const SHIPPING_FEE = 50; // TODO: fetch from admin settings API GET /api/settings/shipping-fee
-const EXPRESS_FEE = 100; // TODO: fetch from admin settings API GET /api/settings/express-fee
+// Admin-configurable settings (in real app, fetched from API)
+export const ADMIN_SETTINGS = {
+  SHIPPING_FEE: 50,
+  EXPRESS_FEE: 100,
+  DISABLED_DISTRICTS: [] as string[], // Admin can disable specific districts
+};
 
 function generateOrderNumber() {
   const now = new Date();
@@ -63,7 +91,6 @@ interface Props {
 
 export default function AddOrderModal({ onClose }: Props) {
   const [orderNum] = useState(generateOrderNumber);
-  const [currentUser] = useState({ name: 'محمد حسن', location: 'القاهرة، مصر', ip: '197.32.45.115' });
   const [currentDateTime, setCurrentDateTime] = useState({ date: '', time: '', day: '' });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [subtotal, setSubtotal] = useState(0);
@@ -71,10 +98,16 @@ export default function AddOrderModal({ onClose }: Props) {
 
   useEffect(() => {
     const now = new Date();
+    const days = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+    const d = now.getDate().toString().padStart(2, '0');
+    const m = (now.getMonth() + 1).toString().padStart(2, '0');
+    const y = now.getFullYear();
+    const h = now.getHours().toString().padStart(2, '0');
+    const min = now.getMinutes().toString().padStart(2, '0');
     setCurrentDateTime({
-      date: now.toLocaleDateString('ar-EG'),
-      time: now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
-      day: now.toLocaleDateString('ar-EG', { weekday: 'long' }),
+      date: `${d}/${m}/${y}`,
+      time: `${h}:${min}`,
+      day: days[now.getDay()],
     });
   }, []);
 
@@ -87,27 +120,42 @@ export default function AddOrderModal({ onClose }: Props) {
     formState: { errors },
   } = useForm<OrderFormData>({
     defaultValues: {
-      region: 'القاهرة',
+      governorate: 'القاهرة',
+      district: '',
       products: [{ productType: 'holder', color: 'brown', withFlashlight: false, quantity: 1, unitPrice: 300, note: '' }],
       expressShipping: false,
+      extraShippingFee: 0,
     },
   });
 
   const { fields, append, remove } = useFieldArray({ control, name: 'products' });
   const watchProducts = watch('products');
   const watchExpress = watch('expressShipping');
+  const watchGovernorate = watch('governorate');
+  const watchExtraFee = watch('extraShippingFee') || 0;
 
   useEffect(() => {
-    const total = watchProducts?.reduce((sum, p) => sum + (p.unitPrice * p.quantity || 0), 0) || 0;
+    const total = watchProducts?.reduce((sum, p) => {
+      const base = (p.unitPrice * p.quantity) || 0;
+      const flash = p.withFlashlight ? (ADMIN_SETTINGS.EXPRESS_FEE * p.quantity) : 0;
+      return sum + base + flash;
+    }, 0) || 0;
     setSubtotal(total);
   }, [watchProducts]);
 
-  const totalShipping = SHIPPING_FEE + (watchExpress ? EXPRESS_FEE : 0);
+  // Reset district when governorate changes
+  useEffect(() => {
+    setValue('district', '');
+  }, [watchGovernorate, setValue]);
+
+  const availableDistricts = (GOVERNORATES_DISTRICTS[watchGovernorate] || [])
+    .filter(d => !ADMIN_SETTINGS.DISABLED_DISTRICTS.includes(d));
+
+  const totalShipping = ADMIN_SETTINGS.SHIPPING_FEE + (watchExpress ? ADMIN_SETTINGS.EXPRESS_FEE : 0) + Number(watchExtraFee || 0);
   const grandTotal = subtotal + totalShipping;
 
   const onSubmit = async (data: OrderFormData) => {
     setIsSubmitting(true);
-    // TODO: POST /api/orders with order data + auto-generate PDF + send WhatsApp notification
     await new Promise((r) => setTimeout(r, 1500));
     toast.success(`تم تسجيل الأوردر ${orderNum} بنجاح!`);
     setIsSubmitting(false);
@@ -122,7 +170,8 @@ export default function AddOrderModal({ onClose }: Props) {
     const product = PRODUCT_TYPES.find((p) => p.value === type);
     if (product) {
       setValue(`products.${index}.unitPrice`, product.basePrice);
-      if (type !== 'holder') setValue(`products.${index}.color`, undefined);
+      if (!product.hasColor) setValue(`products.${index}.color`, undefined);
+      else setValue(`products.${index}.color`, 'brown');
     }
   };
 
@@ -169,24 +218,16 @@ export default function AddOrderModal({ onClose }: Props) {
           ))}
         </div>
 
-        {/* Auto-filled info */}
+        {/* Order number only — IP/registrar hidden from form */}
         <div className="px-6 pt-4 pb-0">
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-blue-50 border border-blue-100 rounded-xl p-3">
+          <div className="flex items-center gap-4 bg-blue-50 border border-blue-100 rounded-xl p-3">
             <div>
               <p className="text-[10px] font-semibold text-blue-600 mb-0.5">رقم الأوردر</p>
               <p className="text-xs font-mono font-bold text-[hsl(var(--foreground))]">{orderNum}</p>
             </div>
             <div>
-              <p className="text-[10px] font-semibold text-blue-600 mb-0.5">المسجِّل</p>
-              <p className="text-xs font-semibold">{currentUser.name}</p>
-            </div>
-            <div>
               <p className="text-[10px] font-semibold text-blue-600 mb-0.5">التاريخ والوقت</p>
               <p className="text-xs">{currentDateTime.day} {currentDateTime.date} — {currentDateTime.time}</p>
-            </div>
-            <div>
-              <p className="text-[10px] font-semibold text-blue-600 mb-0.5">IP الجهاز</p>
-              <p className="text-xs font-mono text-[hsl(var(--muted-foreground))]">{currentUser.ip}</p>
             </div>
           </div>
         </div>
@@ -223,6 +264,7 @@ export default function AddOrderModal({ onClose }: Props) {
                         type="tel"
                         className={`input-field pr-8 ${errors.phone ? 'border-red-400' : ''}`}
                         placeholder="01XXXXXXXXX"
+                        dir="ltr"
                         {...register('phone', {
                           required: 'رقم الموبايل مطلوب',
                           pattern: { value: /^01[0-9]{9}$/, message: 'رقم موبايل مصري غير صحيح' }
@@ -241,6 +283,7 @@ export default function AddOrderModal({ onClose }: Props) {
                         type="tel"
                         className="input-field pr-8"
                         placeholder="01XXXXXXXXX (اختياري)"
+                        dir="ltr"
                         {...register('phone2', {
                           pattern: { value: /^(01[0-9]{9})?$/, message: 'رقم موبايل مصري غير صحيح' }
                         })}
@@ -249,19 +292,40 @@ export default function AddOrderModal({ onClose }: Props) {
                     {errors.phone2 && <p className="text-red-500 text-xs mt-1">{errors.phone2.message}</p>}
                   </div>
 
+                  {/* Governorate */}
                   <div>
-                    <label className="label-text" htmlFor="region">المنطقة *</label>
-                    <p className="text-xs text-[hsl(var(--muted-foreground))] mb-1.5">حدد المنطقة لحساب تكلفة الشحن</p>
+                    <label className="label-text" htmlFor="governorate">المحافظة *</label>
                     <div className="relative">
                       <select
-                        id="region"
+                        id="governorate"
                         className="input-field appearance-none pl-8"
-                        {...register('region', { required: 'المنطقة مطلوبة' })}
+                        {...register('governorate', { required: 'المحافظة مطلوبة' })}
                       >
-                        {REGIONS.map((r) => <option key={`modal-region-${r}`} value={r}>{r}</option>)}
+                        {Object.keys(GOVERNORATES_DISTRICTS).map((g) => (
+                          <option key={`gov-${g}`} value={g}>{g}</option>
+                        ))}
                       </select>
                       <ChevronDown size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))] pointer-events-none" />
                     </div>
+                  </div>
+
+                  {/* District */}
+                  <div>
+                    <label className="label-text" htmlFor="district">المنطقة / الحي *</label>
+                    <div className="relative">
+                      <select
+                        id="district"
+                        className={`input-field appearance-none pl-8 ${errors.district ? 'border-red-400' : ''}`}
+                        {...register('district', { required: 'المنطقة مطلوبة' })}
+                      >
+                        <option value="">-- اختر المنطقة --</option>
+                        {availableDistricts.map((d) => (
+                          <option key={`dist-${d}`} value={d}>{d}</option>
+                        ))}
+                      </select>
+                      <ChevronDown size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))] pointer-events-none" />
+                    </div>
+                    {errors.district && <p className="text-red-500 text-xs mt-1">{errors.district.message}</p>}
                   </div>
 
                   <div className="sm:col-span-2">
@@ -273,8 +337,8 @@ export default function AddOrderModal({ onClose }: Props) {
                       id="address"
                       rows={3}
                       className={`input-field resize-none ${errors.address ? 'border-red-400' : ''}`}
-                      placeholder="المحافظة، الحي، الشارع، رقم المبنى، رقم الشقة..."
-                      {...register('address', { required: 'العنوان مطلوب', minLength: { value: 15, message: 'العنوان قصير جداً، يرجى التفصيل' } })}
+                      placeholder="الشارع، رقم المبنى، رقم الشقة، علامة مميزة..."
+                      {...register('address', { required: 'العنوان مطلوب', minLength: { value: 10, message: 'العنوان قصير جداً' } })}
                     />
                     {errors.address && <p className="text-red-500 text-xs mt-1">{errors.address.message}</p>}
                   </div>
@@ -305,13 +369,18 @@ export default function AddOrderModal({ onClose }: Props) {
                 <div className="space-y-4">
                   {fields.map((field, index) => {
                     const productType = watch(`products.${index}.productType`);
+                    const productDef = PRODUCT_TYPES.find(p => p.value === productType);
                     const isHolder = productType === 'holder';
+                    const isFlashlight = productType === 'flashlight';
                     return (
                       <div key={field.id} className="border border-[hsl(var(--border))] rounded-2xl p-4 relative bg-[hsl(var(--muted))]/20">
                         <div className="flex items-center justify-between mb-3">
-                          <span className="text-xs font-bold text-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10 px-2 py-1 rounded-lg">
-                            منتج #{index + 1}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xl">{productDef?.image || '📦'}</span>
+                            <span className="text-xs font-bold text-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10 px-2 py-1 rounded-lg">
+                              منتج #{index + 1}
+                            </span>
+                          </div>
                           {fields.length > 1 && (
                             <button
                               type="button"
@@ -337,7 +406,7 @@ export default function AddOrderModal({ onClose }: Props) {
                                 }}
                               >
                                 {PRODUCT_TYPES.map((p) => (
-                                  <option key={`product-type-${p.value}`} value={p.value}>{p.label}</option>
+                                  <option key={`product-type-${p.value}`} value={p.value}>{p.image} {p.label}</option>
                                 ))}
                               </select>
                               <ChevronDown size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))] pointer-events-none" />
@@ -356,12 +425,8 @@ export default function AddOrderModal({ onClose }: Props) {
                                       type="button"
                                       onClick={() => setValue(`products.${index}.color`, color.value)}
                                       className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-semibold transition-all ${currentColor === color.value ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))]' : 'border-[hsl(var(--border))] hover:border-gray-400'}`}
-                                      title={color.label}
                                     >
-                                      <span
-                                        className="w-3 h-3 rounded-full border border-gray-300 flex-shrink-0"
-                                        style={{ backgroundColor: color.hex }}
-                                      />
+                                      <span className="w-3 h-3 rounded-full border border-gray-300 flex-shrink-0" style={{ backgroundColor: color.hex }} />
                                       {color.label}
                                     </button>
                                   );
@@ -381,7 +446,7 @@ export default function AddOrderModal({ onClose }: Props) {
                                 <span className="text-sm font-semibold text-[hsl(var(--foreground))]">
                                   إضافة كشاف مع الحامل
                                 </span>
-                                <span className="text-xs text-[hsl(var(--muted-foreground))]">(+ ١٥٠ ج.م)</span>
+                                <span className="text-xs text-[hsl(var(--muted-foreground))]">(+ 150 ج.م)</span>
                               </label>
                             </div>
                           )}
@@ -404,7 +469,12 @@ export default function AddOrderModal({ onClose }: Props) {
                           </div>
 
                           <div>
-                            <label className="label-text">سعر الوحدة (ج.م) *</label>
+                            <label className="label-text">
+                              سعر الوحدة (ج.م) *
+                              {(isFlashlight || productType === 'chair' || productType === 'quran') && (
+                                <span className="text-[10px] text-blue-500 mr-1">(قابل للتعديل)</span>
+                              )}
+                            </label>
                             <input
                               type="number"
                               min={0}
@@ -435,7 +505,7 @@ export default function AddOrderModal({ onClose }: Props) {
                         <div className="mt-3 pt-3 border-t border-[hsl(var(--border))] flex items-center justify-between">
                           <span className="text-xs text-[hsl(var(--muted-foreground))]">إجمالي هذا المنتج:</span>
                           <span className="text-sm font-bold font-mono text-[hsl(var(--primary))]">
-                            {((watch(`products.${index}.unitPrice`) || 0) * (watch(`products.${index}.quantity`) || 0) + (watch(`products.${index}.withFlashlight`) ? 150 * (watch(`products.${index}.quantity`) || 0) : 0)).toLocaleString('ar-EG')} ج.م
+                            {((watch(`products.${index}.unitPrice`) || 0) * (watch(`products.${index}.quantity`) || 0) + (watch(`products.${index}.withFlashlight`) ? 150 * (watch(`products.${index}.quantity`) || 0) : 0)).toLocaleString('en-US')} ج.م
                           </span>
                         </div>
                       </div>
@@ -455,11 +525,32 @@ export default function AddOrderModal({ onClose }: Props) {
                       <div className="flex items-center gap-2">
                         <Zap size={16} className="text-amber-600" />
                         <span className="text-sm font-bold text-[hsl(var(--foreground))]">شحن سريع</span>
-                        <span className="badge bg-amber-100 text-amber-700 border border-amber-200">+ {EXPRESS_FEE} ج.م</span>
+                        <span className="badge bg-amber-100 text-amber-700 border border-amber-200">+ {ADMIN_SETTINGS.EXPRESS_FEE} ج.م</span>
                       </div>
-                      <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">تسليم خلال ٢٤ ساعة — سعره يحدد من الإدارة</p>
+                      <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">تسليم خلال 24 ساعة</p>
                     </div>
                   </label>
+                </div>
+
+                {/* Extra shipping fee — admin only */}
+                <div className="border border-orange-200 bg-orange-50 rounded-2xl p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <DollarSign size={16} className="text-orange-600" />
+                    <span className="text-sm font-bold text-[hsl(var(--foreground))]">مصاريف شحن إضافية</span>
+                    <span className="text-[10px] bg-orange-100 text-orange-700 border border-orange-200 px-2 py-0.5 rounded-full font-semibold">للأدمن فقط</span>
+                  </div>
+                  <p className="text-xs text-[hsl(var(--muted-foreground))] mb-3">أضف مصاريف شحن إضافية خاصة بهذا الأوردر (مناطق بعيدة، طوابق، إلخ)</p>
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="number"
+                      min={0}
+                      dir="ltr"
+                      className="input-field w-32 text-center font-mono"
+                      placeholder="0"
+                      {...register('extraShippingFee', { min: 0, valueAsNumber: true })}
+                    />
+                    <span className="text-sm text-[hsl(var(--muted-foreground))]">ج.م</span>
+                  </div>
                 </div>
 
                 {/* General notes */}
@@ -486,34 +577,36 @@ export default function AddOrderModal({ onClose }: Props) {
                   <div className="space-y-2 text-sm">
                     <div className="flex justify-between">
                       <span className="text-[hsl(var(--muted-foreground))]">إجمالي المنتجات:</span>
-                      <span className="font-mono font-semibold">{subtotal.toLocaleString('ar-EG')} ج.م</span>
+                      <span className="font-mono font-semibold">{subtotal.toLocaleString('en-US')} ج.م</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-[hsl(var(--muted-foreground))]">تكلفة الشحن:</span>
-                      <span className="font-mono font-semibold">{SHIPPING_FEE} ج.م</span>
+                      <span className="font-mono font-semibold">{ADMIN_SETTINGS.SHIPPING_FEE} ج.م</span>
                     </div>
                     {watchExpress && (
                       <div className="flex justify-between text-amber-700">
                         <span>شحن سريع:</span>
-                        <span className="font-mono font-semibold">+ {EXPRESS_FEE} ج.م</span>
+                        <span className="font-mono font-semibold">+ {ADMIN_SETTINGS.EXPRESS_FEE} ج.م</span>
+                      </div>
+                    )}
+                    {Number(watchExtraFee) > 0 && (
+                      <div className="flex justify-between text-orange-700">
+                        <span>مصاريف شحن إضافية:</span>
+                        <span className="font-mono font-semibold">+ {Number(watchExtraFee).toLocaleString('en-US')} ج.م</span>
                       </div>
                     )}
                     <div className="border-t border-[hsl(var(--primary))]/20 pt-2 flex justify-between">
                       <span className="font-bold text-[hsl(var(--foreground))]">الإجمالي الكلي:</span>
                       <span className="font-mono font-bold text-lg text-[hsl(var(--primary))]">
-                        {grandTotal.toLocaleString('ar-EG')} ج.م
+                        {grandTotal.toLocaleString('en-US')} ج.م
                       </span>
                     </div>
                   </div>
                 </div>
 
                 <div className="flex justify-between pt-2">
-                  <button type="button" className="btn-secondary" onClick={() => setStep(1)}>
-                    السابق
-                  </button>
-                  <button type="button" className="btn-primary" onClick={() => setStep(3)}>
-                    التالي: المراجعة
-                  </button>
+                  <button type="button" className="btn-secondary" onClick={() => setStep(1)}>السابق</button>
+                  <button type="button" className="btn-primary" onClick={() => setStep(3)}>التالي: المراجعة</button>
                 </div>
               </div>
             )}
@@ -532,8 +625,9 @@ export default function AddOrderModal({ onClose }: Props) {
                     <div className="space-y-1.5 text-sm">
                       <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">الاسم:</span><span className="font-semibold">{watch('customerName') || '—'}</span></div>
                       <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">الموبايل:</span><span className="font-mono">{watch('phone') || '—'}</span></div>
-                      {watch('phone2') && <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">موبايل ٢:</span><span className="font-mono">{watch('phone2')}</span></div>}
-                      <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">المنطقة:</span><span className="font-semibold">{watch('region')}</span></div>
+                      {watch('phone2') && <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">موبايل 2:</span><span className="font-mono">{watch('phone2')}</span></div>}
+                      <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">المحافظة:</span><span className="font-semibold">{watch('governorate')}</span></div>
+                      <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">المنطقة:</span><span className="font-semibold">{watch('district') || '—'}</span></div>
                       <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">العنوان:</span><span className="text-xs leading-relaxed">{watch('address') || '—'}</span></div>
                     </div>
                   </div>
@@ -541,12 +635,13 @@ export default function AddOrderModal({ onClose }: Props) {
                   <div className="bg-[hsl(var(--muted))]/40 rounded-xl p-4">
                     <p className="text-xs font-bold text-[hsl(var(--muted-foreground))] uppercase tracking-wide mb-2">الملخص المالي</p>
                     <div className="space-y-1.5 text-sm">
-                      <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">المنتجات:</span><span className="font-mono">{subtotal.toLocaleString('ar-EG')} ج.م</span></div>
-                      <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">الشحن:</span><span className="font-mono">{SHIPPING_FEE} ج.م</span></div>
-                      {watchExpress && <div className="flex justify-between text-amber-700"><span>شحن سريع:</span><span className="font-mono">+ {EXPRESS_FEE} ج.م</span></div>}
+                      <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">المنتجات:</span><span className="font-mono">{subtotal.toLocaleString('en-US')} ج.م</span></div>
+                      <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">الشحن:</span><span className="font-mono">{ADMIN_SETTINGS.SHIPPING_FEE} ج.م</span></div>
+                      {watchExpress && <div className="flex justify-between text-amber-700"><span>شحن سريع:</span><span className="font-mono">+ {ADMIN_SETTINGS.EXPRESS_FEE} ج.م</span></div>}
+                      {Number(watchExtraFee) > 0 && <div className="flex justify-between text-orange-700"><span>مصاريف إضافية:</span><span className="font-mono">+ {Number(watchExtraFee).toLocaleString('en-US')} ج.م</span></div>}
                       <div className="border-t border-[hsl(var(--border))] pt-1.5 flex justify-between font-bold">
                         <span>الإجمالي:</span>
-                        <span className="font-mono text-[hsl(var(--primary))] text-base">{grandTotal.toLocaleString('ar-EG')} ج.م</span>
+                        <span className="font-mono text-[hsl(var(--primary))] text-base">{grandTotal.toLocaleString('en-US')} ج.م</span>
                       </div>
                     </div>
                   </div>
@@ -561,17 +656,16 @@ export default function AddOrderModal({ onClose }: Props) {
                       return (
                         <div key={`review-product-${i + 1}`} className="flex items-center justify-between text-sm bg-white rounded-xl px-3 py-2 border border-[hsl(var(--border))]">
                           <div className="flex items-center gap-2">
-                            {colorDef && (
-                              <span className="w-3 h-3 rounded-full border border-gray-300 flex-shrink-0" style={{ backgroundColor: colorDef.hex }} />
-                            )}
+                            <span>{productDef?.image}</span>
+                            {colorDef && <span className="w-3 h-3 rounded-full border border-gray-300 flex-shrink-0" style={{ backgroundColor: colorDef.hex }} />}
                             <span className="font-medium">
                               {productDef?.label} {colorDef ? `(${colorDef.label})` : ''} {p.withFlashlight ? '+ كشاف' : ''}
                             </span>
                           </div>
                           <div className="flex items-center gap-3 text-[hsl(var(--muted-foreground))]">
-                            <span>× {p.quantity}</span>
+                            <span>x {p.quantity}</span>
                             <span className="font-mono font-semibold text-[hsl(var(--foreground))]">
-                              {((p.unitPrice * p.quantity) + (p.withFlashlight ? 150 * p.quantity : 0)).toLocaleString('ar-EG')} ج.م
+                              {((p.unitPrice * p.quantity) + (p.withFlashlight ? 150 * p.quantity : 0)).toLocaleString('en-US')} ج.م
                             </span>
                           </div>
                         </div>
@@ -588,9 +682,7 @@ export default function AddOrderModal({ onClose }: Props) {
                 )}
 
                 <div className="flex justify-between pt-2">
-                  <button type="button" className="btn-secondary" onClick={() => setStep(2)}>
-                    السابق
-                  </button>
+                  <button type="button" className="btn-secondary" onClick={() => setStep(2)}>السابق</button>
                   <button
                     type="submit"
                     disabled={isSubmitting}

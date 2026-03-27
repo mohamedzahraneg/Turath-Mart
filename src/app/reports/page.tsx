@@ -1,19 +1,19 @@
 'use client';
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import AppLayout from '@/components/AppLayout';
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
 } from 'recharts';
-import { TrendingUp, TrendingDown, Package, DollarSign, RotateCcw, Download } from 'lucide-react';
+import { TrendingUp, TrendingDown, Package, DollarSign, RotateCcw, Download, FileSpreadsheet, FileText, X } from 'lucide-react';
 
-const monthlyData = [
-  { month: 'أكتوبر', orders: 320, delivered: 290, returned: 18, revenue: 96000 },
-  { month: 'نوفمبر', orders: 410, delivered: 375, returned: 22, revenue: 123000 },
-  { month: 'ديسمبر', orders: 520, delivered: 480, returned: 28, revenue: 156000 },
-  { month: 'يناير', orders: 380, delivered: 345, returned: 20, revenue: 114000 },
-  { month: 'فبراير', orders: 460, delivered: 420, returned: 25, revenue: 138000 },
-  { month: 'مارس', orders: 490, delivered: 450, returned: 21, revenue: 147000 },
+const ALL_DATA = [
+  { month: 'أكتوبر', orders: 320, delivered: 290, returned: 18, revenue: 96000, period: 'q4' },
+  { month: 'نوفمبر', orders: 410, delivered: 375, returned: 22, revenue: 123000, period: 'q4' },
+  { month: 'ديسمبر', orders: 520, delivered: 480, returned: 28, revenue: 156000, period: 'q4' },
+  { month: 'يناير', orders: 380, delivered: 345, returned: 20, revenue: 114000, period: 'q1' },
+  { month: 'فبراير', orders: 460, delivered: 420, returned: 25, revenue: 138000, period: 'q1' },
+  { month: 'مارس', orders: 490, delivered: 450, returned: 21, revenue: 147000, period: 'q1' },
 ];
 
 const statusData = [
@@ -40,7 +40,7 @@ const CustomTooltip = ({ active, payload, label }: { active?: boolean; payload?:
           <div key={i} className="flex items-center gap-2 mb-1">
             <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: entry.color }} />
             <span className="text-[hsl(var(--muted-foreground))]">{entry.name}:</span>
-            <span className="font-semibold">{entry.value.toLocaleString('ar-EG')}</span>
+            <span className="font-semibold">{entry.value.toLocaleString('en-US')}</span>
           </div>
         ))}
       </div>
@@ -49,10 +49,76 @@ const CustomTooltip = ({ active, payload, label }: { active?: boolean; payload?:
   return null;
 };
 
-const periods = ['هذا الشهر', 'آخر ٣ أشهر', 'آخر ٦ أشهر', 'هذا العام'];
+const PERIOD_OPTIONS = [
+  { key: 'month', label: 'هذا الشهر', months: 1 },
+  { key: '3months', label: 'آخر 3 أشهر', months: 3 },
+  { key: '6months', label: 'آخر 6 أشهر', months: 6 },
+  { key: 'year', label: 'هذا العام', months: 12 },
+];
+
+function exportReportCSV(data: typeof ALL_DATA) {
+  const headers = ['الشهر', 'الأوردرات', 'المسلمة', 'المرتجعة', 'الإيرادات (ج.م)'];
+  const rows = data.map(d => [d.month, d.orders, d.delivered, d.returned, d.revenue]);
+  const csv = '\uFEFF' + [headers, ...rows].map(r => r.map(c => `"${c}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `zahranship-report-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportReportPDF(data: typeof ALL_DATA, period: string) {
+  const win = window.open('', '_blank', 'width=900,height=600');
+  if (!win) return;
+  const rows = data.map(d => `
+    <tr>
+      <td>${d.month}</td>
+      <td>${d.orders.toLocaleString('en-US')}</td>
+      <td>${d.delivered.toLocaleString('en-US')}</td>
+      <td>${d.returned.toLocaleString('en-US')}</td>
+      <td>${d.revenue.toLocaleString('en-US')} ج.م</td>
+    </tr>
+  `).join('');
+  win.document.write(`
+    <!DOCTYPE html><html dir="rtl" lang="ar">
+    <head><meta charset="UTF-8"><title>تقرير Zahranship</title>
+    <style>
+      body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;direction:rtl;padding:24px;font-size:13px;}
+      h1{font-size:22px;color:#1e3a5f;margin-bottom:4px;}
+      .sub{color:#6b7280;margin-bottom:20px;}
+      table{width:100%;border-collapse:collapse;}
+      th{background:#1e3a5f;color:white;padding:10px 12px;text-align:right;}
+      td{padding:9px 12px;border-bottom:1px solid #e5e7eb;}
+      tr:nth-child(even){background:#f9fafb;}
+      .footer{margin-top:20px;text-align:center;color:#9ca3af;font-size:11px;}
+      @media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+    </style></head>
+    <body>
+      <h1>Zahranship — تقرير الأداء</h1>
+      <p class="sub">الفترة: ${period} — تاريخ التصدير: ${new Date().toLocaleDateString('en-US')}</p>
+      <table>
+        <thead><tr><th>الشهر</th><th>الأوردرات</th><th>المسلمة</th><th>المرتجعة</th><th>الإيرادات</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="footer">Zahranship — نظام إدارة الشحن</div>
+      <script>window.onload=function(){window.print();window.close();}<\/script>
+    </body></html>
+  `);
+  win.document.close();
+}
 
 export default function ReportsPage() {
-  const [activePeriod, setActivePeriod] = useState('آخر ٦ أشهر');
+  const [activePeriod, setActivePeriod] = useState('6months');
+  const [regionFilter, setRegionFilter] = useState('الكل');
+  const [showExportMenu, setShowExportMenu] = useState(false);
+
+  const monthlyData = useMemo(() => {
+    const p = PERIOD_OPTIONS.find(p => p.key === activePeriod);
+    const months = p?.months || 6;
+    return ALL_DATA.slice(-months);
+  }, [activePeriod]);
 
   const totalOrders = monthlyData.reduce((s, d) => s + d.orders, 0);
   const totalDelivered = monthlyData.reduce((s, d) => s + d.delivered, 0);
@@ -60,6 +126,7 @@ export default function ReportsPage() {
   const totalRevenue = monthlyData.reduce((s, d) => s + d.revenue, 0);
   const deliveryRate = Math.round((totalDelivered / totalOrders) * 100);
   const returnRate = Math.round((totalReturned / totalOrders) * 100);
+  const currentPeriodLabel = PERIOD_OPTIONS.find(p => p.key === activePeriod)?.label || '';
 
   return (
     <AppLayout currentPath="/reports">
@@ -70,45 +137,91 @@ export default function ReportsPage() {
             <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">التقارير والإحصائيات</h1>
             <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">تحليل شامل لأداء الشحن والمبيعات</p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
+            {/* Period filter */}
             <div className="flex bg-[hsl(var(--muted))] rounded-xl p-1 gap-1">
-              {periods.map((p) => (
+              {PERIOD_OPTIONS.map((p) => (
                 <button
-                  key={p}
-                  onClick={() => setActivePeriod(p)}
-                  className={`text-xs px-3 py-1.5 rounded-lg font-semibold transition-all ${activePeriod === p ? 'bg-white text-[hsl(var(--primary))] shadow-sm' : 'text-[hsl(var(--muted-foreground))]'}`}
+                  key={p.key}
+                  onClick={() => setActivePeriod(p.key)}
+                  className={`text-xs px-3 py-1.5 rounded-lg font-semibold transition-all ${activePeriod === p.key ? 'bg-white text-[hsl(var(--primary))] shadow-sm' : 'text-[hsl(var(--muted-foreground))]'}`}
                 >
-                  {p}
+                  {p.label}
                 </button>
               ))}
             </div>
-            <button className="flex items-center gap-2 px-4 py-2 bg-[hsl(var(--primary))] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity">
-              <Download size={16} />
-              تصدير
-            </button>
+            {/* Region filter */}
+            <select
+              className="input-field w-auto text-sm"
+              value={regionFilter}
+              onChange={(e) => setRegionFilter(e.target.value)}
+            >
+              {['الكل', 'القاهرة', 'الجيزة', 'القليوبية'].map(r => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </select>
+            {/* Export */}
+            <div className="relative">
+              <button
+                className="flex items-center gap-2 px-4 py-2 bg-[hsl(var(--primary))] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
+                onClick={() => setShowExportMenu(!showExportMenu)}
+              >
+                <Download size={16} />
+                تصدير
+              </button>
+              {showExportMenu && (
+                <div className="absolute left-0 top-full mt-1 bg-white border border-[hsl(var(--border))] rounded-xl shadow-lg z-20 min-w-[170px] overflow-hidden">
+                  <button
+                    className="w-full flex items-center gap-2 px-4 py-2.5 text-sm hover:bg-[hsl(var(--muted))] transition-colors text-right"
+                    onClick={() => { exportReportCSV(monthlyData); setShowExportMenu(false); }}
+                  >
+                    <FileSpreadsheet size={15} className="text-green-600" />
+                    تصدير Excel (CSV)
+                  </button>
+                  <button
+                    className="w-full flex items-center gap-2 px-4 py-2.5 text-sm hover:bg-[hsl(var(--muted))] transition-colors text-right border-t border-[hsl(var(--border))]"
+                    onClick={() => { exportReportPDF(monthlyData, currentPeriodLabel); setShowExportMenu(false); }}
+                  >
+                    <FileText size={15} className="text-red-500" />
+                    تصدير PDF
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
+
+        {/* Active filters indicator */}
+        {regionFilter !== 'الكل' && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-[hsl(var(--muted-foreground))]">فلاتر نشطة:</span>
+            <span className="flex items-center gap-1 bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))] text-xs px-2 py-1 rounded-lg font-semibold">
+              {regionFilter}
+              <button onClick={() => setRegionFilter('الكل')}><X size={12} /></button>
+            </span>
+          </div>
+        )}
 
         {/* KPI Cards */}
         <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
           {[
-            { label: 'إجمالي الأوردرات', value: totalOrders.toLocaleString('ar-EG'), icon: <Package size={22} />, color: 'blue', change: 8.2 },
+            { label: 'إجمالي الأوردرات', value: totalOrders.toLocaleString('en-US'), icon: <Package size={22} />, color: 'blue', change: 8.2 },
             { label: 'إجمالي الإيرادات', value: `${(totalRevenue / 1000).toFixed(0)}K ج.م`, icon: <DollarSign size={22} />, color: 'green', change: 12.5 },
-            { label: 'نسبة التسليم', value: `${deliveryRate}٪`, icon: <TrendingUp size={22} />, color: 'purple', change: 2.1 },
-            { label: 'نسبة المرتجعات', value: `${returnRate}٪`, icon: <RotateCcw size={22} />, color: 'red', change: -1.3 },
+            { label: 'نسبة التسليم', value: `${deliveryRate}%`, icon: <TrendingUp size={22} />, color: 'purple', change: 2.1 },
+            { label: 'نسبة المرتجعات', value: `${returnRate}%`, icon: <RotateCcw size={22} />, color: 'red', change: -1.3 },
           ].map((kpi, i) => (
             <div key={i} className="kpi-card">
               <div className="flex items-start justify-between mb-3">
                 <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
                   kpi.color === 'blue' ? 'bg-blue-50 text-blue-600' :
                   kpi.color === 'green' ? 'bg-green-50 text-green-600' :
-                  kpi.color === 'purple'? 'bg-purple-50 text-purple-600' : 'bg-red-50 text-red-600'
+                  kpi.color === 'purple' ? 'bg-purple-50 text-purple-600' : 'bg-red-50 text-red-600'
                 }`}>
                   {kpi.icon}
                 </div>
                 <span className={`text-xs font-semibold px-2 py-1 rounded-lg flex items-center gap-1 ${kpi.change > 0 ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
                   {kpi.change > 0 ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
-                  {Math.abs(kpi.change)}٪
+                  {Math.abs(kpi.change)}%
                 </span>
               </div>
               <p className="text-xs text-[hsl(var(--muted-foreground))] mb-1">{kpi.label}</p>
@@ -119,11 +232,10 @@ export default function ReportsPage() {
 
         {/* Charts Row */}
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-          {/* Revenue & Orders Trend */}
           <div className="xl:col-span-2 card-section p-5">
             <div className="mb-5">
               <h3 className="text-base font-bold text-[hsl(var(--foreground))]">اتجاه الأوردرات والإيرادات</h3>
-              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">آخر ٦ أشهر</p>
+              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">{currentPeriodLabel}</p>
             </div>
             <ResponsiveContainer width="100%" height={250}>
               <AreaChart data={monthlyData} margin={{ top: 5, right: 5, left: -10, bottom: 5 }}>
@@ -143,12 +255,11 @@ export default function ReportsPage() {
                 <Tooltip content={<CustomTooltip />} />
                 <Legend wrapperStyle={{ fontFamily: 'Cairo', fontSize: '12px' }} />
                 <Area type="monotone" dataKey="orders" name="الأوردرات" stroke="hsl(211,67%,28%)" fill="url(#gradOrders2)" strokeWidth={2.5} />
-                <Area type="monotone" dataKey="delivered" name="المسلّمة" stroke="hsl(142,71%,35%)" fill="url(#gradDelivered2)" strokeWidth={2.5} />
+                <Area type="monotone" dataKey="delivered" name="المسلمة" stroke="hsl(142,71%,35%)" fill="url(#gradDelivered2)" strokeWidth={2.5} />
               </AreaChart>
             </ResponsiveContainer>
           </div>
 
-          {/* Status Pie */}
           <div className="card-section p-5">
             <div className="mb-5">
               <h3 className="text-base font-bold text-[hsl(var(--foreground))]">توزيع حالات الأوردرات</h3>
@@ -161,7 +272,7 @@ export default function ReportsPage() {
                     <Cell key={`cell-${index}`} fill={entry.color} />
                   ))}
                 </Pie>
-                <Tooltip formatter={(value: number) => [value.toLocaleString('ar-EG'), '']} />
+                <Tooltip formatter={(value: number) => [value.toLocaleString('en-US'), '']} />
               </PieChart>
             </ResponsiveContainer>
             <div className="space-y-2 mt-2">
@@ -171,7 +282,7 @@ export default function ReportsPage() {
                     <div className="w-3 h-3 rounded-full" style={{ backgroundColor: s.color }} />
                     <span className="text-[hsl(var(--muted-foreground))]">{s.name}</span>
                   </div>
-                  <span className="font-semibold">{s.value}</span>
+                  <span className="font-semibold">{s.value.toLocaleString('en-US')}</span>
                 </div>
               ))}
             </div>
@@ -180,11 +291,10 @@ export default function ReportsPage() {
 
         {/* Monthly Bar + Top Products */}
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          {/* Monthly Bar */}
           <div className="card-section p-5">
             <div className="mb-5">
               <h3 className="text-base font-bold text-[hsl(var(--foreground))]">المقارنة الشهرية</h3>
-              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">المستلمة / المسلّمة / المرتجعة</p>
+              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">المستلمة / المسلمة / المرتجعة</p>
             </div>
             <ResponsiveContainer width="100%" height={220}>
               <BarChart data={monthlyData} margin={{ top: 5, right: 5, left: -10, bottom: 5 }}>
@@ -194,16 +304,15 @@ export default function ReportsPage() {
                 <Tooltip content={<CustomTooltip />} />
                 <Legend wrapperStyle={{ fontFamily: 'Cairo', fontSize: '12px' }} />
                 <Bar dataKey="orders" name="مستلمة" fill="hsl(211,67%,28%)" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="delivered" name="مسلّمة" fill="hsl(142,71%,35%)" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="delivered" name="مسلمة" fill="hsl(142,71%,35%)" radius={[4, 4, 0, 0]} />
                 <Bar dataKey="returned" name="مرتجعة" fill="hsl(0,72%,51%)" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
 
-          {/* Top Products */}
           <div className="card-section p-5">
             <div className="mb-5">
-              <h3 className="text-base font-bold text-[hsl(var(--foreground))]">أكثر المنتجات مبيعاً</h3>
+              <h3 className="text-base font-bold text-[hsl(var(--foreground))]">أكثر المنتجات مبيعا</h3>
               <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">هذا الشهر</p>
             </div>
             <div className="space-y-3">
@@ -215,13 +324,10 @@ export default function ReportsPage() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-sm font-semibold text-[hsl(var(--foreground))] truncate">{p.name}</span>
-                      <span className="text-xs text-[hsl(var(--muted-foreground))] mr-2 flex-shrink-0">{p.orders} أوردر</span>
+                      <span className="text-xs text-[hsl(var(--muted-foreground))] mr-2 flex-shrink-0">{p.orders.toLocaleString('en-US')} أوردر</span>
                     </div>
                     <div className="w-full bg-gray-100 rounded-full h-1.5">
-                      <div
-                        className="h-1.5 rounded-full bg-[hsl(var(--primary))]"
-                        style={{ width: `${(p.orders / topProducts[0].orders) * 100}%` }}
-                      />
+                      <div className="h-1.5 rounded-full bg-[hsl(var(--primary))]" style={{ width: `${(p.orders / topProducts[0].orders) * 100}%` }} />
                     </div>
                   </div>
                   <span className="text-xs font-bold text-green-600 flex-shrink-0">{(p.revenue / 1000).toFixed(0)}K</span>
