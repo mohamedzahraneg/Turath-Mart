@@ -330,8 +330,8 @@ export default function OrdersTableSection() {
   const [supplySuccess, setSupplySuccess] = useState('');
   const [deleteModal, setDeleteModal] = useState<{ order: Order } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
-  const { currentRole } = useAuth();
-  const isAdmin = currentRole === 'manager';
+  const { currentRole, currentRoleId } = useAuth();
+  const isAdmin = currentRole === 'manager' || (currentRoleId != null);
 
   // Load deposits from localStorage on mount
   useEffect(() => {
@@ -513,31 +513,25 @@ export default function OrdersTableSection() {
     setTimeout(() => setSupplySuccess(''), 4000);
   };
 
-  const handleDeleteOrder = async (order: Order) => {
-    setIsDeleting(true);
-    try {
-      // Delete from Supabase
-      const supabase = createClient();
-      await supabase.from('zahranship_orders').delete().eq('id', order.id);
-    } catch {
-      // ignore Supabase errors, still remove locally
-    }
-
-    try {
-      // Delete from localStorage
-      const saved = JSON.parse(localStorage.getItem('zahranship_orders') || '[]') as Order[];
-      const updated = saved.filter(o => o.id !== order.id);
-      localStorage.setItem('zahranship_orders', JSON.stringify(updated));
-    } catch { /* ignore */ }
-
-    // Always update local state and close modal
+  const handleDeleteOrder = (order: Order) => {
+    // Immediately remove from local state (optimistic update)
     setAllOrders(prev => prev.filter(o => o.id !== order.id));
     setSelectedRows(prev => { const s = new Set(prev); s.delete(order.id); return s; });
     setDeleteModal(null);
-    setIsDeleting(false);
 
-    // Notify other components
-    window.dispatchEvent(new CustomEvent('zahranship_orders_updated'));
+    // Remove from localStorage
+    try {
+      const saved = JSON.parse(localStorage.getItem('zahranship_orders') || '[]') as Order[];
+      localStorage.setItem('zahranship_orders', JSON.stringify(saved.filter(o => o.id !== order.id)));
+    } catch { /* ignore */ }
+
+    // Delete from Supabase in background (fire and forget)
+    try {
+      const supabase = createClient();
+      supabase.from('zahranship_orders').delete().eq('id', order.id).then(() => {
+        window.dispatchEvent(new CustomEvent('zahranship_orders_updated'));
+      });
+    } catch { /* ignore */ }
   };
 
   return (
@@ -898,7 +892,11 @@ export default function OrdersTableSection() {
                             <FileText size={14} />
                           </button>
                           {isAdmin && (
-                            <button onClick={() => setDeleteModal({ order })} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors" title="حذف الأوردر">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setDeleteModal({ order }); }}
+                              className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
+                              title="حذف الأوردر"
+                            >
                               <Trash2 size={14} />
                             </button>
                           )}
@@ -950,9 +948,9 @@ export default function OrdersTableSection() {
       {deleteModal && (
         <DeleteConfirmModal
           order={deleteModal.order}
-          onClose={() => !isDeleting && setDeleteModal(null)}
+          onClose={() => setDeleteModal(null)}
           onConfirm={() => handleDeleteOrder(deleteModal.order)}
-          isDeleting={isDeleting}
+          isDeleting={false}
         />
       )}
     </>
