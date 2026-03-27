@@ -519,25 +519,25 @@ export default function OrdersTableSection() {
       // Delete from Supabase
       const supabase = createClient();
       await supabase.from('zahranship_orders').delete().eq('id', order.id);
-
-      // Delete from localStorage
-      try {
-        const saved = JSON.parse(localStorage.getItem('zahranship_orders') || '[]') as Order[];
-        const updated = saved.filter(o => o.id !== order.id);
-        localStorage.setItem('zahranship_orders', JSON.stringify(updated));
-      } catch { /* ignore */ }
-
-      // Update local state
-      setAllOrders(prev => prev.filter(o => o.id !== order.id));
-      setSelectedRows(prev => { const s = new Set(prev); s.delete(order.id); return s; });
-      setDeleteModal(null);
-
-      // Notify other components
-      window.dispatchEvent(new CustomEvent('zahranship_orders_updated'));
     } catch {
-      // silently fail
+      // ignore Supabase errors, still remove locally
     }
+
+    try {
+      // Delete from localStorage
+      const saved = JSON.parse(localStorage.getItem('zahranship_orders') || '[]') as Order[];
+      const updated = saved.filter(o => o.id !== order.id);
+      localStorage.setItem('zahranship_orders', JSON.stringify(updated));
+    } catch { /* ignore */ }
+
+    // Always update local state and close modal
+    setAllOrders(prev => prev.filter(o => o.id !== order.id));
+    setSelectedRows(prev => { const s = new Set(prev); s.delete(order.id); return s; });
+    setDeleteModal(null);
     setIsDeleting(false);
+
+    // Notify other components
+    window.dispatchEvent(new CustomEvent('zahranship_orders_updated'));
   };
 
   return (
