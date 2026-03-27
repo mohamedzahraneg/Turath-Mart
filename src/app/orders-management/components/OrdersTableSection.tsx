@@ -1,6 +1,6 @@
 'use client';
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { Search, ChevronDown, ChevronUp, Eye, Trash2, FileText, ChevronRight, ChevronLeft, CheckSquare, TrendingUp, DollarSign, Truck, ArrowDownCircle, History, Zap } from 'lucide-react';
+import { Search, ChevronDown, ChevronUp, Eye, Trash2, FileText, ChevronRight, ChevronLeft, CheckSquare, TrendingUp, DollarSign, Truck, ArrowDownCircle, History, Zap, Plus, X } from 'lucide-react';
 import StatusUpdateModal from './StatusUpdateModal';
 import OrderDetailModal from './OrderDetailModal';
 import AuditLogModal from './AuditLogModal';
@@ -35,6 +35,19 @@ interface Order {
   delegateName?: string;
 }
 
+interface DepositEntry {
+  amount: number;
+  date: string;
+  note: string;
+}
+
+interface DepositsStore {
+  [delegate: string]: {
+    deposited: number;
+    deposits: DepositEntry[];
+  };
+}
+
 const STATUS_MAP: Record<string, { label: string; cls: string }> = {
   new: { label: 'جديد', cls: 'status-new' },
   preparing: { label: 'جاري التجهيز', cls: 'status-preparing' },
@@ -56,40 +69,23 @@ const PRODUCT_FILTER_OPTIONS = [
   { value: 'كعبة', label: '🕋 كعبة' },
 ];
 
-const MOCK_ORDERS: Order[] = [
-  { id: 'order-001', orderNum: 'ZSH-2026-0047', createdBy: 'محمد حسن', ip: '197.32.45.112', createdByLocation: 'القاهرة، مصر', createdByDevice: 'كمبيوتر', customer: 'أحمد محمود السيد', phone: '01012345678', phone2: '01198765432', region: 'القاهرة', district: 'مدينة نصر', address: 'شارع عباس العقاد، عمارة 5 شقة 12', products: 'حامل مصحف بني x 2', quantity: 2, subtotal: 600, shippingFee: 50, total: 650, status: 'shipping', date: '27/03/2026', time: '09:32:14', day: 'الجمعة', notes: 'العميل يريد التسليم في الصباح', delegateName: 'علي محمود' },
-  { id: 'order-002', orderNum: 'ZSH-2026-0046', createdBy: 'سارة أحمد', ip: '197.32.45.113', createdByLocation: 'الجيزة، مصر', createdByDevice: 'موبايل', customer: 'فاطمة علي حسن', phone: '01123456789', region: 'الجيزة', district: 'الدقي', address: 'شارع التحرير، برج المنار ط3', products: 'كعبة x 1 + مصحف x 2', quantity: 3, subtotal: 840, shippingFee: 50, total: 890, status: 'delivered', date: '27/03/2026', time: '09:15:33', day: 'الجمعة', delegateName: 'علي محمود' },
-  { id: 'order-003', orderNum: 'ZSH-2026-0045', createdBy: 'محمد حسن', ip: '197.32.45.114', createdByLocation: 'القاهرة، مصر', createdByDevice: 'كمبيوتر', customer: 'محمد عبد الرحمن', phone: '01234567890', region: 'القليوبية', district: 'شبرا الخيمة', address: 'شارع النيل، مبنى رقم 14', products: 'حامل مصحف ذهبي x 1', quantity: 1, subtotal: 330, shippingFee: 50, total: 380, status: 'new', date: '27/03/2026', time: '08:55:07', day: 'الجمعة', delegateName: 'خالد سعيد' },
-  { id: 'order-004', orderNum: 'ZSH-2026-0044', createdBy: 'أميرة محمود', ip: '197.32.45.115', createdByLocation: 'القاهرة، مصر', createdByDevice: 'تابلت', customer: 'سارة إبراهيم خليل', phone: '01056789012', region: 'القاهرة', district: 'المعادي', address: 'شارع 9، فيلا 23', products: 'كشاف x 3', quantity: 3, subtotal: 450, shippingFee: 50, extraShippingFee: 30, total: 530, status: 'preparing', date: '27/03/2026', time: '08:40:51', day: 'الجمعة', delegateName: 'علي محمود' },
-  { id: 'order-005', orderNum: 'ZSH-2026-0043', createdBy: 'سارة أحمد', ip: '197.32.45.116', createdByLocation: 'الجيزة، مصر', createdByDevice: 'موبايل', customer: 'عمر حامد الشريف', phone: '01198765432', region: 'الجيزة', district: 'فيصل', address: 'شارع البحر الأعظم، عمارة 7', products: 'حامل مصحف أسود x 1 + كشاف x 1', quantity: 2, subtotal: 470, shippingFee: 100, expressShipping: true, total: 570, status: 'warehouse', date: '26/03/2026', time: '16:20:44', day: 'الخميس', delegateName: 'خالد سعيد' },
-  { id: 'order-006', orderNum: 'ZSH-2026-0042', createdBy: 'محمد حسن', ip: '197.32.45.117', createdByLocation: 'القاهرة، مصر', createdByDevice: 'كمبيوتر', customer: 'نور الدين مصطفى', phone: '01067891234', region: 'القاهرة', district: 'هليوبوليس (مصر الجديدة)', address: 'شارع النزهة، شقة 45', products: 'كرسي x 2', quantity: 2, subtotal: 1150, shippingFee: 50, total: 1200, status: 'returned', date: '26/03/2026', time: '15:50:19', day: 'الخميس', notes: 'العميل رفض الاستلام', delegateName: 'علي محمود' },
-  { id: 'order-007', orderNum: 'ZSH-2026-0041', createdBy: 'أميرة محمود', ip: '197.32.45.118', createdByLocation: 'القليوبية، مصر', createdByDevice: 'موبايل', customer: 'هدى رمضان أحمد', phone: '01145678901', region: 'القليوبية', district: 'قليوب', address: 'شارع السكة الحديد، عمارة 2', products: 'مصحف x 5', quantity: 5, subtotal: 700, shippingFee: 50, total: 750, status: 'cancelled', date: '26/03/2026', time: '14:30:02', day: 'الخميس', notes: 'إلغاء بطلب العميل', delegateName: 'خالد سعيد' },
-  { id: 'order-008', orderNum: 'ZSH-2026-0040', createdBy: 'سارة أحمد', ip: '197.32.45.119', createdByLocation: 'القاهرة، مصر', createdByDevice: 'كمبيوتر', customer: 'خالد عبد العزيز', phone: '01012223344', region: 'القاهرة', district: 'مصر الجديدة', address: 'شارع الثورة، عمارة 10', products: 'حامل مصحف أبيض x 2 + مصحف x 1', quantity: 3, subtotal: 760, shippingFee: 50, total: 810, status: 'delivered', date: '25/03/2026', time: '11:20:38', day: 'الأربعاء', delegateName: 'علي محمود' },
-  { id: 'order-009', orderNum: 'ZSH-2026-0039', createdBy: 'محمد حسن', ip: '197.32.45.120', createdByLocation: 'الجيزة، مصر', createdByDevice: 'موبايل', customer: 'ريم حسام الدين', phone: '01534567890', region: 'الجيزة', district: 'إمبابة', address: 'شارع طه حسين، رقم 33', products: 'كعبة x 1', quantity: 1, subtotal: 450, shippingFee: 50, total: 500, status: 'shipping', date: '25/03/2026', time: '10:05:55', day: 'الأربعاء', delegateName: 'خالد سعيد' },
-  { id: 'order-010', orderNum: 'ZSH-2026-0038', createdBy: 'أميرة محمود', ip: '197.32.45.121', createdByLocation: 'القليوبية، مصر', createdByDevice: 'تابلت', customer: 'طارق سعيد منصور', phone: '01267891234', region: 'القليوبية', district: 'الخانكة', address: 'شارع المحطة، مبنى 5', products: 'حامل مصحف صدف x 1 + كشاف x 1', quantity: 2, subtotal: 560, shippingFee: 50, total: 610, status: 'preparing', date: '25/03/2026', time: '09:45:11', day: 'الأربعاء', delegateName: 'علي محمود' },
-];
+const DEPOSITS_STORAGE_KEY = 'zahranship_deposits';
 
-// Mock cash deposits per delegate
-const MOCK_DEPOSITS: Record<string, { deposited: number; deposits: { amount: number; date: string; note: string }[] }> = {
-  'علي محمود': {
-    deposited: 1500,
-    deposits: [
-      { amount: 1000, date: '26/03/2026', note: 'توريد نقدي' },
-      { amount: 500, date: '27/03/2026', note: 'توريد جزئي' },
-    ]
-  },
-  'خالد سعيد': {
-    deposited: 800,
-    deposits: [
-      { amount: 800, date: '26/03/2026', note: 'توريد نقدي' },
-    ]
-  },
-};
+function loadDepositsFromStorage(): DepositsStore {
+  try {
+    return JSON.parse(localStorage.getItem(DEPOSITS_STORAGE_KEY) || '{}');
+  } catch {
+    return {};
+  }
+}
+
+function saveDepositsToStorage(data: DepositsStore) {
+  localStorage.setItem(DEPOSITS_STORAGE_KEY, JSON.stringify(data));
+}
 
 type SortField = 'orderNum' | 'customer' | 'region' | 'total' | 'status' | 'date';
 type SortDir = 'asc' | 'desc';
 
-// Parse date string DD/MM/YYYY to comparable value
 function parseDateStr(dateStr: string): Date {
   const [d, m, y] = dateStr.split('/').map(Number);
   return new Date(y, m - 1, d);
@@ -157,6 +153,108 @@ function exportToPDF(orders: Order[]) {
   win.document.close();
 }
 
+// ─── Supply Modal ─────────────────────────────────────────────────────────────
+interface SupplyModalProps {
+  delegate: string;
+  maxAmount: number;
+  onClose: () => void;
+  onConfirm: (amount: number, note: string) => void;
+}
+
+function SupplyModal({ delegate, maxAmount, onClose, onConfirm }: SupplyModalProps) {
+  const [amount, setAmount] = useState('');
+  const [note, setNote] = useState('توريد نقدي');
+  const [error, setError] = useState('');
+
+  const handleSubmit = () => {
+    const num = parseFloat(amount);
+    if (!amount || isNaN(num) || num <= 0) {
+      setError('يرجى إدخال مبلغ صحيح أكبر من صفر');
+      return;
+    }
+    if (num > maxAmount) {
+      setError(`المبلغ المدخل (${num.toLocaleString('en-US')} ج.م) أكبر من المتبقي للتوريد (${maxAmount.toLocaleString('en-US')} ج.م)`);
+      return;
+    }
+    onConfirm(num, note || 'توريد نقدي');
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-5">
+          <div className="flex items-center gap-2">
+            <div className="w-9 h-9 bg-purple-100 rounded-xl flex items-center justify-center">
+              <ArrowDownCircle size={18} className="text-purple-600" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-[hsl(var(--foreground))]">تسجيل توريد</h3>
+              <p className="text-xs text-[hsl(var(--muted-foreground))]">المندوب: {delegate}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))] transition-colors">
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4">
+          <p className="text-xs font-semibold text-amber-700">المتبقي للتوريد</p>
+          <p className="text-2xl font-bold font-mono text-amber-800">{maxAmount.toLocaleString('en-US')} <span className="text-sm font-normal">ج.م</span></p>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-semibold mb-1.5 text-[hsl(var(--foreground))]">المبلغ المُوَرَّد (ج.م) <span className="text-red-500">*</span></label>
+            <input
+              type="number"
+              min="1"
+              max={maxAmount}
+              className="input-field w-full text-lg font-mono"
+              placeholder="أدخل المبلغ..."
+              value={amount}
+              onChange={e => { setAmount(e.target.value); setError(''); }}
+              dir="ltr"
+              autoFocus
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-semibold mb-1.5 text-[hsl(var(--foreground))]">ملاحظة</label>
+            <input
+              type="text"
+              className="input-field w-full"
+              placeholder="توريد نقدي..."
+              value={note}
+              onChange={e => setNote(e.target.value)}
+            />
+          </div>
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-xl px-3 py-2">
+              <p className="text-xs text-red-600 font-semibold">{error}</p>
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-3 mt-6">
+          <button
+            onClick={handleSubmit}
+            className="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-bold py-2.5 rounded-xl transition-colors flex items-center justify-center gap-2"
+          >
+            <ArrowDownCircle size={16} />
+            تأكيد التوريد
+          </button>
+          <button
+            onClick={onClose}
+            className="px-5 py-2.5 border border-[hsl(var(--border))] rounded-xl font-semibold hover:bg-[hsl(var(--muted))] transition-colors text-sm"
+          >
+            إلغاء
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
 export default function OrdersTableSection() {
   const [search, setSearch] = useState('');
   const [regionFilter, setRegionFilter] = useState('الكل');
@@ -174,10 +272,18 @@ export default function OrdersTableSection() {
   const [auditModal, setAuditModal] = useState<{ order: Order } | null>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showDelegateStats, setShowDelegateStats] = useState(false);
-  const [selectedDelegate, setSelectedDelegate] = useState('علي محمود');
-  const [allOrders, setAllOrders] = useState<Order[]>(MOCK_ORDERS);
+  const [selectedDelegate, setSelectedDelegate] = useState('');
+  const [allOrders, setAllOrders] = useState<Order[]>([]);
   const [liveUpdateCount, setLiveUpdateCount] = useState(0);
   const [lastUpdateTime, setLastUpdateTime] = useState<string | null>(null);
+  const [depositsStore, setDepositsStore] = useState<DepositsStore>({});
+  const [showSupplyModal, setShowSupplyModal] = useState(false);
+  const [supplySuccess, setSupplySuccess] = useState('');
+
+  // Load deposits from localStorage on mount
+  useEffect(() => {
+    setDepositsStore(loadDepositsFromStorage());
+  }, []);
 
   const loadOrders = useCallback(async () => {
     try {
@@ -225,27 +331,23 @@ export default function OrdersTableSection() {
         // Supabase fetch failed, continue with localStorage only
       }
 
-      // 3. Merge: Supabase + localStorage take priority over MOCK_ORDERS
-      const realOrderIds = new Set([
-        ...supabaseOrders.map((o) => o.id),
-        ...saved.map((o) => o.id),
-      ]);
-
-      // Build merged map: supabase first, then localStorage overrides (for status updates)
+      // 3. Merge: Supabase + localStorage (no mock data)
       const mergedMap = new Map<string, Order>();
       supabaseOrders.forEach((o) => mergedMap.set(o.id, o));
-      saved.forEach((o) => mergedMap.set(o.id, o)); // localStorage overrides supabase for latest status
+      saved.forEach((o) => mergedMap.set(o.id, o));
 
       const realOrders = Array.from(mergedMap.values());
-      const uniqueMock = MOCK_ORDERS.filter((o) => !realOrderIds.has(o.id));
+      setAllOrders(realOrders);
 
+      // Set default selected delegate if not set
       if (realOrders.length > 0) {
-        setAllOrders([...realOrders, ...uniqueMock]);
-      } else {
-        setAllOrders(MOCK_ORDERS);
+        const delegates = [...new Set(realOrders.map(o => o.delegateName).filter(Boolean))] as string[];
+        if (delegates.length > 0) {
+          setSelectedDelegate(prev => prev || delegates[0]);
+        }
       }
     } catch {
-      setAllOrders(MOCK_ORDERS);
+      setAllOrders([]);
     }
   }, []);
 
@@ -259,7 +361,6 @@ export default function OrdersTableSection() {
     window.addEventListener('zahranship_orders_updated', handleUpdate);
     window.addEventListener('storage', handleUpdate);
 
-    // Poll Supabase every 15 seconds for new orders from other sessions
     const interval = setInterval(() => {
       loadOrders();
     }, 15000);
@@ -282,7 +383,6 @@ export default function OrdersTableSection() {
       const matchRegion = regionFilter === 'الكل' || o.region === regionFilter;
       const matchStatus = statusFilter === 'الكل' || o.status === statusFilter;
       const matchProduct = productFilter === 'الكل' || o.products.includes(productFilter);
-      // Date filter
       let matchDate = true;
       if (dateFrom || dateTo) {
         const orderDate = parseDateStr(o.date);
@@ -338,8 +438,27 @@ export default function OrdersTableSection() {
   const delegateShippingIncome = delegateOrders.reduce((s, o) => s + o.shippingFee, 0);
   const delegateExtraFees = delegateOrders.reduce((s, o) => s + (o.extraShippingFee || 0), 0);
   const delegateNetIncome = delegateShippingIncome - delegateExtraFees;
-  const depositInfo = MOCK_DEPOSITS[selectedDelegate] || { deposited: 0, deposits: [] };
-  const delegateAmountDue = delegateTotalValue - depositInfo.deposited;
+  const depositInfo = depositsStore[selectedDelegate] || { deposited: 0, deposits: [] };
+  const delegateAmountDue = Math.max(0, delegateTotalValue - depositInfo.deposited);
+
+  const handleSupplyConfirm = (amount: number, note: string) => {
+    const now = new Date();
+    const dateStr = `${now.getDate().toString().padStart(2, '0')}/${(now.getMonth() + 1).toString().padStart(2, '0')}/${now.getFullYear()}`;
+    const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+
+    const updated = { ...depositsStore };
+    if (!updated[selectedDelegate]) {
+      updated[selectedDelegate] = { deposited: 0, deposits: [] };
+    }
+    updated[selectedDelegate].deposited += amount;
+    updated[selectedDelegate].deposits.unshift({ amount, date: `${dateStr} ${timeStr}`, note });
+
+    saveDepositsToStorage(updated);
+    setDepositsStore(updated);
+    setShowSupplyModal(false);
+    setSupplySuccess(`تم تسجيل توريد ${amount.toLocaleString('en-US')} ج.م بنجاح`);
+    setTimeout(() => setSupplySuccess(''), 4000);
+  };
 
   return (
     <>
@@ -353,6 +472,14 @@ export default function OrdersTableSection() {
             {lastUpdateTime && (
               <span className="text-xs text-green-600 mr-auto">آخر تحديث: {lastUpdateTime}</span>
             )}
+          </div>
+        )}
+
+        {/* Supply success toast */}
+        {supplySuccess && (
+          <div className="flex items-center gap-2 px-4 py-2.5 bg-purple-50 border-b border-purple-200 fade-in">
+            <div className="w-2 h-2 bg-purple-500 rounded-full" />
+            <span className="text-xs text-purple-700 font-semibold">✅ {supplySuccess}</span>
           </div>
         )}
 
@@ -375,77 +502,95 @@ export default function OrdersTableSection() {
               <div className="flex items-center gap-3 flex-wrap">
                 <span className="text-xs font-semibold text-[hsl(var(--muted-foreground))]">المندوب:</span>
                 <div className="flex gap-2 flex-wrap">
-                  {delegates.map(d => (
-                    <button
-                      key={d}
-                      onClick={() => setSelectedDelegate(d)}
-                      className={`text-xs px-3 py-1.5 rounded-xl font-semibold transition-all border ${selectedDelegate === d ? 'bg-[hsl(var(--primary))] text-white border-[hsl(var(--primary))]' : 'border-[hsl(var(--border))] hover:border-[hsl(var(--primary))]/50'}`}
-                    >
-                      {d}
-                    </button>
-                  ))}
+                  {delegates.length === 0 ? (
+                    <span className="text-xs text-[hsl(var(--muted-foreground))]">لا يوجد مندوبون بعد</span>
+                  ) : (
+                    delegates.map(d => (
+                      <button
+                        key={d}
+                        onClick={() => setSelectedDelegate(d)}
+                        className={`text-xs px-3 py-1.5 rounded-xl font-semibold transition-all border ${selectedDelegate === d ? 'bg-[hsl(var(--primary))] text-white border-[hsl(var(--primary))]' : 'border-[hsl(var(--border))] hover:border-[hsl(var(--primary))]/50'}`}
+                      >
+                        {d}
+                      </button>
+                    ))
+                  )}
                 </div>
               </div>
 
-              {/* Stats cards */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div className="bg-blue-50 border border-blue-100 rounded-xl p-3">
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <Truck size={13} className="text-blue-600" />
-                    <p className="text-[11px] font-semibold text-blue-700">اوردرات مشحونة</p>
-                  </div>
-                  <p className="text-xl font-bold font-mono text-blue-800">{delegateTotalOrders}</p>
-                </div>
-                <div className="bg-green-50 border border-green-100 rounded-xl p-3">
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <DollarSign size={13} className="text-green-600" />
-                    <p className="text-[11px] font-semibold text-green-700">إجمالي القيمة</p>
-                  </div>
-                  <p className="text-xl font-bold font-mono text-green-800">{delegateTotalValue.toLocaleString('en-US')} <span className="text-xs">ج.م</span></p>
-                </div>
-                <div className="bg-purple-50 border border-purple-100 rounded-xl p-3">
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <TrendingUp size={13} className="text-purple-600" />
-                    <p className="text-[11px] font-semibold text-purple-700">صافي دخل الشحن</p>
-                  </div>
-                  <p className="text-xl font-bold font-mono text-purple-800">{delegateNetIncome.toLocaleString('en-US')} <span className="text-xs">ج.م</span></p>
-                  {delegateExtraFees > 0 && <p className="text-[10px] text-orange-600 mt-0.5">بعد خصم {delegateExtraFees} ج.م مصاريف إضافية</p>}
-                </div>
-                <div className="bg-red-50 border border-red-100 rounded-xl p-3">
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <ArrowDownCircle size={13} className="text-red-600" />
-                    <p className="text-[11px] font-semibold text-red-700">المطلوب توريده</p>
-                  </div>
-                  <p className="text-xl font-bold font-mono text-red-800">{delegateAmountDue.toLocaleString('en-US')} <span className="text-xs">ج.م</span></p>
-                </div>
-              </div>
-
-              {/* Cash deposits section */}
-              <div className="border border-[hsl(var(--border))] rounded-xl p-3">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <ArrowDownCircle size={14} className="text-[hsl(var(--primary))]" />
-                    <span className="text-sm font-bold">التوريدات النقدية — {selectedDelegate}</span>
-                  </div>
-                  <div className="flex gap-3 text-xs">
-                    <span className="bg-green-50 text-green-700 px-2 py-1 rounded-lg font-semibold">تم توريده: {depositInfo.deposited.toLocaleString('en-US')} ج.م</span>
-                    <span className="bg-red-50 text-red-700 px-2 py-1 rounded-lg font-semibold">المتبقي: {delegateAmountDue.toLocaleString('en-US')} ج.م</span>
-                  </div>
-                </div>
-                {depositInfo.deposits.length === 0 ? (
-                  <p className="text-xs text-[hsl(var(--muted-foreground))] text-center py-2">لا توجد توريدات مسجلة</p>
-                ) : (
-                  <div className="space-y-2">
-                    {depositInfo.deposits.map((dep, i) => (
-                      <div key={`dep-${i}`} className="flex items-center justify-between text-xs bg-[hsl(var(--muted))]/30 rounded-lg px-3 py-2">
-                        <span className="font-semibold">{dep.note}</span>
-                        <span className="text-[hsl(var(--muted-foreground))]">{dep.date}</span>
-                        <span className="font-mono font-bold text-green-700">+ {dep.amount.toLocaleString('en-US')} ج.م</span>
+              {selectedDelegate && (
+                <>
+                  {/* Stats cards */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div className="bg-blue-50 border border-blue-100 rounded-xl p-3">
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <Truck size={13} className="text-blue-600" />
+                        <p className="text-[11px] font-semibold text-blue-700">اوردرات مشحونة</p>
                       </div>
-                    ))}
+                      <p className="text-xl font-bold font-mono text-blue-800">{delegateTotalOrders}</p>
+                    </div>
+                    <div className="bg-green-50 border border-green-100 rounded-xl p-3">
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <DollarSign size={13} className="text-green-600" />
+                        <p className="text-[11px] font-semibold text-green-700">إجمالي القيمة</p>
+                      </div>
+                      <p className="text-xl font-bold font-mono text-green-800">{delegateTotalValue.toLocaleString('en-US')} <span className="text-xs">ج.م</span></p>
+                    </div>
+                    <div className="bg-purple-50 border border-purple-100 rounded-xl p-3">
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <TrendingUp size={13} className="text-purple-600" />
+                        <p className="text-[11px] font-semibold text-purple-700">صافي دخل الشحن</p>
+                      </div>
+                      <p className="text-xl font-bold font-mono text-purple-800">{delegateNetIncome.toLocaleString('en-US')} <span className="text-xs">ج.م</span></p>
+                      {delegateExtraFees > 0 && <p className="text-[10px] text-orange-600 mt-0.5">بعد خصم {delegateExtraFees} ج.م مصاريف إضافية</p>}
+                    </div>
+                    <div className="bg-red-50 border border-red-100 rounded-xl p-3">
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <ArrowDownCircle size={13} className="text-red-600" />
+                        <p className="text-[11px] font-semibold text-red-700">المطلوب توريده</p>
+                      </div>
+                      <p className="text-xl font-bold font-mono text-red-800">{delegateAmountDue.toLocaleString('en-US')} <span className="text-xs">ج.م</span></p>
+                    </div>
                   </div>
-                )}
-              </div>
+
+                  {/* Cash deposits section */}
+                  <div className="border border-[hsl(var(--border))] rounded-xl p-3">
+                    <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                      <div className="flex items-center gap-2">
+                        <ArrowDownCircle size={14} className="text-[hsl(var(--primary))]" />
+                        <span className="text-sm font-bold">التوريدات النقدية — {selectedDelegate}</span>
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="bg-green-50 text-green-700 px-2 py-1 rounded-lg font-semibold text-xs">تم توريده: {depositInfo.deposited.toLocaleString('en-US')} ج.م</span>
+                        <span className="bg-red-50 text-red-700 px-2 py-1 rounded-lg font-semibold text-xs">المتبقي: {delegateAmountDue.toLocaleString('en-US')} ج.م</span>
+                        {/* ─── Supply Button ─── */}
+                        <button
+                          onClick={() => setShowSupplyModal(true)}
+                          disabled={delegateAmountDue <= 0}
+                          className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          title={delegateAmountDue <= 0 ? 'لا يوجد مبلغ متبقي للتوريد' : 'تسجيل توريد جديد'}
+                        >
+                          <Plus size={13} />
+                          توريد
+                        </button>
+                      </div>
+                    </div>
+                    {depositInfo.deposits.length === 0 ? (
+                      <p className="text-xs text-[hsl(var(--muted-foreground))] text-center py-2">لا توجد توريدات مسجلة</p>
+                    ) : (
+                      <div className="space-y-2 max-h-48 overflow-y-auto">
+                        {depositInfo.deposits.map((dep, i) => (
+                          <div key={`dep-${i}`} className="flex items-center justify-between text-xs bg-[hsl(var(--muted))]/30 rounded-lg px-3 py-2">
+                            <span className="font-semibold">{dep.note}</span>
+                            <span className="text-[hsl(var(--muted-foreground))]">{dep.date}</span>
+                            <span className="font-mono font-bold text-green-700">+ {dep.amount.toLocaleString('en-US')} ج.م</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -472,7 +617,6 @@ export default function OrdersTableSection() {
                   <option key={`status-filter-${s}`} value={s}>{s === 'الكل' ? 'كل الحالات' : STATUS_MAP[s]?.label || s}</option>
                 ))}
               </select>
-              {/* Product filter */}
               <select
                 className="input-field w-auto text-sm"
                 value={productFilter}
@@ -482,7 +626,6 @@ export default function OrdersTableSection() {
                   <option key={`product-filter-${p.value}`} value={p.value}>{p.label}</option>
                 ))}
               </select>
-              {/* Export */}
               <div className="relative">
                 <button
                   className="flex items-center gap-1.5 px-3 py-2 bg-[hsl(var(--primary))] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
@@ -510,7 +653,7 @@ export default function OrdersTableSection() {
               </div>
             </div>
           </div>
-          {/* Date range filter — ACTIVE */}
+          {/* Date range filter */}
           <div className="flex items-center gap-3 flex-wrap">
             <span className="text-xs text-[hsl(var(--muted-foreground))] font-semibold">فلتر التاريخ:</span>
             <div className="flex items-center gap-2">
@@ -714,6 +857,14 @@ export default function OrdersTableSection() {
       {statusModal && <StatusUpdateModal order={statusModal.order} onClose={() => setStatusModal(null)} />}
       {detailModal && <OrderDetailModal order={detailModal.order} onClose={() => setDetailModal(null)} />}
       {auditModal && <AuditLogModal orderId={auditModal.order.id} orderNum={auditModal.order.orderNum} onClose={() => setAuditModal(null)} />}
+      {showSupplyModal && selectedDelegate && (
+        <SupplyModal
+          delegate={selectedDelegate}
+          maxAmount={delegateAmountDue}
+          onClose={() => setShowSupplyModal(false)}
+          onConfirm={handleSupplyConfirm}
+        />
+      )}
     </>
   );
 }
