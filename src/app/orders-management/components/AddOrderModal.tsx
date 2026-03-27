@@ -361,6 +361,8 @@ export default function AddOrderModal({ onClose }: Props) {
       const existing = JSON.parse(localStorage.getItem('zahranship_orders') || '[]');
       existing.unshift(newOrder);
       localStorage.setItem('zahranship_orders', JSON.stringify(existing));
+      // Notify other components that orders have been updated
+      window.dispatchEvent(new CustomEvent('zahranship_orders_updated'));
     } catch {
       // ignore storage errors
     }

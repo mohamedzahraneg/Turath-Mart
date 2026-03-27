@@ -1,5 +1,5 @@
 'use client';
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { Search, ChevronDown, ChevronUp, Eye, Edit2, Trash2, FileText, ChevronRight, ChevronLeft, CheckSquare, TrendingUp, DollarSign, Truck, ArrowDownCircle } from 'lucide-react';
 import StatusUpdateModal from './StatusUpdateModal';
 import OrderDetailModal from './OrderDetailModal';
@@ -172,6 +172,34 @@ export default function OrdersTableSection() {
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showDelegateStats, setShowDelegateStats] = useState(false);
   const [selectedDelegate, setSelectedDelegate] = useState('علي محمود');
+  const [allOrders, setAllOrders] = useState<Order[]>(MOCK_ORDERS);
+
+  const loadOrders = useCallback(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('zahranship_orders') || '[]') as Order[];
+      if (saved.length > 0) {
+        // Merge: saved orders first, then mock orders that don't conflict by id
+        const savedIds = new Set(saved.map(o => o.id));
+        const uniqueMock = MOCK_ORDERS.filter(o => !savedIds.has(o.id));
+        setAllOrders([...saved, ...uniqueMock]);
+      } else {
+        setAllOrders(MOCK_ORDERS);
+      }
+    } catch {
+      setAllOrders(MOCK_ORDERS);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadOrders();
+    const handleUpdate = () => loadOrders();
+    window.addEventListener('zahranship_orders_updated', handleUpdate);
+    window.addEventListener('storage', handleUpdate);
+    return () => {
+      window.removeEventListener('zahranship_orders_updated', handleUpdate);
+      window.removeEventListener('storage', handleUpdate);
+    };
+  }, [loadOrders]);
 
   const handleSort = (field: SortField) => {
     if (sortField === field) setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
@@ -179,7 +207,7 @@ export default function OrdersTableSection() {
   };
 
   const filtered = useMemo(() => {
-    return MOCK_ORDERS.filter((o) => {
+    return allOrders.filter((o) => {
       const matchSearch = !search || o.customer.includes(search) || o.orderNum.includes(search) || o.phone.includes(search);
       const matchRegion = regionFilter === 'الكل' || o.region === regionFilter;
       const matchStatus = statusFilter === 'الكل' || o.status === statusFilter;
@@ -209,7 +237,7 @@ export default function OrdersTableSection() {
       else if (sortField === 'date') cmp = parseDateStr(a.date).getTime() - parseDateStr(b.date).getTime();
       return sortDir === 'asc' ? cmp : -cmp;
     });
-  }, [search, regionFilter, statusFilter, dateFrom, dateTo, sortField, sortDir]);
+  }, [allOrders, search, regionFilter, statusFilter, dateFrom, dateTo, sortField, sortDir]);
 
   const totalPages = Math.ceil(filtered.length / perPage);
   const paginated = filtered.slice((page - 1) * perPage, page * perPage);
@@ -233,8 +261,8 @@ export default function OrdersTableSection() {
   const statusOptions = ['الكل', ...Object.keys(STATUS_MAP)];
 
   // Delegate stats calculation
-  const delegates = [...new Set(MOCK_ORDERS.map(o => o.delegateName).filter(Boolean))] as string[];
-  const delegateOrders = MOCK_ORDERS.filter(o => o.delegateName === selectedDelegate && ['shipping', 'delivered'].includes(o.status));
+  const delegates = [...new Set(allOrders.map(o => o.delegateName).filter(Boolean))] as string[];
+  const delegateOrders = allOrders.filter(o => o.delegateName === selectedDelegate && ['shipping', 'delivered'].includes(o.status));
   const delegateTotalOrders = delegateOrders.length;
   const delegateTotalValue = delegateOrders.reduce((s, o) => s + o.total, 0);
   const delegateShippingIncome = delegateOrders.reduce((s, o) => s + o.shippingFee, 0);
@@ -438,7 +466,7 @@ export default function OrdersTableSection() {
               <button className="bg-white/20 hover:bg-white/30 text-white text-xs px-3 py-1.5 rounded-lg transition-colors font-medium">تحديث الحالة</button>
               <button
                 className="bg-white/20 hover:bg-white/30 text-white text-xs px-3 py-1.5 rounded-lg transition-colors font-medium"
-                onClick={() => exportToCSV(MOCK_ORDERS.filter(o => selectedRows.has(o.id)))}
+                onClick={() => exportToCSV(allOrders.filter(o => selectedRows.has(o.id)))}
               >
                 تصدير المحدد
               </button>
