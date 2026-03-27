@@ -1,7 +1,7 @@
 'use client';
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import AppLayout from '@/components/AppLayout';
-import { ShieldCheck, Plus, Edit2, Trash2, X, Save, Check, Users, Eye, EyeOff, Key, UserPlus } from 'lucide-react';
+import { ShieldCheck, Plus, Edit2, Trash2, X, Save, Check, Users, Eye, EyeOff, Key, UserPlus, Camera, Upload } from 'lucide-react';
 
 interface Permission {
   id: string;
@@ -26,6 +26,7 @@ interface Employee {
   roleId: string;
   status: 'active' | 'inactive';
   createdAt: string;
+  avatar?: string;
 }
 
 const allPermissions: Permission[] = [
@@ -35,54 +36,92 @@ const allPermissions: Permission[] = [
   { id: 'edit_orders', label: 'تعديل الأوردرات', group: 'الأوردرات' },
   { id: 'delete_orders', label: 'حذف الأوردرات', group: 'الأوردرات' },
   { id: 'update_status', label: 'تحديث حالة الأوردر', group: 'الأوردرات' },
+  { id: 'view_shipping', label: 'عرض الشحن', group: 'الشحن' },
+  { id: 'manage_shipping', label: 'إدارة الشحن', group: 'الشحن' },
+  { id: 'assign_courier', label: 'تعيين مندوب شحن', group: 'الشحن' },
   { id: 'view_inventory', label: 'عرض المخزون', group: 'المخزون' },
   { id: 'edit_inventory', label: 'تعديل المخزون', group: 'المخزون' },
   { id: 'view_reports', label: 'عرض التقارير', group: 'التقارير' },
   { id: 'export_reports', label: 'تصدير التقارير', group: 'التقارير' },
   { id: 'manage_users', label: 'إدارة المستخدمين', group: 'المستخدمون' },
-  { id: 'manage_roles', label: 'إدارة الصلاحيات', group: 'المستخدمون' },
+  { id: 'manage_roles', label: 'إدارة الأدوار والصلاحيات', group: 'المستخدمون' },
+  { id: 'view_customers', label: 'عرض العملاء', group: 'خدمة العملاء' },
+  { id: 'manage_customers', label: 'إدارة شكاوى العملاء', group: 'خدمة العملاء' },
+  { id: 'customer_support', label: 'دعم العملاء', group: 'خدمة العملاء' },
   { id: 'system_settings', label: 'إعدادات النظام', group: 'الإعدادات' },
 ];
 
-const permGroups = ['لوحة التحكم', 'الأوردرات', 'المخزون', 'التقارير', 'المستخدمون', 'الإعدادات'];
+const permGroups = ['لوحة التحكم', 'الأوردرات', 'الشحن', 'المخزون', 'التقارير', 'المستخدمون', 'خدمة العملاء', 'الإعدادات'];
 
 const initialRoles: Role[] = [
   {
-    id: 'r1', name: 'مدير النظام', description: 'صلاحيات كاملة على جميع أقسام النظام', color: 'purple',
-    permissions: allPermissions.map(p => p.id), usersCount: 1,
+    id: 'r1',
+    name: 'مدير النظام',
+    description: 'صلاحيات كاملة على جميع أقسام النظام',
+    color: 'purple',
+    permissions: allPermissions.map(p => p.id),
+    usersCount: 1,
   },
   {
-    id: 'r2', name: 'مشرف شحن', description: 'إدارة الأوردرات والشحن وتحديث الحالات', color: 'blue',
-    permissions: ['view_dashboard', 'view_orders', 'create_orders', 'edit_orders', 'update_status', 'view_inventory', 'view_reports'], usersCount: 2,
+    id: 'r2',
+    name: 'مشرف النظام',
+    description: 'إشراف على النظام وإدارة المستخدمين والتقارير',
+    color: 'indigo',
+    permissions: ['view_dashboard', 'view_orders', 'edit_orders', 'update_status', 'view_shipping', 'manage_shipping', 'view_inventory', 'view_reports', 'export_reports', 'manage_users'],
+    usersCount: 1,
   },
   {
-    id: 'r3', name: 'موظف مبيعات', description: 'إنشاء وعرض الأوردرات فقط', color: 'green',
-    permissions: ['view_dashboard', 'view_orders', 'create_orders', 'update_status'], usersCount: 2,
+    id: 'r3',
+    name: 'مشرف شحن',
+    description: 'إدارة عمليات الشحن وتعيين المناديب وتحديث الحالات',
+    color: 'blue',
+    permissions: ['view_dashboard', 'view_orders', 'create_orders', 'edit_orders', 'update_status', 'view_shipping', 'manage_shipping', 'assign_courier', 'view_inventory', 'view_reports'],
+    usersCount: 2,
   },
   {
-    id: 'r4', name: 'موظف مخزون', description: 'إدارة المخزون والأصناف', color: 'amber',
-    permissions: ['view_dashboard', 'view_inventory', 'edit_inventory', 'view_orders'], usersCount: 1,
+    id: 'r4',
+    name: 'مندوب شحن',
+    description: 'تنفيذ عمليات التوصيل وتحديث حالة الشحنات',
+    color: 'cyan',
+    permissions: ['view_orders', 'update_status', 'view_shipping'],
+    usersCount: 3,
   },
   {
-    id: 'r5', name: 'محاسب', description: 'عرض التقارير المالية وتصديرها', color: 'orange',
-    permissions: ['view_dashboard', 'view_reports', 'export_reports', 'view_orders'], usersCount: 0,
+    id: 'r5',
+    name: 'مدير خدمة عملاء',
+    description: 'إدارة فريق خدمة العملاء والإشراف على الشكاوى',
+    color: 'green',
+    permissions: ['view_dashboard', 'view_orders', 'view_shipping', 'view_reports', 'export_reports', 'view_customers', 'manage_customers', 'customer_support'],
+    usersCount: 1,
+  },
+  {
+    id: 'r6',
+    name: 'خدمة عملاء',
+    description: 'التواصل مع العملاء ومتابعة الطلبات والشكاوى',
+    color: 'teal',
+    permissions: ['view_orders', 'view_shipping', 'view_customers', 'customer_support'],
+    usersCount: 2,
   },
 ];
 
 const initialEmployees: Employee[] = [
-  { id: 'e1', name: 'محمد الزهراني', username: 'admin', password: 'Admin@123', roleId: 'r1', status: 'active', createdAt: '01/01/2026' },
-  { id: 'e2', name: 'أحمد علي', username: 'ahmed.ali', password: 'Ahmed@2026', roleId: 'r2', status: 'active', createdAt: '15/01/2026' },
-  { id: 'e3', name: 'سارة محمود', username: 'sara.m', password: 'Sara@2026', roleId: 'r3', status: 'active', createdAt: '20/01/2026' },
+  { id: 'e1', name: 'محمد الزهراني', username: 'admin', password: 'Admin@123', roleId: 'r1', status: 'active', createdAt: '01/01/2026', avatar: '' },
+  { id: 'e2', name: 'أحمد علي', username: 'ahmed.ali', password: 'Ahmed@2026', roleId: 'r3', status: 'active', createdAt: '15/01/2026', avatar: '' },
+  { id: 'e3', name: 'سارة محمود', username: 'sara.m', password: 'Sara@2026', roleId: 'r5', status: 'active', createdAt: '20/01/2026', avatar: '' },
 ];
 
-const colorMap: Record<string, { bg: string; text: string; border: string }> = {
-  purple: { bg: 'bg-purple-50', text: 'text-purple-700', border: 'border-purple-200' },
-  blue: { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200' },
-  green: { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-200' },
-  amber: { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
-  orange: { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
+const colorMap: Record<string, { bg: string; text: string; border: string; avatar: string }> = {
+  purple: { bg: 'bg-purple-50', text: 'text-purple-700', border: 'border-purple-200', avatar: 'bg-purple-500' },
+  indigo: { bg: 'bg-indigo-50', text: 'text-indigo-700', border: 'border-indigo-200', avatar: 'bg-indigo-500' },
+  blue: { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200', avatar: 'bg-blue-500' },
+  cyan: { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200', avatar: 'bg-cyan-500' },
+  green: { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-200', avatar: 'bg-green-500' },
+  teal: { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200', avatar: 'bg-teal-500' },
+  amber: { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200', avatar: 'bg-amber-500' },
+  orange: { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200', avatar: 'bg-orange-500' },
 };
 
+// ─── Role Modal ────────────────────────────────────────────────────────────────
 interface RoleModalProps {
   role: Role | null;
   onClose: () => void;
@@ -213,6 +252,7 @@ function RoleModal({ role, onClose, onSave }: RoleModalProps) {
   );
 }
 
+// ─── Employee Modal ────────────────────────────────────────────────────────────
 interface EmployeeModalProps {
   employee: Employee | null;
   roles: Role[];
@@ -230,10 +270,27 @@ function EmployeeModal({ employee, roles, onClose, onSave }: EmployeeModalProps)
       roleId: roles[0]?.id || '',
       status: 'active',
       createdAt: new Date().toLocaleDateString('en-GB'),
+      avatar: '',
     }
   );
   const [showPassword, setShowPassword] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      setErrors(prev => ({ ...prev, avatar: 'حجم الصورة يجب أن يكون أقل من 2MB' }));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      setForm(prev => ({ ...prev, avatar: ev.target?.result as string }));
+      setErrors(prev => { const n = { ...prev }; delete n.avatar; return n; });
+    };
+    reader.readAsDataURL(file);
+  };
 
   const validate = () => {
     const errs: Record<string, string> = {};
@@ -250,9 +307,11 @@ function EmployeeModal({ employee, roles, onClose, onSave }: EmployeeModalProps)
     if (validate()) onSave(form);
   };
 
+  const roleColor = colorMap[roles.find(r => r.id === form.roleId)?.color || 'blue'] || colorMap.blue;
+
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" dir="rtl">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] flex flex-col">
         <div className="flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
           <div className="flex items-center gap-2">
             <UserPlus size={20} className="text-[hsl(var(--primary))]" />
@@ -262,7 +321,42 @@ function EmployeeModal({ employee, roles, onClose, onSave }: EmployeeModalProps)
             <X size={18} />
           </button>
         </div>
-        <div className="p-5 space-y-4">
+        <div className="p-5 space-y-4 overflow-y-auto flex-1">
+          {/* Avatar Upload */}
+          <div className="flex flex-col items-center gap-3">
+            <div className="relative">
+              <div className={`w-20 h-20 rounded-full overflow-hidden flex items-center justify-center text-white text-2xl font-bold ${form.avatar ? '' : roleColor.avatar}`}>
+                {form.avatar ? (
+                  <img src={form.avatar} alt="صورة المستخدم" className="w-full h-full object-cover" />
+                ) : (
+                  <span>{form.name ? form.name.charAt(0) : <Camera size={28} />}</span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="absolute bottom-0 left-0 w-7 h-7 bg-[hsl(var(--primary))] text-white rounded-full flex items-center justify-center shadow-md hover:opacity-90 transition-opacity"
+              >
+                <Upload size={13} />
+              </button>
+            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleAvatarChange}
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="text-xs text-[hsl(var(--primary))] font-semibold hover:underline"
+            >
+              {form.avatar ? 'تغيير الصورة' : 'رفع صورة المستخدم'}
+            </button>
+            {errors.avatar && <p className="text-red-500 text-xs">{errors.avatar}</p>}
+          </div>
+
           <div>
             <label className="block text-sm font-semibold mb-1.5">الاسم الكامل *</label>
             <input
@@ -354,6 +448,7 @@ function EmployeeModal({ employee, roles, onClose, onSave }: EmployeeModalProps)
   );
 }
 
+// ─── Main Page ─────────────────────────────────────────────────────────────────
 export default function RolesPage() {
   const [roles, setRoles] = useState<Role[]>(initialRoles);
   const [employees, setEmployees] = useState<Employee[]>(initialEmployees);
@@ -381,11 +476,6 @@ export default function RolesPage() {
       if (exists) return prev.map(e => e.id === emp.id ? (emp.password ? emp : { ...emp, password: e.password }) : e);
       return [...prev, emp];
     });
-    // Update role usersCount
-    setRoles(prev => prev.map(r => ({
-      ...r,
-      usersCount: employees.filter(e => e.roleId === r.id).length + (emp.roleId === r.id && !employees.find(e => e.id === emp.id) ? 1 : 0),
-    })));
     setEditEmployee(undefined);
   };
 
@@ -402,9 +492,9 @@ export default function RolesPage() {
   };
 
   const getRoleName = (roleId: string) => roles.find(r => r.id === roleId)?.name || '—';
-  const getRoleColor = (roleId: string) => {
+  const getRoleColors = (roleId: string) => {
     const role = roles.find(r => r.id === roleId);
-    return colorMap[role?.color] || colorMap.blue;
+    return colorMap[role?.color || 'blue'] || colorMap.blue;
   };
 
   return (
@@ -413,8 +503,8 @@ export default function RolesPage() {
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">الأدوار والموظفون</h1>
-            <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">إدارة أدوار المستخدمين وإضافة الموظفين بصلاحياتهم</p>
+            <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">الأدوار والصلاحيات</h1>
+            <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">إدارة أدوار المستخدمين وتخصيص الصلاحيات لكل دور</p>
           </div>
           <button
             onClick={() => activeTab === 'roles' ? setEditRole(null) : setEditEmployee(null)}
@@ -423,6 +513,26 @@ export default function RolesPage() {
             <Plus size={18} />
             {activeTab === 'roles' ? 'إضافة دور' : 'إضافة موظف'}
           </button>
+        </div>
+
+        {/* Stats */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <div className="card-section p-4 text-center">
+            <p className="text-2xl font-bold text-[hsl(var(--primary))]">{roles.length}</p>
+            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">إجمالي الأدوار</p>
+          </div>
+          <div className="card-section p-4 text-center">
+            <p className="text-2xl font-bold text-green-600">{employees.filter(e => e.status === 'active').length}</p>
+            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">موظفون نشطون</p>
+          </div>
+          <div className="card-section p-4 text-center">
+            <p className="text-2xl font-bold text-[hsl(var(--foreground))]">{employees.length}</p>
+            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">إجمالي الموظفين</p>
+          </div>
+          <div className="card-section p-4 text-center">
+            <p className="text-2xl font-bold text-purple-600">{allPermissions.length}</p>
+            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">إجمالي الصلاحيات</p>
+          </div>
         </div>
 
         {/* Tabs */}
@@ -465,20 +575,24 @@ export default function RolesPage() {
                       <button
                         onClick={() => setEditRole(role)}
                         className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted))] transition-colors"
+                        title="تعديل الدور وصلاحياته"
                       >
                         <Edit2 size={14} />
                       </button>
                       <button
                         onClick={() => handleDeleteRole(role.id)}
                         className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
+                        title="حذف الدور"
                       >
                         <Trash2 size={14} />
                       </button>
                     </div>
                   </div>
                   <p className="text-xs text-[hsl(var(--muted-foreground))] mb-3">{role.description}</p>
+
+                  {/* Permissions preview */}
                   <div className="flex flex-wrap gap-1.5 mb-3">
-                    {role.permissions.slice(0, 4).map(p => {
+                    {role.permissions.slice(0, 3).map(p => {
                       const perm = allPermissions.find(ap => ap.id === p);
                       return perm ? (
                         <span key={p} className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${colors.bg} ${colors.text}`}>
@@ -486,22 +600,61 @@ export default function RolesPage() {
                         </span>
                       ) : null;
                     })}
-                    {role.permissions.length > 4 && (
+                    {role.permissions.length > 3 && (
                       <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${colors.bg} ${colors.text}`}>
-                        +{role.permissions.length - 4} أخرى
+                        +{role.permissions.length - 3} أخرى
+                      </span>
+                    )}
+                    {role.permissions.length === 0 && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-gray-100 text-gray-500">
+                        لا توجد صلاحيات
                       </span>
                     )}
                   </div>
+
+                  {/* Employees avatars */}
+                  {roleEmployees.length > 0 && (
+                    <div className="flex items-center gap-1 mb-3">
+                      <div className="flex -space-x-2 space-x-reverse">
+                        {roleEmployees.slice(0, 4).map(emp => (
+                          <div key={emp.id} className={`w-7 h-7 rounded-full border-2 border-white overflow-hidden flex items-center justify-center text-white text-xs font-bold ${colors.avatar}`}>
+                            {emp.avatar ? (
+                              <img src={emp.avatar} alt={emp.name} className="w-full h-full object-cover" />
+                            ) : (
+                              emp.name.charAt(0)
+                            )}
+                          </div>
+                        ))}
+                        {roleEmployees.length > 4 && (
+                          <div className="w-7 h-7 rounded-full border-2 border-white bg-gray-200 flex items-center justify-center text-gray-600 text-xs font-bold">
+                            +{roleEmployees.length - 4}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   <button
-                    onClick={() => { setActiveTab('employees'); setEditEmployee(null); }}
-                    className={`w-full flex items-center justify-center gap-1.5 text-xs py-2 rounded-xl border ${colors.border} ${colors.text} hover:${colors.bg} transition-colors`}
+                    onClick={() => setEditRole(role)}
+                    className={`w-full flex items-center justify-center gap-1.5 text-xs py-2 rounded-xl border ${colors.border} ${colors.text} hover:${colors.bg} transition-colors font-semibold`}
                   >
-                    <UserPlus size={13} />
-                    إضافة موظف لهذا الدور
+                    <ShieldCheck size={13} />
+                    تعديل الصلاحيات
                   </button>
                 </div>
               );
             })}
+
+            {/* Add Role Card */}
+            <button
+              onClick={() => setEditRole(null)}
+              className="card-section p-5 border-2 border-dashed border-[hsl(var(--border))] hover:border-[hsl(var(--primary))]/50 hover:bg-[hsl(var(--primary))]/5 transition-all flex flex-col items-center justify-center gap-3 min-h-[180px] group"
+            >
+              <div className="w-11 h-11 rounded-xl bg-[hsl(var(--muted))] group-hover:bg-[hsl(var(--primary))]/10 flex items-center justify-center transition-colors">
+                <Plus size={22} className="text-[hsl(var(--muted-foreground))] group-hover:text-[hsl(var(--primary))]" />
+              </div>
+              <p className="text-sm font-semibold text-[hsl(var(--muted-foreground))] group-hover:text-[hsl(var(--primary))] transition-colors">إضافة دور جديد</p>
+            </button>
           </div>
         )}
 
@@ -510,7 +663,7 @@ export default function RolesPage() {
           <div className="card-section overflow-hidden">
             <div className="p-4 border-b border-[hsl(var(--border))]">
               <p className="text-sm font-semibold text-[hsl(var(--foreground))]">قائمة الموظفين وبيانات الدخول</p>
-              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">يمكنك عرض وتعديل اسم المستخدم وكلمة المرور لكل موظف</p>
+              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">يمكنك عرض وتعديل بيانات كل موظف وصورته الشخصية</p>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm" dir="rtl">
@@ -527,14 +680,18 @@ export default function RolesPage() {
                 </thead>
                 <tbody>
                   {employees.map(emp => {
-                    const roleColors = getRoleColor(emp.roleId);
+                    const roleColors = getRoleColors(emp.roleId);
                     const isShowingPass = showPasswords.has(emp.id);
                     return (
                       <tr key={emp.id} className="border-t border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/30 transition-colors">
                         <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
-                            <div className="w-8 h-8 rounded-full bg-[hsl(var(--primary))] flex items-center justify-center text-white text-sm font-bold flex-shrink-0">
-                              {emp.name.charAt(0)}
+                          <div className="flex items-center gap-3">
+                            <div className={`w-9 h-9 rounded-full overflow-hidden flex items-center justify-center text-white text-sm font-bold flex-shrink-0 ${emp.avatar ? '' : roleColors.avatar}`}>
+                              {emp.avatar ? (
+                                <img src={emp.avatar} alt={emp.name} className="w-full h-full object-cover" />
+                              ) : (
+                                <span>{emp.name.charAt(0)}</span>
+                              )}
                             </div>
                             <span className="font-semibold">{emp.name}</span>
                           </div>
@@ -574,12 +731,14 @@ export default function RolesPage() {
                             <button
                               onClick={() => setEditEmployee(emp)}
                               className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted))] transition-colors"
+                              title="تعديل"
                             >
                               <Edit2 size={14} />
                             </button>
                             <button
                               onClick={() => handleDeleteEmployee(emp.id)}
                               className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
+                              title="حذف"
                             >
                               <Trash2 size={14} />
                             </button>
