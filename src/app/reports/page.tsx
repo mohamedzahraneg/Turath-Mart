@@ -18,9 +18,9 @@ const ALL_DATA = [
 
 const statusData = [
   { name: 'تم التسليم', value: 450, color: 'hsl(142,71%,35%)' },
-  { name: 'جاري الشحن', value: 87, color: 'hsl(211,67%,28%)' },
-  { name: 'معلق', value: 32, color: 'hsl(38,92%,50%)' },
-  { name: 'مرتجع', value: 21, color: 'hsl(0,72%,51%)' },
+  { name: 'جاري الشحن', value: 18, color: 'hsl(211,67%,28%)' },
+  { name: 'معلق', value: 15, color: 'hsl(38,92%,50%)' },
+  { name: 'مرتجع', value: 7, color: 'hsl(0,72%,51%)' },
 ];
 
 const topProducts = [

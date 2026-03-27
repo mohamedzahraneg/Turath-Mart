@@ -29,8 +29,8 @@ const recentOrders: RecentOrder[] = [
   { id: 'order-001', orderNum: 'ZSH-2026-0047', customer: 'أحمد محمود السيد', phone: '01012345678', region: 'القاهرة', products: 'حامل مصحف بني × ٢', total: 650, status: 'shipping', time: '٠٩:٣٢' },
   { id: 'order-002', orderNum: 'ZSH-2026-0046', customer: 'فاطمة علي حسن', phone: '01123456789', region: 'الجيزة', products: 'كعبة + مصحف', total: 890, status: 'delivered', time: '٠٩:١٥' },
   { id: 'order-003', orderNum: 'ZSH-2026-0045', customer: 'محمد عبد الرحمن', phone: '01234567890', region: 'القليوبية', products: 'حامل مصحف ذهبي × ١', total: 380, status: 'new', time: '٠٨:٥٥' },
-  { id: 'order-004', orderNum: 'ZSH-2026-0044', customer: 'سارة إبراهيم خليل', phone: '01056789012', region: 'القاهرة', products: 'كشاف × ٣', total: 450, status: 'preparing', time: '٠٨:٤٠' },
-  { id: 'order-005', orderNum: 'ZSH-2026-0043', customer: 'عمر حامد الشريف', phone: '01198765432', region: 'الجيزة', products: 'حامل مصحف أسود × ١ + كشاف', total: 520, status: 'warehouse', time: '٠٨:٢٠' },
+  { id: 'order-004', orderNum: 'ZSH-2026-0044', customer: 'سارة إبراهيم خليل', phone: '01056789012', region: 'القاهرة', products: 'كشاف × ٣', total: 530, status: 'preparing', time: '٠٨:٤٠' },
+  { id: 'order-005', orderNum: 'ZSH-2026-0043', customer: 'عمر حامد الشريف', phone: '01198765432', region: 'الجيزة', products: 'حامل مصحف أسود × ١ + كشاف', total: 570, status: 'warehouse', time: '٠٨:٢٠' },
   { id: 'order-006', orderNum: 'ZSH-2026-0042', customer: 'نور الدين مصطفى', phone: '01067891234', region: 'القاهرة', products: 'كرسي × ٢', total: 1200, status: 'returned', time: '٠٧:٥٠' },
   { id: 'order-007', orderNum: 'ZSH-2026-0041', customer: 'هدى رمضان أحمد', phone: '01145678901', region: 'القليوبية', products: 'مصحف × ٥', total: 750, status: 'cancelled', time: '٠٧:٣٠' },
 ];
