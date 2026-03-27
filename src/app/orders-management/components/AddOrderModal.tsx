@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { Toaster } from 'sonner';
-import { X, Trash2, Package, User, MapPin, Phone, FileText, Zap, Calculator, ChevronDown, DollarSign, Plus, Minus } from 'lucide-react';
+import { X, Trash2, Package, User, MapPin, Phone, FileText, Zap, Calculator, ChevronDown, DollarSign, Plus, Minus, CheckCircle, Eye } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 
 interface ProductItem {
@@ -90,11 +90,42 @@ function getDeviceType(): string {
   return 'كمبيوتر';
 }
 
-function generateOrderNumber() {
+/**
+ * Generate order number in format: YYMMDDNNN
+ * YY = last 2 digits of year, MM = month, DD = day, NNN = sequential number for today
+ * Example: 2603271 = year 26, month 03, day 27, order #1 today
+ */
+async function generateOrderNumber(): Promise<string> {
   const now = new Date();
-  const year = now.getFullYear();
-  const seq = Math.floor(Math.random() * 9000) + 1000;
-  return `ZSH-${year}-${seq.toString().padStart(4, '0')}`;
+  const yy = now.getFullYear().toString().slice(-2);
+  const mm = (now.getMonth() + 1).toString().padStart(2, '0');
+  const dd = now.getDate().toString().padStart(2, '0');
+  const prefix = `${yy}${mm}${dd}`;
+
+  // Try to get today's order count from Supabase for sequential number
+  try {
+    const supabase = createClient();
+    const { count } = await supabase
+      .from('zahranship_orders')
+      .select('*', { count: 'exact', head: true })
+      .like('order_num', `${prefix}%`);
+    const seq = (count || 0) + 1;
+    return `${prefix}${seq}`;
+  } catch {
+    // Fallback: use localStorage count + random
+    try {
+      const existing = JSON.parse(localStorage.getItem('zahranship_orders') || '[]');
+      const todayOrders = existing.filter((o: { order_num?: string; orderNum?: string }) => {
+        const num = o.order_num || o.orderNum || '';
+        return num.startsWith(prefix);
+      });
+      const seq = todayOrders.length + 1;
+      return `${prefix}${seq}`;
+    } catch {
+      const seq = Math.floor(Math.random() * 900) + 1;
+      return `${prefix}${seq}`;
+    }
+  }
 }
 
 // Load settings from localStorage
@@ -166,7 +197,7 @@ function lineTotal(line: OrderLine): number {
 }
 
 export default function AddOrderModal({ onClose }: Props) {
-  const [orderNum] = useState(generateOrderNumber);
+  const [orderNum, setOrderNum] = useState('جاري التحميل...');
   const [currentDateTime, setCurrentDateTime] = useState({ date: '', time: '', day: '' });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [step, setStep] = useState(1);
@@ -191,6 +222,11 @@ export default function AddOrderModal({ onClose }: Props) {
 
   // All product cards (default + inventory items)
   const [productCards, setProductCards] = useState<ProductCard[]>([]);
+
+  // Generate order number on mount
+  useEffect(() => {
+    generateOrderNumber().then(num => setOrderNum(num));
+  }, []);
 
   // Load products from settings + inventory on mount
   useEffect(() => {
@@ -443,6 +479,8 @@ export default function AddOrderModal({ onClose }: Props) {
     setStep(1);
     setOrderSuccess(false);
     setSuccessOrderNum('');
+    // Generate a new order number for the next order
+    generateOrderNumber().then(num => setOrderNum(num));
   };
 
   return (
@@ -504,15 +542,17 @@ export default function AddOrderModal({ onClose }: Props) {
           {[
             { num: 1, label: 'بيانات العميل' },
             { num: 2, label: 'المنتجات' },
-            { num: 3, label: 'المراجعة' },
+            { num: 3, label: 'المراجعة والتأكيد' },
           ].map((s, i) => (
             <React.Fragment key={`step-${s.num}`}>
               <button
-                onClick={() => setStep(s.num)}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-sm font-semibold transition-all ${step === s.num ? 'bg-[hsl(var(--primary))] text-white' : step > s.num ? 'text-green-600' : 'text-[hsl(var(--muted-foreground))]'}`}
+                onClick={() => {
+                  if (s.num < step) setStep(s.num);
+                }}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-sm font-semibold transition-all ${step === s.num ? 'bg-[hsl(var(--primary))] text-white' : step > s.num ? 'text-green-600 cursor-pointer' : 'text-[hsl(var(--muted-foreground))] cursor-default'}`}
               >
                 <span className={`w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold ${step === s.num ? 'bg-white/20' : step > s.num ? 'bg-green-100' : 'bg-[hsl(var(--border))]'}`}>
-                  {s.num}
+                  {step > s.num ? '✓' : s.num}
                 </span>
                 {s.label}
               </button>
@@ -526,7 +566,7 @@ export default function AddOrderModal({ onClose }: Props) {
           <div className="flex items-center gap-4 bg-blue-50 border border-blue-100 rounded-xl p-3">
             <div>
               <p className="text-[10px] font-semibold text-blue-600 mb-0.5">رقم الأوردر</p>
-              <p className="text-xs font-mono text-[hsl(var(--foreground))]">{orderNum}</p>
+              <p className="text-xs font-mono text-[hsl(var(--foreground))] font-bold">{orderNum}</p>
             </div>
             <div>
               <p className="text-[10px] font-semibold text-blue-600 mb-0.5">التاريخ والوقت</p>
@@ -964,7 +1004,7 @@ export default function AddOrderModal({ onClose }: Props) {
                       <span className="font-mono font-semibold">{subtotal.toLocaleString('en-US')} ج.م</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-[hsl(var(--muted-foreground))]">{expressShipping ? 'شحن سريع:' : 'الشحن:'}</span>
+                      <span className="text-[hsl(var(--muted-foreground))]">{expressShipping ? '⚡ شحن سريع:' : 'الشحن:'}</span>
                       <span className={`font-mono ${expressShipping ? 'text-amber-700' : ''}`}>{shippingCost} ج.م</span>
                     </div>
                     {IS_ADMIN && extraShippingFee > 0 && (
@@ -979,11 +1019,155 @@ export default function AddOrderModal({ onClose }: Props) {
                   </div>
                 </div>
 
-                <div className="flex justify-between pt-2">
+                <div className="flex justify-between pt-2 gap-3">
                   <button type="button" className="btn-secondary" onClick={() => setStep(1)}>السابق</button>
                   <button
                     type="button"
-                    className="btn-primary flex-1 justify-center"
+                    className="btn-primary flex items-center gap-2"
+                    onClick={() => { if (validateStep2()) setStep(3); }}
+                  >
+                    <Eye size={16} />
+                    مراجعة الأوردر
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ── Step 3: Review & Confirm ── */}
+            {step === 3 && (
+              <div className="space-y-5 fade-in">
+                <div className="flex items-center gap-2 mb-2">
+                  <CheckCircle size={16} className="text-green-600" />
+                  <h3 className="text-sm font-bold text-[hsl(var(--foreground))]">مراجعة الأوردر قبل التأكيد</h3>
+                  <span className="text-xs text-[hsl(var(--muted-foreground))]">— تأكد من صحة جميع البيانات</span>
+                </div>
+
+                {/* Order number highlight */}
+                <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 text-center">
+                  <p className="text-xs text-blue-600 font-semibold mb-1">رقم الأوردر</p>
+                  <p className="text-2xl font-bold font-mono text-blue-800">{orderNum}</p>
+                  <p className="text-xs text-blue-500 mt-1">{currentDateTime.day} {currentDateTime.date} — {currentDateTime.time}</p>
+                </div>
+
+                {/* Customer info review */}
+                <div className="border border-[hsl(var(--border))] rounded-2xl overflow-hidden">
+                  <div className="bg-[hsl(var(--muted))]/50 px-4 py-2 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <User size={14} className="text-[hsl(var(--primary))]" />
+                      <span className="text-xs font-bold text-[hsl(var(--foreground))]">بيانات العميل</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setStep(1)}
+                      className="text-xs text-[hsl(var(--primary))] hover:underline font-semibold"
+                    >
+                      تعديل
+                    </button>
+                  </div>
+                  <div className="p-4 grid grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <p className="text-[10px] text-[hsl(var(--muted-foreground))] font-semibold mb-0.5">الاسم</p>
+                      <p className="font-semibold">{customerName}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-[hsl(var(--muted-foreground))] font-semibold mb-0.5">الموبايل</p>
+                      <p className="font-mono font-semibold">{phone}{phone2 ? ` / ${phone2}` : ''}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-[hsl(var(--muted-foreground))] font-semibold mb-0.5">المحافظة / المنطقة</p>
+                      <p className="font-semibold">{governorate} — {district}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-[hsl(var(--muted-foreground))] font-semibold mb-0.5">الضمان</p>
+                      <p className="font-semibold">{warranty}</p>
+                    </div>
+                    <div className="col-span-2">
+                      <p className="text-[10px] text-[hsl(var(--muted-foreground))] font-semibold mb-0.5">العنوان</p>
+                      <p className="font-semibold text-xs leading-relaxed">{address}</p>
+                    </div>
+                    {notes && (
+                      <div className="col-span-2">
+                        <p className="text-[10px] text-[hsl(var(--muted-foreground))] font-semibold mb-0.5">ملاحظات</p>
+                        <p className="text-xs text-[hsl(var(--muted-foreground))]">{notes}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Products review */}
+                <div className="border border-[hsl(var(--border))] rounded-2xl overflow-hidden">
+                  <div className="bg-[hsl(var(--muted))]/50 px-4 py-2 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Package size={14} className="text-[hsl(var(--primary))]" />
+                      <span className="text-xs font-bold text-[hsl(var(--foreground))]">المنتجات ({lines.length} صنف)</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setStep(2)}
+                      className="text-xs text-[hsl(var(--primary))] hover:underline font-semibold"
+                    >
+                      تعديل
+                    </button>
+                  </div>
+                  <div className="divide-y divide-[hsl(var(--border))]">
+                    {lines.map((line, index) => {
+                      const card = productCards.find(p => p.value === line.productType);
+                      return (
+                        <div key={`review-line-${line.id}`} className="px-4 py-3 flex items-center justify-between text-sm">
+                          <div className="flex items-center gap-2">
+                            <span className="text-base">{card?.emoji || '📦'}</span>
+                            <div>
+                              <p className="font-semibold text-xs">
+                                {card?.label || line.productType}
+                                {line.color ? ` — ${line.color}` : ''}
+                                {line.includeFlashlight ? ' + كشاف' : ''}
+                              </p>
+                              {line.note && <p className="text-[10px] text-[hsl(var(--muted-foreground))]">{line.note}</p>}
+                            </div>
+                          </div>
+                          <div className="text-left">
+                            <p className="font-mono font-bold text-[hsl(var(--primary))] text-xs">{lineTotal(line).toLocaleString('en-US')} ج.م</p>
+                            <p className="text-[10px] text-[hsl(var(--muted-foreground))]">{line.quantity} × {line.unitPrice} ج.م</p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Price summary review */}
+                <div className="bg-[hsl(var(--primary))]/5 border border-[hsl(var(--primary))]/20 rounded-2xl p-4">
+                  <div className="space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-[hsl(var(--muted-foreground))]">إجمالي المنتجات:</span>
+                      <span className="font-mono font-semibold">{subtotal.toLocaleString('en-US')} ج.م</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-[hsl(var(--muted-foreground))]">
+                        {expressShipping ? '⚡ شحن سريع:' : 'الشحن:'}
+                      </span>
+                      <span className={`font-mono ${expressShipping ? 'text-amber-700' : ''}`}>{shippingCost} ج.م</span>
+                    </div>
+                    {IS_ADMIN && extraShippingFee > 0 && (
+                      <div className="flex justify-between text-orange-700">
+                        <span>مصاريف إضافية:</span>
+                        <span className="font-mono">+ {extraShippingFee.toLocaleString('en-US')} ج.م</span>
+                      </div>
+                    )}
+                    <div className="border-t border-[hsl(var(--primary))]/20 pt-2 flex justify-between">
+                      <span className="font-bold text-base">الإجمالي الكلي:</span>
+                      <span className="font-mono font-bold text-xl text-[hsl(var(--primary))]">
+                        {grandTotal.toLocaleString('en-US')} ج.م
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex justify-between pt-2 gap-3">
+                  <button type="button" className="btn-secondary" onClick={() => setStep(2)}>السابق</button>
+                  <button
+                    type="button"
+                    className="btn-primary flex-1 justify-center flex items-center gap-2"
                     disabled={isSubmitting}
                     onClick={handleSubmit}
                   >
@@ -992,7 +1176,12 @@ export default function AddOrderModal({ onClose }: Props) {
                         <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
                         جاري التسجيل...
                       </span>
-                    ) : '✅ تأكيد التسجيل'}
+                    ) : (
+                      <>
+                        <CheckCircle size={16} />
+                        ✅ تأكيد وتسجيل الأوردر
+                      </>
+                    )}
                   </button>
                 </div>
               </div>
