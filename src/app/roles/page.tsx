@@ -88,13 +88,14 @@ const initialRoles: Role[] = [
   { id: 'r3', name: 'مشرف شحن', description: 'إدارة عمليات الشحن وتعيين المناديب وتحديث الحالات', color: 'blue', permissions: ['view_dashboard', 'view_orders', 'create_orders', 'edit_orders', 'update_status', 'view_shipping', 'manage_shipping', 'assign_courier', 'view_inventory', 'view_reports'], usersCount: 2 },
   { id: 'r4', name: 'مندوب شحن', description: 'تنفيذ عمليات التوصيل وتحديث حالة الشحنات', color: 'cyan', permissions: ['view_orders', 'update_status', 'view_shipping'], usersCount: 3 },
   { id: 'r5', name: 'مدير خدمة عملاء', description: 'إدارة فريق خدمة العملاء والإشراف على الشكاوى', color: 'green', permissions: ['view_dashboard', 'view_orders', 'view_shipping', 'view_reports', 'export_reports', 'view_customers', 'manage_customers', 'customer_support'], usersCount: 1 },
-  { id: 'r6', name: 'خدمة عملاء', description: 'التواصل مع العملاء ومتابعة الطلبات والشكاوى', color: 'teal', permissions: ['view_orders', 'view_shipping', 'view_customers', 'customer_support'], usersCount: 2 },
+  { id: 'r6', name: 'خدمة عملاء', description: 'التواصل مع العملاء ومتابعة الطلبات والشكاوى', color: 'teal', permissions: ['view_orders', 'create_orders', 'update_status', 'view_shipping', 'view_customers', 'customer_support'], usersCount: 2 },
 ];
 
 const defaultEmployees: Employee[] = [
   { id: 'e1', name: 'محمد الزهراني', username: 'admin', password: 'Admin@123', roleId: 'r1', status: 'active', createdAt: '01/01/2026', avatar: '' },
   { id: 'e2', name: 'أحمد علي', username: 'ahmed.ali', password: 'Ahmed@2026', roleId: 'r3', status: 'active', createdAt: '15/01/2026', avatar: '' },
   { id: 'e3', name: 'سارة محمود', username: 'sara.m', password: 'Sara@2026', roleId: 'r5', status: 'active', createdAt: '20/01/2026', avatar: '' },
+  { id: 'e4', name: 'رحمة', username: 'rahma', password: 'Rahma@2026', roleId: 'r6', status: 'active', createdAt: '27/03/2026', avatar: '' },
 ];
 
 const DAYS_AR = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
@@ -614,6 +615,18 @@ export default function RolesPage() {
     const storedEmp = localStorage.getItem(LS_EMPLOYEES);
     if (!storedEmp || storedEmp === '[]') {
       saveEmployeesToStorage(defaultEmployees);
+    } else {
+      // Merge: ensure any new default employees are added if missing
+      try {
+        const parsed: Employee[] = JSON.parse(storedEmp);
+        const existingIds = new Set(parsed.map((e: Employee) => e.id));
+        const missing = defaultEmployees.filter(e => !existingIds.has(e.id));
+        if (missing.length > 0) {
+          saveEmployeesToStorage([...parsed, ...missing]);
+        }
+      } catch {
+        saveEmployeesToStorage(defaultEmployees);
+      }
     }
 
     // Load roles from localStorage (or use defaults)
@@ -622,7 +635,18 @@ export default function RolesPage() {
       try {
         const parsed = JSON.parse(storedRolesRaw);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          setRoles(parsed);
+          // Merge: update permissions of existing roles from initialRoles to pick up any changes
+          const merged = parsed.map((storedRole: Role) => {
+            const defaultRole = initialRoles.find(r => r.id === storedRole.id);
+            if (defaultRole) {
+              // Merge permissions: union of stored + default (ensures new permissions are added)
+              const mergedPerms = Array.from(new Set([...storedRole.permissions, ...defaultRole.permissions]));
+              return { ...storedRole, permissions: mergedPerms };
+            }
+            return storedRole;
+          });
+          setRoles(merged);
+          saveRolesToStorage(merged);
         } else {
           saveRolesToStorage(initialRoles);
         }
