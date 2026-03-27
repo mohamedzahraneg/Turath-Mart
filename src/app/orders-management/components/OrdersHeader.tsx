@@ -1,14 +1,44 @@
 'use client';
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Plus, Download, RefreshCw, FileSpreadsheet, FileText } from 'lucide-react';
 import AddOrderModal from './AddOrderModal';
+import { createClient } from '@/lib/supabase/client';
 
 export default function OrdersHeader() {
   const [showModal, setShowModal] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [totalOrders, setTotalOrders] = useState<number | null>(null);
+  const [todayOrders, setTodayOrders] = useState<number | null>(null);
+
+  useEffect(() => {
+    const fetchStats = async () => {
+      try {
+        const supabase = createClient();
+        const today = new Date();
+        const pad = (n: number) => n.toString().padStart(2, '0');
+        const todayStr = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+
+        const [totalRes, todayRes] = await Promise.all([
+          supabase.from('zahranship_orders').select('id', { count: 'exact', head: true }),
+          supabase.from('zahranship_orders').select('id', { count: 'exact', head: true }).gte('date', todayStr),
+        ]);
+
+        if (!totalRes.error) setTotalOrders(totalRes.count ?? 0);
+        if (!todayRes.error) setTodayOrders(todayRes.count ?? 0);
+      } catch {
+        // silently fail
+      }
+    };
+
+    fetchStats();
+
+    // Refresh when new order is added
+    const handleUpdate = () => fetchStats();
+    window.addEventListener('zahranship_orders_updated', handleUpdate);
+    return () => window.removeEventListener('zahranship_orders_updated', handleUpdate);
+  }, []);
 
   const handleExportCSV = () => {
-    // Trigger CSV export — in real app, pass filtered orders from parent
     const event = new CustomEvent('export-orders-csv');
     window.dispatchEvent(event);
     setShowExportMenu(false);
@@ -26,7 +56,11 @@ export default function OrdersHeader() {
         <div>
           <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">إدارة الأوردرات</h1>
           <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">
-            إجمالي 12,487 أوردر — 47 اليوم
+            {totalOrders !== null ? (
+              <>إجمالي {totalOrders.toLocaleString('en-US')} أوردر — {todayOrders ?? 0} اليوم</>
+            ) : (
+              'جاري التحميل...'
+            )}
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">

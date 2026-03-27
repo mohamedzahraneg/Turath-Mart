@@ -1,10 +1,11 @@
 'use client';
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { Search, ChevronDown, ChevronUp, Eye, Trash2, FileText, ChevronRight, ChevronLeft, CheckSquare, TrendingUp, DollarSign, Truck, ArrowDownCircle, History, Zap, Plus, X } from 'lucide-react';
+import { Search, ChevronDown, ChevronUp, Eye, Trash2, FileText, ChevronRight, ChevronLeft, CheckSquare, TrendingUp, DollarSign, Truck, ArrowDownCircle, History, Zap, Plus, X, AlertTriangle } from 'lucide-react';
 import StatusUpdateModal from './StatusUpdateModal';
 import OrderDetailModal from './OrderDetailModal';
 import AuditLogModal from './AuditLogModal';
 import { createClient } from '@/lib/supabase/client';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface Order {
   id: string;
@@ -254,6 +255,54 @@ function SupplyModal({ delegate, maxAmount, onClose, onConfirm }: SupplyModalPro
   );
 }
 
+// ─── Delete Confirm Modal ─────────────────────────────────────────────────────
+interface DeleteConfirmModalProps {
+  order: Order;
+  onClose: () => void;
+  onConfirm: () => void;
+  isDeleting: boolean;
+}
+
+function DeleteConfirmModal({ order, onClose, onConfirm, isDeleting }: DeleteConfirmModalProps) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 p-6" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 bg-red-100 rounded-xl flex items-center justify-center flex-shrink-0">
+            <AlertTriangle size={20} className="text-red-600" />
+          </div>
+          <div>
+            <h3 className="text-base font-bold text-[hsl(var(--foreground))]">حذف الأوردر</h3>
+            <p className="text-xs text-[hsl(var(--muted-foreground))]">هذا الإجراء لا يمكن التراجع عنه</p>
+          </div>
+        </div>
+        <div className="bg-red-50 border border-red-100 rounded-xl p-3 mb-5">
+          <p className="text-sm text-red-700">
+            هل أنت متأكد من حذف الأوردر <span className="font-bold font-mono">{order.orderNum}</span> للعميل <span className="font-bold">{order.customer}</span>؟
+          </p>
+        </div>
+        <div className="flex gap-3">
+          <button
+            onClick={onConfirm}
+            disabled={isDeleting}
+            className="flex-1 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-bold py-2.5 rounded-xl transition-colors flex items-center justify-center gap-2"
+          >
+            <Trash2 size={15} />
+            {isDeleting ? 'جاري الحذف...' : 'تأكيد الحذف'}
+          </button>
+          <button
+            onClick={onClose}
+            disabled={isDeleting}
+            className="px-5 py-2.5 border border-[hsl(var(--border))] rounded-xl font-semibold hover:bg-[hsl(var(--muted))] transition-colors text-sm"
+          >
+            إلغاء
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function OrdersTableSection() {
   const [search, setSearch] = useState('');
@@ -279,6 +328,10 @@ export default function OrdersTableSection() {
   const [depositsStore, setDepositsStore] = useState<DepositsStore>({});
   const [showSupplyModal, setShowSupplyModal] = useState(false);
   const [supplySuccess, setSupplySuccess] = useState('');
+  const [deleteModal, setDeleteModal] = useState<{ order: Order } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const { currentRole } = useAuth();
+  const isAdmin = currentRole === 'manager';
 
   // Load deposits from localStorage on mount
   useEffect(() => {
@@ -458,6 +511,33 @@ export default function OrdersTableSection() {
     setShowSupplyModal(false);
     setSupplySuccess(`تم تسجيل توريد ${amount.toLocaleString('en-US')} ج.م بنجاح`);
     setTimeout(() => setSupplySuccess(''), 4000);
+  };
+
+  const handleDeleteOrder = async (order: Order) => {
+    setIsDeleting(true);
+    try {
+      // Delete from Supabase
+      const supabase = createClient();
+      await supabase.from('zahranship_orders').delete().eq('id', order.id);
+
+      // Delete from localStorage
+      try {
+        const saved = JSON.parse(localStorage.getItem('zahranship_orders') || '[]') as Order[];
+        const updated = saved.filter(o => o.id !== order.id);
+        localStorage.setItem('zahranship_orders', JSON.stringify(updated));
+      } catch { /* ignore */ }
+
+      // Update local state
+      setAllOrders(prev => prev.filter(o => o.id !== order.id));
+      setSelectedRows(prev => { const s = new Set(prev); s.delete(order.id); return s; });
+      setDeleteModal(null);
+
+      // Notify other components
+      window.dispatchEvent(new CustomEvent('zahranship_orders_updated'));
+    } catch {
+      // silently fail
+    }
+    setIsDeleting(false);
   };
 
   return (
@@ -817,9 +897,11 @@ export default function OrdersTableSection() {
                           <button onClick={() => setDetailModal({ order })} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-green-50 text-green-600 transition-colors" title="عرض الفاتورة PDF">
                             <FileText size={14} />
                           </button>
-                          <button className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors" title="حذف الأوردر">
-                            <Trash2 size={14} />
-                          </button>
+                          {isAdmin && (
+                            <button onClick={() => setDeleteModal({ order })} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors" title="حذف الأوردر">
+                              <Trash2 size={14} />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -863,6 +945,14 @@ export default function OrdersTableSection() {
           maxAmount={delegateAmountDue}
           onClose={() => setShowSupplyModal(false)}
           onConfirm={handleSupplyConfirm}
+        />
+      )}
+      {deleteModal && (
+        <DeleteConfirmModal
+          order={deleteModal.order}
+          onClose={() => !isDeleting && setDeleteModal(null)}
+          onConfirm={() => handleDeleteOrder(deleteModal.order)}
+          isDeleting={isDeleting}
         />
       )}
     </>

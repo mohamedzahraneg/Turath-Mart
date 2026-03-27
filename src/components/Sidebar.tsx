@@ -4,6 +4,7 @@ import Link from 'next/link';
 import AppLogo from '@/components/ui/AppLogo';
 import { useAuth } from '@/contexts/AuthContext';
 import { LayoutDashboard, Package, Truck, BarChart3, Warehouse, Settings, ChevronRight, ChevronLeft, Bell, LogOut, ShieldCheck, Users } from 'lucide-react';
+import { createClient } from '@/lib/supabase/client';
 
 interface NavItem {
   id: string;
@@ -14,9 +15,9 @@ interface NavItem {
   group?: string;
 }
 
-const navItems: NavItem[] = [
+const BASE_NAV_ITEMS: Omit<NavItem, 'badge'>[] = [
   { id: 'nav-dashboard', label: 'لوحة التحكم', icon: <LayoutDashboard size={20} />, href: '/dashboard', group: 'رئيسي' },
-  { id: 'nav-orders', label: 'الأوردرات', icon: <Package size={20} />, href: '/orders-management', badge: 7, group: 'رئيسي' },
+  { id: 'nav-orders', label: 'الأوردرات', icon: <Package size={20} />, href: '/orders-management', group: 'رئيسي' },
   { id: 'nav-shipping', label: 'الشحن', icon: <Truck size={20} />, href: '/shipping', group: 'رئيسي' },
   { id: 'nav-crm', label: 'إدارة العملاء (CRM)', icon: <Users size={20} />, href: '/crm', group: 'إدارة' },
   { id: 'nav-inventory', label: 'المخزون', icon: <Warehouse size={20} />, href: '/inventory', group: 'إدارة' },
@@ -42,7 +43,46 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [userName, setUserName] = useState('المستخدم');
+  const [newOrdersCount, setNewOrdersCount] = useState(0);
+  const [notifCount, setNotifCount] = useState(0);
   const { currentRole, hasAccess } = useAuth();
+
+  // Fetch real new orders count for today
+  useEffect(() => {
+    const fetchNewOrders = async () => {
+      try {
+        const supabase = createClient();
+        const today = new Date();
+        const pad = (n: number) => n.toString().padStart(2, '0');
+        const todayStr = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+
+        const { data, error } = await supabase
+          .from('zahranship_orders')
+          .select('id', { count: 'exact', head: false })
+          .eq('status', 'new')
+          .gte('date', todayStr);
+
+        if (!error && data) {
+          setNewOrdersCount(data.length);
+          setNotifCount(data.length);
+        }
+      } catch {
+        // silently fail
+      }
+    };
+
+    fetchNewOrders();
+    const interval = setInterval(fetchNewOrders, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Build nav items with real badge
+  const navItems: NavItem[] = BASE_NAV_ITEMS.map(item => {
+    if (item.id === 'nav-orders' && newOrdersCount > 0) {
+      return { ...item, badge: newOrdersCount };
+    }
+    return item;
+  });
 
   // Manager sees ALL nav items — no filtering whatsoever
   const isManager = currentRole === 'manager';
@@ -150,14 +190,14 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
                         {!collapsed && (
                           <>
                             <span className="flex-1 text-sm">{item.label}</span>
-                            {item.badge && (
+                            {item.badge && item.badge > 0 && (
                               <span className="bg-[hsl(var(--accent))] text-white text-xs rounded-full px-2 py-0.5 font-bold min-w-[20px] text-center">
                                 {item.badge}
                               </span>
                             )}
                           </>
                         )}
-                        {collapsed && item.badge && (
+                        {collapsed && item.badge && item.badge > 0 && (
                           <span className="absolute top-1 left-1 bg-[hsl(var(--accent))] text-white text-[10px] rounded-full w-4 h-4 flex items-center justify-center font-bold">
                             {item.badge}
                           </span>
@@ -176,8 +216,8 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
           <button className={`sidebar-item sidebar-item-inactive w-full ${collapsed ? 'justify-center' : ''}`}>
             <Bell size={18} />
             {!collapsed && <span className="text-sm">الإشعارات</span>}
-            {!collapsed && (
-              <span className="mr-auto bg-red-500 text-white text-xs rounded-full px-1.5 py-0.5 font-bold">3</span>
+            {!collapsed && notifCount > 0 && (
+              <span className="mr-auto bg-red-500 text-white text-xs rounded-full px-1.5 py-0.5 font-bold">{notifCount}</span>
             )}
           </button>
 
