@@ -1,6 +1,6 @@
 'use client';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Package, MapPin, User, Phone, Clock, CheckCircle, Truck, Warehouse, ClipboardList, XCircle, RotateCcw, RefreshCw, MessageCircle, Navigation, Star, Shield, Send, ChevronDown, AlertCircle, Headphones, X } from 'lucide-react';
+import { Package, MapPin, User, Phone, Clock, CheckCircle, Truck, Warehouse, ClipboardList, XCircle, RotateCcw, RefreshCw, MessageCircle, Navigation, Star, Shield, Send, ChevronDown, AlertCircle, Headphones, X, Download, FileText, Award } from 'lucide-react';
 
 interface TrackingOrder {
   orderNum: string;
@@ -12,6 +12,8 @@ interface TrackingOrder {
   products: string;
   quantity: number;
   total: number;
+  subtotal?: number;
+  shippingFee?: number;
   status: string;
   date: string;
   time: string;
@@ -89,6 +91,8 @@ const MOCK_TRACKING_DATA: Record<string, TrackingOrder> = {
     products: 'حامل مصحف بني x 2',
     quantity: 2,
     total: 650,
+    subtotal: 580,
+    shippingFee: 70,
     status: 'shipping',
     date: '27/03/2026',
     time: '09:32:14',
@@ -110,12 +114,15 @@ const MOCK_TRACKING_DATA: Record<string, TrackingOrder> = {
     products: 'كعبة x 1 + مصحف x 2',
     quantity: 3,
     total: 890,
+    subtotal: 820,
+    shippingFee: 70,
     status: 'delivered',
     date: '27/03/2026',
     time: '09:15:33',
     delegate: 'علي محمود',
     delegatePhone: '01098765432',
     delegateRating: 4.8,
+    warranty: '12 شهر',
   },
 };
 
@@ -173,7 +180,6 @@ function ChatPanel({ type, order, onClose }: ChatPanelProps) {
     localStorage.setItem(storageKey, JSON.stringify(updated));
     setInput('');
 
-    // Simulate reply after 1.5s
     setTimeout(() => {
       const replies = type === 'delegate'
         ? ['حسناً، سأكون عندك قريباً إن شاء الله.', 'تمام، سأتصل بك قبل الوصول.', 'فهمت، شكراً لتواصلك.']
@@ -197,7 +203,6 @@ function ChatPanel({ type, order, onClose }: ChatPanelProps) {
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center p-0 sm:p-4" dir="rtl">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
       <div className="relative bg-white w-full sm:max-w-md sm:rounded-2xl flex flex-col shadow-2xl" style={{ height: '85vh', maxHeight: '600px' }}>
-        {/* Header */}
         <div className={`flex items-center gap-3 px-4 py-3 ${type === 'delegate' ? 'bg-[hsl(211,67%,28%)]' : 'bg-emerald-600'} sm:rounded-t-2xl`}>
           <div className={`w-10 h-10 rounded-full ${avatarBg} border-2 border-white/30 flex items-center justify-center text-white font-bold text-lg flex-shrink-0`}>
             {avatarLetter}
@@ -213,8 +218,6 @@ function ChatPanel({ type, order, onClose }: ChatPanelProps) {
             <X size={18} className="text-white" />
           </button>
         </div>
-
-        {/* Messages */}
         <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50">
           {displayMessages.map(msg => {
             const isCustomer = msg.sender === 'customer';
@@ -229,8 +232,6 @@ function ChatPanel({ type, order, onClose }: ChatPanelProps) {
           })}
           <div ref={bottomRef} />
         </div>
-
-        {/* Input */}
         <div className="p-3 border-t border-gray-100 bg-white sm:rounded-b-2xl">
           <div className="flex items-center gap-2">
             <input
@@ -284,7 +285,6 @@ function ComplaintModal({ order, onClose }: ComplaintModalProps) {
 
   const submitComplaint = () => {
     if (!reason) return;
-    // Save complaint to localStorage
     try {
       const complaints = JSON.parse(localStorage.getItem('zahranship_crm_complaints') || '{}');
       const phone = order.phone;
@@ -300,7 +300,6 @@ function ComplaintModal({ order, onClose }: ComplaintModalProps) {
       localStorage.setItem('zahranship_crm_complaints', JSON.stringify(complaints));
     } catch {}
 
-    // Initialize support chat
     const initMsg: ChatMessage = {
       id: 'init-1',
       sender: 'support',
@@ -345,7 +344,6 @@ function ComplaintModal({ order, onClose }: ComplaintModalProps) {
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center p-0 sm:p-4" dir="rtl">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
       <div className="relative bg-white w-full sm:max-w-md sm:rounded-2xl flex flex-col shadow-2xl" style={{ height: step === 'chat' ? '85vh' : 'auto', maxHeight: '600px' }}>
-        {/* Header */}
         <div className="flex items-center gap-3 px-4 py-3 bg-red-600 sm:rounded-t-2xl">
           <div className="w-10 h-10 rounded-full bg-red-700 border-2 border-white/30 flex items-center justify-center flex-shrink-0">
             <AlertCircle size={20} className="text-white" />
@@ -395,14 +393,12 @@ function ComplaintModal({ order, onClose }: ComplaintModalProps) {
           </div>
         ) : (
           <>
-            {/* Submitted banner */}
             {submitted && (
               <div className="mx-4 mt-3 bg-green-50 border border-green-200 rounded-xl px-3 py-2 flex items-center gap-2">
                 <CheckCircle size={14} className="text-green-600 flex-shrink-0" />
                 <p className="text-xs text-green-700 font-medium">تم تسجيل شكواك بنجاح — يمكنك الآن التحدث مع خدمة العملاء</p>
               </div>
             )}
-            {/* Chat messages */}
             <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50">
               {chatMessages.map(msg => {
                 const isCustomer = msg.sender === 'customer';
@@ -417,7 +413,6 @@ function ComplaintModal({ order, onClose }: ComplaintModalProps) {
               })}
               <div ref={bottomRef} />
             </div>
-            {/* Input */}
             <div className="p-3 border-t border-gray-100 bg-white sm:rounded-b-2xl">
               <div className="flex items-center gap-2">
                 <input
@@ -559,7 +554,7 @@ function StatusTimeline({ history, currentStatus }: { history: { status: string;
                 step.active
                   ? 'bg-[hsl(211,67%,28%)] border-[hsl(211,67%,28%)] text-white shadow-lg scale-110'
                   : step.completed
-                  ? 'bg-green-500 border-green-500 text-white' :'bg-white border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))]'
+                  ? 'bg-green-500 border-green-500 text-white' : 'bg-white border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))]'
               }`}>
                 {step.icon}
               </div>
@@ -625,6 +620,206 @@ function StarRating({ rating }: { rating: number }) {
   );
 }
 
+// ─── Invoice PDF Generator ────────────────────────────────────────────────────
+function generateInvoiceHTML(order: TrackingOrder): string {
+  const trackingLink = `${typeof window !== 'undefined' ? window.location.origin : 'https://zahranship.com'}/track/${order.orderNum}`;
+  const subtotal = order.subtotal ?? order.total;
+  const shippingFee = order.shippingFee ?? 0;
+
+  const productRows = order.lines && order.lines.length > 0
+    ? order.lines.map(line => {
+        const hasImg = line.image && (line.image.startsWith('data:') || line.image.startsWith('http') || line.image.startsWith('/'));
+        const imgHtml = hasImg
+          ? `<img src="${line.image}" alt="${line.label}" style="width:40px;height:40px;object-fit:cover;border-radius:6px;border:1px solid #e5e7eb;" />`
+          : `<span style="font-size:24px;">${line.emoji || '📦'}</span>`;
+        const noteHtml = line.note ? `<br/><span style="font-size:11px;color:#d97706;font-style:italic;">ملاحظة: ${line.note}</span>` : '';
+        const colorHtml = line.color ? ` (${line.color})` : '';
+        const flashHtml = line.includeFlashlight ? ' + كشاف' : '';
+        return `<tr>
+          <td style="display:flex;align-items:center;gap:10px;padding:10px 12px;">
+            ${imgHtml}
+            <div><strong>${line.label}${colorHtml}${flashHtml}</strong>${noteHtml}</div>
+          </td>
+          <td>${line.quantity}</td>
+          <td>${line.unitPrice.toLocaleString('en-US')} ج.م</td>
+          <td>${line.total.toLocaleString('en-US')} ج.م</td>
+        </tr>`;
+      }).join('')
+    : `<tr><td>${order.products}</td><td>${order.quantity}</td><td>—</td><td>${subtotal.toLocaleString('en-US')} ج.م</td></tr>`;
+
+  const warrantyRow = order.warranty && order.warranty !== 'بدون ضمان'
+    ? `<tr class="warranty-row"><td colspan="3">فترة الضمان</td><td>—</td><td>${order.warranty}</td></tr>`
+    : '';
+
+  return `<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+  <meta charset="UTF-8" />
+  <title>فاتورة - ${order.orderNum}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', Tahoma, Arial, sans-serif; direction: rtl; background: #fff; color: #1a1a1a; }
+    .invoice-wrap { max-width: 700px; margin: 0 auto; padding: 20px; }
+    .inv-header { background: #1e3a5f; color: white; padding: 24px; text-align: center; border-radius: 12px 12px 0 0; }
+    .inv-header h1 { font-size: 26px; font-weight: 800; }
+    .inv-header p { font-size: 13px; opacity: 0.8; margin-top: 4px; }
+    .inv-body { border: 2px solid #e5e7eb; border-top: none; border-radius: 0 0 12px 12px; padding: 24px; }
+    .inv-meta { display: flex; justify-content: space-between; border-bottom: 1px solid #e5e7eb; padding-bottom: 16px; margin-bottom: 16px; }
+    .inv-meta div p:first-child { font-size: 11px; color: #6b7280; margin-bottom: 4px; }
+    .inv-meta div p:last-child { font-weight: 700; font-size: 14px; }
+    .section-title { font-size: 11px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+    .customer-info { margin-bottom: 16px; }
+    .customer-info p { font-size: 14px; margin-bottom: 4px; }
+    .customer-info .name { font-size: 18px; font-weight: 700; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
+    th { background: #f3f4f6; padding: 10px 12px; text-align: right; font-size: 12px; font-weight: 700; color: #374151; }
+    td { padding: 10px 12px; border-bottom: 1px solid #f3f4f6; font-size: 13px; vertical-align: middle; }
+    .total-row { background: #eff6ff; }
+    .total-row td { font-weight: 700; font-size: 16px; color: #1e3a5f; }
+    .warranty-row { background: #f0fdf4; }
+    .warranty-row td { color: #166534; font-weight: 600; }
+    .tracking-box { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 12px; margin-bottom: 16px; }
+    .tracking-box p { font-size: 12px; color: #1e40af; }
+    .tracking-box a { font-size: 13px; color: #1d4ed8; font-weight: 700; word-break: break-all; }
+    .footer { text-align: center; font-size: 12px; color: #9ca3af; margin-top: 20px; padding-top: 16px; border-top: 1px solid #e5e7eb; }
+    @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+  </style>
+</head>
+<body>
+  <div class="invoice-wrap">
+    <div class="inv-header">
+      <h1>Zahranship</h1>
+      <p>فاتورة ضريبية مبسطة</p>
+    </div>
+    <div class="inv-body">
+      <div class="inv-meta">
+        <div><p>رقم الفاتورة</p><p>${order.orderNum}</p></div>
+        <div><p>تاريخ الإصدار</p><p>${order.date}</p></div>
+        <div><p>الوقت</p><p>${order.time}</p></div>
+      </div>
+      <div class="customer-info">
+        <p class="section-title">بيانات العميل</p>
+        <p class="name">${order.customer}</p>
+        <p>${order.phone}</p>
+        <p>${order.region}${order.district ? ' - ' + order.district : ''} — ${order.address}</p>
+      </div>
+      <div class="tracking-box">
+        <p>رابط تتبع الشحنة:</p>
+        <a href="${trackingLink}">${trackingLink}</a>
+      </div>
+      <p class="section-title">المنتجات</p>
+      <table>
+        <thead><tr><th>المنتج</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr></thead>
+        <tbody>
+          ${productRows}
+          ${shippingFee > 0 ? `<tr><td>تكلفة الشحن</td><td>—</td><td>—</td><td>${shippingFee.toLocaleString('en-US')} ج.م</td></tr>` : ''}
+          ${warrantyRow}
+          <tr class="total-row"><td colspan="3"><strong>الإجمالي الكلي</strong></td><td><strong>${order.total.toLocaleString('en-US')} ج.م</strong></td></tr>
+        </tbody>
+      </table>
+      ${order.notes ? `<p style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px;font-size:13px;"><strong>ملاحظات:</strong> ${order.notes}</p>` : ''}
+      <div class="footer">شكرا لثقتك في Zahranship — للاستفسار: info@zahranship.com</div>
+    </div>
+  </div>
+  <script>window.onload = function(){ window.print(); }<\/script>
+</body>
+</html>`;
+}
+
+// ─── Warranty Certificate Generator ──────────────────────────────────────────
+function generateWarrantyCertHTML(order: TrackingOrder): string {
+  const productNames = order.lines && order.lines.length > 0
+    ? order.lines.map(l => `${l.label}${l.color ? ` (${l.color})` : ''} × ${l.quantity}`).join('، ')
+    : order.products;
+
+  const issueDate = order.date;
+  const warrantyPeriod = order.warranty || '6 أشهر';
+
+  return `<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+  <meta charset="UTF-8" />
+  <title>شهادة ضمان - ${order.orderNum}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', Tahoma, Arial, sans-serif; direction: rtl; background: #f8f9fa; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
+    .cert-wrap { max-width: 680px; width: 100%; background: white; border-radius: 20px; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,0.15); }
+    .cert-header { background: linear-gradient(135deg, #1e3a5f 0%, #2d5a8e 50%, #1e3a5f 100%); padding: 40px 32px; text-align: center; position: relative; }
+    .cert-header::before { content: ''; position: absolute; inset: 0; background: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.05'%3E%3Cpath d='M30 3 L35 20 L53 20 L39 31 L44 48 L30 38 L16 48 L21 31 L7 20 L25 20z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E"); }
+    .cert-badge { width: 80px; height: 80px; background: rgba(255,255,255,0.15); border: 3px solid rgba(255,255,255,0.4); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; font-size: 36px; }
+    .cert-header h1 { color: white; font-size: 28px; font-weight: 800; letter-spacing: 1px; }
+    .cert-header p { color: rgba(255,255,255,0.75); font-size: 14px; margin-top: 6px; }
+    .cert-body { padding: 36px 32px; }
+    .cert-title { text-align: center; margin-bottom: 28px; }
+    .cert-title h2 { font-size: 22px; font-weight: 700; color: #1e3a5f; }
+    .cert-title p { color: #6b7280; font-size: 14px; margin-top: 4px; }
+    .cert-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+    .cert-field { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 16px; }
+    .cert-field label { font-size: 11px; color: #94a3b8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 4px; }
+    .cert-field span { font-size: 15px; font-weight: 700; color: #1e293b; }
+    .warranty-highlight { background: linear-gradient(135deg, #f0fdf4, #dcfce7); border: 2px solid #86efac; border-radius: 16px; padding: 20px; text-align: center; margin-bottom: 24px; }
+    .warranty-highlight .period { font-size: 36px; font-weight: 900; color: #166534; }
+    .warranty-highlight .label { font-size: 14px; color: #15803d; margin-top: 4px; }
+    .products-box { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 12px; padding: 16px; margin-bottom: 24px; }
+    .products-box h3 { font-size: 13px; font-weight: 700; color: #1e40af; margin-bottom: 8px; }
+    .products-box p { font-size: 14px; color: #1e3a5f; line-height: 1.6; }
+    .cert-footer { background: #f8fafc; border-top: 2px dashed #e2e8f0; padding: 20px 32px; text-align: center; }
+    .cert-footer p { font-size: 12px; color: #94a3b8; line-height: 1.6; }
+    .cert-footer strong { color: #1e3a5f; }
+    .seal { display: inline-flex; align-items: center; gap: 8px; background: #1e3a5f; color: white; padding: 8px 20px; border-radius: 50px; font-size: 13px; font-weight: 700; margin-top: 12px; }
+    @media print { body { background: white; padding: 0; } .cert-wrap { box-shadow: none; border-radius: 0; } }
+  </style>
+</head>
+<body>
+  <div class="cert-wrap">
+    <div class="cert-header">
+      <div class="cert-badge">🛡️</div>
+      <h1>Zahranship</h1>
+      <p>شركة زهران للشحن والتوصيل</p>
+    </div>
+    <div class="cert-body">
+      <div class="cert-title">
+        <h2>شهادة ضمان المنتج</h2>
+        <p>هذه الشهادة تُثبت حق العميل في الضمان الرسمي</p>
+      </div>
+      <div class="warranty-highlight">
+        <div class="period">${warrantyPeriod}</div>
+        <div class="label">مدة الضمان المعتمدة</div>
+      </div>
+      <div class="cert-grid">
+        <div class="cert-field">
+          <label>رقم الطلب</label>
+          <span>${order.orderNum}</span>
+        </div>
+        <div class="cert-field">
+          <label>تاريخ الإصدار</label>
+          <span>${issueDate}</span>
+        </div>
+        <div class="cert-field">
+          <label>اسم العميل</label>
+          <span>${order.customer}</span>
+        </div>
+        <div class="cert-field">
+          <label>رقم الهاتف</label>
+          <span>${order.phone}</span>
+        </div>
+      </div>
+      <div class="products-box">
+        <h3>المنتجات المشمولة بالضمان</h3>
+        <p>${productNames}</p>
+      </div>
+    </div>
+    <div class="cert-footer">
+      <p>يشمل الضمان عيوب الصناعة والمواد فقط. لا يشمل الكسر أو سوء الاستخدام.</p>
+      <p>للتواصل بخصوص الضمان: <strong>info@zahranship.com</strong></p>
+      <div class="seal">✅ شهادة ضمان رسمية معتمدة</div>
+    </div>
+  </div>
+  <script>window.onload = function(){ window.print(); }<\/script>
+</body>
+</html>`;
+}
+
 export default function TrackingPage({ params }: { params: Promise<{ orderId: string }> }) {
   const { orderId } = React.use(params);
   const [order, setOrder] = useState<TrackingOrder | null>(null);
@@ -635,11 +830,11 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
   const [refreshing, setRefreshing] = useState(false);
   const [activeChat, setActiveChat] = useState<'delegate' | 'support' | null>(null);
   const [showComplaint, setShowComplaint] = useState(false);
+  const [liveUpdateFlash, setLiveUpdateFlash] = useState(false);
 
-  const loadOrder = useCallback(() => {
-    setRefreshing(true);
+  const loadOrder = useCallback((silent = false) => {
+    if (!silent) setRefreshing(true);
     setTimeout(() => {
-      // First try localStorage orders
       let found: TrackingOrder | null = null;
       let foundHistory: { status: string; label: string; time: string; date: string; note: string }[] = [];
       try {
@@ -647,17 +842,45 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
         const match = stored.find((o: TrackingOrder & { orderNum: string }) => o.orderNum === orderId);
         if (match) {
           found = match as TrackingOrder;
+          // Build history from audit logs if available
+          try {
+            const allAudit = JSON.parse(localStorage.getItem('zahranship_audit_logs') || '{}');
+            const orderAudit = allAudit[match.id] || [];
+            if (orderAudit.length > 0) {
+              const statusChanges = orderAudit
+                .filter((e: { action: string; newStatus?: string; status?: string; timestamp: string; note?: string }) => e.action === 'status_change' || e.newStatus)
+                .map((e: { action: string; newStatus?: string; status?: string; timestamp: string; note?: string }) => {
+                  const ts = new Date(e.timestamp);
+                  const time = ts.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+                  const date = ts.toLocaleDateString('en-GB');
+                  const statusKey = e.newStatus || e.status || 'new';
+                  return {
+                    status: statusKey,
+                    label: STATUS_CONFIG[statusKey]?.label || statusKey,
+                    time,
+                    date,
+                    note: e.note || STATUS_CONFIG[statusKey]?.description || '',
+                  };
+                });
+              if (statusChanges.length > 0) foundHistory = statusChanges;
+            }
+          } catch {}
         }
       } catch {}
 
-      // Fallback to mock data
       if (!found) {
         found = MOCK_TRACKING_DATA[orderId] || null;
         foundHistory = MOCK_STATUS_HISTORY[orderId] || [];
       }
 
       if (found) {
-        setOrder(found);
+        setOrder(prev => {
+          if (prev && prev.status !== found!.status) {
+            setLiveUpdateFlash(true);
+            setTimeout(() => setLiveUpdateFlash(false), 3000);
+          }
+          return found;
+        });
         setHistory(foundHistory);
         setNotFound(false);
       } else {
@@ -666,13 +889,25 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
       setLoading(false);
       setRefreshing(false);
       setLastUpdated(new Date());
-    }, 600);
+    }, silent ? 0 : 600);
   }, [orderId]);
 
   useEffect(() => {
     loadOrder();
-    const interval = setInterval(loadOrder, 30000);
-    return () => clearInterval(interval);
+    // Auto-refresh every 10 seconds for near real-time tracking
+    const interval = setInterval(() => loadOrder(true), 10000);
+
+    // Listen for instant updates from orders management
+    const handleOrdersUpdate = () => loadOrder(true);
+    const handleAuditUpdate = () => loadOrder(true);
+    window.addEventListener('zahranship_orders_updated', handleOrdersUpdate);
+    window.addEventListener('zahranship_audit_updated', handleAuditUpdate);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('zahranship_orders_updated', handleOrdersUpdate);
+      window.removeEventListener('zahranship_audit_updated', handleAuditUpdate);
+    };
   }, [loadOrder]);
 
   const handleContactDelegate = () => {
@@ -686,6 +921,22 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
       const msg = encodeURIComponent(`مرحباً، أنا ${order?.customer}، أتواصل بخصوص الطلب رقم ${order?.orderNum}`);
       window.open(`https://wa.me/2${order.delegatePhone}?text=${msg}`, '_blank');
     }
+  };
+
+  const handleDownloadInvoice = () => {
+    if (!order) return;
+    const win = window.open('', '_blank', 'width=800,height=700');
+    if (!win) { alert('يرجى السماح بالنوافذ المنبثقة'); return; }
+    win.document.write(generateInvoiceHTML(order));
+    win.document.close();
+  };
+
+  const handleDownloadWarranty = () => {
+    if (!order) return;
+    const win = window.open('', '_blank', 'width=800,height=700');
+    if (!win) { alert('يرجى السماح بالنوافذ المنبثقة'); return; }
+    win.document.write(generateWarrantyCertHTML(order));
+    win.document.close();
   };
 
   if (loading) {
@@ -742,6 +993,7 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
   const statusConfig = STATUS_CONFIG[order.status] || STATUS_CONFIG['new'];
   const isShipping = order.status === 'shipping';
   const isDelivered = order.status === 'delivered';
+  const hasWarranty = order.warranty && order.warranty !== 'بدون ضمان';
 
   return (
     <div className="min-h-screen relative" dir="rtl">
@@ -764,6 +1016,13 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
           style={{ background: 'radial-gradient(ellipse at 30% 20%, hsl(35,70%,35%) 0%, transparent 60%), radial-gradient(ellipse at 70% 80%, hsl(25,60%,25%) 0%, transparent 60%)' }} />
       </div>
 
+      {/* Live update flash banner */}
+      {liveUpdateFlash && (
+        <div className="fixed top-0 left-0 right-0 z-50 bg-green-500 text-white text-center py-2 text-sm font-bold animate-pulse">
+          🔄 تم تحديث حالة الشحنة لحظياً!
+        </div>
+      )}
+
       {/* Header */}
       <div style={{ background: 'linear-gradient(135deg, rgba(0,0,0,0.5) 0%, rgba(0,0,0,0.3) 100%)', backdropFilter: 'blur(12px)', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
         <div className="max-w-lg mx-auto px-4 py-5">
@@ -778,7 +1037,7 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
               </div>
             </div>
             <button
-              onClick={loadOrder}
+              onClick={() => loadOrder()}
               disabled={refreshing}
               className="flex items-center gap-1.5 text-amber-200 text-xs px-3 py-1.5 rounded-lg transition-colors"
               style={{ background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.2)' }}
@@ -979,6 +1238,58 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
           </div>
         </div>
 
+        {/* Download Actions — Invoice & Warranty */}
+        <div className="bg-white rounded-2xl border border-[hsl(var(--border))] shadow-sm p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Download size={16} className="text-[hsl(211,67%,28%)]" />
+            <h2 className="font-bold text-sm text-[hsl(var(--foreground))]">تحميل المستندات</h2>
+          </div>
+          <div className="space-y-2.5">
+            {/* Invoice Download - always available */}
+            <button
+              onClick={handleDownloadInvoice}
+              className="w-full flex items-center gap-3 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl px-4 py-3 transition-colors"
+            >
+              <div className="w-10 h-10 bg-[hsl(211,67%,28%)] rounded-xl flex items-center justify-center flex-shrink-0">
+                <FileText size={18} className="text-white" />
+              </div>
+              <div className="text-right flex-1">
+                <p className="text-sm font-bold text-[hsl(211,67%,28%)]">تحميل الفاتورة PDF</p>
+                <p className="text-xs text-blue-600">فاتورة ضريبية مبسطة بتفاصيل الطلب</p>
+              </div>
+              <Download size={16} className="text-blue-500 flex-shrink-0" />
+            </button>
+
+            {/* Warranty Certificate - only on delivery */}
+            {isDelivered && hasWarranty ? (
+              <button
+                onClick={handleDownloadWarranty}
+                className="w-full flex items-center gap-3 bg-green-50 hover:bg-green-100 border border-green-200 rounded-xl px-4 py-3 transition-colors"
+              >
+                <div className="w-10 h-10 bg-green-600 rounded-xl flex items-center justify-center flex-shrink-0">
+                  <Award size={18} className="text-white" />
+                </div>
+                <div className="text-right flex-1">
+                  <p className="text-sm font-bold text-green-800">تحميل شهادة الضمان</p>
+                  <p className="text-xs text-green-600">ضمان {order.warranty} — متاح بعد التسليم</p>
+                </div>
+                <Download size={16} className="text-green-500 flex-shrink-0" />
+              </button>
+            ) : hasWarranty && !isDelivered ? (
+              <div className="w-full flex items-center gap-3 bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 opacity-60 cursor-not-allowed">
+                <div className="w-10 h-10 bg-gray-400 rounded-xl flex items-center justify-center flex-shrink-0">
+                  <Shield size={18} className="text-white" />
+                </div>
+                <div className="text-right flex-1">
+                  <p className="text-sm font-bold text-gray-600">شهادة الضمان</p>
+                  <p className="text-xs text-gray-500">ستتوفر بعد تسليم الطلب — ضمان {order.warranty}</p>
+                </div>
+                <Clock size={16} className="text-gray-400 flex-shrink-0" />
+              </div>
+            ) : null}
+          </div>
+        </div>
+
         {/* Delivery Notes */}
         {order.notes && (
           <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4">
@@ -990,13 +1301,13 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
           </div>
         )}
 
-        {/* Warranty */}
-        {order.warranty && order.warranty !== 'بدون ضمان' && (
-          <div className="bg-green-50 border border-green-200 rounded-2xl p-4 flex items-center gap-3">
+        {/* Warranty info badge */}
+        {hasWarranty && (
+          <div className={`border rounded-2xl p-4 flex items-center gap-3 ${isDelivered ? 'bg-green-50 border-green-200' : 'bg-green-50/60 border-green-200/60'}`}>
             <Shield size={20} className="text-green-600 flex-shrink-0" />
             <div>
               <p className="text-sm font-bold text-green-800">ضمان المنتج</p>
-              <p className="text-xs text-green-600">{order.warranty}</p>
+              <p className="text-xs text-green-600">{order.warranty}{isDelivered ? ' — يمكنك تحميل الشهادة أعلاه' : ' — يبدأ من تاريخ التسليم'}</p>
             </div>
           </div>
         )}
@@ -1037,10 +1348,13 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
 
         {/* Last updated */}
         <div className="text-center pb-6">
-          <p className="text-xs text-amber-200/60">
-            آخر تحديث: {lastUpdated.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })}
-          </p>
-          <p className="text-xs text-amber-200/50 mt-1">يتحدث تلقائياً كل 30 ثانية</p>
+          <div className="flex items-center justify-center gap-1.5 mb-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse inline-block" />
+            <p className="text-xs text-amber-200/70">
+              آخر تحديث: {lastUpdated.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })}
+            </p>
+          </div>
+          <p className="text-xs text-amber-200/50">يتحدث تلقائياً كل 10 ثوانٍ</p>
         </div>
       </div>
 
