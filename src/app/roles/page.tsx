@@ -576,8 +576,20 @@ export default function RolesPage() {
         ? prev.map(e => e.id === emp.id ? (emp.password ? emp : { ...emp, password: e.password }) : e)
         : [...prev, emp];
       // Persist to localStorage so login page can authenticate employees
+      // Strip avatar (base64) to avoid localStorage quota exceeded error
       if (typeof window !== 'undefined') {
-        localStorage.setItem('turath_employees', JSON.stringify(updated));
+        try {
+          const lightweight = updated.map(({ avatar, ...rest }) => rest);
+          localStorage.setItem('turath_employees', JSON.stringify(lightweight));
+        } catch (e) {
+          // If still too large, save only essential auth fields
+          try {
+            const minimal = updated.map(({ id, username, password, roleId, status, name, createdAt }) => ({ id, username, password, roleId, status, name, createdAt }));
+            localStorage.setItem('turath_employees', JSON.stringify(minimal));
+          } catch {
+            // localStorage unavailable or full — skip persistence
+          }
+        }
       }
       return updated;
     });
@@ -754,7 +766,9 @@ export default function RolesPage() {
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1.5">
                             <span className="font-mono text-xs bg-[hsl(var(--muted))] px-2 py-1 rounded-lg">{isShowingPass ? emp.password : '••••••••'}</span>
-                            <button onClick={() => toggleShowPassword(emp.id)} className="text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors">{isShowingPass ? <EyeOff size={14} /> : <Eye size={14} />}</button>
+                            <button onClick={() => toggleShowPassword(emp.id)} className="text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]">
+                              {isShowingPass ? <EyeOff size={14} /> : <Eye size={14} />}
+                            </button>
                           </div>
                         </td>
                         <td className="px-4 py-3"><span className={`text-xs px-2.5 py-1 rounded-full font-semibold ${rc.bg} ${rc.text}`}>{getRoleName(emp.roleId)}</span></td>
