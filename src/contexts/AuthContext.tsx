@@ -9,23 +9,24 @@ export type UserRole = 'manager' | 'data_entry' | 'shipping' | 'supervisor';
 // Routes each role is allowed to access (prefix match)
 export const ROLE_ALLOWED_ROUTES: Record<UserRole, string[]> = {
   manager: ['/dashboard', '/orders-management', '/shipping', '/inventory', '/reports', '/users', '/roles', '/settings', '/track', '/crm'],
-  data_entry: ['/shipping', '/track'],
+  data_entry: ['/orders-management', '/shipping', '/track'],
   shipping: ['/shipping', '/track'],
-  supervisor: ['/shipping', '/track'],
+  supervisor: ['/dashboard', '/orders-management', '/shipping', '/track', '/reports'],
 };
 
 // Default redirect after login per role
 export const ROLE_DEFAULT_ROUTE: Record<UserRole, string> = {
   manager: '/dashboard',
-  data_entry: '/shipping',
+  data_entry: '/orders-management',
   shipping: '/shipping',
   supervisor: '/shipping',
 };
 
 const AuthContext = createContext<any>({
   hasAccess: () => true,
-  currentRole: 'manager' as UserRole,
-  loading: false,
+  currentRole: null,
+  loading: true,
+  roleLoading: true,
 });
 
 export const useAuth = () => {
@@ -40,18 +41,31 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [user, setUser] = useState<any>(null);
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(false);
-  const [currentRole, setCurrentRole] = useState<UserRole>('manager');
+  // null = not yet loaded from localStorage
+  const [currentRole, setCurrentRole] = useState<UserRole | null>(null);
+  const [roleLoading, setRoleLoading] = useState(true);
 
   useEffect(() => {
-    // Load role from localStorage
+    // Load role from localStorage — must complete before access checks run
     if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem('current_user');
-      if (stored) {
-        try {
+      try {
+        const stored = localStorage.getItem('current_user');
+        if (stored) {
           const parsed = JSON.parse(stored);
-          if (parsed?.role) setCurrentRole(parsed.role as UserRole);
-        } catch {}
+          if (parsed?.role) {
+            setCurrentRole(parsed.role as UserRole);
+          } else {
+            // Stored user has no role — treat as unauthenticated
+            setCurrentRole(null);
+          }
+        } else {
+          // No stored user — not logged in
+          setCurrentRole(null);
+        }
+      } catch {
+        setCurrentRole(null);
       }
+      setRoleLoading(false);
     }
 
     // Try to initialize Supabase session (non-blocking)
@@ -84,6 +98,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   // Check if current role can access a given path
   const hasAccess = (path: string): boolean => {
+    // While role is loading, don't block access
+    if (roleLoading || currentRole === null) return true;
     const allowed = ROLE_ALLOWED_ROUTES[currentRole] ?? [];
     return allowed.some((route) => path === route || path.startsWith(route + '/') || path.startsWith(route + '?'));
   };
@@ -121,6 +137,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     if (typeof window !== 'undefined') {
       localStorage.removeItem('current_user');
     }
+    setCurrentRole(null);
     try {
       const supabase = createClient();
       if (supabase) {
@@ -170,6 +187,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     user,
     session,
     loading,
+    roleLoading,
     currentRole,
     setCurrentRole,
     hasAccess,

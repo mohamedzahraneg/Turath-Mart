@@ -11,7 +11,7 @@ interface AppLayoutProps {
 }
 
 export default function AppLayout({ children, currentPath = '' }: AppLayoutProps) {
-  const { currentRole, hasAccess } = useAuth();
+  const { currentRole, hasAccess, roleLoading } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
 
@@ -21,12 +21,19 @@ export default function AppLayout({ children, currentPath = '' }: AppLayoutProps
     if (!activePath) return;
     // Skip guard for login/public pages
     if (activePath.startsWith('/sign-up-login-screen') || activePath.startsWith('/track')) return;
+    // Wait until role is loaded from localStorage before enforcing access
+    if (roleLoading) return;
+    // If no role (not logged in), redirect to login
+    if (currentRole === null) {
+      router.replace('/sign-up-login-screen');
+      return;
+    }
 
     if (!hasAccess(activePath)) {
       // Redirect to the default route for this role
       router.replace(ROLE_DEFAULT_ROUTE[currentRole] ?? '/shipping');
     }
-  }, [activePath, currentRole, hasAccess, router]);
+  }, [activePath, currentRole, hasAccess, roleLoading, router]);
 
   return (
     <div className="flex min-h-screen bg-[hsl(210,20%,97%)]" dir="rtl">

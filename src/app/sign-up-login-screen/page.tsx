@@ -53,6 +53,9 @@ const ROLE_ID_TO_ROLE: Record<string, string> = {
   r4: 'shipping',
   r5: 'supervisor',
   r6: 'data_entry',
+  // Additional role IDs that may be created dynamically
+  r7: 'data_entry',
+  r8: 'shipping',
 };
 
 const STATS = [
