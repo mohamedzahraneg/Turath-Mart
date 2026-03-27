@@ -6,6 +6,7 @@ import { Toaster } from 'sonner';
 import { X, Clock, AlertTriangle, CheckCircle, MapPin, ShieldOff } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { addAuditLog, getAuditLogs } from './AuditLogModal';
+import { createClient } from '@/lib/supabase/client';
 
 interface Order {
   id: string;
@@ -118,6 +119,17 @@ export default function StatusUpdateModal({ order, onClose }: Props) {
         window.dispatchEvent(new CustomEvent('zahranship_orders_updated'));
       }
     } catch {}
+
+    // Sync status update to Supabase for cross-origin tracking
+    try {
+      const supabase = createClient();
+      await supabase
+        .from('zahranship_orders')
+        .update({ status: data.newStatus })
+        .eq('order_num', order.orderNum);
+    } catch {
+      // Supabase sync failed, status updated in localStorage only
+    }
 
     await new Promise((r) => setTimeout(r, 600));
     toast.success(`تم تحديث حالة الأوردر ${order.orderNum} إلى: ${statusLabel}`);

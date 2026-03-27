@@ -1,6 +1,7 @@
 'use client';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Package, MapPin, User, Phone, Clock, CheckCircle, Truck, Warehouse, ClipboardList, XCircle, RotateCcw, RefreshCw, MessageCircle, Navigation, Star, Shield, Send, ChevronDown, AlertCircle, Headphones, X, Download, FileText, Award } from 'lucide-react';
+import { createClient } from '@/lib/supabase/client';
 
 interface TrackingOrder {
   orderNum: string;
@@ -122,7 +123,6 @@ const MOCK_TRACKING_DATA: Record<string, TrackingOrder> = {
     delegate: 'علي محمود',
     delegatePhone: '01098765432',
     delegateRating: 4.8,
-    warranty: '12 شهر',
   },
 };
 
@@ -141,6 +141,20 @@ const MOCK_STATUS_HISTORY: Record<string, { status: string; label: string; time:
     { status: 'delivered', label: 'تم التسليم', time: '14:05', date: '27/03/2026', note: 'تم تسليم الطلب بنجاح' },
   ],
 };
+
+// Fallback: all orders from orders management (mock + any that may not be in localStorage)
+const ORDERS_MANAGEMENT_MOCK: TrackingOrder[] = [
+  { orderNum: 'ZSH-2026-0047', customer: 'أحمد محمود السيد', phone: '01012345678', region: 'القاهرة', district: 'مدينة نصر', address: 'شارع عباس العقاد، عمارة 5 شقة 12', products: 'حامل مصحف بني x 2', quantity: 2, total: 650, subtotal: 600, shippingFee: 50, status: 'shipping', date: '27/03/2026', time: '09:32:14', notes: 'العميل يريد التسليم في الصباح', delegate: 'علي محمود', delegatePhone: '01098765432', delegateRating: 4.8 },
+  { orderNum: 'ZSH-2026-0046', customer: 'فاطمة علي حسن', phone: '01123456789', region: 'الجيزة', district: 'الدقي', address: 'شارع التحرير، برج المنار ط3', products: 'كعبة x 1 + مصحف x 2', quantity: 3, total: 890, subtotal: 840, shippingFee: 50, status: 'delivered', date: '27/03/2026', time: '09:15:33', delegate: 'علي محمود', delegatePhone: '01098765432', delegateRating: 4.8 },
+  { orderNum: 'ZSH-2026-0045', customer: 'محمد عبد الرحمن', phone: '01234567890', region: 'القليوبية', district: 'شبرا الخيمة', address: 'شارع النيل، مبنى رقم 14', products: 'حامل مصحف ذهبي x 1', quantity: 1, total: 380, subtotal: 330, shippingFee: 50, status: 'new', date: '27/03/2026', time: '08:55:07', delegate: 'خالد سعيد' },
+  { orderNum: 'ZSH-2026-0044', customer: 'سارة إبراهيم خليل', phone: '01056789012', region: 'القاهرة', district: 'المعادي', address: 'شارع 9، فيلا 23', products: 'كشاف x 3', quantity: 3, total: 530, subtotal: 450, shippingFee: 50, status: 'preparing', date: '27/03/2026', time: '08:40:51', delegate: 'علي محمود' },
+  { orderNum: 'ZSH-2026-0043', customer: 'عمر حامد الشريف', phone: '01198765432', region: 'الجيزة', district: 'فيصل', address: 'شارع البحر الأعظم، عمارة 7', products: 'حامل مصحف أسود x 1 + كشاف x 1', quantity: 2, total: 570, subtotal: 470, shippingFee: 100, status: 'warehouse', date: '26/03/2026', time: '16:20:44', delegate: 'خالد سعيد' },
+  { orderNum: 'ZSH-2026-0042', customer: 'نور الدين مصطفى', phone: '01067891234', region: 'القاهرة', district: 'هليوبوليس (مصر الجديدة)', address: 'شارع النزهة، شقة 45', products: 'كرسي x 2', quantity: 2, total: 1200, subtotal: 1150, shippingFee: 50, status: 'returned', date: '26/03/2026', time: '15:50:19', notes: 'العميل رفض الاستلام', delegate: 'علي محمود' },
+  { orderNum: 'ZSH-2026-0041', customer: 'هدى رمضان أحمد', phone: '01145678901', region: 'القليوبية', district: 'قليوب', address: 'شارع السكة الحديد، عمارة 2', products: 'مصحف x 5', quantity: 5, total: 750, subtotal: 700, shippingFee: 50, status: 'cancelled', date: '26/03/2026', time: '14:30:02', notes: 'إلغاء بطلب العميل', delegate: 'خالد سعيد' },
+  { orderNum: 'ZSH-2026-0040', customer: 'خالد عبد العزيز', phone: '01012223344', region: 'القاهرة', district: 'مصر الجديدة', address: 'شارع الثورة، عمارة 10', products: 'حامل مصحف أبيض x 2 + مصحف x 1', quantity: 3, total: 810, subtotal: 760, shippingFee: 50, status: 'delivered', date: '25/03/2026', time: '11:20:38', delegate: 'علي محمود' },
+  { orderNum: 'ZSH-2026-0039', customer: 'ريم حسام الدين', phone: '01534567890', region: 'الجيزة', district: 'إمبابة', address: 'شارع طه حسين، رقم 33', products: 'كعبة x 1', quantity: 1, total: 500, subtotal: 450, shippingFee: 50, status: 'shipping', date: '25/03/2026', time: '10:05:55', delegate: 'خالد سعيد' },
+  { orderNum: 'ZSH-2026-0038', customer: 'طارق سعيد منصور', phone: '01267891234', region: 'القليوبية', district: 'الخانكة', address: 'شارع المحطة، مبنى 5', products: 'حامل مصحف صدف x 1 + كشاف x 1', quantity: 2, total: 610, subtotal: 560, shippingFee: 50, status: 'preparing', date: '25/03/2026', time: '09:45:11', delegate: 'علي محمود' },
+];
 
 // ─── Chat Panel ───────────────────────────────────────────────────────────────
 
@@ -449,7 +463,7 @@ function LiveLocationMap({ status, delegate }: { status: string; delegate?: stri
 
   return (
     <div className="relative w-full h-48 rounded-2xl overflow-hidden bg-gradient-to-br from-slate-100 to-slate-200 border border-[hsl(var(--border))]">
-      <div className="absolute inset-0 opacity-20">
+      <div className="absolute inset-0 opacity-20 pointer-events-none">
         <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
           <defs>
             <pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
@@ -459,7 +473,7 @@ function LiveLocationMap({ status, delegate }: { status: string; delegate?: stri
           <rect width="100%" height="100%" fill="url(#grid)" />
         </svg>
       </div>
-      <svg className="absolute inset-0 w-full h-full opacity-30" viewBox="0 0 400 200">
+      <svg className="absolute inset-0 w-full h-full opacity-30 pointer-events-none" viewBox="0 0 400 200">
         <path d="M 0 100 Q 100 80 200 100 T 400 100" stroke="#64748b" strokeWidth="4" fill="none"/>
         <path d="M 200 0 Q 210 100 200 200" stroke="#64748b" strokeWidth="3" fill="none"/>
         <path d="M 0 50 Q 150 60 300 40 T 400 60" stroke="#94a3b8" strokeWidth="2" fill="none"/>
@@ -486,12 +500,12 @@ function LiveLocationMap({ status, delegate }: { status: string; delegate?: stri
         </div>
       )}
       {isActive && (
-        <svg className="absolute inset-0 w-full h-full" viewBox="0 0 400 200">
+        <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 400 200">
           <path d="M 133 67 Q 200 80 267 133" stroke="hsl(211,67%,28%)" strokeWidth="3" fill="none" strokeDasharray="8,4" opacity="0.6"/>
         </svg>
       )}
       {!isActive && (
-        <div className="absolute inset-0 flex items-center justify-center bg-slate-100/80 backdrop-blur-sm">
+        <div className="absolute inset-0 flex items-center justify-center bg-slate-100/80 backdrop-blur-sm pointer-events-none">
           <div className="text-center">
             <Navigation size={32} className="text-slate-400 mx-auto mb-2" />
             <p className="text-sm text-slate-500 font-medium">
@@ -576,7 +590,7 @@ function StatusTimeline({ history, currentStatus }: { history: { status: string;
                 )}
               </div>
               {step.timestamp && (
-                <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 flex items-center gap-1">
+                <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1 flex items-center gap-1">
                   <Clock size={10} />
                   {step.timestamp}
                 </p>
@@ -834,7 +848,7 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
 
   const loadOrder = useCallback((silent = false) => {
     if (!silent) setRefreshing(true);
-    setTimeout(() => {
+    setTimeout(async () => {
       let found: TrackingOrder | null = null;
       let foundHistory: { status: string; label: string; time: string; date: string; note: string }[] = [];
       try {
@@ -868,9 +882,57 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
         }
       } catch {}
 
+      // Second: check MOCK_TRACKING_DATA
       if (!found) {
         found = MOCK_TRACKING_DATA[orderId] || null;
         foundHistory = MOCK_STATUS_HISTORY[orderId] || [];
+      }
+
+      // Third: check orders management mock orders
+      if (!found) {
+        const mockMatch = ORDERS_MANAGEMENT_MOCK.find(o => o.orderNum === orderId);
+        if (mockMatch) {
+          found = mockMatch;
+          foundHistory = [];
+        }
+      }
+
+      // Fourth: query Supabase (handles cross-origin tracking)
+      if (!found) {
+        try {
+          const supabase = createClient();
+          const { data } = await supabase
+            .from('zahranship_orders')
+            .select('*')
+            .eq('order_num', orderId)
+            .single();
+          if (data) {
+            found = {
+              orderNum: data.order_num,
+              customer: data.customer,
+              phone: data.phone,
+              phone2: data.phone2 || undefined,
+              region: data.region,
+              district: data.district || undefined,
+              address: data.address,
+              products: data.products,
+              quantity: data.quantity,
+              total: data.total,
+              subtotal: data.subtotal,
+              shippingFee: data.shipping_fee,
+              status: data.status,
+              date: data.date,
+              time: data.time,
+              notes: data.notes || undefined,
+              warranty: data.warranty || undefined,
+              delegate: data.delegate_name || undefined,
+              lines: data.lines || undefined,
+            } as TrackingOrder;
+            foundHistory = [];
+          }
+        } catch {
+          // Supabase query failed, order not found
+        }
       }
 
       if (found) {

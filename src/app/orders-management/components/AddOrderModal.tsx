@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { Toaster } from 'sonner';
 import { X, Trash2, Package, User, MapPin, Phone, FileText, Zap, Calculator, ChevronDown, DollarSign, Plus, Minus } from 'lucide-react';
+import { createClient } from '@/lib/supabase/client';
 
 interface ProductItem {
   productType: string;
@@ -383,6 +384,39 @@ export default function AddOrderModal({ onClose }: Props) {
       window.dispatchEvent(new CustomEvent('zahranship_orders_updated'));
     } catch {
       // ignore storage errors
+    }
+
+    // Save to Supabase for cross-origin tracking
+    try {
+      const supabase = createClient();
+      await supabase.from('zahranship_orders').upsert({
+        id: newOrder.id,
+        order_num: newOrder.orderNum,
+        created_by: newOrder.createdBy,
+        created_by_device: newOrder.createdByDevice,
+        customer: newOrder.customer,
+        phone: newOrder.phone,
+        phone2: newOrder.phone2 || null,
+        region: newOrder.region,
+        district: newOrder.district || null,
+        address: newOrder.address,
+        products: newOrder.products,
+        quantity: newOrder.quantity,
+        subtotal: newOrder.subtotal,
+        shipping_fee: newOrder.shippingFee,
+        extra_shipping_fee: newOrder.extraShippingFee || 0,
+        express_shipping: newOrder.expressShipping || false,
+        total: newOrder.total,
+        status: newOrder.status,
+        date: newOrder.date,
+        time: newOrder.time,
+        day: newOrder.day || null,
+        notes: newOrder.notes || null,
+        warranty: newOrder.warranty || null,
+        lines: newOrder.lines || null,
+      }, { onConflict: 'id' });
+    } catch {
+      // Supabase save failed, order still saved in localStorage
     }
 
     await new Promise((r) => setTimeout(r, 800));
@@ -947,149 +981,6 @@ export default function AddOrderModal({ onClose }: Props) {
 
                 <div className="flex justify-between pt-2">
                   <button type="button" className="btn-secondary" onClick={() => setStep(1)}>السابق</button>
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    onClick={() => { if (validateStep2()) setStep(3); }}
-                  >
-                    التالي: المراجعة
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* ── Step 3: Review ── */}
-            {step === 3 && (
-              <div className="space-y-5 fade-in">
-                <div className="flex items-center gap-2 mb-2">
-                  <FileText size={16} className="text-[hsl(var(--primary))]" />
-                  <h3 className="text-sm font-bold text-[hsl(var(--foreground))]">مراجعة الأوردر قبل التأكيد</h3>
-                </div>
-
-                {/* Customer info review */}
-                <div className="border border-[hsl(var(--border))] rounded-2xl p-4 bg-blue-50/50">
-                  <div className="flex items-center gap-2 mb-3">
-                    <User size={14} className="text-blue-600" />
-                    <span className="text-xs font-bold text-blue-700 uppercase tracking-wide">بيانات العميل</span>
-                    <button type="button" onClick={() => setStep(1)} className="mr-auto text-xs text-[hsl(var(--primary))] hover:underline">تعديل</button>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
-                    <div>
-                      <span className="text-[hsl(var(--muted-foreground))] text-xs">الاسم:</span>
-                      <p className="font-semibold">{customerName}</p>
-                    </div>
-                    <div>
-                      <span className="text-[hsl(var(--muted-foreground))] text-xs">الموبايل:</span>
-                      <p className="font-semibold font-mono" dir="ltr">{phone}{phone2 ? ` / ${phone2}` : ''}</p>
-                    </div>
-                    <div>
-                      <span className="text-[hsl(var(--muted-foreground))] text-xs">المحافظة / المنطقة:</span>
-                      <p className="font-semibold">{governorate} — {district}</p>
-                    </div>
-                    <div>
-                      <span className="text-[hsl(var(--muted-foreground))] text-xs">العنوان:</span>
-                      <p className="font-semibold">{address}</p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Products review */}
-                <div className="border border-[hsl(var(--border))] rounded-2xl p-4">
-                  <div className="flex items-center gap-2 mb-3">
-                    <Package size={14} className="text-[hsl(var(--primary))]" />
-                    <span className="text-xs font-bold text-[hsl(var(--primary))] uppercase tracking-wide">المنتجات</span>
-                    <button type="button" onClick={() => setStep(2)} className="mr-auto text-xs text-[hsl(var(--primary))] hover:underline">تعديل</button>
-                  </div>
-                  <div className="space-y-2">
-                    {lines.map((line, idx) => {
-                      const card = productCards.find(p => p.value === line.productType);
-                      const hasRealImage = card?.image && (card.image.startsWith('data:') || card.image.startsWith('http') || card.image.startsWith('/'));
-                      return (
-                        <div key={line.id} className="flex items-center gap-3 py-2 border-b border-[hsl(var(--border))] last:border-0">
-                          <div className="w-10 h-10 rounded-xl overflow-hidden flex-shrink-0 bg-[hsl(var(--muted))] flex items-center justify-center">
-                            {hasRealImage ? (
-                              <img src={card!.image} alt={card?.label || ''} className="w-full h-full object-cover" />
-                            ) : (
-                              <span className="text-xl">{card?.emoji || '📦'}</span>
-                            )}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-semibold truncate">
-                              {card?.label || line.productType}
-                              {line.color ? ` — ${line.color}` : ''}
-                              {line.includeFlashlight ? ' + كشاف' : ''}
-                            </p>
-                            {line.note && <p className="text-xs text-amber-600 truncate">ملاحظة: {line.note}</p>}
-                          </div>
-                          <div className="text-left flex-shrink-0">
-                            <p className="text-xs text-[hsl(var(--muted-foreground))]">{line.quantity} × {line.unitPrice} ج.م</p>
-                            <p className="text-sm font-bold font-mono text-[hsl(var(--primary))]">{lineTotal(line).toLocaleString('en-US')} ج.م</p>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Shipping & notes review */}
-                <div className="border border-[hsl(var(--border))] rounded-2xl p-4 bg-[hsl(var(--muted))]/20">
-                  <div className="flex items-center gap-2 mb-3">
-                    <Zap size={14} className="text-amber-600" />
-                    <span className="text-xs font-bold text-[hsl(var(--foreground))] uppercase tracking-wide">الشحن والملاحظات</span>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
-                    <div>
-                      <span className="text-[hsl(var(--muted-foreground))] text-xs">نوع الشحن:</span>
-                      <p className="font-semibold">{expressShipping ? '⚡ شحن سريع' : 'شحن عادي'}</p>
-                    </div>
-                    <div>
-                      <span className="text-[hsl(var(--muted-foreground))] text-xs">تكلفة الشحن:</span>
-                      <p className="font-semibold font-mono">{shippingCost} ج.م</p>
-                    </div>
-                    {warranty && warranty !== 'بدون ضمان' && (
-                      <div>
-                        <span className="text-[hsl(var(--muted-foreground))] text-xs">الضمان:</span>
-                        <p className="font-semibold">{warranty}</p>
-                      </div>
-                    )}
-                    {notes && (
-                      <div className="sm:col-span-2">
-                        <span className="text-[hsl(var(--muted-foreground))] text-xs">ملاحظات:</span>
-                        <p className="font-semibold">{notes}</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Price summary */}
-                <div className="bg-[hsl(var(--primary))]/5 border border-[hsl(var(--primary))]/20 rounded-2xl p-4">
-                  <div className="flex items-center gap-2 mb-3">
-                    <Calculator size={16} className="text-[hsl(var(--primary))]" />
-                    <span className="text-sm font-bold">ملخص الأسعار النهائي</span>
-                  </div>
-                  <div className="space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-[hsl(var(--muted-foreground))]">إجمالي المنتجات ({lines.length} صنف):</span>
-                      <span className="font-mono font-semibold">{subtotal.toLocaleString('en-US')} ج.م</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-[hsl(var(--muted-foreground))]">{expressShipping ? 'شحن سريع:' : 'الشحن:'}</span>
-                      <span className={`font-mono ${expressShipping ? 'text-amber-700' : ''}`}>{shippingCost} ج.م</span>
-                    </div>
-                    {IS_ADMIN && extraShippingFee > 0 && (
-                      <div className="flex justify-between text-orange-700"><span>مصاريف إضافية:</span><span className="font-mono">+ {extraShippingFee.toLocaleString('en-US')} ج.م</span></div>
-                    )}
-                    <div className="border-t border-[hsl(var(--primary))]/20 pt-2 flex justify-between">
-                      <span className="font-bold text-base">الإجمالي الكلي:</span>
-                      <span className="font-mono font-bold text-xl text-[hsl(var(--primary))]">
-                        {grandTotal.toLocaleString('en-US')} ج.م
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex justify-between pt-2">
-                  <button type="button" className="btn-secondary" onClick={() => setStep(2)}>السابق</button>
                   <button
                     type="button"
                     className="btn-primary flex-1 justify-center"
