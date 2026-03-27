@@ -8,7 +8,7 @@ export type UserRole = 'manager' | 'data_entry' | 'shipping' | 'supervisor';
 
 // Routes each role is allowed to access (prefix match)
 export const ROLE_ALLOWED_ROUTES: Record<UserRole, string[]> = {
-  manager: ['/dashboard', '/orders-management', '/shipping', '/inventory', '/reports', '/users', '/roles', '/settings', '/track'],
+  manager: ['/dashboard', '/orders-management', '/shipping', '/inventory', '/reports', '/users', '/roles', '/settings', '/track', '/crm'],
   data_entry: ['/shipping', '/track'],
   shipping: ['/shipping', '/track'],
   supervisor: ['/shipping', '/track'],
