@@ -147,7 +147,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     if (roleLoading) return true;
     if (currentRole === null) return false;
 
-    // Manager always has full access
+    // Manager ALWAYS has full access — no restrictions whatsoever
     if (currentRole === 'manager') return true;
 
     // Try permission-based access using roleId

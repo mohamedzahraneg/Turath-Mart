@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import AppLogo from '@/components/ui/AppLogo';
-import { useAuth, ROLE_ALLOWED_ROUTES } from '@/contexts/AuthContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { LayoutDashboard, Package, Truck, BarChart3, Warehouse, Settings, ChevronRight, ChevronLeft, Bell, LogOut, ShieldCheck, Users } from 'lucide-react';
 
 interface NavItem {
@@ -42,14 +42,13 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [userName, setUserName] = useState('المستخدم');
-  const { currentRole } = useAuth();
+  const { currentRole, hasAccess } = useAuth();
 
-  const allowedRoutes = ROLE_ALLOWED_ROUTES[currentRole] ?? [];
-
-  // Filter nav items to only those the current role can access
-  const visibleNavItems = navItems.filter((item) =>
-    allowedRoutes.some((route) => item.href === route || item.href.startsWith(route + '/'))
-  );
+  // Manager sees ALL nav items — no filtering whatsoever
+  const isManager = currentRole === 'manager';
+  const visibleNavItems = isManager
+    ? navItems
+    : navItems.filter((item) => hasAccess(item.href));
 
   const isActive = (href: string) => currentPath === href || currentPath.startsWith(href);
 
@@ -189,7 +188,7 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-semibold truncate">{userName}</p>
-                <p className="text-xs text-[hsl(var(--muted-foreground))] truncate">{ROLE_LABELS[currentRole] ?? currentRole}</p>
+                <p className="text-xs text-[hsl(var(--muted-foreground))] truncate">{ROLE_LABELS[currentRole ?? ''] ?? currentRole}</p>
               </div>
               <button onClick={handleLogout} className="text-[hsl(var(--muted-foreground))] hover:text-red-500 transition-colors" aria-label="تسجيل الخروج">
                 <LogOut size={16} />

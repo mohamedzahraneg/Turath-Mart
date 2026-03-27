@@ -29,6 +29,9 @@ export default function AppLayout({ children, currentPath = '' }: AppLayoutProps
       return;
     }
 
+    // Manager has FULL access — skip all route guards entirely
+    if (currentRole === 'manager') return;
+
     if (!hasAccess(activePath)) {
       // Redirect to the default route for this role
       router.replace(ROLE_DEFAULT_ROUTE[currentRole] ?? '/shipping');
