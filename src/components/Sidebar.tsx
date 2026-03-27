@@ -29,7 +29,7 @@ interface NavItem {
 const navItems: NavItem[] = [
   { id: 'nav-dashboard', label: 'لوحة التحكم', icon: <LayoutDashboard size={20} />, href: '/dashboard', group: 'رئيسي' },
   { id: 'nav-orders', label: 'الأوردرات', icon: <Package size={20} />, href: '/orders-management', badge: 7, group: 'رئيسي' },
-  { id: 'nav-shipping', label: 'الشحن', icon: <Truck size={20} />, href: '/orders-management', group: 'رئيسي' },
+  { id: 'nav-shipping', label: 'الشحن', icon: <Truck size={20} />, href: '/shipping', group: 'رئيسي' },
   { id: 'nav-inventory', label: 'المخزون', icon: <Warehouse size={20} />, href: '/inventory', group: 'إدارة' },
   { id: 'nav-reports', label: 'التقارير', icon: <BarChart3 size={20} />, href: '/reports', group: 'إدارة' },
   { id: 'nav-users', label: 'المستخدمون', icon: <Users size={20} />, href: '/users', group: 'إدارة' },

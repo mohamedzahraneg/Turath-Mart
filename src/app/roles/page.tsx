@@ -1,7 +1,7 @@
 'use client';
 import React, { useState } from 'react';
 import AppLayout from '@/components/AppLayout';
-import { ShieldCheck, Plus, Edit2, Trash2, X, Save, Check } from 'lucide-react';
+import { ShieldCheck, Plus, Edit2, Trash2, X, Save, Check, Users, Eye, EyeOff, Key, UserPlus } from 'lucide-react';
 
 interface Permission {
   id: string;
@@ -16,6 +16,16 @@ interface Role {
   color: string;
   permissions: string[];
   usersCount: number;
+}
+
+interface Employee {
+  id: string;
+  name: string;
+  username: string;
+  password: string;
+  roleId: string;
+  status: 'active' | 'inactive';
+  createdAt: string;
 }
 
 const allPermissions: Permission[] = [
@@ -57,6 +67,12 @@ const initialRoles: Role[] = [
     id: 'r5', name: 'محاسب', description: 'عرض التقارير المالية وتصديرها', color: 'orange',
     permissions: ['view_dashboard', 'view_reports', 'export_reports', 'view_orders'], usersCount: 0,
   },
+];
+
+const initialEmployees: Employee[] = [
+  { id: 'e1', name: 'محمد الزهراني', username: 'admin', password: 'Admin@123', roleId: 'r1', status: 'active', createdAt: '01/01/2026' },
+  { id: 'e2', name: 'أحمد علي', username: 'ahmed.ali', password: 'Ahmed@2026', roleId: 'r2', status: 'active', createdAt: '15/01/2026' },
+  { id: 'e3', name: 'سارة محمود', username: 'sara.m', password: 'Sara@2026', roleId: 'r3', status: 'active', createdAt: '20/01/2026' },
 ];
 
 const colorMap: Record<string, { bg: string; text: string; border: string }> = {
@@ -197,11 +213,156 @@ function RoleModal({ role, onClose, onSave }: RoleModalProps) {
   );
 }
 
+interface EmployeeModalProps {
+  employee: Employee | null;
+  roles: Role[];
+  onClose: () => void;
+  onSave: (emp: Employee) => void;
+}
+
+function EmployeeModal({ employee, roles, onClose, onSave }: EmployeeModalProps) {
+  const [form, setForm] = useState<Employee>(
+    employee || {
+      id: `e${Date.now()}`,
+      name: '',
+      username: '',
+      password: '',
+      roleId: roles[0]?.id || '',
+      status: 'active',
+      createdAt: new Date().toLocaleDateString('en-GB'),
+    }
+  );
+  const [showPassword, setShowPassword] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const validate = () => {
+    const errs: Record<string, string> = {};
+    if (!form.name.trim()) errs.name = 'الاسم مطلوب';
+    if (!form.username.trim()) errs.username = 'اسم المستخدم مطلوب';
+    if (form.username.includes(' ')) errs.username = 'اسم المستخدم لا يجب أن يحتوي على مسافات';
+    if (!employee && form.password.length < 6) errs.password = 'كلمة المرور يجب أن تكون 6 أحرف على الأقل';
+    if (!form.roleId) errs.roleId = 'الدور مطلوب';
+    setErrors(errs);
+    return Object.keys(errs).length === 0;
+  };
+
+  const handleSave = () => {
+    if (validate()) onSave(form);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" dir="rtl">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
+        <div className="flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
+          <div className="flex items-center gap-2">
+            <UserPlus size={20} className="text-[hsl(var(--primary))]" />
+            <h2 className="text-lg font-bold">{employee ? 'تعديل موظف' : 'إضافة موظف جديد'}</h2>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-[hsl(var(--muted))] rounded-xl transition-colors">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div>
+            <label className="block text-sm font-semibold mb-1.5">الاسم الكامل *</label>
+            <input
+              type="text"
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              className={`w-full border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 ${errors.name ? 'border-red-400' : 'border-[hsl(var(--border))]'}`}
+              placeholder="الاسم الكامل للموظف"
+            />
+            {errors.name && <p className="text-red-500 text-xs mt-1">{errors.name}</p>}
+          </div>
+
+          <div>
+            <label className="block text-sm font-semibold mb-1.5">اسم المستخدم *</label>
+            <input
+              type="text"
+              value={form.username}
+              onChange={(e) => setForm({ ...form, username: e.target.value.toLowerCase().replace(/\s/g, '') })}
+              className={`w-full border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 ${errors.username ? 'border-red-400' : 'border-[hsl(var(--border))]'}`}
+              placeholder="مثال: ahmed.ali"
+              dir="ltr"
+            />
+            {errors.username && <p className="text-red-500 text-xs mt-1">{errors.username}</p>}
+          </div>
+
+          <div>
+            <label className="block text-sm font-semibold mb-1.5">
+              {employee ? 'كلمة المرور الجديدة (اتركها فارغة للإبقاء على القديمة)' : 'كلمة المرور *'}
+            </label>
+            <div className="relative">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={form.password}
+                onChange={(e) => setForm({ ...form, password: e.target.value })}
+                className={`w-full border rounded-xl px-3 py-2.5 pl-10 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 ${errors.password ? 'border-red-400' : 'border-[hsl(var(--border))]'}`}
+                placeholder="••••••••"
+                dir="ltr"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"
+              >
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+            {errors.password && <p className="text-red-500 text-xs mt-1">{errors.password}</p>}
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-semibold mb-1.5">الدور الوظيفي *</label>
+              <select
+                value={form.roleId}
+                onChange={(e) => setForm({ ...form, roleId: e.target.value })}
+                className={`w-full border rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 ${errors.roleId ? 'border-red-400' : 'border-[hsl(var(--border))]'}`}
+              >
+                {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+              {errors.roleId && <p className="text-red-500 text-xs mt-1">{errors.roleId}</p>}
+            </div>
+            <div>
+              <label className="block text-sm font-semibold mb-1.5">الحالة</label>
+              <select
+                value={form.status}
+                onChange={(e) => setForm({ ...form, status: e.target.value as 'active' | 'inactive' })}
+                className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30"
+              >
+                <option value="active">نشط</option>
+                <option value="inactive">غير نشط</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div className="flex gap-3 p-5 border-t border-[hsl(var(--border))]">
+          <button
+            onClick={handleSave}
+            className="flex-1 flex items-center justify-center gap-2 bg-[hsl(var(--primary))] text-white rounded-xl py-2.5 text-sm font-semibold hover:opacity-90 transition-opacity"
+          >
+            <Save size={16} />
+            حفظ
+          </button>
+          <button onClick={onClose} className="px-5 border border-[hsl(var(--border))] rounded-xl text-sm font-semibold hover:bg-[hsl(var(--muted))] transition-colors">
+            إلغاء
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function RolesPage() {
   const [roles, setRoles] = useState<Role[]>(initialRoles);
+  const [employees, setEmployees] = useState<Employee[]>(initialEmployees);
   const [editRole, setEditRole] = useState<Role | null | undefined>(undefined);
+  const [editEmployee, setEditEmployee] = useState<Employee | null | undefined>(undefined);
+  const [activeTab, setActiveTab] = useState<'roles' | 'employees'>('roles');
+  const [showPasswords, setShowPasswords] = useState<Set<string>>(new Set());
 
-  const handleSave = (role: Role) => {
+  const handleSaveRole = (role: Role) => {
     setRoles(prev => {
       const exists = prev.find(r => r.id === role.id);
       if (exists) return prev.map(r => r.id === role.id ? role : r);
@@ -210,8 +371,40 @@ export default function RolesPage() {
     setEditRole(undefined);
   };
 
-  const handleDelete = (id: string) => {
+  const handleDeleteRole = (id: string) => {
     setRoles(prev => prev.filter(r => r.id !== id));
+  };
+
+  const handleSaveEmployee = (emp: Employee) => {
+    setEmployees(prev => {
+      const exists = prev.find(e => e.id === emp.id);
+      if (exists) return prev.map(e => e.id === emp.id ? (emp.password ? emp : { ...emp, password: e.password }) : e);
+      return [...prev, emp];
+    });
+    // Update role usersCount
+    setRoles(prev => prev.map(r => ({
+      ...r,
+      usersCount: employees.filter(e => e.roleId === r.id).length + (emp.roleId === r.id && !employees.find(e => e.id === emp.id) ? 1 : 0),
+    })));
+    setEditEmployee(undefined);
+  };
+
+  const handleDeleteEmployee = (id: string) => {
+    setEmployees(prev => prev.filter(e => e.id !== id));
+  };
+
+  const toggleShowPassword = (id: string) => {
+    setShowPasswords(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const getRoleName = (roleId: string) => roles.find(r => r.id === roleId)?.name || '—';
+  const getRoleColor = (roleId: string) => {
+    const role = roles.find(r => r.id === roleId);
+    return colorMap[role?.color] || colorMap.blue;
   };
 
   return (
@@ -220,98 +413,212 @@ export default function RolesPage() {
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">الأدوار والصلاحيات</h1>
-            <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">إدارة أدوار المستخدمين وتحديد صلاحياتهم</p>
+            <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">الأدوار والموظفون</h1>
+            <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">إدارة أدوار المستخدمين وإضافة الموظفين بصلاحياتهم</p>
           </div>
           <button
-            onClick={() => setEditRole(null)}
+            onClick={() => activeTab === 'roles' ? setEditRole(null) : setEditEmployee(null)}
             className="flex items-center gap-2 px-4 py-2.5 bg-[hsl(var(--primary))] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
           >
             <Plus size={18} />
-            إضافة دور
+            {activeTab === 'roles' ? 'إضافة دور' : 'إضافة موظف'}
           </button>
         </div>
 
-        {/* Roles Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">
-          {roles.map(role => {
-            const colors = colorMap[role.color] || colorMap.blue;
-            return (
-              <div key={role.id} className={`card-section p-5 border-2 ${colors.border} hover:shadow-md transition-shadow`}>
-                <div className="flex items-start justify-between mb-4">
-                  <div className="flex items-center gap-3">
-                    <div className={`w-11 h-11 rounded-xl ${colors.bg} ${colors.text} flex items-center justify-center`}>
-                      <ShieldCheck size={22} />
-                    </div>
-                    <div>
-                      <p className="font-bold text-[hsl(var(--foreground))]">{role.name}</p>
-                      <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">{role.usersCount} مستخدم</p>
-                    </div>
-                  </div>
-                  <div className="flex gap-1">
-                    <button onClick={() => setEditRole(role)} className="p-1.5 hover:bg-blue-50 text-blue-600 rounded-lg transition-colors">
-                      <Edit2 size={14} />
-                    </button>
-                    <button onClick={() => handleDelete(role.id)} className="p-1.5 hover:bg-red-50 text-red-500 rounded-lg transition-colors">
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                </div>
-                <p className="text-sm text-[hsl(var(--muted-foreground))] mb-4">{role.description}</p>
-                <div className="flex items-center justify-between">
-                  <span className={`text-xs font-semibold px-2.5 py-1 rounded-lg ${colors.bg} ${colors.text}`}>
-                    {role.permissions.length} صلاحية
-                  </span>
-                  <div className="flex flex-wrap gap-1 justify-end">
-                    {permGroups.filter(g => allPermissions.filter(p => p.group === g).some(p => role.permissions.includes(p.id))).slice(0, 3).map(g => (
-                      <span key={g} className="text-[10px] px-2 py-0.5 bg-[hsl(var(--muted))] rounded-full text-[hsl(var(--muted-foreground))]">{g}</span>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+        {/* Tabs */}
+        <div className="flex bg-[hsl(var(--muted))] rounded-xl p-1 gap-1 w-fit">
+          <button
+            onClick={() => setActiveTab('roles')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${activeTab === 'roles' ? 'bg-white text-[hsl(var(--primary))] shadow-sm' : 'text-[hsl(var(--muted-foreground))]'}`}
+          >
+            <ShieldCheck size={16} />
+            الأدوار ({roles.length})
+          </button>
+          <button
+            onClick={() => setActiveTab('employees')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${activeTab === 'employees' ? 'bg-white text-[hsl(var(--primary))] shadow-sm' : 'text-[hsl(var(--muted-foreground))]'}`}
+          >
+            <Users size={16} />
+            الموظفون ({employees.length})
+          </button>
         </div>
 
-        {/* Permissions Matrix */}
-        <div className="card-section overflow-hidden">
-          <div className="p-5 border-b border-[hsl(var(--border))]">
-            <h3 className="text-base font-bold">مصفوفة الصلاحيات</h3>
-            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">نظرة عامة على صلاحيات كل دور</p>
+        {/* Roles Tab */}
+        {activeTab === 'roles' && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">
+            {roles.map(role => {
+              const colors = colorMap[role.color] || colorMap.blue;
+              const roleEmployees = employees.filter(e => e.roleId === role.id);
+              return (
+                <div key={role.id} className={`card-section p-5 border-2 ${colors.border} hover:shadow-md transition-shadow`}>
+                  <div className="flex items-start justify-between mb-4">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-11 h-11 rounded-xl ${colors.bg} ${colors.text} flex items-center justify-center`}>
+                        <ShieldCheck size={22} />
+                      </div>
+                      <div>
+                        <p className="font-bold text-[hsl(var(--foreground))]">{role.name}</p>
+                        <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">{roleEmployees.length} موظف</p>
+                      </div>
+                    </div>
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => setEditRole(role)}
+                        className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted))] transition-colors"
+                      >
+                        <Edit2 size={14} />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteRole(role.id)}
+                        className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+                  <p className="text-xs text-[hsl(var(--muted-foreground))] mb-3">{role.description}</p>
+                  <div className="flex flex-wrap gap-1.5 mb-3">
+                    {role.permissions.slice(0, 4).map(p => {
+                      const perm = allPermissions.find(ap => ap.id === p);
+                      return perm ? (
+                        <span key={p} className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${colors.bg} ${colors.text}`}>
+                          {perm.label}
+                        </span>
+                      ) : null;
+                    })}
+                    {role.permissions.length > 4 && (
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${colors.bg} ${colors.text}`}>
+                        +{role.permissions.length - 4} أخرى
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => { setActiveTab('employees'); setEditEmployee(null); }}
+                    className={`w-full flex items-center justify-center gap-1.5 text-xs py-2 rounded-xl border ${colors.border} ${colors.text} hover:${colors.bg} transition-colors`}
+                  >
+                    <UserPlus size={13} />
+                    إضافة موظف لهذا الدور
+                  </button>
+                </div>
+              );
+            })}
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/50">
-                  <th className="text-right px-4 py-3 font-semibold text-[hsl(var(--muted-foreground))] min-w-[160px]">الصلاحية</th>
-                  {roles.map(r => (
-                    <th key={r.id} className="text-center px-3 py-3 font-semibold text-[hsl(var(--muted-foreground))] min-w-[100px]">{r.name}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[hsl(var(--border))]">
-                {allPermissions.map(perm => (
-                  <tr key={perm.id} className="hover:bg-[hsl(var(--muted))]/20 transition-colors">
-                    <td className="px-4 py-2.5 text-sm">{perm.label}</td>
-                    {roles.map(r => (
-                      <td key={r.id} className="px-3 py-2.5 text-center">
-                        {r.permissions.includes(perm.id) ? (
-                          <Check size={16} className="mx-auto text-green-500" />
-                        ) : (
-                          <X size={16} className="mx-auto text-gray-300" />
-                        )}
-                      </td>
-                    ))}
+        )}
+
+        {/* Employees Tab */}
+        {activeTab === 'employees' && (
+          <div className="card-section overflow-hidden">
+            <div className="p-4 border-b border-[hsl(var(--border))]">
+              <p className="text-sm font-semibold text-[hsl(var(--foreground))]">قائمة الموظفين وبيانات الدخول</p>
+              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">يمكنك عرض وتعديل اسم المستخدم وكلمة المرور لكل موظف</p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm" dir="rtl">
+                <thead>
+                  <tr className="bg-[hsl(var(--muted))]/50 text-[hsl(var(--muted-foreground))] text-xs">
+                    <th className="text-right px-4 py-3 font-semibold">الموظف</th>
+                    <th className="text-right px-4 py-3 font-semibold">اسم المستخدم</th>
+                    <th className="text-right px-4 py-3 font-semibold">كلمة المرور</th>
+                    <th className="text-right px-4 py-3 font-semibold">الدور</th>
+                    <th className="text-right px-4 py-3 font-semibold">الحالة</th>
+                    <th className="text-right px-4 py-3 font-semibold">تاريخ الإنشاء</th>
+                    <th className="text-right px-4 py-3 font-semibold">إجراءات</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {employees.map(emp => {
+                    const roleColors = getRoleColor(emp.roleId);
+                    const isShowingPass = showPasswords.has(emp.id);
+                    return (
+                      <tr key={emp.id} className="border-t border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/30 transition-colors">
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <div className="w-8 h-8 rounded-full bg-[hsl(var(--primary))] flex items-center justify-center text-white text-sm font-bold flex-shrink-0">
+                              {emp.name.charAt(0)}
+                            </div>
+                            <span className="font-semibold">{emp.name}</span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1.5">
+                            <Key size={13} className="text-[hsl(var(--muted-foreground))]" />
+                            <span className="font-mono text-xs bg-[hsl(var(--muted))] px-2 py-1 rounded-lg">{emp.username}</span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono text-xs bg-[hsl(var(--muted))] px-2 py-1 rounded-lg">
+                              {isShowingPass ? emp.password : '••••••••'}
+                            </span>
+                            <button
+                              onClick={() => toggleShowPassword(emp.id)}
+                              className="text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors"
+                            >
+                              {isShowingPass ? <EyeOff size={14} /> : <Eye size={14} />}
+                            </button>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`text-xs px-2.5 py-1 rounded-full font-semibold ${roleColors.bg} ${roleColors.text}`}>
+                            {getRoleName(emp.roleId)}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`text-xs px-2.5 py-1 rounded-full font-semibold ${emp.status === 'active' ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                            {emp.status === 'active' ? 'نشط' : 'غير نشط'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">{emp.createdAt}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex gap-1">
+                            <button
+                              onClick={() => setEditEmployee(emp)}
+                              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted))] transition-colors"
+                            >
+                              <Edit2 size={14} />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteEmployee(emp.id)}
+                              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {employees.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-8 text-center text-[hsl(var(--muted-foreground))] text-sm">
+                        لا يوجد موظفون — اضغط "إضافة موظف" لإضافة أول موظف
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
+      {/* Role Modal */}
       {editRole !== undefined && (
-        <RoleModal role={editRole} onClose={() => setEditRole(undefined)} onSave={handleSave} />
+        <RoleModal
+          role={editRole}
+          onClose={() => setEditRole(undefined)}
+          onSave={handleSaveRole}
+        />
+      )}
+
+      {/* Employee Modal */}
+      {editEmployee !== undefined && (
+        <EmployeeModal
+          employee={editEmployee}
+          roles={roles}
+          onClose={() => setEditEmployee(undefined)}
+          onSave={handleSaveEmployee}
+        />
       )}
     </AppLayout>
   );

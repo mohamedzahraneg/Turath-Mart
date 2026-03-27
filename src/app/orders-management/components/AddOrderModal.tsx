@@ -310,7 +310,62 @@ export default function AddOrderModal({ onClose }: Props) {
   const handleSubmit = async () => {
     setIsSubmitting(true);
     const deviceType = getDeviceType();
-    await new Promise((r) => setTimeout(r, 1500));
+
+    // Build order object and save to localStorage
+    const productsSummary = lines.map(l => {
+      const card = productCards.find(p => p.value === l.productType);
+      const label = card?.label || l.productType;
+      const colorPart = l.color ? ` ${l.color}` : '';
+      const flashPart = l.includeFlashlight ? ' + كشاف' : '';
+      return `${label}${colorPart}${flashPart} x ${l.quantity}`;
+    }).join(' + ');
+
+    const now = new Date();
+    const days = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+    const d = now.getDate().toString().padStart(2, '0');
+    const m = (now.getMonth() + 1).toString().padStart(2, '0');
+    const y = now.getFullYear();
+    const h = now.getHours().toString().padStart(2, '0');
+    const min = now.getMinutes().toString().padStart(2, '0');
+    const sec = now.getSeconds().toString().padStart(2, '0');
+
+    const newOrder = {
+      id: `order-${Date.now()}`,
+      orderNum,
+      createdBy: 'موظف خدمة عملاء',
+      createdByDevice: deviceType,
+      customer: customerName,
+      phone,
+      phone2: phone2 || undefined,
+      region: governorate,
+      district,
+      address,
+      products: productsSummary || 'لا يوجد منتجات',
+      quantity: lines.reduce((s, l) => s + l.quantity, 0),
+      subtotal,
+      shippingFee: shippingCost,
+      extraShippingFee: IS_ADMIN ? extraShippingFee : 0,
+      expressShipping,
+      total: grandTotal,
+      status: 'new',
+      date: `${d}/${m}/${y}`,
+      time: `${h}:${min}:${sec}`,
+      day: days[now.getDay()],
+      notes: notes || undefined,
+      warranty,
+      ip: '—',
+    };
+
+    // Save to localStorage
+    try {
+      const existing = JSON.parse(localStorage.getItem('zahranship_orders') || '[]');
+      existing.unshift(newOrder);
+      localStorage.setItem('zahranship_orders', JSON.stringify(existing));
+    } catch {
+      // ignore storage errors
+    }
+
+    await new Promise((r) => setTimeout(r, 800));
     toast.success(`تم تسجيل الأوردر ${orderNum} بنجاح! (${deviceType})`);
     setIsSubmitting(false);
     onClose();
