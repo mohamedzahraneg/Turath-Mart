@@ -1,5 +1,5 @@
 'use client';
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import AppLogo from '@/components/ui/AppLogo';
 import { useAuth, ROLE_ALLOWED_ROUTES } from '@/contexts/AuthContext';
@@ -54,6 +54,7 @@ interface SidebarProps {
 export default function Sidebar({ currentPath = '' }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [userName, setUserName] = useState('المستخدم');
   const { currentRole } = useAuth();
 
   const allowedRoutes = ROLE_ALLOWED_ROUTES[currentRole] ?? [];
@@ -65,24 +66,21 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
 
   const isActive = (href: string) => currentPath === href || currentPath.startsWith(href);
 
-  const handleLogout = () => {
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem('current_user');
-      window.location.href = '/sign-up-login-screen';
-    }
-  };
-
-  // Get current user info from localStorage
-  let userName = 'المستخدم';
-  if (typeof window !== 'undefined') {
+  React.useEffect(() => {
     try {
       const stored = localStorage.getItem('current_user');
       if (stored) {
         const parsed = JSON.parse(stored);
-        userName = parsed?.name || parsed?.email?.split('@')[0] || 'المستخدم';
+        const name = parsed?.name || parsed?.email?.split('@')[0] || 'المستخدم';
+        setUserName(name);
       }
     } catch {}
-  }
+  }, []);
+
+  const handleLogout = () => {
+    localStorage.removeItem('current_user');
+    window.location.href = '/sign-up-login-screen';
+  };
 
   return (
     <>
