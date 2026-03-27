@@ -637,12 +637,23 @@ export default function RolesPage() {
 
   // Unified save: persists employee for login AND syncs AppUser for the users tab
   const handleSaveMember = (emp: Employee) => {
-    // Save avatar separately if present
+    const existingEmp = employees.find(e => e.id === emp.id);
+
+    // Avatar handling: only update/remove avatar if user explicitly changed it
+    // If emp.avatar is empty but existing employee had a stored avatar, preserve it
     if (emp.avatar) {
+      // User uploaded a new avatar — save it
       saveAvatar(emp.id, emp.avatar);
-    } else {
-      removeAvatar(emp.id);
+    } else if (existingEmp) {
+      // Editing existing employee: check if they had a stored avatar
+      const storedAvatars = loadAvatars();
+      if (storedAvatars[emp.id]) {
+        // Preserve existing avatar — user didn't change it, just left field empty
+        emp = { ...emp, avatar: storedAvatars[emp.id] };
+      }
+      // If no stored avatar either, nothing to do (no removeAvatar call)
     }
+    // For new employees with no avatar: nothing to save/remove
 
     const isNew = !employees.find(e => e.id === emp.id);
 

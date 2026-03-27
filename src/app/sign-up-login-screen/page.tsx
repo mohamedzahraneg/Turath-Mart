@@ -39,6 +39,13 @@ const BASE_CREDENTIALS = [
   { role: 'supervisor', email: 'supervisor@zahranship.com', password: 'Super@2026', label: 'مشرف' },
 ];
 
+// Default employees seeded in roles page — used as login fallback
+const DEFAULT_EMPLOYEES_FALLBACK: StoredEmployee[] = [
+  { id: 'e1', name: 'محمد الزهراني', username: 'admin', password: 'Admin@123', roleId: 'r1', status: 'active', createdAt: '01/01/2026' },
+  { id: 'e2', name: 'أحمد علي', username: 'ahmed.ali', password: 'Ahmed@2026', roleId: 'r3', status: 'active', createdAt: '15/01/2026' },
+  { id: 'e3', name: 'سارة محمود', username: 'sara.m', password: 'Sara@2026', roleId: 'r5', status: 'active', createdAt: '20/01/2026' },
+];
+
 const ROLE_ID_TO_ROLE: Record<string, string> = {
   r1: 'manager',
   r2: 'supervisor',
@@ -164,22 +171,27 @@ export default function LoginPage() {
     if (typeof window !== 'undefined') {
       try {
         const stored = localStorage.getItem('turath_employees');
-        if (stored) {
-          const employees: StoredEmployee[] = JSON.parse(stored);
-          const emp = employees.find(
-            (e) =>
-              e.status === 'active' &&
-              e.password === inputPassword &&
-              (
-                e.username === inputValue ||
-                e.username === inputValue.split('@')[0] ||
-                (e.email && e.email === inputValue)
-              )
-          );
-          if (emp) {
-            const mappedRole = ROLE_ID_TO_ROLE[emp.roleId] || 'data_entry';
-            employeeMatch = { name: emp.name, role: mappedRole };
-          }
+        // Merge stored employees with default fallback (stored takes priority)
+        const storedEmployees: StoredEmployee[] = stored ? JSON.parse(stored) : [];
+        // Build merged list: stored employees + any default employees not already in stored
+        const storedIds = new Set(storedEmployees.map(e => e.id));
+        const mergedEmployees = [
+          ...storedEmployees,
+          ...DEFAULT_EMPLOYEES_FALLBACK.filter(e => !storedIds.has(e.id)),
+        ];
+        const emp = mergedEmployees.find(
+          (e) =>
+            e.status === 'active' &&
+            e.password === inputPassword &&
+            (
+              e.username === inputValue ||
+              e.username === inputValue.split('@')[0] ||
+              (e.email && e.email === inputValue)
+            )
+        );
+        if (emp) {
+          const mappedRole = ROLE_ID_TO_ROLE[emp.roleId] || 'data_entry';
+          employeeMatch = { name: emp.name, role: mappedRole };
         }
       } catch {}
     }
