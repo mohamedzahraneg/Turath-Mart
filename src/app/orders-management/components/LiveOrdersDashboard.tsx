@@ -39,13 +39,13 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; 
 };
 
 // Simulated live orders data
-const BASE_ORDERS: LiveOrder[] = [
-  { id: 'o1', orderNum: 'ZSH-2026-0047', customer: 'أحمد محمود السيد', region: 'القاهرة', products: 'حامل مصحف بني x 2', total: 650, status: 'shipping', delegateName: 'علي محمود', time: '09:32', updatedAt: new Date() },
-  { id: 'o2', orderNum: 'ZSH-2026-0046', customer: 'فاطمة علي حسن', region: 'الجيزة', products: 'كعبة x 1 + مصحف x 2', total: 890, status: 'delivered', delegateName: 'علي محمود', time: '09:15', updatedAt: new Date() },
-  { id: 'o3', orderNum: 'ZSH-2026-0045', customer: 'محمد عبد الرحمن', region: 'القليوبية', products: 'حامل مصحف ذهبي x 1', total: 380, status: 'new', delegateName: 'خالد سعيد', time: '08:55', updatedAt: new Date() },
-  { id: 'o4', orderNum: 'ZSH-2026-0044', customer: 'سارة إبراهيم خليل', region: 'القاهرة', products: 'كشاف x 3', total: 530, status: 'preparing', delegateName: 'علي محمود', time: '08:40', updatedAt: new Date() },
-  { id: 'o5', orderNum: 'ZSH-2026-0043', customer: 'عمر حامد الشريف', region: 'الجيزة', products: 'حامل مصحف أسود x 1 + كشاف x 1', total: 570, status: 'warehouse', delegateName: 'خالد سعيد', time: '07:20', updatedAt: new Date() },
-  { id: 'o6', orderNum: 'ZSH-2026-0042', customer: 'نور الدين مصطفى', region: 'القاهرة', products: 'كرسي x 2', total: 1200, status: 'shipping', delegateName: 'علي محمود', time: '07:50', updatedAt: new Date() },
+const BASE_ORDERS_TEMPLATE = [
+  { id: 'o1', orderNum: 'ZSH-2026-0047', customer: 'أحمد محمود السيد', region: 'القاهرة', products: 'حامل مصحف بني x 2', total: 650, status: 'shipping', delegateName: 'علي محمود', time: '09:32' },
+  { id: 'o2', orderNum: 'ZSH-2026-0046', customer: 'فاطمة علي حسن', region: 'الجيزة', products: 'كعبة x 1 + مصحف x 2', total: 890, status: 'delivered', delegateName: 'علي محمود', time: '09:15' },
+  { id: 'o3', orderNum: 'ZSH-2026-0045', customer: 'محمد عبد الرحمن', region: 'القليوبية', products: 'حامل مصحف ذهبي x 1', total: 380, status: 'new', delegateName: 'خالد سعيد', time: '08:55' },
+  { id: 'o4', orderNum: 'ZSH-2026-0044', customer: 'سارة إبراهيم خليل', region: 'القاهرة', products: 'كشاف x 3', total: 530, status: 'preparing', delegateName: 'علي محمود', time: '08:40' },
+  { id: 'o5', orderNum: 'ZSH-2026-0043', customer: 'عمر حامد الشريف', region: 'الجيزة', products: 'حامل مصحف أسود x 1 + كشاف x 1', total: 570, status: 'warehouse', delegateName: 'خالد سعيد', time: '07:20' },
+  { id: 'o6', orderNum: 'ZSH-2026-0042', customer: 'نور الدين مصطفى', region: 'القاهرة', products: 'كرسي x 2', total: 1200, status: 'shipping', delegateName: 'علي محمود', time: '07:50' },
 ];
 
 const AGENT_LOCATIONS: AgentLocation[] = [
@@ -62,7 +62,8 @@ const STATUS_CYCLE: Record<string, string> = {
   shipping: 'delivered',
 };
 
-function timeAgo(date: Date): string {
+function timeAgo(date: Date | null): string {
+  if (!date) return '';
   const diff = Math.floor((Date.now() - date.getTime()) / 1000);
   if (diff < 60) return `منذ ${diff} ث`;
   if (diff < 3600) return `منذ ${Math.floor(diff / 60)} د`;
@@ -70,12 +71,22 @@ function timeAgo(date: Date): string {
 }
 
 export default function LiveOrdersDashboard() {
-  const [orders, setOrders] = useState<LiveOrder[]>(BASE_ORDERS);
+  const [orders, setOrders] = useState<LiveOrder[]>(() =>
+    BASE_ORDERS_TEMPLATE.map(o => ({ ...o, updatedAt: new Date(0) }))
+  );
   const [isLive, setIsLive] = useState(true);
-  const [lastUpdate, setLastUpdate] = useState(new Date());
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [flashIds, setFlashIds] = useState<Set<string>>(new Set());
   const [collapsed, setCollapsed] = useState(false);
   const [tick, setTick] = useState(0);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+    const now = new Date();
+    setOrders(BASE_ORDERS_TEMPLATE.map(o => ({ ...o, updatedAt: now })));
+    setLastUpdate(now);
+  }, []);
 
   // Simulate real-time updates
   const simulateUpdate = useCallback(() => {
@@ -151,7 +162,7 @@ export default function LiveOrdersDashboard() {
         </div>
         <div className="flex items-center gap-3">
           <span className="text-[11px] text-[hsl(var(--muted-foreground))]">
-            آخر تحديث: {timeAgo(lastUpdate)}
+            آخر تحديث: {lastUpdate ? timeAgo(lastUpdate) : ''}
           </span>
           <button
             onClick={(e) => { e.stopPropagation(); setIsLive(!isLive); }}
@@ -287,7 +298,7 @@ export default function LiveOrdersDashboard() {
                             <span>{cfg.label}</span>
                           </div>
                           <span className="font-mono text-xs font-bold text-[hsl(var(--foreground))]">{order.total.toLocaleString('en-US')} ج.م</span>
-                          <span className="text-[9px] text-[hsl(var(--muted-foreground))]">{timeAgo(order.updatedAt)}</span>
+                          <span className="text-[9px] text-[hsl(var(--muted-foreground))]">{mounted ? timeAgo(order.updatedAt) : ''}</span>
                         </div>
                       </div>
                     </div>
