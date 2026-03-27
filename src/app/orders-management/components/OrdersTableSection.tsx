@@ -132,7 +132,7 @@ function exportToPDF(orders: Order[]) {
   `).join('');
   win.document.write(`
     <!DOCTYPE html><html dir="rtl" lang="ar">
-    <head><meta charset="UTF-8"><title>تقرير الأوردرات - Zahranship</title>
+    <head><meta charset="UTF-8"><title>تقرير الأوردرات - Turath Mart</title>
     <style>
       body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;direction:rtl;padding:20px;font-size:12px;}
       h1{font-size:20px;margin-bottom:4px;color:#1e3a5f;}
@@ -144,7 +144,7 @@ function exportToPDF(orders: Order[]) {
       @media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
     </style></head>
     <body>
-      <h1>Zahranship — تقرير الأوردرات</h1>
+      <h1>Turath Mart — تقرير الأوردرات</h1>
       <p class="sub">تاريخ التصدير: ${new Date().toLocaleDateString('en-US')} — إجمالي: ${orders.length} أوردر</p>
       <table>
         <thead><tr><th>رقم الأوردر</th><th>العميل</th><th>الموبايل</th><th>المنطقة</th><th>المنتجات</th><th>الكمية</th><th>الإجمالي</th><th>الحالة</th><th>التاريخ والوقت</th></tr></thead>

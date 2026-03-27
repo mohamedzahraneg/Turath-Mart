@@ -114,7 +114,7 @@ const DEFAULT_WA_TEMPLATE = `مرحبا {customerName}،
 تم استلام طلبك رقم {orderNum} بإجمالي {total} ج.م.
 يمكنك تتبع شحنتك عبر الرابط: {trackingLink}
 سيتواصل معك المندوب قريباً.
-شكراً لثقتك في Zahranship 🚚`;
+شكراً لثقتك في Turath Mart 🚚`;
 
 interface Props {
   order: Order;
@@ -252,7 +252,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
       <body>
         <div class="invoice-wrap">
           <div class="inv-header">
-            <h1>Zahranship</h1>
+            <h1>Turath Mart</h1>
             <p>فاتورة ضريبية مبسطة</p>
           </div>
           <div class="inv-body">
@@ -652,7 +652,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
             <div className="fade-in">
               <div id="invoice-print-area" className="border-2 border-[hsl(var(--border))] rounded-2xl overflow-hidden">
                 <div className="bg-[hsl(var(--primary))] text-white p-6 text-center">
-                  <h2 className="text-2xl font-bold">Zahranship</h2>
+                  <h2 className="text-2xl font-bold">Turath Mart</h2>
                   <p className="text-blue-200 text-sm mt-1">فاتورة ضريبية مبسطة</p>
                 </div>
 

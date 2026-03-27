@@ -702,7 +702,7 @@ function generateInvoiceHTML(order: TrackingOrder): string {
 <body>
   <div class="invoice-wrap">
     <div class="inv-header">
-      <h1>Zahranship</h1>
+      <h1>Turath Mart</h1>
       <p>فاتورة ضريبية مبسطة</p>
     </div>
     <div class="inv-body">
@@ -788,7 +788,7 @@ function generateWarrantyCertHTML(order: TrackingOrder): string {
   <div class="cert-wrap">
     <div class="cert-header">
       <div class="cert-badge">🛡️</div>
-      <h1>Zahranship</h1>
+      <h1>Turath Mart</h1>
       <p>شركة زهران للشحن والتوصيل</p>
     </div>
     <div class="cert-body">

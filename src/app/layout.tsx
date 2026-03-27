@@ -8,8 +8,8 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: 'Zahranship — نظام إدارة الشحن',
-  description: 'نظام إدارة متكامل لشركة Zahranship لتسجيل الأوردرات وتتبع الشحن وإدارة المخزون والتقارير المالية.',
+  title: 'Turath Mart — نظام إدارة الشحن',
+  description: 'نظام إدارة متكامل لشركة Turath Mart لتسجيل الأوردرات وتتبع الشحن وإدارة المخزون والتقارير المالية.',
   icons: {
     icon: [{ url: '/favicon.ico', type: 'image/x-icon' }],
   },

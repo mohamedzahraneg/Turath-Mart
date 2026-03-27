@@ -42,7 +42,7 @@ function saveLS(key: string, value: unknown) {
 function CompanyTab() {
   const [form, setForm] = useState(() =>
     loadLS('settings_company', {
-      name: 'Zahranship', nameAr: 'شركة الزهراني للشحن',
+      name: 'Turath Mart', nameAr: 'شركة الزهراني للشحن',
       phone: '01012345678', email: 'info@zahranship.com',
       website: 'www.zahranship.com', address: 'القاهرة، مصر', taxId: '123456789',
     })
@@ -477,7 +477,7 @@ const DEFAULT_WA_TEMPLATE = `مرحبا {customerName}،
 تم استلام طلبك رقم {orderNum} بإجمالي {total} ج.م.
 يمكنك تتبع شحنتك عبر الرابط: {trackingLink}
 سيتواصل معك المندوب قريباً.
-شكراً لثقتك في Zahranship 🚚`;
+شكراً لثقتك في Turath Mart 🚚`;
 
 function WhatsAppTab() {
   const [template, setTemplate] = useState(() =>

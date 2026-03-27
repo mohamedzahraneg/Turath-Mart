@@ -83,7 +83,7 @@ function exportReportPDF(data: typeof ALL_DATA, period: string) {
   `).join('');
   win.document.write(`
     <!DOCTYPE html><html dir="rtl" lang="ar">
-    <head><meta charset="UTF-8"><title>تقرير Zahranship</title>
+    <head><meta charset="UTF-8"><title>تقرير Turath Mart</title>
     <style>
       body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;direction:rtl;padding:24px;font-size:13px;}
       h1{font-size:22px;color:#1e3a5f;margin-bottom:4px;}
@@ -96,13 +96,13 @@ function exportReportPDF(data: typeof ALL_DATA, period: string) {
       @media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
     </style></head>
     <body>
-      <h1>Zahranship — تقرير الأداء</h1>
+      <h1>Turath Mart — تقرير الأداء</h1>
       <p class="sub">الفترة: ${period} — تاريخ التصدير: ${new Date().toLocaleDateString('en-US')}</p>
       <table>
         <thead><tr><th>الشهر</th><th>الأوردرات</th><th>المسلمة</th><th>المرتجعة</th><th>الإيرادات</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
-      <div class="footer">Zahranship — نظام إدارة الشحن</div>
+      <div class="footer">Turath Mart — نظام إدارة الشحن</div>
       <script>window.onload=function(){window.print();window.close();}<\/script>
     </body></html>
   `);
