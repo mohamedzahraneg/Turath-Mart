@@ -1,0 +1,593 @@
+'use client';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Package, MapPin, User, Phone, Clock, CheckCircle, Truck, Warehouse, ClipboardList, XCircle, RotateCcw, RefreshCw, MessageCircle, Navigation, Star, Shield } from 'lucide-react';
+
+interface TrackingOrder {
+  orderNum: string;
+  customer: string;
+  phone: string;
+  region: string;
+  district?: string;
+  address: string;
+  products: string;
+  quantity: number;
+  total: number;
+  status: string;
+  date: string;
+  time: string;
+  notes?: string;
+  warranty?: string;
+  delegate?: string;
+  delegatePhone?: string;
+  delegateRating?: number;
+  eta?: string;
+  deliveryNotes?: string;
+}
+
+interface StatusStep {
+  key: string;
+  label: string;
+  icon: React.ReactNode;
+  description: string;
+  timestamp?: string;
+  completed: boolean;
+  active: boolean;
+}
+
+const STATUS_FLOW = ['new', 'preparing', 'warehouse', 'shipping', 'delivered'];
+
+const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; border: string; description: string }> = {
+  new: { label: 'تم استلام الطلب', color: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-200', description: 'تم تسجيل طلبك بنجاح وهو قيد المراجعة' },
+  preparing: { label: 'جاري التجهيز', color: 'text-amber-600', bg: 'bg-amber-50', border: 'border-amber-200', description: 'يتم الآن تجهيز طلبك وتغليفه بعناية' },
+  warehouse: { label: 'في المستودع', color: 'text-purple-600', bg: 'bg-purple-50', border: 'border-purple-200', description: 'طلبك جاهز في المستودع وينتظر المندوب' },
+  shipping: { label: 'في الطريق إليك', color: 'text-[hsl(211,67%,28%)]', bg: 'bg-blue-50', border: 'border-blue-300', description: 'المندوب في الطريق لتوصيل طلبك الآن' },
+  delivered: { label: 'تم التسليم', color: 'text-green-600', bg: 'bg-green-50', border: 'border-green-200', description: 'تم تسليم طلبك بنجاح. شكراً لثقتك بنا!' },
+  cancelled: { label: 'ملغي', color: 'text-red-600', bg: 'bg-red-50', border: 'border-red-200', description: 'تم إلغاء هذا الطلب' },
+  returned: { label: 'مرتجع', color: 'text-orange-600', bg: 'bg-orange-50', border: 'border-orange-200', description: 'تم إرجاع هذا الطلب' },
+};
+
+// Mock data — in production this would be fetched from API/Supabase by orderId
+const MOCK_TRACKING_DATA: Record<string, TrackingOrder> = {
+  'ZSH-2026-0047': {
+    orderNum: 'ZSH-2026-0047',
+    customer: 'أحمد محمود السيد',
+    phone: '01012345678',
+    region: 'القاهرة',
+    district: 'مدينة نصر',
+    address: 'شارع عباس العقاد، عمارة 5 شقة 12',
+    products: 'حامل مصحف بني x 2',
+    quantity: 2,
+    total: 650,
+    status: 'shipping',
+    date: '27/03/2026',
+    time: '09:32:14',
+    notes: 'العميل يريد التسليم في الصباح',
+    warranty: '6 أشهر',
+    delegate: 'علي محمود',
+    delegatePhone: '01098765432',
+    delegateRating: 4.8,
+    eta: '2:30 م - 4:00 م',
+    deliveryNotes: 'سيتصل بك المندوب قبل الوصول بـ 30 دقيقة',
+  },
+  'ZSH-2026-0046': {
+    orderNum: 'ZSH-2026-0046',
+    customer: 'فاطمة علي حسن',
+    phone: '01123456789',
+    region: 'الجيزة',
+    district: 'الدقي',
+    address: 'شارع التحرير، برج المنار ط3',
+    products: 'كعبة x 1 + مصحف x 2',
+    quantity: 3,
+    total: 890,
+    status: 'delivered',
+    date: '27/03/2026',
+    time: '09:15:33',
+    delegate: 'علي محمود',
+    delegatePhone: '01098765432',
+    delegateRating: 4.8,
+  },
+};
+
+const MOCK_STATUS_HISTORY: Record<string, { status: string; label: string; time: string; date: string; note: string }[]> = {
+  'ZSH-2026-0047': [
+    { status: 'new', label: 'تم استلام الطلب', time: '09:32', date: '27/03/2026', note: 'تم تسجيل طلبك بنجاح' },
+    { status: 'preparing', label: 'جاري التجهيز', time: '11:15', date: '27/03/2026', note: 'يتم تجهيز وتغليف طلبك' },
+    { status: 'warehouse', label: 'في المستودع', time: '12:40', date: '27/03/2026', note: 'الطلب جاهز في المستودع' },
+    { status: 'shipping', label: 'في الطريق إليك', time: '13:40', date: '27/03/2026', note: 'المندوب في الطريق لتوصيل طلبك' },
+  ],
+  'ZSH-2026-0046': [
+    { status: 'new', label: 'تم استلام الطلب', time: '09:15', date: '27/03/2026', note: 'تم تسجيل طلبك بنجاح' },
+    { status: 'preparing', label: 'جاري التجهيز', time: '10:30', date: '27/03/2026', note: 'يتم تجهيز وتغليف طلبك' },
+    { status: 'warehouse', label: 'في المستودع', time: '11:45', date: '27/03/2026', note: 'الطلب جاهز في المستودع' },
+    { status: 'shipping', label: 'في الطريق إليك', time: '12:20', date: '27/03/2026', note: 'المندوب في الطريق' },
+    { status: 'delivered', label: 'تم التسليم', time: '14:05', date: '27/03/2026', note: 'تم تسليم الطلب بنجاح' },
+  ],
+};
+
+function LiveLocationMap({ status, delegate }: { status: string; delegate?: string }) {
+  const isActive = status === 'shipping';
+  const [pulse, setPulse] = useState(true);
+
+  useEffect(() => {
+    const interval = setInterval(() => setPulse(p => !p), 1500);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="relative w-full h-48 rounded-2xl overflow-hidden bg-gradient-to-br from-slate-100 to-slate-200 border border-[hsl(var(--border))]">
+      {/* Map background pattern */}
+      <div className="absolute inset-0 opacity-20">
+        <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
+              <path d="M 30 0 L 0 0 0 30" fill="none" stroke="#94a3b8" strokeWidth="0.5"/>
+            </pattern>
+          </defs>
+          <rect width="100%" height="100%" fill="url(#grid)" />
+        </svg>
+      </div>
+
+      {/* Simulated roads */}
+      <svg className="absolute inset-0 w-full h-full opacity-30" viewBox="0 0 400 200">
+        <path d="M 0 100 Q 100 80 200 100 T 400 100" stroke="#64748b" strokeWidth="4" fill="none"/>
+        <path d="M 200 0 Q 210 100 200 200" stroke="#64748b" strokeWidth="3" fill="none"/>
+        <path d="M 0 50 Q 150 60 300 40 T 400 60" stroke="#94a3b8" strokeWidth="2" fill="none"/>
+        <path d="M 50 200 Q 80 120 100 0" stroke="#94a3b8" strokeWidth="2" fill="none"/>
+        <path d="M 300 200 Q 320 130 350 0" stroke="#94a3b8" strokeWidth="2" fill="none"/>
+      </svg>
+
+      {/* Destination pin */}
+      <div className="absolute bottom-8 right-1/3 flex flex-col items-center">
+        <div className="w-8 h-8 bg-green-500 rounded-full flex items-center justify-center shadow-lg border-2 border-white">
+          <MapPin size={14} className="text-white" />
+        </div>
+        <div className="mt-1 bg-white text-xs font-semibold text-green-700 px-2 py-0.5 rounded-full shadow border border-green-200">
+          وجهتك
+        </div>
+      </div>
+
+      {/* Delegate/truck pin */}
+      {isActive && (
+        <div className="absolute top-1/3 left-1/3 flex flex-col items-center">
+          <div className={`w-10 h-10 bg-[hsl(211,67%,28%)] rounded-full flex items-center justify-center shadow-xl border-3 border-white transition-transform duration-500 ${pulse ? 'scale-110' : 'scale-100'}`}>
+            <Truck size={16} className="text-white" />
+          </div>
+          {/* Pulse ring */}
+          <div className={`absolute w-14 h-14 rounded-full border-2 border-[hsl(211,67%,28%)] opacity-40 transition-all duration-1000 ${pulse ? 'scale-150 opacity-0' : 'scale-100 opacity-40'}`} />
+          <div className="mt-1 bg-[hsl(211,67%,28%)] text-xs font-semibold text-white px-2 py-0.5 rounded-full shadow">
+            {delegate || 'المندوب'}
+          </div>
+        </div>
+      )}
+
+      {/* Route line */}
+      {isActive && (
+        <svg className="absolute inset-0 w-full h-full" viewBox="0 0 400 200">
+          <path d="M 133 67 Q 200 80 267 133" stroke="hsl(211,67%,28%)" strokeWidth="3" fill="none" strokeDasharray="8,4" opacity="0.6"/>
+        </svg>
+      )}
+
+      {/* Status overlay */}
+      {!isActive && (
+        <div className="absolute inset-0 flex items-center justify-center bg-slate-100/80 backdrop-blur-sm">
+          <div className="text-center">
+            <Navigation size={32} className="text-slate-400 mx-auto mb-2" />
+            <p className="text-sm text-slate-500 font-medium">
+              {status === 'delivered' ? 'تم التسليم بنجاح' : 'الموقع الحي متاح عند بدء الشحن'}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Live badge */}
+      {isActive && (
+        <div className="absolute top-3 right-3 flex items-center gap-1.5 bg-red-500 text-white text-xs font-bold px-2.5 py-1 rounded-full shadow-lg">
+          <span className={`w-1.5 h-1.5 rounded-full bg-white ${pulse ? 'opacity-100' : 'opacity-40'} transition-opacity duration-500`} />
+          مباشر
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatusTimeline({ history, currentStatus }: { history: { status: string; label: string; time: string; date: string; note: string }[]; currentStatus: string }) {
+  const isCancelled = currentStatus === 'cancelled';
+  const isReturned = currentStatus === 'returned';
+
+  const steps: StatusStep[] = STATUS_FLOW.map((key, idx) => {
+    const historyItem = history.find(h => h.status === key);
+    const currentIdx = STATUS_FLOW.indexOf(currentStatus);
+    const stepIdx = idx;
+
+    return {
+      key,
+      label: STATUS_CONFIG[key]?.label || key,
+      icon: getStepIcon(key),
+      description: historyItem?.note || STATUS_CONFIG[key]?.description || '',
+      timestamp: historyItem ? `${historyItem.time} — ${historyItem.date}` : undefined,
+      completed: historyItem !== undefined || stepIdx < currentIdx,
+      active: key === currentStatus,
+    };
+  });
+
+  if (isCancelled || isReturned) {
+    const specialStep = {
+      key: currentStatus,
+      label: STATUS_CONFIG[currentStatus]?.label || currentStatus,
+      icon: currentStatus === 'cancelled' ? <XCircle size={16} /> : <RotateCcw size={16} />,
+      description: STATUS_CONFIG[currentStatus]?.description || '',
+      timestamp: history[history.length - 1] ? `${history[history.length - 1].time} — ${history[history.length - 1].date}` : undefined,
+      completed: true,
+      active: true,
+    };
+    steps.push(specialStep);
+  }
+
+  return (
+    <div className="relative">
+      {steps.map((step, idx) => {
+        const isLast = idx === steps.length - 1;
+        return (
+          <div key={step.key} className="flex gap-4">
+            {/* Icon column */}
+            <div className="flex flex-col items-center">
+              <div className={`w-9 h-9 rounded-full flex items-center justify-center border-2 transition-all duration-300 flex-shrink-0 ${
+                step.active
+                  ? 'bg-[hsl(211,67%,28%)] border-[hsl(211,67%,28%)] text-white shadow-lg scale-110'
+                  : step.completed
+                  ? 'bg-green-500 border-green-500 text-white' :'bg-white border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))]'
+              }`}>
+                {step.icon}
+              </div>
+              {!isLast && (
+                <div className={`w-0.5 flex-1 my-1 min-h-[2rem] transition-colors duration-300 ${
+                  step.completed ? 'bg-green-400' : 'bg-[hsl(var(--border))]'
+                }`} />
+              )}
+            </div>
+
+            {/* Content */}
+            <div className={`pb-5 flex-1 ${isLast ? 'pb-0' : ''}`}>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className={`font-semibold text-sm ${
+                  step.active ? 'text-[hsl(211,67%,28%)]' : step.completed ? 'text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))]'
+                }`}>
+                  {step.label}
+                </span>
+                {step.active && (
+                  <span className="text-xs bg-[hsl(211,67%,28%)] text-white px-2 py-0.5 rounded-full font-medium">الحالة الحالية</span>
+                )}
+              </div>
+              {step.timestamp && (
+                <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 flex items-center gap-1">
+                  <Clock size={10} />
+                  {step.timestamp}
+                </p>
+              )}
+              {step.description && (
+                <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">{step.description}</p>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function getStepIcon(status: string) {
+  switch (status) {
+    case 'new': return <ClipboardList size={16} />;
+    case 'preparing': return <Package size={16} />;
+    case 'warehouse': return <Warehouse size={16} />;
+    case 'shipping': return <Truck size={16} />;
+    case 'delivered': return <CheckCircle size={16} />;
+    case 'cancelled': return <XCircle size={16} />;
+    case 'returned': return <RotateCcw size={16} />;
+    default: return <Package size={16} />;
+  }
+}
+
+function StarRating({ rating }: { rating: number }) {
+  return (
+    <div className="flex items-center gap-0.5">
+      {[1, 2, 3, 4, 5].map(i => (
+        <Star
+          key={i}
+          size={12}
+          className={i <= Math.round(rating) ? 'text-amber-400 fill-amber-400' : 'text-slate-300'}
+        />
+      ))}
+      <span className="text-xs text-[hsl(var(--muted-foreground))] mr-1">{rating}</span>
+    </div>
+  );
+}
+
+export default function TrackingPage({ params }: { params: { orderId: string } }) {
+  const orderId = params.orderId;
+  const [order, setOrder] = useState<TrackingOrder | null>(null);
+  const [history, setHistory] = useState<{ status: string; label: string; time: string; date: string; note: string }[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
+  const [refreshing, setRefreshing] = useState(false);
+
+  const loadOrder = useCallback(() => {
+    setRefreshing(true);
+    // Simulate API fetch — replace with real Supabase query
+    setTimeout(() => {
+      const found = MOCK_TRACKING_DATA[orderId];
+      if (found) {
+        setOrder(found);
+        setHistory(MOCK_STATUS_HISTORY[orderId] || []);
+        setNotFound(false);
+      } else {
+        setNotFound(true);
+      }
+      setLoading(false);
+      setRefreshing(false);
+      setLastUpdated(new Date());
+    }, 600);
+  }, [orderId]);
+
+  useEffect(() => {
+    loadOrder();
+    // Auto-refresh every 30 seconds for live updates
+    const interval = setInterval(loadOrder, 30000);
+    return () => clearInterval(interval);
+  }, [loadOrder]);
+
+  const handleContactDelegate = () => {
+    if (order?.delegatePhone) {
+      window.open(`tel:${order.delegatePhone}`, '_self');
+    }
+  };
+
+  const handleWhatsAppDelegate = () => {
+    if (order?.delegatePhone) {
+      const msg = encodeURIComponent(`مرحباً، أنا ${order?.customer}، أتواصل بخصوص الطلب رقم ${order?.orderNum}`);
+      window.open(`https://wa.me/2${order.delegatePhone}?text=${msg}`, '_blank');
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex items-center justify-center" dir="rtl">
+        <div className="text-center">
+          <div className="w-16 h-16 border-4 border-[hsl(211,67%,28%)] border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+          <p className="text-[hsl(var(--muted-foreground))] font-medium">جاري تحميل بيانات الشحنة...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (notFound) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex items-center justify-center p-4" dir="rtl">
+        <div className="text-center max-w-sm">
+          <div className="w-20 h-20 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <Package size={36} className="text-red-400" />
+          </div>
+          <h1 className="text-xl font-bold text-[hsl(var(--foreground))] mb-2">الشحنة غير موجودة</h1>
+          <p className="text-[hsl(var(--muted-foreground))] text-sm mb-1">لم يتم العثور على شحنة برقم:</p>
+          <p className="font-mono font-bold text-[hsl(211,67%,28%)] text-lg mb-4">{orderId}</p>
+          <p className="text-xs text-[hsl(var(--muted-foreground))]">تأكد من صحة رقم الطلب أو تواصل مع خدمة العملاء</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!order) return null;
+
+  const statusConfig = STATUS_CONFIG[order.status] || STATUS_CONFIG['new'];
+  const isShipping = order.status === 'shipping';
+  const isDelivered = order.status === 'delivered';
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-slate-100" dir="rtl">
+      {/* Header */}
+      <div className="bg-[hsl(211,67%,28%)] text-white">
+        <div className="max-w-lg mx-auto px-4 py-5">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
+                <Truck size={20} className="text-white" />
+              </div>
+              <div>
+                <h1 className="font-bold text-lg leading-tight">Zahranship</h1>
+                <p className="text-blue-200 text-xs">تتبع شحنتك</p>
+              </div>
+            </div>
+            <button
+              onClick={loadOrder}
+              disabled={refreshing}
+              className="flex items-center gap-1.5 bg-white/20 hover:bg-white/30 text-white text-xs px-3 py-1.5 rounded-lg transition-colors"
+            >
+              <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+              تحديث
+            </button>
+          </div>
+
+          {/* Order number */}
+          <div className="bg-white/10 rounded-2xl p-4">
+            <p className="text-blue-200 text-xs mb-1">رقم الطلب</p>
+            <p className="font-mono font-bold text-xl tracking-wide">{order.orderNum}</p>
+            <p className="text-blue-200 text-xs mt-1">{order.date} — {order.time}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Current Status Banner */}
+      <div className="max-w-lg mx-auto px-4 -mt-2">
+        <div className={`${statusConfig.bg} ${statusConfig.border} border rounded-2xl p-4 shadow-sm`}>
+          <div className="flex items-center gap-3">
+            <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${statusConfig.bg} border ${statusConfig.border}`}>
+              {getStepIcon(order.status)}
+            </div>
+            <div className="flex-1">
+              <p className="text-xs text-[hsl(var(--muted-foreground))] mb-0.5">الحالة الحالية</p>
+              <p className={`font-bold text-lg ${statusConfig.color}`}>{statusConfig.label}</p>
+              <p className="text-xs text-[hsl(var(--muted-foreground))]">{statusConfig.description}</p>
+            </div>
+            {isShipping && (
+              <div className="flex flex-col items-center">
+                <div className="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse mb-1" />
+                <span className="text-xs text-green-600 font-medium">مباشر</span>
+              </div>
+            )}
+          </div>
+
+          {/* ETA */}
+          {order.eta && isShipping && (
+            <div className="mt-3 pt-3 border-t border-current/10 flex items-center gap-2">
+              <Clock size={14} className={statusConfig.color} />
+              <span className="text-xs text-[hsl(var(--muted-foreground))]">الوقت المتوقع للتسليم:</span>
+              <span className={`text-sm font-bold ${statusConfig.color}`}>{order.eta}</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="max-w-lg mx-auto px-4 py-4 space-y-4">
+
+        {/* Live Location Map */}
+        <div className="bg-white rounded-2xl border border-[hsl(var(--border))] shadow-sm overflow-hidden">
+          <div className="px-4 pt-4 pb-3 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <MapPin size={16} className="text-[hsl(211,67%,28%)]" />
+              <h2 className="font-bold text-sm text-[hsl(var(--foreground))]">الموقع الحي</h2>
+            </div>
+            {isShipping && (
+              <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse inline-block" />
+                يتحدث تلقائياً
+              </span>
+            )}
+          </div>
+          <div className="px-4 pb-4">
+            <LiveLocationMap status={order.status} delegate={order.delegate} />
+            {isShipping && order.deliveryNotes && (
+              <div className="mt-3 flex items-start gap-2 bg-blue-50 rounded-xl p-3 border border-blue-100">
+                <Navigation size={14} className="text-blue-500 mt-0.5 flex-shrink-0" />
+                <p className="text-xs text-blue-700">{order.deliveryNotes}</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Assigned Delegate */}
+        {order.delegate && (
+          <div className="bg-white rounded-2xl border border-[hsl(var(--border))] shadow-sm p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <User size={16} className="text-[hsl(211,67%,28%)]" />
+              <h2 className="font-bold text-sm text-[hsl(var(--foreground))]">المندوب المعين</h2>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 bg-gradient-to-br from-[hsl(211,67%,28%)] to-[hsl(211,67%,40%)] rounded-full flex items-center justify-center text-white font-bold text-lg flex-shrink-0">
+                {order.delegate.charAt(0)}
+              </div>
+              <div className="flex-1">
+                <p className="font-bold text-[hsl(var(--foreground))]">{order.delegate}</p>
+                {order.delegateRating && <StarRating rating={order.delegateRating} />}
+                <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">مندوب توصيل معتمد</p>
+              </div>
+              {order.delegatePhone && !isDelivered && (
+                <div className="flex flex-col gap-2">
+                  <button
+                    onClick={handleContactDelegate}
+                    className="w-9 h-9 bg-[hsl(211,67%,28%)] text-white rounded-xl flex items-center justify-center hover:bg-[hsl(211,67%,22%)] transition-colors"
+                    title="اتصال"
+                  >
+                    <Phone size={14} />
+                  </button>
+                  <button
+                    onClick={handleWhatsAppDelegate}
+                    className="w-9 h-9 bg-green-500 text-white rounded-xl flex items-center justify-center hover:bg-green-600 transition-colors"
+                    title="واتساب"
+                  >
+                    <MessageCircle size={14} />
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Order Status Timeline */}
+        <div className="bg-white rounded-2xl border border-[hsl(var(--border))] shadow-sm p-4">
+          <div className="flex items-center gap-2 mb-4">
+            <ClipboardList size={16} className="text-[hsl(211,67%,28%)]" />
+            <h2 className="font-bold text-sm text-[hsl(var(--foreground))]">مراحل الشحنة</h2>
+          </div>
+          <StatusTimeline history={history} currentStatus={order.status} />
+        </div>
+
+        {/* Order Details */}
+        <div className="bg-white rounded-2xl border border-[hsl(var(--border))] shadow-sm p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Package size={16} className="text-[hsl(211,67%,28%)]" />
+            <h2 className="font-bold text-sm text-[hsl(var(--foreground))]">تفاصيل الطلب</h2>
+          </div>
+          <div className="space-y-2.5">
+            <div className="flex items-start gap-2">
+              <User size={13} className="text-[hsl(var(--muted-foreground))] mt-0.5 flex-shrink-0" />
+              <div>
+                <p className="text-xs text-[hsl(var(--muted-foreground))]">العميل</p>
+                <p className="text-sm font-semibold text-[hsl(var(--foreground))]">{order.customer}</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-2">
+              <MapPin size={13} className="text-[hsl(var(--muted-foreground))] mt-0.5 flex-shrink-0" />
+              <div>
+                <p className="text-xs text-[hsl(var(--muted-foreground))]">عنوان التسليم</p>
+                <p className="text-sm font-semibold text-[hsl(var(--foreground))]">{order.address}</p>
+                <p className="text-xs text-[hsl(var(--muted-foreground))]">{order.district ? `${order.district}، ` : ''}{order.region}</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-2">
+              <Package size={13} className="text-[hsl(var(--muted-foreground))] mt-0.5 flex-shrink-0" />
+              <div>
+                <p className="text-xs text-[hsl(var(--muted-foreground))]">المنتجات</p>
+                <p className="text-sm font-semibold text-[hsl(var(--foreground))]">{order.products}</p>
+              </div>
+            </div>
+            <div className="flex items-center justify-between pt-2 border-t border-[hsl(var(--border))]">
+              <span className="text-sm text-[hsl(var(--muted-foreground))]">إجمالي الطلب</span>
+              <span className="font-bold text-[hsl(211,67%,28%)] text-base">{order.total.toLocaleString('en-US')} ج.م</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Delivery Notes */}
+        {order.notes && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <ClipboardList size={14} className="text-amber-600" />
+              <h2 className="font-bold text-sm text-amber-800">ملاحظات التوصيل</h2>
+            </div>
+            <p className="text-sm text-amber-700">{order.notes}</p>
+          </div>
+        )}
+
+        {/* Warranty */}
+        {order.warranty && order.warranty !== 'بدون ضمان' && (
+          <div className="bg-green-50 border border-green-200 rounded-2xl p-4 flex items-center gap-3">
+            <Shield size={20} className="text-green-600 flex-shrink-0" />
+            <div>
+              <p className="text-sm font-bold text-green-800">ضمان المنتج</p>
+              <p className="text-xs text-green-600">{order.warranty}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Last updated */}
+        <div className="text-center pb-6">
+          <p className="text-xs text-[hsl(var(--muted-foreground))]">
+            آخر تحديث: {lastUpdated.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+          </p>
+          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">يتحدث تلقائياً كل 30 ثانية</p>
+        </div>
+      </div>
+    </div>
+  );
+}
