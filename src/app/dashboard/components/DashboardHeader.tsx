@@ -1,6 +1,5 @@
 'use client';
 import React, { useState, useEffect } from 'react';
-import { RefreshCw, Download, Calendar } from 'lucide-react';
 
 export default function DashboardHeader() {
   const [currentTime, setCurrentTime] = useState('');
@@ -9,11 +8,14 @@ export default function DashboardHeader() {
   useEffect(() => {
     const update = () => {
       const now = new Date();
-      setCurrentTime(now?.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }));
+      const h = now?.getHours()?.toString()?.padStart(2, '0');
+      const m = now?.getMinutes()?.toString()?.padStart(2, '0');
+      const s = now?.getSeconds()?.toString()?.padStart(2, '0');
+      setCurrentTime(`${h}:${m}:${s}`);
       setCurrentDate(now?.toLocaleDateString('ar-EG', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }));
     };
     update();
-    const interval = setInterval(update, 60000);
+    const interval = setInterval(update, 1000);
     return () => clearInterval(interval);
   }, []);
 
@@ -24,23 +26,11 @@ export default function DashboardHeader() {
         <div className="flex items-center gap-2 mt-1">
           <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
           <p className="text-sm text-[hsl(var(--muted-foreground))]">
-            {currentDate} — آخر تحديث: {currentTime}
+            {currentDate}
           </p>
+          <span className="text-[hsl(var(--muted-foreground))]">—</span>
+          <span className="text-sm font-mono font-semibold text-[hsl(var(--foreground))]">{currentTime}</span>
         </div>
-      </div>
-      <div className="flex items-center gap-2">
-        <button className="btn-secondary text-sm">
-          <Calendar size={16} />
-          <span>اليوم</span>
-        </button>
-        <button className="btn-secondary text-sm">
-          <Download size={16} />
-          <span>تصدير</span>
-        </button>
-        <button className="btn-primary text-sm">
-          <RefreshCw size={16} />
-          <span>تحديث</span>
-        </button>
       </div>
     </div>
   );

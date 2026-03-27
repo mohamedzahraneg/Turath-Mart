@@ -25,6 +25,7 @@ interface OrderFormData {
   expressShipping: boolean;
   extraShippingFee: number;
   notes: string;
+  warranty: string;
 }
 
 export const PRODUCT_TYPES = [
@@ -149,6 +150,7 @@ export default function AddOrderModal({ onClose }: Props) {
       products: [{ productType: 'holder', color: 'brown', withFlashlight: false, quantity: 1, unitPrice: 300, note: '' }],
       expressShipping: false,
       extraShippingFee: 0,
+      warranty: 'بدون ضمان',
     },
   });
 
@@ -263,7 +265,7 @@ export default function AddOrderModal({ onClose }: Props) {
           <div className="flex items-center gap-4 bg-blue-50 border border-blue-100 rounded-xl p-3">
             <div>
               <p className="text-[10px] font-semibold text-blue-600 mb-0.5">رقم الأوردر</p>
-              <p className="text-xs font-mono font-bold text-[hsl(var(--foreground))]">{orderNum}</p>
+              <p className="text-xs font-mono text-[hsl(var(--foreground))]">{orderNum}</p>
             </div>
             <div>
               <p className="text-[10px] font-semibold text-blue-600 mb-0.5">التاريخ والوقت</p>
@@ -349,7 +351,7 @@ export default function AddOrderModal({ onClose }: Props) {
                           <option key={`gov-${g}`} value={g}>{g}</option>
                         ))}
                       </select>
-                      <ChevronDown size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))] pointer-events-none" />
+                      <ChevronDown size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]" />
                     </div>
                   </div>
 
@@ -367,7 +369,7 @@ export default function AddOrderModal({ onClose }: Props) {
                           <option key={`dist-${d}`} value={d}>{d}</option>
                         ))}
                       </select>
-                      <ChevronDown size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))] pointer-events-none" />
+                      <ChevronDown size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]" />
                     </div>
                     {errors.district && <p className="text-red-500 text-xs mt-1">{errors.district.message}</p>}
                   </div>
@@ -399,14 +401,9 @@ export default function AddOrderModal({ onClose }: Props) {
             {/* Step 2: Products */}
             {step === 2 && (
               <div className="space-y-4 fade-in">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <Package size={16} className="text-[hsl(var(--primary))]" />
-                    <h3 className="text-sm font-bold text-[hsl(var(--foreground))]">اختر المنتجات</h3>
-                  </div>
-                  {IS_ADMIN && (
-                    <span className="text-[10px] bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-semibold">أدمن: يمكنك رفع صور المنتجات</span>
-                  )}
+                <div className="flex items-center gap-2 mb-4">
+                  <Package size={16} className="text-[hsl(var(--primary))]" />
+                  <h3 className="text-sm font-bold text-[hsl(var(--foreground))]">اختر المنتجات</h3>
                 </div>
 
                 {/* Product image cards grid — customer service selects from here */}
@@ -640,6 +637,28 @@ export default function AddOrderModal({ onClose }: Props) {
                     </div>
                   </div>
                 )}
+
+                {/* Warranty selection */}
+                <div>
+                  <label className="label-text" htmlFor="warranty">
+                    فترة الضمان
+                  </label>
+                  <select
+                    id="warranty"
+                    className="input-field"
+                    {...register('warranty')}
+                  >
+                    {(() => {
+                      try {
+                        const saved = typeof window !== 'undefined' ? localStorage.getItem('settings_warranty') : null;
+                        const opts: string[] = saved ? JSON.parse(saved) : ['بدون ضمان', '3 أشهر', '6 أشهر', 'سنة', 'سنتان'];
+                        return opts.map((opt: string) => <option key={opt} value={opt}>{opt}</option>);
+                      } catch {
+                        return ['بدون ضمان', '3 أشهر', '6 أشهر', 'سنة', 'سنتان'].map(opt => <option key={opt} value={opt}>{opt}</option>);
+                      }
+                    })()}
+                  </select>
+                </div>
 
                 {/* General notes */}
                 <div>

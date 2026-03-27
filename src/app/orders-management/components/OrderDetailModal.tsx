@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { toast } from 'sonner';
 import { Toaster } from 'sonner';
-import { X, User, Phone, MapPin, Package, FileText, MessageCircle, Mail, Printer, CheckCircle, Shield, Monitor, Smartphone, Tablet } from 'lucide-react';
+import { X, User, Phone, MapPin, Package, FileText, MessageCircle, Mail, Printer, CheckCircle, Shield, Monitor, Smartphone, Tablet, Link, Copy, Clock } from 'lucide-react';
 
 interface Order {
   id: string;
@@ -30,6 +30,8 @@ interface Order {
   day: string;
   notes?: string;
   ip: string;
+  warranty?: string;
+  delegate?: string;
 }
 
 // Simulated current user role — in real app comes from auth context
@@ -56,13 +58,14 @@ const MOCK_STATUS_HISTORY = [
 // Mock notifications log
 const MOCK_NOTIFICATIONS = [
   { id: 'notif-001', type: 'status_change', message: 'تم تغيير حالة الأوردر إلى "جاري الشحن"', date: '27/03/2026', time: '13:40:07', by: 'علي محمود' },
-  { id: 'notif-002', type: 'whatsapp', message: 'تم إرسال رسالة واتساب للعميل', date: '27/03/2026', time: '13:41:22', by: 'النظام' },
+  { id: 'notif-002', type: 'whatsapp', message: 'تم إرسال رسالة واتساب للعميل مع رابط التتبع', date: '27/03/2026', time: '13:41:22', by: 'النظام' },
   { id: 'notif-003', type: 'status_change', message: 'تم تغيير حالة الأوردر إلى "جاري التجهيز"', date: '27/03/2026', time: '11:15:42', by: 'أحمد السيد' },
   { id: 'notif-004', type: 'order_created', message: 'تم إنشاء الأوردر بنجاح', date: '27/03/2026', time: '09:32:14', by: 'محمد حسن' },
 ];
 
 const TABS = [
   { id: 'tab-details', label: 'تفاصيل الأوردر' },
+  { id: 'tab-tracking', label: 'رابط التتبع' },
   { id: 'tab-history', label: 'سجل الحالات' },
   { id: 'tab-notifications', label: 'سجل الإشعارات' },
   { id: 'tab-invoice', label: 'الفاتورة' },
@@ -75,6 +78,27 @@ function DeviceIcon({ device }: { device?: string }) {
   return <Monitor size={12} />;
 }
 
+// Generate a unique tracking link per order
+function getTrackingLink(orderNum: string): string {
+  const base = typeof window !== 'undefined' ? window.location.origin : 'https://zahranship.com';
+  return `${base}/track/${orderNum}`;
+}
+
+// Load WhatsApp template from localStorage
+function getWATemplate(): string {
+  if (typeof window === 'undefined') return '';
+  try {
+    const saved = localStorage.getItem('settings_wa_template');
+    return saved ? JSON.parse(saved) : '';
+  } catch { return ''; }
+}
+
+const DEFAULT_WA_TEMPLATE = `مرحبا {customerName}،
+تم استلام طلبك رقم {orderNum} بإجمالي {total} ج.م.
+يمكنك تتبع شحنتك عبر الرابط: {trackingLink}
+سيتواصل معك المندوب قريباً.
+شكراً لثقتك في Zahranship 🚚`;
+
 interface Props {
   order: Order;
   onClose: () => void;
@@ -84,18 +108,34 @@ export default function OrderDetailModal({ order, onClose }: Props) {
   const [activeTab, setActiveTab] = useState('tab-details');
   const statusInfo = STATUS_BADGE_MAP[order.status] || STATUS_BADGE_MAP['new'];
   const extraFee = order.extraShippingFee || 0;
-
-  // Express shipping: replaces default shipping fee
   const shippingLabel = order.expressShipping ? 'شحن سريع' : 'تكلفة الشحن';
+  const trackingLink = getTrackingLink(order.orderNum);
+
+  const buildWAMessage = () => {
+    const template = getWATemplate() || DEFAULT_WA_TEMPLATE;
+    return template
+      .replace('{customerName}', order.customer)
+      .replace('{orderNum}', order.orderNum)
+      .replace('{total}', order.total.toLocaleString('en-US'))
+      .replace('{trackingLink}', trackingLink)
+      .replace('{delegate}', order.delegate || 'المندوب')
+      .replace('{status}', statusInfo.label);
+  };
 
   const handleSendWhatsApp = () => {
-    const msg = encodeURIComponent(`مرحبا ${order.customer}، تم استلام طلبك رقم ${order.orderNum} بإجمالي ${order.total.toLocaleString('en-US')} ج.م. سيتم التواصل معك قريبا. شكرا لثقتك في Zahranship`);
+    const msg = encodeURIComponent(buildWAMessage());
     window.open(`https://wa.me/2${order.phone}?text=${msg}`, '_blank');
-    toast.success('تم فتح واتساب لإرسال الرسالة');
+    toast.success('تم فتح واتساب مع رابط التتبع');
   };
 
   const handleSendEmail = () => {
     toast.success('تم إرسال الفاتورة بالبريد الإلكتروني');
+  };
+
+  const handleCopyTracking = () => {
+    navigator.clipboard.writeText(trackingLink).then(() => {
+      toast.success('تم نسخ رابط التتبع');
+    });
   };
 
   const handlePrintInvoice = () => {
@@ -104,6 +144,9 @@ export default function OrderDetailModal({ order, onClose }: Props) {
       toast.error('يرجى السماح بالنوافذ المنبثقة في إعدادات المتصفح');
       return;
     }
+    const warrantyRow = order.warranty && order.warranty !== 'بدون ضمان'
+      ? `<tr><td>فترة الضمان</td><td>—</td><td>${order.warranty}</td></tr>`
+      : '';
     win.document.write(`
       <!DOCTYPE html>
       <html dir="rtl" lang="ar">
@@ -130,6 +173,11 @@ export default function OrderDetailModal({ order, onClose }: Props) {
           td { padding: 10px 12px; border-bottom: 1px solid #f3f4f6; font-size: 13px; }
           .total-row { background: #eff6ff; }
           .total-row td { font-weight: 700; font-size: 16px; color: #1e3a5f; }
+          .warranty-row { background: #f0fdf4; }
+          .warranty-row td { color: #166534; font-weight: 600; }
+          .tracking-box { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 12px; margin-bottom: 16px; }
+          .tracking-box p { font-size: 12px; color: #1e40af; }
+          .tracking-box a { font-size: 13px; color: #1d4ed8; font-weight: 700; word-break: break-all; }
           .footer { text-align: center; font-size: 12px; color: #9ca3af; margin-top: 20px; padding-top: 16px; border-top: 1px solid #e5e7eb; }
           @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
         </style>
@@ -152,6 +200,10 @@ export default function OrderDetailModal({ order, onClose }: Props) {
               <p>${order.phone}${order.phone2 ? ' / ' + order.phone2 : ''}</p>
               <p>${order.region}${order.district ? ' - ' + order.district : ''} — ${order.address}</p>
             </div>
+            <div class="tracking-box">
+              <p>رابط تتبع الشحنة:</p>
+              <a href="${trackingLink}">${trackingLink}</a>
+            </div>
             <p class="section-title">المنتجات</p>
             <table>
               <thead><tr><th>المنتج</th><th>الكمية</th><th>الإجمالي</th></tr></thead>
@@ -159,6 +211,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 <tr><td>${order.products}</td><td>${order.quantity}</td><td>${order.subtotal.toLocaleString('en-US')} ج.م</td></tr>
                 <tr><td>${shippingLabel}</td><td>—</td><td>${order.shippingFee.toLocaleString('en-US')} ج.م</td></tr>
                 ${extraFee > 0 ? `<tr><td>مصاريف شحن إضافية</td><td>—</td><td>${extraFee.toLocaleString('en-US')} ج.م</td></tr>` : ''}
+                ${warrantyRow}
                 <tr class="total-row"><td colspan="2"><strong>الإجمالي الكلي</strong></td><td><strong>${order.total.toLocaleString('en-US')} ج.م</strong></td></tr>
               </tbody>
             </table>
@@ -202,11 +255,15 @@ export default function OrderDetailModal({ order, onClose }: Props) {
         <div className="flex gap-2 px-5 py-3 bg-[hsl(var(--muted))]/30 border-b border-[hsl(var(--border))] flex-wrap">
           <button onClick={handleSendWhatsApp} className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 text-white text-xs px-3 py-1.5 rounded-xl font-semibold transition-colors">
             <MessageCircle size={13} />
-            إرسال واتساب
+            إرسال واتساب + تتبع
           </button>
           <button onClick={handleSendEmail} className="flex items-center gap-1.5 bg-blue-500 hover:bg-blue-600 text-white text-xs px-3 py-1.5 rounded-xl font-semibold transition-colors">
             <Mail size={13} />
             إرسال بريد
+          </button>
+          <button onClick={handleCopyTracking} className="flex items-center gap-1.5 bg-purple-500 hover:bg-purple-600 text-white text-xs px-3 py-1.5 rounded-xl font-semibold transition-colors">
+            <Link size={13} />
+            نسخ رابط التتبع
           </button>
           <button onClick={handlePrintInvoice} className="flex items-center gap-1.5 btn-secondary text-xs py-1.5">
             <Printer size={13} />
@@ -229,9 +286,9 @@ export default function OrderDetailModal({ order, onClose }: Props) {
 
         {/* Tab content */}
         <div className="flex-1 overflow-y-auto p-5 scrollbar-thin">
+          {/* Details Tab */}
           {activeTab === 'tab-details' && (
             <div className="space-y-5 fade-in">
-              {/* Customer info */}
               <div className="card-section p-4">
                 <div className="flex items-center gap-2 mb-3">
                   <User size={15} className="text-[hsl(var(--primary))]" />
@@ -263,7 +320,6 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 </div>
               </div>
 
-              {/* Products */}
               <div className="card-section p-4">
                 <div className="flex items-center gap-2 mb-3">
                   <Package size={15} className="text-[hsl(var(--primary))]" />
@@ -272,10 +328,15 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 <div className="bg-[hsl(var(--muted))]/40 rounded-xl p-3">
                   <p className="text-sm font-medium">{order.products}</p>
                   <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">إجمالي الكمية: {order.quantity} قطعة</p>
+                  {order.warranty && order.warranty !== 'بدون ضمان' && (
+                    <div className="flex items-center gap-1.5 mt-2 text-xs text-green-700 bg-green-50 border border-green-200 rounded-lg px-2 py-1 w-fit">
+                      <Clock size={11} />
+                      <span>فترة الضمان: <strong>{order.warranty}</strong></span>
+                    </div>
+                  )}
                 </div>
               </div>
 
-              {/* Financials */}
               <div className="card-section p-4">
                 <div className="flex items-center gap-2 mb-3">
                   <FileText size={15} className="text-[hsl(var(--primary))]" />
@@ -293,7 +354,6 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                     </span>
                     <span className={`font-mono ${order.expressShipping ? 'text-amber-700 font-semibold' : ''}`}>{order.shippingFee.toLocaleString('en-US')} ج.م</span>
                   </div>
-                  {/* Extra fee: only shown to admin */}
                   {IS_ADMIN && extraFee > 0 && (
                     <div className="flex justify-between py-1.5 border-b border-[hsl(var(--border))] text-orange-700">
                       <span>مصاريف شحن إضافية (أدمن):</span>
@@ -307,7 +367,6 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 </div>
               </div>
 
-              {/* Sensitive info — only for admin/supervisor/delegate/manager */}
               {CAN_SEE_SENSITIVE && (
                 <div className="border border-amber-200 bg-amber-50 rounded-xl p-4">
                   <div className="flex items-center gap-2 mb-3">
@@ -347,6 +406,72 @@ export default function OrderDetailModal({ order, onClose }: Props) {
             </div>
           )}
 
+          {/* Tracking Tab */}
+          {activeTab === 'tab-tracking' && (
+            <div className="space-y-5 fade-in">
+              <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <Link size={16} className="text-blue-600" />
+                  <h4 className="text-sm font-bold text-blue-800">رابط تتبع الشحنة</h4>
+                </div>
+                <p className="text-xs text-blue-600 mb-3">هذا الرابط فريد لهذا الأوردر. يمكن إرساله للعميل عبر الواتساب أو البريد الإلكتروني.</p>
+                <div className="flex items-center gap-2 bg-white border border-blue-200 rounded-xl p-3">
+                  <p className="flex-1 text-sm font-mono text-[hsl(var(--foreground))] break-all">{trackingLink}</p>
+                  <button
+                    onClick={handleCopyTracking}
+                    className="flex-shrink-0 flex items-center gap-1.5 bg-blue-600 text-white text-xs px-3 py-1.5 rounded-lg font-semibold hover:bg-blue-700 transition-colors"
+                  >
+                    <Copy size={12} />
+                    نسخ
+                  </button>
+                </div>
+              </div>
+
+              {/* Delegate info */}
+              <div className="card-section p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <User size={15} className="text-[hsl(var(--primary))]" />
+                  <h4 className="text-sm font-bold">تفاصيل المندوب</h4>
+                </div>
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div className="bg-[hsl(var(--muted))]/40 rounded-xl p-3">
+                    <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">اسم المندوب</p>
+                    <p className="font-semibold">{order.delegate || 'لم يُعيَّن بعد'}</p>
+                  </div>
+                  <div className="bg-[hsl(var(--muted))]/40 rounded-xl p-3">
+                    <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">حالة التوصيل</p>
+                    <span className={`badge ${statusInfo.cls} text-xs`}>{statusInfo.label}</span>
+                  </div>
+                  <div className="col-span-2 bg-[hsl(var(--muted))]/40 rounded-xl p-3">
+                    <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1 flex items-center gap-1"><MapPin size={10} /> موقع المندوب الحالي</p>
+                    <p className="text-sm font-medium">{order.region}{order.district ? ` — ${order.district}` : ''}</p>
+                    <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">آخر تحديث: {order.time} — {order.date}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* WhatsApp preview */}
+              <div className="card-section p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <MessageCircle size={15} className="text-green-600" />
+                  <h4 className="text-sm font-bold">معاينة رسالة الواتساب</h4>
+                  <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded-full">تتضمن رابط التتبع</span>
+                </div>
+                <div className="bg-[#dcf8c6] rounded-2xl rounded-tl-sm p-4 text-sm leading-relaxed whitespace-pre-wrap font-sans shadow-sm border border-green-200 max-w-sm">
+                  {buildWAMessage()}
+                </div>
+                <button
+                  onClick={handleSendWhatsApp}
+                  className="mt-3 flex items-center gap-2 bg-green-500 hover:bg-green-600 text-white text-sm px-4 py-2 rounded-xl font-semibold transition-colors"
+                >
+                  <MessageCircle size={15} />
+                  إرسال للعميل عبر الواتساب
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* History Tab */}
           {activeTab === 'tab-history' && (
             <div className="space-y-3 fade-in">
               <p className="text-sm text-[hsl(var(--muted-foreground))] mb-4">سجل كامل لجميع تحديثات الحالة مع التوقيت الكامل والمسؤول</p>
@@ -379,45 +504,41 @@ export default function OrderDetailModal({ order, onClose }: Props) {
             </div>
           )}
 
+          {/* Notifications Tab */}
           {activeTab === 'tab-notifications' && (
             <div className="space-y-3 fade-in">
               <p className="text-sm text-[hsl(var(--muted-foreground))] mb-4">سجل جميع الإشعارات المرتبطة بهذا الأوردر</p>
-              {MOCK_NOTIFICATIONS.length === 0 ? (
-                <div className="text-center py-10 text-[hsl(var(--muted-foreground))]">
-                  <p className="text-sm">لا توجد إشعارات لهذا الأوردر</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {MOCK_NOTIFICATIONS.map((notif) => {
-                    const typeConfig: Record<string, { color: string; label: string }> = {
-                      status_change: { color: 'bg-blue-50 border-blue-200 text-blue-700', label: 'تغيير حالة' },
-                      whatsapp: { color: 'bg-green-50 border-green-200 text-green-700', label: 'واتساب' },
-                      order_created: { color: 'bg-purple-50 border-purple-200 text-purple-700', label: 'إنشاء أوردر' },
-                    };
-                    const cfg = typeConfig[notif.type] || { color: 'bg-gray-50 border-gray-200 text-gray-700', label: 'إشعار' };
-                    return (
-                      <div key={notif.id} className={`border rounded-xl p-3 ${cfg.color}`}>
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 mb-1">
-                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/60">{cfg.label}</span>
-                              <span className="text-xs font-semibold">{notif.message}</span>
-                            </div>
-                            <p className="text-[11px] opacity-80">بواسطة: {notif.by}</p>
+              <div className="space-y-3">
+                {MOCK_NOTIFICATIONS.map((notif) => {
+                  const typeConfig: Record<string, { color: string; label: string }> = {
+                    status_change: { color: 'bg-blue-50 border-blue-200 text-blue-700', label: 'تغيير حالة' },
+                    whatsapp: { color: 'bg-green-50 border-green-200 text-green-700', label: 'واتساب' },
+                    order_created: { color: 'bg-purple-50 border-purple-200 text-purple-700', label: 'إنشاء أوردر' },
+                  };
+                  const cfg = typeConfig[notif.type] || { color: 'bg-gray-50 border-gray-200 text-gray-700', label: 'إشعار' };
+                  return (
+                    <div key={notif.id} className={`border rounded-xl p-3 ${cfg.color}`}>
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/60">{cfg.label}</span>
+                            <span className="text-xs font-semibold">{notif.message}</span>
                           </div>
-                          <div className="text-left flex-shrink-0">
-                            <p className="text-[10px] font-mono opacity-70">{notif.date}</p>
-                            <p className="text-[10px] font-mono opacity-70">{notif.time}</p>
-                          </div>
+                          <p className="text-[11px] opacity-80">بواسطة: {notif.by}</p>
+                        </div>
+                        <div className="text-left flex-shrink-0">
+                          <p className="text-[10px] font-mono opacity-70">{notif.date}</p>
+                          <p className="text-[10px] font-mono opacity-70">{notif.time}</p>
                         </div>
                       </div>
-                    );
-                  })}
-                </div>
-              )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
 
+          {/* Invoice Tab */}
           {activeTab === 'tab-invoice' && (
             <div className="fade-in">
               <div id="invoice-print-area" className="border-2 border-[hsl(var(--border))] rounded-2xl overflow-hidden">
@@ -446,6 +567,12 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                     <p className="text-[hsl(var(--muted-foreground))] mt-1">{order.region}{order.district ? ` - ${order.district}` : ''} — {order.address}</p>
                   </div>
 
+                  {/* Tracking link in invoice */}
+                  <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
+                    <p className="text-xs font-bold text-blue-700 mb-1 flex items-center gap-1"><Link size={11} /> رابط تتبع الشحنة</p>
+                    <p className="text-xs font-mono text-blue-600 break-all">{trackingLink}</p>
+                  </div>
+
                   <div>
                     <p className="text-[hsl(var(--muted-foreground))] text-xs mb-2 font-bold uppercase tracking-wide">المنتجات</p>
                     <div className="bg-[hsl(var(--muted))]/40 rounded-xl overflow-hidden">
@@ -464,12 +591,19 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                         <span className="text-center">—</span>
                         <span className="text-left font-mono">{order.shippingFee.toLocaleString('en-US')} ج.م</span>
                       </div>
-                      {/* Extra fee only shown to admin in invoice preview */}
                       {IS_ADMIN && extraFee > 0 && (
                         <div className="grid grid-cols-3 gap-4 px-4 py-3 text-sm border-t border-[hsl(var(--border))] text-orange-700">
                           <span>مصاريف شحن إضافية</span>
                           <span className="text-center">—</span>
                           <span className="text-left font-mono">{extraFee.toLocaleString('en-US')} ج.م</span>
+                        </div>
+                      )}
+                      {/* Warranty row */}
+                      {order.warranty && order.warranty !== 'بدون ضمان' && (
+                        <div className="grid grid-cols-3 gap-4 px-4 py-3 text-sm border-t border-[hsl(var(--border))] bg-green-50">
+                          <span className="text-green-700 font-semibold flex items-center gap-1"><Clock size={12} /> فترة الضمان</span>
+                          <span className="text-center">—</span>
+                          <span className="text-left font-semibold text-green-700">{order.warranty}</span>
                         </div>
                       )}
                     </div>
@@ -493,7 +627,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 </button>
                 <button onClick={handleSendWhatsApp} className="flex-1 flex items-center justify-center gap-2 bg-green-500 hover:bg-green-600 text-white px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors active:scale-95">
                   <MessageCircle size={15} />
-                  إرسال واتساب
+                  إرسال واتساب + تتبع
                 </button>
               </div>
             </div>
