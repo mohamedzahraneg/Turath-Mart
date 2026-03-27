@@ -330,6 +330,7 @@ export default function OrdersTableSection() {
   const [supplySuccess, setSupplySuccess] = useState('');
   const [deleteModal, setDeleteModal] = useState<{ order: Order } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const orderToDeleteRef = React.useRef<Order | null>(null);
   const { currentRole, currentRoleId } = useAuth();
   const isAdmin = currentRole === 'manager' || (currentRoleId != null);
 
@@ -518,6 +519,7 @@ export default function OrdersTableSection() {
     setAllOrders(prev => prev.filter(o => o.id !== order.id));
     setSelectedRows(prev => { const s = new Set(prev); s.delete(order.id); return s; });
     setDeleteModal(null);
+    orderToDeleteRef.current = null;
 
     // Remove from localStorage
     try {
@@ -881,7 +883,7 @@ export default function OrdersTableSection() {
                         </div>
                       </td>
                       <td className="table-cell">
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+                        <div className="flex items-center gap-1 transition-opacity duration-150">
                           <button onClick={() => setDetailModal({ order })} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-blue-600 transition-colors" title="عرض التفاصيل">
                             <Eye size={14} />
                           </button>
@@ -893,7 +895,7 @@ export default function OrdersTableSection() {
                           </button>
                           {isAdmin && (
                             <button
-                              onClick={(e) => { e.stopPropagation(); setDeleteModal({ order }); }}
+                              onClick={(e) => { e.stopPropagation(); orderToDeleteRef.current = order; setDeleteModal({ order }); }}
                               className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
                               title="حذف الأوردر"
                             >
@@ -948,8 +950,11 @@ export default function OrdersTableSection() {
       {deleteModal && (
         <DeleteConfirmModal
           order={deleteModal.order}
-          onClose={() => setDeleteModal(null)}
-          onConfirm={() => handleDeleteOrder(deleteModal.order)}
+          onClose={() => { setDeleteModal(null); orderToDeleteRef.current = null; }}
+          onConfirm={() => {
+            const o = orderToDeleteRef.current || deleteModal.order;
+            handleDeleteOrder(o);
+          }}
           isDeleting={false}
         />
       )}
