@@ -3,20 +3,7 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import AppLogo from '@/components/ui/AppLogo';
 import { useAuth, ROLE_ALLOWED_ROUTES } from '@/contexts/AuthContext';
-import {
-  LayoutDashboard,
-  Package,
-  Truck,
-  BarChart3,
-  Warehouse,
-  Users,
-  Settings,
-  ChevronRight,
-  ChevronLeft,
-  Bell,
-  LogOut,
-  ShieldCheck,
-} from 'lucide-react';
+import { LayoutDashboard, Package, Truck, BarChart3, Warehouse, Settings, ChevronRight, ChevronLeft, Bell, LogOut, ShieldCheck,  } from 'lucide-react';
 
 interface NavItem {
   id: string;
@@ -33,8 +20,7 @@ const navItems: NavItem[] = [
   { id: 'nav-shipping', label: 'الشحن', icon: <Truck size={20} />, href: '/shipping', group: 'رئيسي' },
   { id: 'nav-inventory', label: 'المخزون', icon: <Warehouse size={20} />, href: '/inventory', group: 'إدارة' },
   { id: 'nav-reports', label: 'التقارير', icon: <BarChart3 size={20} />, href: '/reports', group: 'إدارة' },
-  { id: 'nav-users', label: 'المستخدمون', icon: <Users size={20} />, href: '/users', group: 'إدارة' },
-  { id: 'nav-roles', label: 'الصلاحيات', icon: <ShieldCheck size={20} />, href: '/roles', group: 'النظام' },
+  { id: 'nav-roles', label: 'المستخدمون والصلاحيات', icon: <ShieldCheck size={20} />, href: '/roles', group: 'النظام' },
   { id: 'nav-settings', label: 'الإعدادات', icon: <Settings size={20} />, href: '/settings', group: 'النظام' },
 ];
 

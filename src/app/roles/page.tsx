@@ -1,7 +1,7 @@
 'use client';
 import React, { useState, useRef } from 'react';
 import AppLayout from '@/components/AppLayout';
-import { ShieldCheck, Plus, Edit2, Trash2, X, Save, Check, Users, Eye, EyeOff, Key, UserPlus, Camera, Upload, Monitor, Smartphone, Tablet, LogIn, LogOut, Calendar, Clock, Search, CheckCircle, XCircle, ChevronDown, ChevronUp } from 'lucide-react';
+import { ShieldCheck, Plus, Edit2, Trash2, X, Save, Check, Users, Eye, EyeOff, Key, UserPlus, Camera, Upload, Monitor, Smartphone, Tablet, LogIn, LogOut, Calendar, Clock, Search, CheckCircle, XCircle, ChevronDown, ChevronUp, Lock, Unlock } from 'lucide-react';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface Permission {
@@ -35,7 +35,7 @@ interface SessionLog {
   userId: string;
   type: 'login' | 'logout';
   device: 'كمبيوتر' | 'موبايل' | 'تابلت';
-  timestamp: string; // ISO string
+  timestamp: string;
   day: string;
   date: string;
   time: string;
@@ -45,7 +45,7 @@ interface AppUser {
   id: string;
   name: string;
   email: string;
-  role: string;
+  roleId: string; // linked to Role.id
   status: 'active' | 'inactive';
   avatar: string;
   loginCount: number;
@@ -109,7 +109,7 @@ function formatSession(iso: string) {
 
 const initialUsers: AppUser[] = [
   {
-    id: 'u1', name: 'محمد الزهراني', email: 'manager@zahranship.com', role: 'مدير النظام', status: 'active', avatar: 'م', loginCount: 47, logoutCount: 46, lastDevice: 'كمبيوتر', lastLogin: '2026-03-27T09:32:14',
+    id: 'u1', name: 'محمد الزهراني', email: 'manager@zahranship.com', roleId: 'r1', status: 'active', avatar: 'م', loginCount: 47, logoutCount: 46, lastDevice: 'كمبيوتر', lastLogin: '2026-03-27T09:32:14',
     sessions: [
       { id: 's1', userId: 'u1', type: 'login', device: 'كمبيوتر', timestamp: '2026-03-27T09:32:14', ...formatSession('2026-03-27T09:32:14') },
       { id: 's2', userId: 'u1', type: 'logout', device: 'كمبيوتر', timestamp: '2026-03-27T14:10:00', ...formatSession('2026-03-27T14:10:00') },
@@ -118,7 +118,7 @@ const initialUsers: AppUser[] = [
     ],
   },
   {
-    id: 'u2', name: 'أحمد علي', email: 'ahmed@zahranship.com', role: 'مشرف شحن', status: 'active', avatar: 'أ', loginCount: 32, logoutCount: 31, lastDevice: 'موبايل', lastLogin: '2026-03-26T11:15:42',
+    id: 'u2', name: 'أحمد علي', email: 'ahmed@zahranship.com', roleId: 'r3', status: 'active', avatar: 'أ', loginCount: 32, logoutCount: 31, lastDevice: 'موبايل', lastLogin: '2026-03-26T11:15:42',
     sessions: [
       { id: 's5', userId: 'u2', type: 'login', device: 'موبايل', timestamp: '2026-03-26T11:15:42', ...formatSession('2026-03-26T11:15:42') },
       { id: 's6', userId: 'u2', type: 'logout', device: 'موبايل', timestamp: '2026-03-26T18:30:00', ...formatSession('2026-03-26T18:30:00') },
@@ -126,36 +126,27 @@ const initialUsers: AppUser[] = [
     ],
   },
   {
-    id: 'u3', name: 'سارة محمود', email: 'sara@zahranship.com', role: 'مدير خدمة عملاء', status: 'active', avatar: 'س', loginCount: 28, logoutCount: 28, lastDevice: 'كمبيوتر', lastLogin: '2026-03-25T08:40:51',
+    id: 'u3', name: 'سارة محمود', email: 'sara@zahranship.com', roleId: 'r5', status: 'active', avatar: 'س', loginCount: 28, logoutCount: 28, lastDevice: 'كمبيوتر', lastLogin: '2026-03-25T08:40:51',
     sessions: [
       { id: 's8', userId: 'u3', type: 'login', device: 'كمبيوتر', timestamp: '2026-03-25T08:40:51', ...formatSession('2026-03-25T08:40:51') },
       { id: 's9', userId: 'u3', type: 'logout', device: 'كمبيوتر', timestamp: '2026-03-25T16:00:00', ...formatSession('2026-03-25T16:00:00') },
     ],
   },
   {
-    id: 'u4', name: 'خالد عمر', email: 'khaled@zahranship.com', role: 'مندوب شحن', status: 'inactive', avatar: 'خ', loginCount: 15, logoutCount: 15, lastDevice: 'تابلت', lastLogin: '2026-03-20T14:22:05',
+    id: 'u4', name: 'خالد عمر', email: 'khaled@zahranship.com', roleId: 'r4', status: 'inactive', avatar: 'خ', loginCount: 15, logoutCount: 15, lastDevice: 'تابلت', lastLogin: '2026-03-20T14:22:05',
     sessions: [
       { id: 's10', userId: 'u4', type: 'login', device: 'تابلت', timestamp: '2026-03-20T14:22:05', ...formatSession('2026-03-20T14:22:05') },
       { id: 's11', userId: 'u4', type: 'logout', device: 'تابلت', timestamp: '2026-03-20T19:00:00', ...formatSession('2026-03-20T19:00:00') },
     ],
   },
   {
-    id: 'u5', name: 'فاطمة حسن', email: 'fatma@zahranship.com', role: 'خدمة عملاء', status: 'active', avatar: 'ف', loginCount: 22, logoutCount: 22, lastDevice: 'موبايل', lastLogin: '2026-03-27T13:40:07',
+    id: 'u5', name: 'فاطمة حسن', email: 'fatma@zahranship.com', roleId: 'r6', status: 'active', avatar: 'ف', loginCount: 22, logoutCount: 22, lastDevice: 'موبايل', lastLogin: '2026-03-27T13:40:07',
     sessions: [
       { id: 's12', userId: 'u5', type: 'login', device: 'موبايل', timestamp: '2026-03-27T13:40:07', ...formatSession('2026-03-27T13:40:07') },
       { id: 's13', userId: 'u5', type: 'logout', device: 'موبايل', timestamp: '2026-03-27T20:00:00', ...formatSession('2026-03-27T20:00:00') },
     ],
   },
 ];
-
-const roleColors: Record<string, string> = {
-  'مدير النظام': 'bg-purple-100 text-purple-700',
-  'مشرف النظام': 'bg-indigo-100 text-indigo-700',
-  'مشرف شحن': 'bg-blue-100 text-blue-700',
-  'مندوب شحن': 'bg-cyan-100 text-cyan-700',
-  'مدير خدمة عملاء': 'bg-green-100 text-green-700',
-  'خدمة عملاء': 'bg-teal-100 text-teal-700',
-};
 
 const colorMap: Record<string, { bg: string; text: string; border: string; avatar: string }> = {
   purple: { bg: 'bg-purple-50', text: 'text-purple-700', border: 'border-purple-200', avatar: 'bg-purple-500' },
@@ -365,23 +356,29 @@ function EmployeeModal({ employee, roles, onClose, onSave }: EmployeeModalProps)
   );
 }
 
-// ─── User Modal ────────────────────────────────────────────────────────────────
-interface UserModalProps { user: AppUser | null; onClose: () => void; onSave: (user: AppUser) => void; }
+// ─── User Modal (linked to roles) ─────────────────────────────────────────────
+interface UserModalProps { user: AppUser | null; roles: Role[]; onClose: () => void; onSave: (user: AppUser) => void; }
 
-function UserModal({ user, onClose, onSave }: UserModalProps) {
-  const allRoles = ['مدير النظام', 'مشرف النظام', 'مشرف شحن', 'مندوب شحن', 'مدير خدمة عملاء', 'خدمة عملاء'];
+function UserModal({ user, roles, onClose, onSave }: UserModalProps) {
   const [form, setForm] = useState<AppUser>(
-    user || { id: `u${Date.now()}`, name: '', email: '', role: 'مشرف شحن', status: 'active', avatar: '', loginCount: 0, logoutCount: 0, sessions: [] }
+    user || { id: `u${Date.now()}`, name: '', email: '', roleId: roles[0]?.id || '', status: 'active', avatar: '', loginCount: 0, logoutCount: 0, sessions: [] }
   );
+  const [showPerms, setShowPerms] = useState(false);
+
+  const selectedRole = roles.find(r => r.id === form.roleId);
+  const roleColors = colorMap[selectedRole?.color || 'blue'] || colorMap.blue;
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" dir="rtl">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] flex flex-col">
         <div className="flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
-          <h2 className="text-lg font-bold">{user ? 'تعديل مستخدم' : 'إضافة مستخدم جديد'}</h2>
+          <div className="flex items-center gap-2">
+            <Users size={20} className="text-[hsl(var(--primary))]" />
+            <h2 className="text-lg font-bold">{user ? 'تعديل مستخدم' : 'إضافة مستخدم جديد'}</h2>
+          </div>
           <button onClick={onClose} className="p-2 hover:bg-[hsl(var(--muted))] rounded-xl transition-colors"><X size={18} /></button>
         </div>
-        <div className="p-5 space-y-4">
+        <div className="p-5 space-y-4 overflow-y-auto flex-1">
           <div>
             <label className="block text-sm font-semibold mb-1.5">الاسم الكامل</label>
             <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value, avatar: e.target.value.trim().charAt(0) || '؟' })} className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30" placeholder="الاسم الكامل" />
@@ -393,8 +390,8 @@ function UserModal({ user, onClose, onSave }: UserModalProps) {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-semibold mb-1.5">الدور الوظيفي</label>
-              <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30">
-                {allRoles.map(r => <option key={r}>{r}</option>)}
+              <select value={form.roleId} onChange={(e) => setForm({ ...form, roleId: e.target.value })} className="w-full border border-[hsl(var(--border))] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30">
+                {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
               </select>
             </div>
             <div>
@@ -405,6 +402,29 @@ function UserModal({ user, onClose, onSave }: UserModalProps) {
               </select>
             </div>
           </div>
+          {/* Role permissions preview */}
+          {selectedRole && (
+            <div className={`rounded-xl border ${roleColors.border} overflow-hidden`}>
+              <button onClick={() => setShowPerms(!showPerms)} className={`w-full flex items-center justify-between px-4 py-3 ${roleColors.bg} transition-colors`}>
+                <div className="flex items-center gap-2">
+                  <ShieldCheck size={15} className={roleColors.text} />
+                  <span className={`text-sm font-semibold ${roleColors.text}`}>صلاحيات دور "{selectedRole.name}"</span>
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${roleColors.bg} ${roleColors.text} border ${roleColors.border}`}>{selectedRole.permissions.length}</span>
+                </div>
+                {showPerms ? <ChevronUp size={15} className={roleColors.text} /> : <ChevronDown size={15} className={roleColors.text} />}
+              </button>
+              {showPerms && (
+                <div className="p-3 flex flex-wrap gap-1.5 bg-white">
+                  {selectedRole.permissions.length === 0
+                    ? <span className="text-xs text-[hsl(var(--muted-foreground))]">لا توجد صلاحيات لهذا الدور</span>
+                    : selectedRole.permissions.map(pid => {
+                        const perm = allPermissions.find(p => p.id === pid);
+                        return perm ? <span key={pid} className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${roleColors.bg} ${roleColors.text}`}>{perm.label}</span> : null;
+                      })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
         <div className="flex gap-3 p-5 border-t border-[hsl(var(--border))]">
           <button onClick={() => onSave(form)} className="flex-1 flex items-center justify-center gap-2 bg-[hsl(var(--primary))] text-white rounded-xl py-2.5 text-sm font-semibold hover:opacity-90 transition-opacity">
@@ -491,6 +511,43 @@ function SessionsPanel({ user, onClose }: { user: AppUser; onClose: () => void }
   );
 }
 
+// ─── User Permissions Panel (inline) ──────────────────────────────────────────
+function UserPermissionsPanel({ user, role }: { user: AppUser; role: Role | undefined }) {
+  if (!role) return <div className="px-6 py-3 text-xs text-[hsl(var(--muted-foreground))]">لا يوجد دور محدد</div>;
+  const colors = colorMap[role.color] || colorMap.blue;
+  const grouped = permGroups.map(g => ({
+    group: g,
+    perms: allPermissions.filter(p => p.group === g),
+  }));
+  return (
+    <div className="px-6 py-4 bg-[hsl(var(--muted))]/20">
+      <div className="flex items-center gap-2 mb-3">
+        <ShieldCheck size={14} className={colors.text} />
+        <span className="text-xs font-bold text-[hsl(var(--foreground))]">صلاحيات دور "{role.name}" المطبقة على هذا المستخدم</span>
+        <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${colors.bg} ${colors.text}`}>{role.permissions.length} صلاحية</span>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        {grouped.map(({ group, perms }) => (
+          <div key={group} className="bg-white rounded-xl border border-[hsl(var(--border))] p-2.5">
+            <p className="text-[10px] font-bold text-[hsl(var(--muted-foreground))] mb-1.5 uppercase tracking-wide">{group}</p>
+            <div className="space-y-1">
+              {perms.map(perm => {
+                const has = role.permissions.includes(perm.id);
+                return (
+                  <div key={perm.id} className={`flex items-center gap-1.5 text-[10px] ${has ? 'text-[hsl(var(--foreground))]' : 'text-gray-300'}`}>
+                    {has ? <Unlock size={9} className={colors.text} /> : <Lock size={9} className="text-gray-300" />}
+                    <span className={has ? 'font-semibold' : ''}>{perm.label}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 export default function RolesPage() {
   const [roles, setRoles] = useState<Role[]>(initialRoles);
@@ -505,6 +562,7 @@ export default function RolesPage() {
   const [userSearch, setUserSearch] = useState('');
   const [userFilter, setUserFilter] = useState<'all' | 'active' | 'inactive'>('all');
   const [expandedUser, setExpandedUser] = useState<string | null>(null);
+  const [expandedUserPerms, setExpandedUserPerms] = useState<string | null>(null);
 
   const handleSaveRole = (role: Role) => {
     setRoles(prev => { const exists = prev.find(r => r.id === role.id); if (exists) return prev.map(r => r.id === role.id ? role : r); return [...prev, role]; });
@@ -526,10 +584,12 @@ export default function RolesPage() {
   };
 
   const getRoleName = (roleId: string) => roles.find(r => r.id === roleId)?.name || '—';
+  const getRoleById = (roleId: string) => roles.find(r => r.id === roleId);
   const getRoleColors = (roleId: string) => { const role = roles.find(r => r.id === roleId); return colorMap[role?.color || 'blue'] || colorMap.blue; };
 
   const filteredUsers = appUsers.filter(u => {
-    const matchSearch = u.name.includes(userSearch) || u.email.includes(userSearch) || u.role.includes(userSearch);
+    const roleName = getRoleName(u.roleId);
+    const matchSearch = u.name.includes(userSearch) || u.email.includes(userSearch) || roleName.includes(userSearch);
     const matchStatus = userFilter === 'all' || u.status === userFilter;
     return matchSearch && matchStatus;
   });
@@ -542,8 +602,8 @@ export default function RolesPage() {
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">الأدوار والصلاحيات والمستخدمون</h1>
-            <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">إدارة الأدوار والموظفين والمستخدمين وتتبع سجلات الدخول</p>
+            <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">المستخدمون والأدوار والصلاحيات</h1>
+            <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">إدارة موحدة للمستخدمين والأدوار وتفعيل الصلاحيات على كل مستخدم</p>
           </div>
           <button
             onClick={() => { if (activeTab === 'roles') setEditRole(null); else if (activeTab === 'employees') setEditEmployee(null); else setEditUser(null); }}
@@ -597,6 +657,7 @@ export default function RolesPage() {
             {roles.map(role => {
               const colors = colorMap[role.color] || colorMap.blue;
               const roleEmployees = employees.filter(e => e.roleId === role.id);
+              const roleUsers = appUsers.filter(u => u.roleId === role.id);
               return (
                 <div key={role.id} className={`card-section p-5 border-2 ${colors.border} hover:shadow-md transition-shadow`}>
                   <div className="flex items-start justify-between mb-4">
@@ -604,7 +665,7 @@ export default function RolesPage() {
                       <div className={`w-11 h-11 rounded-xl ${colors.bg} ${colors.text} flex items-center justify-center`}><ShieldCheck size={22} /></div>
                       <div>
                         <p className="font-bold text-[hsl(var(--foreground))]">{role.name}</p>
-                        <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">{roleEmployees.length} موظف</p>
+                        <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">{roleEmployees.length + roleUsers.length} مستخدم</p>
                       </div>
                     </div>
                     <div className="flex gap-1">
@@ -658,6 +719,7 @@ export default function RolesPage() {
                     <th className="text-right px-4 py-3 font-semibold">اسم المستخدم</th>
                     <th className="text-right px-4 py-3 font-semibold">كلمة المرور</th>
                     <th className="text-right px-4 py-3 font-semibold">الدور</th>
+                    <th className="text-right px-4 py-3 font-semibold">الصلاحيات</th>
                     <th className="text-right px-4 py-3 font-semibold">الحالة</th>
                     <th className="text-right px-4 py-3 font-semibold">تاريخ الإنشاء</th>
                     <th className="text-right px-4 py-3 font-semibold">إجراءات</th>
@@ -666,6 +728,7 @@ export default function RolesPage() {
                 <tbody>
                   {employees.map(emp => {
                     const rc = getRoleColors(emp.roleId);
+                    const empRole = getRoleById(emp.roleId);
                     const isShowingPass = showPasswords.has(emp.id);
                     return (
                       <tr key={emp.id} className="border-t border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/30 transition-colors">
@@ -685,6 +748,11 @@ export default function RolesPage() {
                           </div>
                         </td>
                         <td className="px-4 py-3"><span className={`text-xs px-2.5 py-1 rounded-full font-semibold ${rc.bg} ${rc.text}`}>{getRoleName(emp.roleId)}</span></td>
+                        <td className="px-4 py-3">
+                          <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${rc.bg} ${rc.text}`}>
+                            {empRole ? `${empRole.permissions.length} صلاحية` : '—'}
+                          </span>
+                        </td>
                         <td className="px-4 py-3"><span className={`text-xs px-2.5 py-1 rounded-full font-semibold ${emp.status === 'active' ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-500'}`}>{emp.status === 'active' ? 'نشط' : 'غير نشط'}</span></td>
                         <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">{emp.createdAt}</td>
                         <td className="px-4 py-3">
@@ -696,7 +764,7 @@ export default function RolesPage() {
                       </tr>
                     );
                   })}
-                  {employees.length === 0 && <tr><td colSpan={7} className="px-4 py-8 text-center text-[hsl(var(--muted-foreground))] text-sm">لا يوجد موظفون</td></tr>}
+                  {employees.length === 0 && <tr><td colSpan={8} className="px-4 py-8 text-center text-[hsl(var(--muted-foreground))] text-sm">لا يوجد موظفون</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -742,7 +810,7 @@ export default function RolesPage() {
                   <thead>
                     <tr className="bg-[hsl(var(--muted))]/50 text-[hsl(var(--muted-foreground))] text-xs">
                       <th className="text-right px-4 py-3 font-semibold">المستخدم</th>
-                      <th className="text-right px-4 py-3 font-semibold">الدور</th>
+                      <th className="text-right px-4 py-3 font-semibold">الدور والصلاحيات</th>
                       <th className="text-right px-4 py-3 font-semibold">الجهاز</th>
                       <th className="text-right px-4 py-3 font-semibold">مرات الدخول</th>
                       <th className="text-right px-4 py-3 font-semibold">مرات الخروج</th>
@@ -753,14 +821,17 @@ export default function RolesPage() {
                   </thead>
                   <tbody>
                     {filteredUsers.map(user => {
+                      const userRole = getRoleById(user.roleId);
+                      const rc = getRoleColors(user.roleId);
                       const lastSession = user.sessions.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
                       const isExpanded = expandedUser === user.id;
+                      const isPermsExpanded = expandedUserPerms === user.id;
                       return (
                         <React.Fragment key={user.id}>
                           <tr className="border-t border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/30 transition-colors">
                             <td className="px-4 py-3">
                               <div className="flex items-center gap-3">
-                                <div className="w-9 h-9 rounded-full bg-[hsl(var(--primary))] flex items-center justify-center text-white text-sm font-bold flex-shrink-0">{user.avatar}</div>
+                                <div className={`w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-bold flex-shrink-0 ${rc.avatar}`}>{user.avatar}</div>
                                 <div>
                                   <p className="font-semibold text-[hsl(var(--foreground))]">{user.name}</p>
                                   <p className="text-xs text-[hsl(var(--muted-foreground))]" dir="ltr">{user.email}</p>
@@ -768,7 +839,19 @@ export default function RolesPage() {
                               </div>
                             </td>
                             <td className="px-4 py-3">
-                              <span className={`text-xs px-2.5 py-1 rounded-full font-semibold ${roleColors[user.role] || 'bg-gray-100 text-gray-600'}`}>{user.role}</span>
+                              <div className="flex flex-col gap-1">
+                                <span className={`text-xs px-2.5 py-1 rounded-full font-semibold w-fit ${rc.bg} ${rc.text}`}>{getRoleName(user.roleId)}</span>
+                                {userRole && (
+                                  <button
+                                    onClick={() => setExpandedUserPerms(isPermsExpanded ? null : user.id)}
+                                    className={`flex items-center gap-1 text-[10px] font-semibold transition-colors w-fit ${isPermsExpanded ? rc.text : 'text-[hsl(var(--muted-foreground))] hover:' + rc.text}`}
+                                  >
+                                    <ShieldCheck size={10} />
+                                    {userRole.permissions.length} صلاحية
+                                    {isPermsExpanded ? <ChevronUp size={9} /> : <ChevronDown size={9} />}
+                                  </button>
+                                )}
+                              </div>
                             </td>
                             <td className="px-4 py-3">
                               <span className="inline-flex items-center gap-1.5 text-xs text-[hsl(var(--foreground))] bg-[hsl(var(--muted))] px-2.5 py-1 rounded-lg">
@@ -812,9 +895,17 @@ export default function RolesPage() {
                               </div>
                             </td>
                           </tr>
+                          {/* Permissions panel */}
+                          {isPermsExpanded && (
+                            <tr className="border-t border-[hsl(var(--border))]">
+                              <td colSpan={8} className="p-0">
+                                <UserPermissionsPanel user={user} role={userRole} />
+                              </td>
+                            </tr>
+                          )}
                           {/* Inline sessions preview */}
                           {isExpanded && (
-                            <tr className="bg-[hsl(var(--muted))]/20">
+                            <tr className="bg-[hsl(var(--muted))]/20 border-t border-[hsl(var(--border))]">
                               <td colSpan={8} className="px-6 py-3">
                                 <p className="text-xs font-semibold text-[hsl(var(--muted-foreground))] mb-2">آخر 5 جلسات:</p>
                                 <div className="flex flex-wrap gap-2">
@@ -850,7 +941,7 @@ export default function RolesPage() {
       {/* Modals */}
       {editRole !== undefined && <RoleModal role={editRole} onClose={() => setEditRole(undefined)} onSave={handleSaveRole} />}
       {editEmployee !== undefined && <EmployeeModal employee={editEmployee} roles={roles} onClose={() => setEditEmployee(undefined)} onSave={handleSaveEmployee} />}
-      {editUser !== undefined && <UserModal user={editUser} onClose={() => setEditUser(undefined)} onSave={handleSaveUser} />}
+      {editUser !== undefined && <UserModal user={editUser} roles={roles} onClose={() => setEditUser(undefined)} onSave={handleSaveUser} />}
       {viewSessionsUser && <SessionsPanel user={viewSessionsUser} onClose={() => setViewSessionsUser(null)} />}
     </AppLayout>
   );
