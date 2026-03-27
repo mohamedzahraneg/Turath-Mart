@@ -1,9 +1,9 @@
 'use client';
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import AppLayout from '@/components/AppLayout';
 import {
   Warehouse, AlertTriangle, CheckCircle, Plus, Search,
-  Edit2, Trash2, TrendingDown, Package, X, Save
+  Edit2, Trash2, TrendingDown, Package, X, Save, Image as ImageIcon, ChevronLeft, ChevronRight
 } from 'lucide-react';
 
 interface InventoryItem {
@@ -15,17 +15,18 @@ interface InventoryItem {
   minStock: number;
   price: number;
   category: string;
+  images?: string[];
 }
 
 const initialInventory: InventoryItem[] = [
-  { id: 'inv-1', name: 'حامل مصحف بني', sku: 'HMB-001', available: 45, withdrawn: 120, minStock: 20, price: 300, category: 'حوامل' },
-  { id: 'inv-2', name: 'حامل مصحف أسود', sku: 'HMA-002', available: 8, withdrawn: 92, minStock: 20, price: 300, category: 'حوامل' },
-  { id: 'inv-3', name: 'حامل مصحف أبيض', sku: 'HMW-003', available: 32, withdrawn: 68, minStock: 20, price: 300, category: 'حوامل' },
-  { id: 'inv-4', name: 'حامل مصحف ذهبي', sku: 'HMG-004', available: 5, withdrawn: 75, minStock: 20, price: 350, category: 'حوامل' },
-  { id: 'inv-5', name: 'كشاف', sku: 'KSH-005', available: 67, withdrawn: 133, minStock: 30, price: 150, category: 'إكسسوارات' },
-  { id: 'inv-6', name: 'كرسي', sku: 'KRS-006', available: 18, withdrawn: 42, minStock: 10, price: 500, category: 'أثاث' },
-  { id: 'inv-7', name: 'مصحف', sku: 'MSH-007', available: 95, withdrawn: 205, minStock: 50, price: 200, category: 'كتب' },
-  { id: 'inv-8', name: 'كعبة', sku: 'KAB-008', available: 3, withdrawn: 47, minStock: 10, price: 450, category: 'ديكور' },
+  { id: 'inv-1', name: 'حامل مصحف بني', sku: 'HMB-001', available: 45, withdrawn: 120, minStock: 20, price: 300, category: 'حوامل', images: [] },
+  { id: 'inv-2', name: 'حامل مصحف أسود', sku: 'HMA-002', available: 8, withdrawn: 92, minStock: 20, price: 300, category: 'حوامل', images: [] },
+  { id: 'inv-3', name: 'حامل مصحف أبيض', sku: 'HMW-003', available: 32, withdrawn: 68, minStock: 20, price: 300, category: 'حوامل', images: [] },
+  { id: 'inv-4', name: 'حامل مصحف ذهبي', sku: 'HMG-004', available: 5, withdrawn: 75, minStock: 20, price: 350, category: 'حوامل', images: [] },
+  { id: 'inv-5', name: 'كشاف', sku: 'KSH-005', available: 67, withdrawn: 133, minStock: 30, price: 150, category: 'إكسسوارات', images: [] },
+  { id: 'inv-6', name: 'كرسي', sku: 'KRS-006', available: 18, withdrawn: 42, minStock: 10, price: 500, category: 'أثاث', images: [] },
+  { id: 'inv-7', name: 'مصحف', sku: 'MSH-007', available: 95, withdrawn: 205, minStock: 50, price: 200, category: 'كتب', images: [] },
+  { id: 'inv-8', name: 'كعبة', sku: 'KAB-008', available: 3, withdrawn: 47, minStock: 10, price: 450, category: 'ديكور', images: [] },
 ];
 
 const categories = ['الكل', 'حوامل', 'إكسسوارات', 'أثاث', 'كتب', 'ديكور'];
@@ -38,19 +39,143 @@ interface EditModalProps {
 
 function EditModal({ item, onClose, onSave }: EditModalProps) {
   const [form, setForm] = useState<InventoryItem>(
-    item || { id: `inv-${Date.now()}`, name: '', sku: '', available: 0, withdrawn: 0, minStock: 10, price: 0, category: 'حوامل' }
+    item
+      ? { ...item, images: item.images || [] }
+      : { id: `inv-${Date.now()}`, name: '', sku: '', available: 0, withdrawn: 0, minStock: 10, price: 0, category: 'حوامل', images: [] }
   );
+  const [previewIndex, setPreviewIndex] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImagesUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    const readers = files.map(
+      (file) =>
+        new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (ev) => resolve(ev.target?.result as string);
+          reader.readAsDataURL(file);
+        })
+    );
+    Promise.all(readers).then((results) => {
+      setForm((prev) => ({
+        ...prev,
+        images: [...(prev.images || []), ...results],
+      }));
+    });
+    // reset input so same files can be re-selected
+    e.target.value = '';
+  };
+
+  const removeImage = (index: number) => {
+    setForm((prev) => {
+      const imgs = [...(prev.images || [])];
+      imgs.splice(index, 1);
+      if (previewIndex >= imgs.length) setPreviewIndex(Math.max(0, imgs.length - 1));
+      return { ...prev, images: imgs };
+    });
+  };
+
+  const images = form.images || [];
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" dir="rtl">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col">
         <div className="flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
           <h2 className="text-lg font-bold">{item ? 'تعديل صنف' : 'إضافة صنف جديد'}</h2>
           <button onClick={onClose} className="p-2 hover:bg-[hsl(var(--muted))] rounded-xl transition-colors">
             <X size={18} />
           </button>
         </div>
-        <div className="p-5 space-y-4">
+        <div className="p-5 space-y-4 overflow-y-auto flex-1">
+          {/* Multiple image upload */}
+          <div>
+            <label className="block text-sm font-semibold mb-2">صور المنتج</label>
+            {/* Image preview carousel */}
+            {images.length > 0 ? (
+              <div className="relative mb-3">
+                <div className="w-full h-44 rounded-xl overflow-hidden bg-gray-100 border border-[hsl(var(--border))]">
+                  <img
+                    src={images[previewIndex]}
+                    alt={`صورة ${previewIndex + 1}`}
+                    className="w-full h-full object-contain"
+                  />
+                </div>
+                {/* Navigation arrows */}
+                {images.length > 1 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setPreviewIndex((i) => (i - 1 + images.length) % images.length)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 bg-white/80 rounded-full flex items-center justify-center shadow hover:bg-white transition-colors"
+                    >
+                      <ChevronRight size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPreviewIndex((i) => (i + 1) % images.length)}
+                      className="absolute left-2 top-1/2 -translate-y-1/2 w-7 h-7 bg-white/80 rounded-full flex items-center justify-center shadow hover:bg-white transition-colors"
+                    >
+                      <ChevronLeft size={14} />
+                    </button>
+                  </>
+                )}
+                {/* Counter */}
+                <div className="absolute bottom-2 left-1/2 -translate-x-1/2 bg-black/50 text-white text-[10px] px-2 py-0.5 rounded-full font-mono">
+                  {previewIndex + 1} / {images.length}
+                </div>
+              </div>
+            ) : (
+              <div className="w-full h-32 rounded-xl border-2 border-dashed border-[hsl(var(--border))] flex flex-col items-center justify-center gap-2 text-[hsl(var(--muted-foreground))] mb-3 bg-[hsl(var(--muted))]/20">
+                <ImageIcon size={28} className="opacity-40" />
+                <p className="text-xs">لا توجد صور — اضغط لإضافة صور</p>
+              </div>
+            )}
+
+            {/* Thumbnails row */}
+            {images.length > 0 && (
+              <div className="flex gap-2 flex-wrap mb-3">
+                {images.map((img, i) => (
+                  <div key={`thumb-${i}`} className="relative group">
+                    <button
+                      type="button"
+                      onClick={() => setPreviewIndex(i)}
+                      className={`w-14 h-14 rounded-lg overflow-hidden border-2 transition-all ${previewIndex === i ? 'border-[hsl(var(--primary))]' : 'border-[hsl(var(--border))]'}`}
+                    >
+                      <img src={img} alt={`thumb-${i}`} className="w-full h-full object-cover" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeImage(i)}
+                      className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow"
+                    >
+                      <X size={10} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Upload button */}
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex items-center gap-2 px-4 py-2 border border-[hsl(var(--border))] rounded-xl text-sm font-semibold hover:bg-[hsl(var(--muted))] transition-colors"
+            >
+              <ImageIcon size={15} className="text-[hsl(var(--primary))]" />
+              {images.length === 0 ? 'إضافة صور' : 'إضافة المزيد من الصور'}
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={handleImagesUpload}
+            />
+            <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1">يمكنك اختيار أكثر من صورة في نفس الوقت</p>
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <div className="col-span-2">
               <label className="block text-sm font-semibold mb-1.5">اسم الصنف</label>
@@ -235,6 +360,7 @@ export default function InventoryPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/50">
+                  <th className="text-right px-4 py-3 font-semibold text-[hsl(var(--muted-foreground))]">الصورة</th>
                   <th className="text-right px-4 py-3 font-semibold text-[hsl(var(--muted-foreground))]">الصنف</th>
                   <th className="text-right px-4 py-3 font-semibold text-[hsl(var(--muted-foreground))]">الكود</th>
                   <th className="text-right px-4 py-3 font-semibold text-[hsl(var(--muted-foreground))]">الفئة</th>
@@ -249,8 +375,25 @@ export default function InventoryPage() {
                 {filtered.map((item) => {
                   const isLow = item.available <= item.minStock;
                   const pct = Math.round((item.available / (item.available + item.withdrawn)) * 100);
+                  const firstImage = item.images?.[0];
                   return (
                     <tr key={item.id} className={`hover:bg-[hsl(var(--muted))]/30 transition-colors ${isLow ? 'bg-red-50/30' : ''}`}>
+                      <td className="px-4 py-3">
+                        {firstImage ? (
+                          <div className="relative">
+                            <img src={firstImage} alt={item.name} className="w-10 h-10 rounded-lg object-cover border border-[hsl(var(--border))]" />
+                            {(item.images?.length || 0) > 1 && (
+                              <span className="absolute -bottom-1 -right-1 bg-[hsl(var(--primary))] text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
+                                {item.images!.length}
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="w-10 h-10 rounded-lg bg-[hsl(var(--muted))] flex items-center justify-center border border-[hsl(var(--border))]">
+                            <ImageIcon size={16} className="text-[hsl(var(--muted-foreground))] opacity-50" />
+                          </div>
+                        )}
+                      </td>
                       <td className="px-4 py-3 font-semibold">{item.name}</td>
                       <td className="px-4 py-3 text-[hsl(var(--muted-foreground))] font-mono text-xs">{item.sku}</td>
                       <td className="px-4 py-3">

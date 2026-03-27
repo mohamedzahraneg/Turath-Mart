@@ -1,17 +1,20 @@
 'use client';
 import React, { useState, useEffect, useRef } from 'react';
-import { useForm, useFieldArray } from 'react-hook-form';
 import { toast } from 'sonner';
 import { Toaster } from 'sonner';
-import { X, Trash2, Package, User, MapPin, Phone, FileText, Zap, Calculator, ChevronDown, DollarSign, Image as ImageIcon, Check } from 'lucide-react';
+import { X, Trash2, Package, User, MapPin, Phone, FileText, Zap, Calculator, ChevronDown, DollarSign, Image as ImageIcon, Plus, Minus } from 'lucide-react';
 
 interface ProductItem {
   productType: string;
   color?: string;
-  withFlashlight: boolean;
   quantity: number;
   unitPrice: number;
   note: string;
+  // For chair/quran multi-select with individual prices
+  chairPrice?: number;
+  quranPrice?: number;
+  flashlightPrice?: number;
+  includeFlashlight?: boolean;
 }
 
 interface OrderFormData {
@@ -21,7 +24,6 @@ interface OrderFormData {
   governorate: string;
   district: string;
   address: string;
-  products: ProductItem[];
   expressShipping: boolean;
   extraShippingFee: number;
   notes: string;
@@ -29,11 +31,11 @@ interface OrderFormData {
 }
 
 export const PRODUCT_TYPES = [
-  { value: 'holder', label: 'حامل مصحف', basePrice: 300, image: '/assets/images/no_image.png', emoji: '📿', hasColor: true },
-  { value: 'flashlight', label: 'كشاف', basePrice: 150, image: '/assets/images/no_image.png', emoji: '🔦', hasColor: false },
-  { value: 'chair', label: 'كرسي', basePrice: 600, image: '/assets/images/no_image.png', emoji: '🪑', hasColor: false },
-  { value: 'quran', label: 'مصحف', basePrice: 140, image: '/assets/images/no_image.png', emoji: '📖', hasColor: false },
-  { value: 'kaaba', label: 'كعبة', basePrice: 450, image: '/assets/images/no_image.png', emoji: '🕋', hasColor: false },
+  { value: 'holder', label: 'حامل مصحف', basePrice: 300, emoji: '📿', hasColor: true },
+  { value: 'flashlight', label: 'كشاف', basePrice: 150, emoji: '🔦', hasColor: false },
+  { value: 'chair', label: 'كرسي', basePrice: 600, emoji: '🪑', hasColor: false },
+  { value: 'quran', label: 'مصحف', basePrice: 140, emoji: '📖', hasColor: false },
+  { value: 'kaaba', label: 'كعبة', basePrice: 450, emoji: '🕋', hasColor: false },
 ];
 
 export const HOLDER_COLORS = [
@@ -72,14 +74,12 @@ export const GOVERNORATES_DISTRICTS: Record<string, string[]> = {
   ],
 };
 
-// Admin-configurable settings (in real app, fetched from API)
 export const ADMIN_SETTINGS = {
   SHIPPING_FEE: 50,
   EXPRESS_FEE: 100,
-  DISABLED_DISTRICTS: [] as string[], // Admin can disable specific districts
+  DISABLED_DISTRICTS: [] as string[],
 };
 
-// Simulated current user role — in real app from auth context
 const CURRENT_USER_ROLE: 'admin' | 'supervisor' | 'customer_service' | 'delegate' = 'customer_service';
 const IS_ADMIN = CURRENT_USER_ROLE === 'admin';
 
@@ -101,13 +101,61 @@ interface Props {
   onClose: () => void;
 }
 
+// A single product line in the order
+interface OrderLine {
+  id: string;
+  productType: string;
+  color: string; // for holder
+  quantity: number;
+  unitPrice: number;
+  includeFlashlight: boolean;
+  flashlightPrice: number;
+  note: string;
+}
+
+function createLine(productType: string): OrderLine {
+  const def = PRODUCT_TYPES.find(p => p.value === productType);
+  return {
+    id: `line-${Date.now()}-${Math.random()}`,
+    productType,
+    color: productType === 'holder' ? 'brown' : '',
+    quantity: 1,
+    unitPrice: def?.basePrice || 0,
+    includeFlashlight: false,
+    flashlightPrice: 150,
+    note: '',
+  };
+}
+
+function lineTotal(line: OrderLine): number {
+  const base = line.unitPrice * line.quantity;
+  const flash = line.includeFlashlight ? line.flashlightPrice * line.quantity : 0;
+  return base + flash;
+}
+
 export default function AddOrderModal({ onClose }: Props) {
   const [orderNum] = useState(generateOrderNumber);
   const [currentDateTime, setCurrentDateTime] = useState({ date: '', time: '', day: '' });
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [subtotal, setSubtotal] = useState(0);
   const [step, setStep] = useState(1);
-  // Product image upload state (admin only)
+
+  // Form fields
+  const [customerName, setCustomerName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [phone2, setPhone2] = useState('');
+  const [governorate, setGovernorate] = useState('القاهرة');
+  const [district, setDistrict] = useState('');
+  const [address, setAddress] = useState('');
+  const [expressShipping, setExpressShipping] = useState(false);
+  const [extraShippingFee, setExtraShippingFee] = useState(0);
+  const [notes, setNotes] = useState('');
+  const [warranty, setWarranty] = useState('بدون ضمان');
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // Order lines (multi-select, same product can appear multiple times with different colors)
+  const [lines, setLines] = useState<OrderLine[]>([]);
+
+  // Product images (admin-uploaded)
   const [productImages, setProductImages] = useState<Record<string, string>>(() => {
     const init: Record<string, string> = {};
     PRODUCT_TYPES.forEach(p => { init[p.value] = p.emoji; });
@@ -125,83 +173,34 @@ export default function AddOrderModal({ onClose }: Props) {
       const h = now.getHours().toString().padStart(2, '0');
       const min = now.getMinutes().toString().padStart(2, '0');
       const sec = now.getSeconds().toString().padStart(2, '0');
-      setCurrentDateTime({
-        date: `${d}/${m}/${y}`,
-        time: `${h}:${min}:${sec}`,
-        day: days[now.getDay()],
-      });
+      setCurrentDateTime({ date: `${d}/${m}/${y}`, time: `${h}:${min}:${sec}`, day: days[now.getDay()] });
     };
     updateTime();
     const interval = setInterval(updateTime, 1000);
     return () => clearInterval(interval);
   }, []);
 
-  const {
-    register,
-    control,
-    handleSubmit,
-    watch,
-    setValue,
-    formState: { errors },
-  } = useForm<OrderFormData>({
-    defaultValues: {
-      governorate: 'القاهرة',
-      district: '',
-      products: [{ productType: 'holder', color: 'brown', withFlashlight: false, quantity: 1, unitPrice: 300, note: '' }],
-      expressShipping: false,
-      extraShippingFee: 0,
-      warranty: 'بدون ضمان',
-    },
-  });
-
-  const { fields, append, remove } = useFieldArray({ control, name: 'products' });
-  const watchProducts = watch('products');
-  const watchExpress = watch('expressShipping');
-  const watchGovernorate = watch('governorate');
-  const watchExtraFee = watch('extraShippingFee') || 0;
-
-  useEffect(() => {
-    const total = watchProducts?.reduce((sum, p) => {
-      const base = (p.unitPrice * p.quantity) || 0;
-      const flash = p.withFlashlight ? (150 * p.quantity) : 0;
-      return sum + base + flash;
-    }, 0) || 0;
-    setSubtotal(total);
-  }, [watchProducts]);
-
   // Reset district when governorate changes
-  useEffect(() => {
-    setValue('district', '');
-  }, [watchGovernorate, setValue]);
+  useEffect(() => { setDistrict(''); }, [governorate]);
 
-  const availableDistricts = (GOVERNORATES_DISTRICTS[watchGovernorate] || [])
+  const availableDistricts = (GOVERNORATES_DISTRICTS[governorate] || [])
     .filter(d => !ADMIN_SETTINGS.DISABLED_DISTRICTS.includes(d));
 
-  // Express shipping REPLACES default shipping fee (not added on top)
-  const shippingCost = watchExpress ? ADMIN_SETTINGS.EXPRESS_FEE : ADMIN_SETTINGS.SHIPPING_FEE;
-  const extraFeeAmount = IS_ADMIN ? Number(watchExtraFee || 0) : 0;
+  const shippingCost = expressShipping ? ADMIN_SETTINGS.EXPRESS_FEE : ADMIN_SETTINGS.SHIPPING_FEE;
+  const extraFeeAmount = IS_ADMIN ? extraShippingFee : 0;
+  const subtotal = lines.reduce((s, l) => s + lineTotal(l), 0);
   const grandTotal = subtotal + shippingCost + extraFeeAmount;
 
-  const onSubmit = async (data: OrderFormData) => {
-    setIsSubmitting(true);
-    const deviceType = getDeviceType();
-    await new Promise((r) => setTimeout(r, 1500));
-    toast.success(`تم تسجيل الأوردر ${orderNum} بنجاح! (${deviceType})`);
-    setIsSubmitting(false);
-    onClose();
+  const addLine = (productType: string) => {
+    setLines(prev => [...prev, createLine(productType)]);
   };
 
-  const addProduct = () => {
-    append({ productType: 'holder', color: 'brown', withFlashlight: false, quantity: 1, unitPrice: 300, note: '' });
+  const removeLine = (id: string) => {
+    setLines(prev => prev.filter(l => l.id !== id));
   };
 
-  const handleProductTypeChange = (index: number, type: string) => {
-    const product = PRODUCT_TYPES.find((p) => p.value === type);
-    if (product) {
-      setValue(`products.${index}.unitPrice`, product.basePrice);
-      if (!product.hasColor) setValue(`products.${index}.color`, undefined);
-      else setValue(`products.${index}.color`, 'brown');
-    }
+  const updateLine = (id: string, patch: Partial<OrderLine>) => {
+    setLines(prev => prev.map(l => l.id === id ? { ...l, ...patch } : l));
   };
 
   const handleImageUpload = (productValue: string, e: React.ChangeEvent<HTMLInputElement>) => {
@@ -216,6 +215,41 @@ export default function AddOrderModal({ onClose }: Props) {
     };
     reader.readAsDataURL(file);
   };
+
+  const validateStep1 = () => {
+    const errs: Record<string, string> = {};
+    if (!customerName.trim()) errs.customerName = 'اسم العميل مطلوب';
+    if (!/^01[0-9]{9}$/.test(phone)) errs.phone = 'رقم موبايل مصري غير صحيح';
+    if (phone2 && !/^01[0-9]{9}$/.test(phone2)) errs.phone2 = 'رقم موبايل مصري غير صحيح';
+    if (!district) errs.district = 'المنطقة مطلوبة';
+    if (!address.trim() || address.trim().length < 10) errs.address = 'العنوان قصير جداً';
+    setErrors(errs);
+    return Object.keys(errs).length === 0;
+  };
+
+  const validateStep2 = () => {
+    if (lines.length === 0) {
+      toast.error('يجب إضافة منتج واحد على الأقل');
+      return false;
+    }
+    return true;
+  };
+
+  const handleSubmit = async () => {
+    setIsSubmitting(true);
+    const deviceType = getDeviceType();
+    await new Promise((r) => setTimeout(r, 1500));
+    toast.success(`تم تسجيل الأوردر ${orderNum} بنجاح! (${deviceType})`);
+    setIsSubmitting(false);
+    onClose();
+  };
+
+  const warrantyOptions = (() => {
+    try {
+      const saved = typeof window !== 'undefined' ? localStorage.getItem('settings_warranty') : null;
+      return saved ? JSON.parse(saved) : ['بدون ضمان', '3 أشهر', '6 أشهر', 'سنة', 'سنتان'];
+    } catch { return ['بدون ضمان', '3 أشهر', '6 أشهر', 'سنة', 'سنتان']; }
+  })();
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" dir="rtl">
@@ -279,9 +313,10 @@ export default function AddOrderModal({ onClose }: Props) {
         </div>
 
         {/* Form body */}
-        <form onSubmit={handleSubmit(onSubmit)} className="flex-1 overflow-y-auto scrollbar-thin">
+        <div className="flex-1 overflow-y-auto scrollbar-thin">
           <div className="px-6 py-4">
-            {/* Step 1: Customer info */}
+
+            {/* ── Step 1: Customer info ── */}
             {step === 1 && (
               <div className="space-y-4 fade-in">
                 <div className="flex items-center gap-2 mb-4">
@@ -291,61 +326,55 @@ export default function AddOrderModal({ onClose }: Props) {
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="sm:col-span-2">
-                    <label className="label-text" htmlFor="customerName">اسم العميل *</label>
+                    <label className="label-text">اسم العميل *</label>
                     <input
-                      id="customerName"
                       className={`input-field ${errors.customerName ? 'border-red-400' : ''}`}
                       placeholder="الاسم الكامل للعميل"
-                      {...register('customerName', { required: 'اسم العميل مطلوب' })}
+                      value={customerName}
+                      onChange={e => setCustomerName(e.target.value)}
                     />
-                    {errors.customerName && <p className="text-red-500 text-xs mt-1">{errors.customerName.message}</p>}
+                    {errors.customerName && <p className="text-red-500 text-xs mt-1">{errors.customerName}</p>}
                   </div>
 
                   <div>
-                    <label className="label-text" htmlFor="phone">رقم الموبايل الأساسي *</label>
+                    <label className="label-text">رقم الموبايل الأساسي *</label>
                     <div className="relative">
                       <Phone size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]" />
                       <input
-                        id="phone"
                         type="tel"
                         className={`input-field pr-8 ${errors.phone ? 'border-red-400' : ''}`}
                         placeholder="01XXXXXXXXX"
                         dir="ltr"
-                        {...register('phone', {
-                          required: 'رقم الموبايل مطلوب',
-                          pattern: { value: /^01[0-9]{9}$/, message: 'رقم موبايل مصري غير صحيح' }
-                        })}
+                        value={phone}
+                        onChange={e => setPhone(e.target.value)}
                       />
                     </div>
-                    {errors.phone && <p className="text-red-500 text-xs mt-1">{errors.phone.message}</p>}
+                    {errors.phone && <p className="text-red-500 text-xs mt-1">{errors.phone}</p>}
                   </div>
 
                   <div>
-                    <label className="label-text" htmlFor="phone2">رقم موبايل إضافي</label>
+                    <label className="label-text">رقم موبايل إضافي</label>
                     <div className="relative">
                       <Phone size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]" />
                       <input
-                        id="phone2"
                         type="tel"
-                        className="input-field pr-8"
+                        className={`input-field pr-8 ${errors.phone2 ? 'border-red-400' : ''}`}
                         placeholder="01XXXXXXXXX (اختياري)"
                         dir="ltr"
-                        {...register('phone2', {
-                          pattern: { value: /^(01[0-9]{9})?$/, message: 'رقم موبايل مصري غير صحيح' }
-                        })}
+                        value={phone2}
+                        onChange={e => setPhone2(e.target.value)}
                       />
                     </div>
-                    {errors.phone2 && <p className="text-red-500 text-xs mt-1">{errors.phone2.message}</p>}
+                    {errors.phone2 && <p className="text-red-500 text-xs mt-1">{errors.phone2}</p>}
                   </div>
 
-                  {/* Governorate */}
                   <div>
-                    <label className="label-text" htmlFor="governorate">المحافظة *</label>
+                    <label className="label-text">المحافظة *</label>
                     <div className="relative">
                       <select
-                        id="governorate"
                         className="input-field appearance-none pl-8"
-                        {...register('governorate', { required: 'المحافظة مطلوبة' })}
+                        value={governorate}
+                        onChange={e => setGovernorate(e.target.value)}
                       >
                         {Object.keys(GOVERNORATES_DISTRICTS).map((g) => (
                           <option key={`gov-${g}`} value={g}>{g}</option>
@@ -355,14 +384,13 @@ export default function AddOrderModal({ onClose }: Props) {
                     </div>
                   </div>
 
-                  {/* District */}
                   <div>
-                    <label className="label-text" htmlFor="district">المنطقة / الحي *</label>
+                    <label className="label-text">المنطقة / الحي *</label>
                     <div className="relative">
                       <select
-                        id="district"
                         className={`input-field appearance-none pl-8 ${errors.district ? 'border-red-400' : ''}`}
-                        {...register('district', { required: 'المنطقة مطلوبة' })}
+                        value={district}
+                        onChange={e => setDistrict(e.target.value)}
                       >
                         <option value="">-- اختر المنطقة --</option>
                         {availableDistricts.map((d) => (
@@ -371,71 +399,75 @@ export default function AddOrderModal({ onClose }: Props) {
                       </select>
                       <ChevronDown size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]" />
                     </div>
-                    {errors.district && <p className="text-red-500 text-xs mt-1">{errors.district.message}</p>}
+                    {errors.district && <p className="text-red-500 text-xs mt-1">{errors.district}</p>}
                   </div>
 
                   <div className="sm:col-span-2">
-                    <label className="label-text" htmlFor="address">
+                    <label className="label-text">
                       <MapPin size={13} className="inline ml-1" />
                       العنوان بالتفصيل *
                     </label>
                     <textarea
-                      id="address"
                       rows={3}
                       className={`input-field resize-none ${errors.address ? 'border-red-400' : ''}`}
                       placeholder="الشارع، رقم المبنى، رقم الشقة، علامة مميزة..."
-                      {...register('address', { required: 'العنوان مطلوب', minLength: { value: 10, message: 'العنوان قصير جداً' } })}
+                      value={address}
+                      onChange={e => setAddress(e.target.value)}
                     />
-                    {errors.address && <p className="text-red-500 text-xs mt-1">{errors.address.message}</p>}
+                    {errors.address && <p className="text-red-500 text-xs mt-1">{errors.address}</p>}
                   </div>
                 </div>
 
                 <div className="flex justify-end pt-2">
-                  <button type="button" className="btn-primary" onClick={() => setStep(2)}>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={() => { if (validateStep1()) setStep(2); }}
+                  >
                     التالي: المنتجات
                   </button>
                 </div>
               </div>
             )}
 
-            {/* Step 2: Products */}
+            {/* ── Step 2: Products ── */}
             {step === 2 && (
-              <div className="space-y-4 fade-in">
-                <div className="flex items-center gap-2 mb-4">
+              <div className="space-y-5 fade-in">
+                <div className="flex items-center gap-2 mb-2">
                   <Package size={16} className="text-[hsl(var(--primary))]" />
                   <h3 className="text-sm font-bold text-[hsl(var(--foreground))]">اختر المنتجات</h3>
+                  <span className="text-xs text-[hsl(var(--muted-foreground))]">— يمكنك إضافة نفس المنتج أكثر من مرة بلون مختلف</span>
                 </div>
 
-                {/* Product image cards grid — customer service selects from here */}
-                <div className="grid grid-cols-3 sm:grid-cols-5 gap-3 mb-4">
+                {/* Product image cards — click to add a new line */}
+                <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
                   {PRODUCT_TYPES.map((product) => {
-                    const isSelected = watchProducts?.some(p => p.productType === product.value);
                     const imgSrc = productImages[product.value];
-                    const isEmoji = !imgSrc?.startsWith('data:') && !imgSrc?.startsWith('/assets/images/no_image');
+                    const isEmoji = !imgSrc?.startsWith('data:');
+                    const count = lines.filter(l => l.productType === product.value).length;
                     return (
                       <div key={`product-card-${product.value}`} className="relative group">
                         <button
                           type="button"
-                          onClick={() => {
-                            if (!isSelected) {
-                              append({ productType: product.value, color: product.hasColor ? 'brown' : undefined, withFlashlight: false, quantity: 1, unitPrice: product.basePrice, note: '' });
-                            }
-                          }}
-                          className={`w-full aspect-square rounded-2xl border-2 flex flex-col items-center justify-center gap-1 transition-all relative overflow-hidden ${isSelected ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/5 shadow-md' : 'border-[hsl(var(--border))] hover:border-[hsl(var(--primary))]/50 hover:shadow-sm bg-white'}`}
+                          onClick={() => addLine(product.value)}
+                          className={`w-full aspect-square rounded-2xl border-2 flex flex-col items-center justify-center gap-1 transition-all relative overflow-hidden ${count > 0 ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/5 shadow-md' : 'border-[hsl(var(--border))] hover:border-[hsl(var(--primary))]/50 hover:shadow-sm bg-white'}`}
                         >
                           {isEmoji ? (
                             <span className="text-3xl">{imgSrc}</span>
                           ) : (
                             <img src={imgSrc} alt={product.label} className="w-full h-full object-cover absolute inset-0" />
                           )}
-                          {isSelected && (
+                          {count > 0 && (
                             <div className="absolute top-1 left-1 w-5 h-5 bg-[hsl(var(--primary))] rounded-full flex items-center justify-center">
-                              <Check size={11} className="text-white" />
+                              <span className="text-white text-[10px] font-bold">{count}</span>
                             </div>
                           )}
-                          <span className={`text-[10px] font-bold mt-1 relative z-10 ${isEmoji ? 'text-[hsl(var(--foreground))]' : 'text-white bg-black/50 px-1 rounded absolute bottom-1'}`}>{product.label}</span>
+                          <span className={`text-[10px] font-bold mt-1 relative z-10 ${isEmoji ? 'text-[hsl(var(--foreground))]' : 'text-white bg-black/50 px-1 rounded absolute bottom-1'}`}>
+                            {product.label}
+                          </span>
+                          <span className="text-[9px] text-[hsl(var(--muted-foreground))] relative z-10">+ إضافة</span>
                         </button>
-                        {/* Admin image upload button */}
+                        {/* Admin image upload */}
                         {IS_ADMIN && (
                           <button
                             type="button"
@@ -458,22 +490,24 @@ export default function AddOrderModal({ onClose }: Props) {
                   })}
                 </div>
 
-                {fields.length === 0 && (
+                {lines.length === 0 && (
                   <div className="text-center py-6 text-[hsl(var(--muted-foreground))] text-sm border-2 border-dashed border-[hsl(var(--border))] rounded-2xl">
-                    اضغط على صورة المنتج أعلاه لإضافته
+                    اضغط على صورة المنتج أعلاه لإضافته — يمكنك إضافة نفس المنتج مرات متعددة بألوان مختلفة
                   </div>
                 )}
 
-                {/* Selected products detail */}
-                <div className="space-y-4">
-                  {fields.map((field, index) => {
-                    const productType = watch(`products.${index}.productType`);
-                    const productDef = PRODUCT_TYPES.find(p => p.value === productType);
-                    const isHolder = productType === 'holder';
-                    const imgSrc = productImages[productType];
-                    const isEmoji = !imgSrc?.startsWith('data:') && !imgSrc?.startsWith('/assets/images/no_image');
+                {/* Lines detail */}
+                <div className="space-y-3">
+                  {lines.map((line, index) => {
+                    const productDef = PRODUCT_TYPES.find(p => p.value === line.productType);
+                    const imgSrc = productImages[line.productType];
+                    const isEmoji = !imgSrc?.startsWith('data:');
+                    const isHolder = line.productType === 'holder';
+                    const isFlashlight = line.productType === 'flashlight';
+
                     return (
-                      <div key={field.id} className="border border-[hsl(var(--border))] rounded-2xl p-4 relative bg-[hsl(var(--muted))]/20">
+                      <div key={line.id} className="border border-[hsl(var(--border))] rounded-2xl p-4 relative bg-[hsl(var(--muted))]/20">
+                        {/* Line header */}
                         <div className="flex items-center justify-between mb-3">
                           <div className="flex items-center gap-2">
                             {isEmoji ? (
@@ -484,10 +518,19 @@ export default function AddOrderModal({ onClose }: Props) {
                             <span className="text-xs font-bold text-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10 px-2 py-1 rounded-lg">
                               {productDef?.label} #{index + 1}
                             </span>
+                            {/* Duplicate same product with same color hint */}
+                            <button
+                              type="button"
+                              onClick={() => addLine(line.productType)}
+                              className="text-[10px] text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--primary))] flex items-center gap-0.5 transition-colors"
+                              title="إضافة نفس المنتج مرة أخرى"
+                            >
+                              <Plus size={11} /> تكرار
+                            </button>
                           </div>
                           <button
                             type="button"
-                            onClick={() => remove(index)}
+                            onClick={() => removeLine(line.id)}
                             className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
                             title="حذف هذا المنتج"
                           >
@@ -496,97 +539,123 @@ export default function AddOrderModal({ onClose }: Props) {
                         </div>
 
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                          {/* Product type selector (hidden, managed by cards above) */}
-                          <input type="hidden" {...register(`products.${index}.productType`)} />
-
+                          {/* Color picker for holder */}
                           {isHolder && (
-                            <div>
+                            <div className="sm:col-span-2">
                               <label className="label-text">اللون *</label>
                               <div className="flex gap-2 flex-wrap">
-                                {HOLDER_COLORS.map((color) => {
-                                  const currentColor = watch(`products.${index}.color`);
-                                  return (
-                                    <button
-                                      key={`color-${index}-${color.value}`}
-                                      type="button"
-                                      onClick={() => setValue(`products.${index}.color`, color.value)}
-                                      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-semibold transition-all ${currentColor === color.value ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))]' : 'border-[hsl(var(--border))] hover:border-gray-400'}`}
-                                    >
-                                      <span className="w-3 h-3 rounded-full border border-gray-300 flex-shrink-0" style={{ backgroundColor: color.hex }} />
-                                      {color.label}
-                                    </button>
-                                  );
-                                })}
+                                {HOLDER_COLORS.map((color) => (
+                                  <button
+                                    key={`color-${line.id}-${color.value}`}
+                                    type="button"
+                                    onClick={() => updateLine(line.id, { color: color.value })}
+                                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-semibold transition-all ${line.color === color.value ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))]' : 'border-[hsl(var(--border))] hover:border-gray-400'}`}
+                                  >
+                                    <span className="w-3 h-3 rounded-full border border-gray-300 flex-shrink-0" style={{ backgroundColor: color.hex }} />
+                                    {color.label}
+                                  </button>
+                                ))}
                               </div>
                             </div>
                           )}
 
-                          {isHolder && (
-                            <div className="sm:col-span-2">
-                              <label className="flex items-center gap-2 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  className="w-4 h-4 rounded"
-                                  {...register(`products.${index}.withFlashlight`)}
-                                />
-                                <span className="text-sm font-semibold text-[hsl(var(--foreground))]">
-                                  إضافة كشاف مع الحامل
-                                </span>
-                                <span className="text-xs text-[hsl(var(--muted-foreground))]">(+ 150 ج.م)</span>
-                              </label>
-                            </div>
-                          )}
-
+                          {/* Quantity */}
                           <div>
                             <label className="label-text">الكمية *</label>
-                            <input
-                              type="number"
-                              min={1}
-                              className={`input-field ${errors.products?.[index]?.quantity ? 'border-red-400' : ''}`}
-                              {...register(`products.${index}.quantity`, {
-                                required: 'الكمية مطلوبة',
-                                min: { value: 1, message: 'الحد الأدنى قطعة واحدة' },
-                                valueAsNumber: true,
-                              })}
-                            />
-                            {errors.products?.[index]?.quantity && (
-                              <p className="text-red-500 text-xs mt-1">{errors.products[index]?.quantity?.message}</p>
-                            )}
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => updateLine(line.id, { quantity: Math.max(1, line.quantity - 1) })}
+                                className="w-8 h-8 flex items-center justify-center rounded-lg border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] transition-colors"
+                              >
+                                <Minus size={13} />
+                              </button>
+                              <input
+                                type="number"
+                                min={1}
+                                className="input-field w-16 text-center font-mono"
+                                value={line.quantity}
+                                onChange={e => updateLine(line.id, { quantity: Math.max(1, Number(e.target.value)) })}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => updateLine(line.id, { quantity: line.quantity + 1 })}
+                                className="w-8 h-8 flex items-center justify-center rounded-lg border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] transition-colors"
+                              >
+                                <Plus size={13} />
+                              </button>
+                            </div>
                           </div>
 
+                          {/* Unit price — always editable */}
                           <div>
                             <label className="label-text">سعر الوحدة (ج.م) *</label>
                             <input
                               type="number"
                               min={0}
-                              className={`input-field ${errors.products?.[index]?.unitPrice ? 'border-red-400' : ''}`}
-                              {...register(`products.${index}.unitPrice`, {
-                                required: 'السعر مطلوب',
-                                min: { value: 1, message: 'السعر يجب أن يكون أكبر من صفر' },
-                                valueAsNumber: true,
-                              })}
+                              className="input-field font-mono"
+                              value={line.unitPrice}
+                              onChange={e => updateLine(line.id, { unitPrice: Number(e.target.value) })}
                             />
-                            {errors.products?.[index]?.unitPrice && (
-                              <p className="text-red-500 text-xs mt-1">{errors.products[index]?.unitPrice?.message}</p>
-                            )}
                           </div>
 
+                          {/* Flashlight option for holder */}
+                          {isHolder && (
+                            <div className="sm:col-span-2 border border-amber-200 bg-amber-50 rounded-xl p-3">
+                              <div className="flex items-center justify-between">
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    className="w-4 h-4 rounded"
+                                    checked={line.includeFlashlight}
+                                    onChange={e => updateLine(line.id, { includeFlashlight: e.target.checked })}
+                                  />
+                                  <span className="text-sm font-semibold">🔦 إضافة كشاف مع الحامل</span>
+                                </label>
+                                {line.includeFlashlight && (
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xs text-[hsl(var(--muted-foreground))]">سعر الكشاف:</span>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      className="input-field w-20 text-center font-mono py-1 text-xs"
+                                      value={line.flashlightPrice}
+                                      onChange={e => updateLine(line.id, { flashlightPrice: Number(e.target.value) })}
+                                    />
+                                    <span className="text-xs text-[hsl(var(--muted-foreground))]">ج.م</span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Standalone flashlight — price editable */}
+                          {isFlashlight && (
+                            <div className="sm:col-span-2 bg-amber-50 border border-amber-200 rounded-xl p-3">
+                              <p className="text-xs text-amber-700 font-semibold">💡 سعر الكشاف قابل للتعديل أعلاه</p>
+                            </div>
+                          )}
+
+                          {/* Note per product */}
                           <div className="sm:col-span-2">
                             <label className="label-text">ملاحظة على هذا المنتج</label>
                             <input
                               type="text"
                               className="input-field"
                               placeholder="ملاحظة خاصة بهذا المنتج (اختياري)"
-                              {...register(`products.${index}.note`)}
+                              value={line.note}
+                              onChange={e => updateLine(line.id, { note: e.target.value })}
                             />
                           </div>
                         </div>
 
-                        {/* Item subtotal */}
+                        {/* Line subtotal */}
                         <div className="mt-3 pt-3 border-t border-[hsl(var(--border))] flex items-center justify-between">
-                          <span className="text-xs text-[hsl(var(--muted-foreground))]">إجمالي هذا المنتج:</span>
+                          <span className="text-xs text-[hsl(var(--muted-foreground))]">
+                            إجمالي هذا المنتج ({line.quantity} × {line.unitPrice} ج.م{line.includeFlashlight ? ` + ${line.flashlightPrice} ج.م كشاف` : ''}):
+                          </span>
                           <span className="text-sm font-bold font-mono text-[hsl(var(--primary))]">
-                            {((watch(`products.${index}.unitPrice`) || 0) * (watch(`products.${index}.quantity`) || 0) + (watch(`products.${index}.withFlashlight`) ? 150 * (watch(`products.${index}.quantity`) || 0) : 0)).toLocaleString('en-US')} ج.م
+                            {lineTotal(line).toLocaleString('en-US')} ج.م
                           </span>
                         </div>
                       </div>
@@ -594,13 +663,14 @@ export default function AddOrderModal({ onClose }: Props) {
                   })}
                 </div>
 
-                {/* Express shipping — REPLACES default shipping */}
+                {/* Express shipping */}
                 <div className="border border-amber-200 bg-amber-50 rounded-2xl p-4">
                   <label className="flex items-start gap-3 cursor-pointer">
                     <input
                       type="checkbox"
                       className="w-4 h-4 rounded mt-0.5"
-                      {...register('expressShipping')}
+                      checked={expressShipping}
+                      onChange={e => setExpressShipping(e.target.checked)}
                     />
                     <div>
                       <div className="flex items-center gap-2">
@@ -615,12 +685,12 @@ export default function AddOrderModal({ onClose }: Props) {
                   </label>
                 </div>
 
-                {/* Extra shipping fee — ADMIN ONLY, hidden from customer service */}
+                {/* Extra shipping fee — ADMIN ONLY */}
                 {IS_ADMIN && (
                   <div className="border border-orange-200 bg-orange-50 rounded-2xl p-4">
                     <div className="flex items-center gap-2 mb-2">
                       <DollarSign size={16} className="text-orange-600" />
-                      <span className="text-sm font-bold text-[hsl(var(--foreground))]">مصاريف شحن إضافية</span>
+                      <span className="text-sm font-bold">مصاريف شحن إضافية</span>
                       <span className="text-[10px] bg-orange-100 text-orange-700 border border-orange-200 px-2 py-0.5 rounded-full font-semibold">للأدمن فقط</span>
                     </div>
                     <p className="text-xs text-[hsl(var(--muted-foreground))] mb-3">تُضاف على الفاتورة وتُخصم من عهدة المندوب</p>
@@ -631,47 +701,38 @@ export default function AddOrderModal({ onClose }: Props) {
                         dir="ltr"
                         className="input-field w-32 text-center font-mono"
                         placeholder="0"
-                        {...register('extraShippingFee', { min: 0, valueAsNumber: true })}
+                        value={extraShippingFee}
+                        onChange={e => setExtraShippingFee(Number(e.target.value))}
                       />
                       <span className="text-sm text-[hsl(var(--muted-foreground))]">ج.م</span>
                     </div>
                   </div>
                 )}
 
-                {/* Warranty selection */}
+                {/* Warranty */}
                 <div>
-                  <label className="label-text" htmlFor="warranty">
-                    فترة الضمان
-                  </label>
+                  <label className="label-text">فترة الضمان</label>
                   <select
-                    id="warranty"
                     className="input-field"
-                    {...register('warranty')}
+                    value={warranty}
+                    onChange={e => setWarranty(e.target.value)}
                   >
-                    {(() => {
-                      try {
-                        const saved = typeof window !== 'undefined' ? localStorage.getItem('settings_warranty') : null;
-                        const opts: string[] = saved ? JSON.parse(saved) : ['بدون ضمان', '3 أشهر', '6 أشهر', 'سنة', 'سنتان'];
-                        return opts.map((opt: string) => <option key={opt} value={opt}>{opt}</option>);
-                      } catch {
-                        return ['بدون ضمان', '3 أشهر', '6 أشهر', 'سنة', 'سنتان'].map(opt => <option key={opt} value={opt}>{opt}</option>);
-                      }
-                    })()}
+                    {warrantyOptions.map((opt: string) => <option key={opt} value={opt}>{opt}</option>)}
                   </select>
                 </div>
 
                 {/* General notes */}
                 <div>
-                  <label className="label-text" htmlFor="notes">
+                  <label className="label-text">
                     <FileText size={13} className="inline ml-1" />
                     ملاحظات عامة على الأوردر
                   </label>
                   <textarea
-                    id="notes"
                     rows={2}
                     className="input-field resize-none"
                     placeholder="أي ملاحظات إضافية للمندوب أو المستودع..."
-                    {...register('notes')}
+                    value={notes}
+                    onChange={e => setNotes(e.target.value)}
                   />
                 </div>
 
@@ -679,30 +740,22 @@ export default function AddOrderModal({ onClose }: Props) {
                 <div className="bg-[hsl(var(--primary))]/5 border border-[hsl(var(--primary))]/20 rounded-2xl p-4">
                   <div className="flex items-center gap-2 mb-3">
                     <Calculator size={16} className="text-[hsl(var(--primary))]" />
-                    <span className="text-sm font-bold text-[hsl(var(--foreground))]">ملخص الأسعار</span>
+                    <span className="text-sm font-bold">ملخص الأسعار</span>
                   </div>
                   <div className="space-y-2 text-sm">
                     <div className="flex justify-between">
-                      <span className="text-[hsl(var(--muted-foreground))]">إجمالي المنتجات:</span>
+                      <span className="text-[hsl(var(--muted-foreground))]">إجمالي المنتجات ({lines.length} صنف):</span>
                       <span className="font-mono font-semibold">{subtotal.toLocaleString('en-US')} ج.م</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-[hsl(var(--muted-foreground))]">
-                        {watchExpress ? 'شحن سريع:' : 'تكلفة الشحن:'}
-                      </span>
-                      <span className={`font-mono font-semibold ${watchExpress ? 'text-amber-700' : ''}`}>
-                        {shippingCost} ج.م
-                        {watchExpress && <span className="text-[10px] mr-1 text-amber-600">(بدلاً من {ADMIN_SETTINGS.SHIPPING_FEE} ج.م)</span>}
-                      </span>
+                      <span className="text-[hsl(var(--muted-foreground))]">{expressShipping ? 'شحن سريع:' : 'الشحن:'}</span>
+                      <span className={`font-mono ${expressShipping ? 'text-amber-700' : ''}`}>{shippingCost} ج.م</span>
                     </div>
-                    {IS_ADMIN && Number(watchExtraFee) > 0 && (
-                      <div className="flex justify-between text-orange-700">
-                        <span>مصاريف شحن إضافية (أدمن):</span>
-                        <span className="font-mono font-semibold">+ {Number(watchExtraFee).toLocaleString('en-US')} ج.م</span>
-                      </div>
+                    {IS_ADMIN && extraShippingFee > 0 && (
+                      <div className="flex justify-between text-orange-700"><span>مصاريف إضافية:</span><span className="font-mono">+ {extraShippingFee.toLocaleString('en-US')} ج.م</span></div>
                     )}
                     <div className="border-t border-[hsl(var(--primary))]/20 pt-2 flex justify-between">
-                      <span className="font-bold text-[hsl(var(--foreground))]">الإجمالي الكلي:</span>
+                      <span className="font-bold">الإجمالي الكلي:</span>
                       <span className="font-mono font-bold text-lg text-[hsl(var(--primary))]">
                         {grandTotal.toLocaleString('en-US')} ج.م
                       </span>
@@ -712,29 +765,35 @@ export default function AddOrderModal({ onClose }: Props) {
 
                 <div className="flex justify-between pt-2">
                   <button type="button" className="btn-secondary" onClick={() => setStep(1)}>السابق</button>
-                  <button type="button" className="btn-primary" onClick={() => setStep(3)}>التالي: المراجعة</button>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={() => { if (validateStep2()) setStep(3); }}
+                  >
+                    التالي: المراجعة
+                  </button>
                 </div>
               </div>
             )}
 
-            {/* Step 3: Review */}
+            {/* ── Step 3: Review ── */}
             {step === 3 && (
               <div className="space-y-4 fade-in">
                 <div className="flex items-center gap-2 mb-4">
                   <FileText size={16} className="text-[hsl(var(--primary))]" />
-                  <h3 className="text-sm font-bold text-[hsl(var(--foreground))]">مراجعة الأوردر قبل الحفظ</h3>
+                  <h3 className="text-sm font-bold">مراجعة الأوردر قبل الحفظ</h3>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="bg-[hsl(var(--muted))]/40 rounded-xl p-4">
                     <p className="text-xs font-bold text-[hsl(var(--muted-foreground))] uppercase tracking-wide mb-2">بيانات العميل</p>
                     <div className="space-y-1.5 text-sm">
-                      <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">الاسم:</span><span className="font-semibold">{watch('customerName') || '—'}</span></div>
-                      <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">الموبايل:</span><span className="font-mono">{watch('phone') || '—'}</span></div>
-                      {watch('phone2') && <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">موبايل 2:</span><span className="font-mono">{watch('phone2')}</span></div>}
-                      <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">المحافظة:</span><span className="font-semibold">{watch('governorate')}</span></div>
-                      <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">المنطقة:</span><span className="font-semibold">{watch('district') || '—'}</span></div>
-                      <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">العنوان:</span><span className="text-xs leading-relaxed">{watch('address') || '—'}</span></div>
+                      <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">الاسم:</span><span className="font-semibold">{customerName || '—'}</span></div>
+                      <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">الموبايل:</span><span className="font-mono">{phone || '—'}</span></div>
+                      {phone2 && <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">موبايل 2:</span><span className="font-mono">{phone2}</span></div>}
+                      <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">المحافظة:</span><span className="font-semibold">{governorate}</span></div>
+                      <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">المنطقة:</span><span className="font-semibold">{district || '—'}</span></div>
+                      <div className="flex gap-2"><span className="text-[hsl(var(--muted-foreground))]">العنوان:</span><span className="text-xs leading-relaxed">{address || '—'}</span></div>
                     </div>
                   </div>
 
@@ -743,10 +802,12 @@ export default function AddOrderModal({ onClose }: Props) {
                     <div className="space-y-1.5 text-sm">
                       <div className="flex justify-between"><span className="text-[hsl(var(--muted-foreground))]">المنتجات:</span><span className="font-mono">{subtotal.toLocaleString('en-US')} ج.م</span></div>
                       <div className="flex justify-between">
-                        <span className="text-[hsl(var(--muted-foreground))]">{watchExpress ? 'شحن سريع:' : 'الشحن:'}</span>
-                        <span className={`font-mono ${watchExpress ? 'text-amber-700' : ''}`}>{shippingCost} ج.م</span>
+                        <span className="text-[hsl(var(--muted-foreground))]">{expressShipping ? 'شحن سريع:' : 'الشحن:'}</span>
+                        <span className={`font-mono ${expressShipping ? 'text-amber-700' : ''}`}>{shippingCost} ج.م</span>
                       </div>
-                      {IS_ADMIN && Number(watchExtraFee) > 0 && <div className="flex justify-between text-orange-700"><span>مصاريف إضافية:</span><span className="font-mono">+ {Number(watchExtraFee).toLocaleString('en-US')} ج.م</span></div>}
+                      {IS_ADMIN && extraShippingFee > 0 && (
+                        <div className="flex justify-between text-orange-700"><span>مصاريف إضافية:</span><span className="font-mono">+ {extraShippingFee.toLocaleString('en-US')} ج.م</span></div>
+                      )}
                       <div className="border-t border-[hsl(var(--border))] pt-1.5 flex justify-between font-bold">
                         <span>الإجمالي:</span>
                         <span className="font-mono text-[hsl(var(--primary))] text-base">{grandTotal.toLocaleString('en-US')} ج.م</span>
@@ -756,27 +817,27 @@ export default function AddOrderModal({ onClose }: Props) {
                 </div>
 
                 <div className="bg-[hsl(var(--muted))]/40 rounded-xl p-4">
-                  <p className="text-xs font-bold text-[hsl(var(--muted-foreground))] uppercase tracking-wide mb-3">المنتجات ({fields.length})</p>
+                  <p className="text-xs font-bold text-[hsl(var(--muted-foreground))] uppercase tracking-wide mb-3">المنتجات ({lines.length})</p>
                   <div className="space-y-2">
-                    {watchProducts?.map((p, i) => {
-                      const productDef = PRODUCT_TYPES.find((pt) => pt.value === p.productType);
-                      const colorDef = HOLDER_COLORS.find((c) => c.value === p.color);
-                      const imgSrc = productImages[p.productType];
-                      const isEmoji = !imgSrc?.startsWith('data:') && !imgSrc?.startsWith('/assets/images/no_image');
+                    {lines.map((line, i) => {
+                      const productDef = PRODUCT_TYPES.find(p => p.value === line.productType);
+                      const colorDef = HOLDER_COLORS.find(c => c.value === line.color);
+                      const imgSrc = productImages[line.productType];
+                      const isEmoji = !imgSrc?.startsWith('data:');
                       return (
-                        <div key={`review-product-${i + 1}`} className="flex items-center justify-between text-sm bg-white rounded-xl px-3 py-2 border border-[hsl(var(--border))]">
+                        <div key={`review-${line.id}`} className="flex items-center justify-between text-sm bg-white rounded-xl px-3 py-2 border border-[hsl(var(--border))]">
                           <div className="flex items-center gap-2">
                             {isEmoji ? <span>{imgSrc}</span> : <img src={imgSrc} alt={productDef?.label || ''} className="w-6 h-6 rounded object-cover" />}
                             {colorDef && <span className="w-3 h-3 rounded-full border border-gray-300 flex-shrink-0" style={{ backgroundColor: colorDef.hex }} />}
                             <span className="font-medium">
-                              {productDef?.label} {colorDef ? `(${colorDef.label})` : ''} {p.withFlashlight ? '+ كشاف' : ''}
+                              {productDef?.label}{colorDef ? ` (${colorDef.label})` : ''}{line.includeFlashlight ? ' + كشاف' : ''}
                             </span>
-                            {p.note && <span className="text-[10px] text-amber-600 italic">— {p.note}</span>}
+                            {line.note && <span className="text-[10px] text-amber-600 italic">— {line.note}</span>}
                           </div>
                           <div className="flex items-center gap-3 text-[hsl(var(--muted-foreground))]">
-                            <span>x {p.quantity}</span>
+                            <span>x {line.quantity}</span>
                             <span className="font-mono font-semibold text-[hsl(var(--foreground))]">
-                              {((p.unitPrice * p.quantity) + (p.withFlashlight ? 150 * p.quantity : 0)).toLocaleString('en-US')} ج.م
+                              {lineTotal(line).toLocaleString('en-US')} ج.م
                             </span>
                           </div>
                         </div>
@@ -785,19 +846,20 @@ export default function AddOrderModal({ onClose }: Props) {
                   </div>
                 </div>
 
-                {watch('notes') && (
+                {notes && (
                   <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm">
                     <span className="font-semibold text-amber-700">ملاحظات: </span>
-                    <span className="text-[hsl(var(--foreground))]">{watch('notes')}</span>
+                    <span>{notes}</span>
                   </div>
                 )}
 
                 <div className="flex justify-between pt-2">
                   <button type="button" className="btn-secondary" onClick={() => setStep(2)}>السابق</button>
                   <button
-                    type="submit"
+                    type="button"
                     disabled={isSubmitting}
                     className="btn-primary min-w-[160px] justify-center"
+                    onClick={handleSubmit}
                   >
                     {isSubmitting ? (
                       <>
@@ -818,7 +880,7 @@ export default function AddOrderModal({ onClose }: Props) {
               </div>
             )}
           </div>
-        </form>
+        </div>
       </div>
     </div>
   );

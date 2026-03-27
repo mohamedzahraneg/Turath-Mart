@@ -45,6 +45,15 @@ const STATUS_MAP: Record<string, { label: string; cls: string }> = {
 
 const REGIONS = ['الكل', 'القاهرة', 'الجيزة', 'القليوبية'];
 
+const PRODUCT_FILTER_OPTIONS = [
+  { value: 'الكل', label: 'كل المنتجات' },
+  { value: 'حامل مصحف', label: '📿 حامل مصحف' },
+  { value: 'كشاف', label: '🔦 كشاف' },
+  { value: 'كرسي', label: '🪑 كرسي' },
+  { value: 'مصحف', label: '📖 مصحف' },
+  { value: 'كعبة', label: '🕋 كعبة' },
+];
+
 const MOCK_ORDERS: Order[] = [
   { id: 'order-001', orderNum: 'ZSH-2026-0047', createdBy: 'محمد حسن', ip: '197.32.45.112', createdByLocation: 'القاهرة، مصر', createdByDevice: 'كمبيوتر', customer: 'أحمد محمود السيد', phone: '01012345678', phone2: '01198765432', region: 'القاهرة', district: 'مدينة نصر', address: 'شارع عباس العقاد، عمارة 5 شقة 12', products: 'حامل مصحف بني x 2', quantity: 2, subtotal: 600, shippingFee: 50, total: 650, status: 'shipping', date: '27/03/2026', time: '09:32:14', day: 'الجمعة', notes: 'العميل يريد التسليم في الصباح', delegateName: 'علي محمود' },
   { id: 'order-002', orderNum: 'ZSH-2026-0046', createdBy: 'سارة أحمد', ip: '197.32.45.113', createdByLocation: 'الجيزة، مصر', createdByDevice: 'موبايل', customer: 'فاطمة علي حسن', phone: '01123456789', region: 'الجيزة', district: 'الدقي', address: 'شارع التحرير، برج المنار ط3', products: 'كعبة x 1 + مصحف x 2', quantity: 3, subtotal: 840, shippingFee: 50, total: 890, status: 'delivered', date: '27/03/2026', time: '09:15:33', day: 'الجمعة', delegateName: 'علي محمود' },
@@ -150,6 +159,7 @@ export default function OrdersTableSection() {
   const [search, setSearch] = useState('');
   const [regionFilter, setRegionFilter] = useState('الكل');
   const [statusFilter, setStatusFilter] = useState('الكل');
+  const [productFilter, setProductFilter] = useState('الكل');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [sortField, setSortField] = useState<SortField>('orderNum');
@@ -173,6 +183,7 @@ export default function OrdersTableSection() {
       const matchSearch = !search || o.customer.includes(search) || o.orderNum.includes(search) || o.phone.includes(search);
       const matchRegion = regionFilter === 'الكل' || o.region === regionFilter;
       const matchStatus = statusFilter === 'الكل' || o.status === statusFilter;
+      const matchProduct = productFilter === 'الكل' || o.products.includes(productFilter);
       // Date filter
       let matchDate = true;
       if (dateFrom || dateTo) {
@@ -187,7 +198,7 @@ export default function OrdersTableSection() {
           if (orderDate > to) matchDate = false;
         }
       }
-      return matchSearch && matchRegion && matchStatus && matchDate;
+      return matchSearch && matchRegion && matchStatus && matchProduct && matchDate;
     }).sort((a, b) => {
       let cmp = 0;
       if (sortField === 'orderNum') cmp = a.orderNum.localeCompare(b.orderNum);
@@ -349,6 +360,16 @@ export default function OrdersTableSection() {
               <select className="input-field w-auto text-sm" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}>
                 {statusOptions.map((s) => (
                   <option key={`status-filter-${s}`} value={s}>{s === 'الكل' ? 'كل الحالات' : STATUS_MAP[s]?.label || s}</option>
+                ))}
+              </select>
+              {/* Product filter */}
+              <select
+                className="input-field w-auto text-sm"
+                value={productFilter}
+                onChange={(e) => { setProductFilter(e.target.value); setPage(1); }}
+              >
+                {PRODUCT_FILTER_OPTIONS.map((p) => (
+                  <option key={`product-filter-${p.value}`} value={p.value}>{p.label}</option>
                 ))}
               </select>
               {/* Export */}
