@@ -1,5 +1,5 @@
 'use client';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend
@@ -54,85 +54,104 @@ export default function DashboardCharts() {
   const [weeklyData, setWeeklyData] = useState<WeekDay[]>([]);
   const [regionData, setRegionData] = useState<RegionData[]>([]);
 
-  useEffect(() => {
-    const fetchChartData = async () => {
-      try {
-        const supabase = createClient();
-        const now = new Date();
-        const pad = (n: number) => n.toString().padStart(2, '0');
-        const fmtDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const fetchChartData = useCallback(async () => {
+    try {
+      const supabase = createClient();
+      const now = new Date();
+      const pad = (n: number) => n.toString().padStart(2, '0');
+      const fmtDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
-        // Last 8 days
-        const start8 = new Date(now); start8.setDate(now.getDate() - 7);
-        const { data: orders } = await supabase
-          .from('zahranship_orders')
-          .select('date, status, total, region')
-          .gte('date', fmtDate(start8))
-          .lte('date', fmtDate(now));
+      // Last 8 days
+      const start8 = new Date(now); start8.setDate(now.getDate() - 7);
+      const { data: orders } = await supabase
+        .from('zahranship_orders')
+        .select('date, status, total, region')
+        .gte('date', fmtDate(start8))
+        .lte('date', fmtDate(now));
 
-        if (!orders) return;
+      if (!orders) return;
 
-        // Build area data (last 8 days)
-        const areaMap: Record<string, { total: number; shipping: number }> = {};
-        for (let i = 7; i >= 0; i--) {
-          const d = new Date(now); d.setDate(now.getDate() - i);
-          const key = fmtDate(d);
-          const label = `${pad(d.getDate())} ${['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر'][d.getMonth()]}`;
-          areaMap[key] = { total: 0, shipping: 0 };
-          (areaMap as Record<string, { total: number; shipping: number; label?: string }>)[key].label = label;
+      // Build area data (last 8 days)
+      const areaMap: Record<string, { total: number; shipping: number; label?: string }> = {};
+      for (let i = 7; i >= 0; i--) {
+        const d = new Date(now); d.setDate(now.getDate() - i);
+        const key = fmtDate(d);
+        const label = `${pad(d.getDate())} ${['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر'][d.getMonth()]}`;
+        areaMap[key] = { total: 0, shipping: 0, label };
+      }
+      orders.forEach(o => {
+        if (areaMap[o.date]) {
+          areaMap[o.date].total += 1;
+          areaMap[o.date].shipping += Number(o.total || 0);
         }
-        orders.forEach(o => {
-          if (areaMap[o.date]) {
-            areaMap[o.date].total += 1;
-            areaMap[o.date].shipping += Number(o.total || 0);
-          }
-        });
-        const areaArr = Object.entries(areaMap).map(([, v]) => ({
-          date: (v as { total: number; shipping: number; label?: string }).label || '',
-          total: v.total,
-          shipping: v.shipping,
-        }));
-        setAreaData(areaArr);
+      });
+      const areaArr = Object.entries(areaMap).map(([, v]) => ({
+        date: v.label || '',
+        total: v.total,
+        shipping: v.shipping,
+      }));
+      setAreaData(areaArr);
 
-        // Build weekly data (last 7 days by day name)
-        const weekMap: Record<string, { orders: number; delivered: number; returned: number }> = {};
-        for (let i = 6; i >= 0; i--) {
-          const d = new Date(now); d.setDate(now.getDate() - i);
-          const key = fmtDate(d);
-          weekMap[key] = { orders: 0, delivered: 0, returned: 0 };
+      // Build weekly data (last 7 days by day name)
+      const weekMap: Record<string, { orders: number; delivered: number; returned: number }> = {};
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(now); d.setDate(now.getDate() - i);
+        const key = fmtDate(d);
+        weekMap[key] = { orders: 0, delivered: 0, returned: 0 };
+      }
+      orders.forEach(o => {
+        if (weekMap[o.date]) {
+          weekMap[o.date].orders += 1;
+          if (o.status === 'delivered') weekMap[o.date].delivered += 1;
+          if (o.status === 'returned') weekMap[o.date].returned += 1;
         }
-        orders.forEach(o => {
-          if (weekMap[o.date]) {
-            weekMap[o.date].orders += 1;
-            if (o.status === 'delivered') weekMap[o.date].delivered += 1;
-            if (o.status === 'returned') weekMap[o.date].returned += 1;
-          }
-        });
-        const weekArr = Object.entries(weekMap).map(([dateStr, v]) => {
-          const d = new Date(dateStr);
-          return { day: DAY_NAMES[d.getDay()], ...v };
-        });
-        setWeeklyData(weekArr);
+      });
+      const weekArr = Object.entries(weekMap).map(([dateStr, v]) => {
+        const d = new Date(dateStr);
+        return { day: DAY_NAMES[d.getDay()], ...v };
+      });
+      setWeeklyData(weekArr);
 
-        // Build region data
-        const regionMap: Record<string, { orders: number; delivered: number; pending: number }> = {};
-        orders.forEach(o => {
-          const r = o.region || 'غير محدد';
-          if (!regionMap[r]) regionMap[r] = { orders: 0, delivered: 0, pending: 0 };
-          regionMap[r].orders += 1;
-          if (o.status === 'delivered') regionMap[r].delivered += 1;
-          if (['new', 'preparing', 'warehouse'].includes(o.status)) regionMap[r].pending += 1;
-        });
-        const regionArr = Object.entries(regionMap)
-          .map(([region, v]) => ({ region, ...v }))
-          .sort((a, b) => b.orders - a.orders)
-          .slice(0, 6);
-        setRegionData(regionArr);
-      } catch { /* silently fail */ }
-    };
-
-    fetchChartData();
+      // Build region data
+      const regionMap: Record<string, { orders: number; delivered: number; pending: number }> = {};
+      orders.forEach(o => {
+        const r = o.region || 'غير محدد';
+        if (!regionMap[r]) regionMap[r] = { orders: 0, delivered: 0, pending: 0 };
+        regionMap[r].orders += 1;
+        if (o.status === 'delivered') regionMap[r].delivered += 1;
+        if (['new', 'preparing', 'warehouse'].includes(o.status)) regionMap[r].pending += 1;
+      });
+      const regionArr = Object.entries(regionMap)
+        .map(([region, v]) => ({ region, ...v }))
+        .sort((a, b) => b.orders - a.orders)
+        .slice(0, 6);
+      setRegionData(regionArr);
+    } catch { /* silently fail */ }
   }, []);
+
+  useEffect(() => {
+    fetchChartData();
+
+    // Realtime subscription
+    const supabase = createClient();
+    const channel = supabase
+      .channel('dashboard-charts-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'zahranship_orders' }, () => {
+        fetchChartData();
+      })
+      .subscribe();
+
+    // Listen for manual events
+    const handler = () => fetchChartData();
+    window.addEventListener('zahranship_order_updated', handler);
+    window.addEventListener('zahranship_order_added', handler);
+
+    return () => {
+      supabase.removeChannel(channel);
+      window.removeEventListener('zahranship_order_updated', handler);
+      window.removeEventListener('zahranship_order_added', handler);
+    };
+  }, [fetchChartData]);
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">

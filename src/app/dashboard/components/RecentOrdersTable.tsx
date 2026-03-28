@@ -1,5 +1,5 @@
 'use client';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { Eye, MoreHorizontal, ChevronLeft } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
@@ -14,6 +14,7 @@ interface RecentOrder {
   total: number;
   status: string;
   time: string;
+  date?: string;
 }
 
 const STATUS_MAP: Record<string, { label: string; class: string }> = {
@@ -32,39 +33,65 @@ export default function RecentOrdersTable() {
   const [totalToday, setTotalToday] = useState(0);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const fetchOrders = async () => {
-      try {
-        const supabase = createClient();
-        const today = new Date().toISOString().slice(0, 10);
+  const fetchOrders = useCallback(async () => {
+    try {
+      const supabase = createClient();
+      const today = new Date().toISOString().slice(0, 10);
 
-        const { data, error } = await supabase
-          .from('zahranship_orders')
-          .select('id, order_num, customer, phone, region, products, total, status, time, date')
-          .order('created_at', { ascending: false })
-          .limit(10);
+      const { data, error } = await supabase
+        .from('zahranship_orders')
+        .select('id, order_num, customer, phone, region, products, total, status, time, date')
+        .order('created_at', { ascending: false })
+        .limit(10);
 
-        if (!error && data) {
-          setOrders(data as RecentOrder[]);
-          const todayCount = data.filter((o: RecentOrder & { date?: string }) => o.date === today).length;
-          setTotalToday(todayCount);
-        }
-      } catch {
-        // silently fail
-      } finally {
-        setLoading(false);
+      if (!error && data) {
+        setOrders(data as RecentOrder[]);
+        const todayCount = data.filter((o: RecentOrder) => o.date === today).length;
+        setTotalToday(todayCount);
       }
-    };
-
-    fetchOrders();
+    } catch {
+      // silently fail
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    fetchOrders();
+
+    // Realtime subscription
+    const supabase = createClient();
+    const channel = supabase
+      .channel('recent-orders-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'zahranship_orders' }, () => {
+        fetchOrders();
+      })
+      .subscribe();
+
+    // Listen for manual events from other components
+    const handler = () => fetchOrders();
+    window.addEventListener('zahranship_order_updated', handler);
+    window.addEventListener('zahranship_order_added', handler);
+
+    return () => {
+      supabase.removeChannel(channel);
+      window.removeEventListener('zahranship_order_updated', handler);
+      window.removeEventListener('zahranship_order_added', handler);
+    };
+  }, [fetchOrders]);
 
   return (
     <div className="card-section overflow-hidden">
       <div className="flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
         <div>
           <h3 className="text-base font-bold text-[hsl(var(--foreground))]">آخر الأوردرات</h3>
-          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">{totalToday} أوردر اليوم</p>
+          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
+            {totalToday} أوردر اليوم
+            <span className="mr-2 inline-flex items-center gap-1">
+              <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
+              <span className="text-[10px]">مباشر</span>
+            </span>
+          </p>
         </div>
         <Link href="/orders-management" className="btn-secondary text-xs">
           <span>عرض الكل</span>
