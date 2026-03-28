@@ -6,6 +6,16 @@ import { X, User, Phone, MapPin, Package, FileText, MessageCircle, Mail, Printer
 import AuditLogModal, { getAuditLogs, AuditEntry } from './AuditLogModal';
 import { useAuth } from '@/contexts/AuthContext';
 
+const STATUS_BADGE_MAP: Record<string, { cls: string; label: string }> = {
+  new:       { cls: 'status-new',       label: 'جديد' },
+  preparing: { cls: 'status-preparing', label: 'جاري التجهيز' },
+  warehouse: { cls: 'status-warehouse', label: 'في المستودع' },
+  shipping:  { cls: 'status-shipping',  label: 'جاري الشحن' },
+  delivered: { cls: 'status-delivered', label: 'تم التسليم' },
+  cancelled: { cls: 'status-cancelled', label: 'ملغي' },
+  returned:  { cls: 'status-returned',  label: 'مرتجع' },
+};
+
 interface OrderLine {
   productType: string;
   label: string;
