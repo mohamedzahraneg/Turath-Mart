@@ -36,11 +36,6 @@ export default function RecentOrdersTable() {
   const fetchOrders = useCallback(async () => {
     try {
       const supabase = createClient();
-      // Use created_at for today's count — date column stores DD/MM/YYYY which won't match ISO format
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
-      const todayEnd = new Date();
-      todayEnd.setHours(23, 59, 59, 999);
 
       const { data, error } = await supabase
         .from('zahranship_orders')
@@ -50,11 +45,23 @@ export default function RecentOrdersTable() {
 
       if (!error && data) {
         setOrders(data as RecentOrder[]);
-        // Count today's orders using created_at
+
+        // Count today's orders using date text field (DD/MM/YYYY) or created_at fallback
+        const now = new Date();
+        const todayD = now.getDate().toString().padStart(2, '0');
+        const todayM = (now.getMonth() + 1).toString().padStart(2, '0');
+        const todayY = now.getFullYear().toString();
+        const todayText = `${todayD}/${todayM}/${todayY}`;
+        const todayISO = `${todayY}-${todayM}-${todayD}`;
+
         const todayCount = data.filter((o: RecentOrder & { created_at?: string }) => {
-          if (!o.created_at) return false;
-          const d = new Date(o.created_at);
-          return d >= todayStart && d <= todayEnd;
+          // Try date text field first
+          if (o.date && o.date === todayText) return true;
+          // Fallback to created_at
+          if (o.created_at) {
+            return String(o.created_at).slice(0, 10) === todayISO;
+          }
+          return false;
         }).length;
         setTotalToday(todayCount);
       }

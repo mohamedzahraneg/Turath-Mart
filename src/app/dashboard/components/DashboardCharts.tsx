@@ -62,20 +62,38 @@ export default function DashboardCharts() {
       const pad = (n: number) => n.toString().padStart(2, '0');
       const fmtDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
-      // Last 8 days using created_at (TIMESTAMPTZ) — reliable date filtering
-      const start8 = new Date(now);
-      start8.setDate(now.getDate() - 7);
-      start8.setHours(0, 0, 0, 0);
-
-      const { data: orders } = await supabase
+      // Fetch ALL orders — filter client-side because created_at may be NULL
+      // date field is stored as DD/MM/YYYY text
+      const { data: allOrders } = await supabase
         .from('zahranship_orders')
-        .select('created_at, status, total, region')
-        .gte('created_at', start8.toISOString())
-        .lte('created_at', `${fmtDate(now)}T23:59:59`);
+        .select('date, created_at, status, total, region');
 
-      if (!orders) return;
+      if (!allOrders) return;
 
-      // Build area data (last 8 days) — key by YYYY-MM-DD from created_at
+      // Helper: get YYYY-MM-DD key from an order (prefer date text field, fallback to created_at)
+      const getOrderDateKey = (o: { date?: string; created_at?: string }): string => {
+        if (o.date) {
+          const parts = o.date.split('/');
+          if (parts.length === 3) {
+            const [d, m, y] = parts;
+            return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+          }
+        }
+        if (o.created_at) return String(o.created_at).slice(0, 10);
+        return '';
+      };
+
+      // Build last 8 days range
+      const last8Keys = new Set<string>();
+      for (let i = 7; i >= 0; i--) {
+        const d = new Date(now); d.setDate(now.getDate() - i);
+        last8Keys.add(fmtDate(d));
+      }
+
+      // Filter orders to last 8 days
+      const orders = allOrders.filter(o => last8Keys.has(getOrderDateKey(o)));
+
+      // Build area data (last 8 days)
       const areaMap: Record<string, { total: number; shipping: number; label: string }> = {};
       for (let i = 7; i >= 0; i--) {
         const d = new Date(now); d.setDate(now.getDate() - i);
@@ -85,8 +103,7 @@ export default function DashboardCharts() {
       }
 
       orders.forEach(o => {
-        // Extract YYYY-MM-DD from created_at ISO string
-        const dayKey = o.created_at ? String(o.created_at).slice(0, 10) : '';
+        const dayKey = getOrderDateKey(o);
         if (areaMap[dayKey]) {
           areaMap[dayKey].total += 1;
           areaMap[dayKey].shipping += Number(o.total || 0);
@@ -100,7 +117,7 @@ export default function DashboardCharts() {
       }));
       setAreaData(areaArr);
 
-      // Build weekly data (last 7 days by day name) — key by YYYY-MM-DD from created_at
+      // Build weekly data (last 7 days by day name)
       const weekMap: Record<string, { orders: number; delivered: number; returned: number }> = {};
       for (let i = 6; i >= 0; i--) {
         const d = new Date(now); d.setDate(now.getDate() - i);
@@ -108,7 +125,7 @@ export default function DashboardCharts() {
       }
 
       orders.forEach(o => {
-        const dayKey = o.created_at ? String(o.created_at).slice(0, 10) : '';
+        const dayKey = getOrderDateKey(o);
         if (weekMap[dayKey]) {
           weekMap[dayKey].orders += 1;
           if (o.status === 'delivered') weekMap[dayKey].delivered += 1;
@@ -125,7 +142,7 @@ export default function DashboardCharts() {
       // Build region data
       const regionMap: Record<string, { orders: number; delivered: number; pending: number }> = {};
       orders.forEach(o => {
-        const r = o.region || 'غير محدد';
+        const r = (o as { region?: string }).region || 'غير محدد';
         if (!regionMap[r]) regionMap[r] = { orders: 0, delivered: 0, pending: 0 };
         regionMap[r].orders += 1;
         if (o.status === 'delivered') regionMap[r].delivered += 1;

@@ -64,6 +64,37 @@ function getDateRange(period: string): { from: string; to: string } {
   return { from: `${fmtDate(start)}T00:00:00`, to: `${fmtDate(now)}T23:59:59` };
 }
 
+// Parse DD/MM/YYYY text date to a comparable Date object
+function parseDateField(dateStr: string): Date | null {
+  if (!dateStr) return null;
+  const parts = dateStr.split('/');
+  if (parts.length === 3) {
+    const [d, m, y] = parts;
+    return new Date(`${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}T12:00:00`);
+  }
+  return null;
+}
+
+// Check if an order falls within the period using date text field or created_at fallback
+function orderInPeriod(order: { date?: string; created_at?: string }, from: string, to: string): boolean {
+  const fromDate = new Date(from);
+  const toDate = new Date(to);
+
+  // Try text date field first (DD/MM/YYYY)
+  if (order.date) {
+    const parsed = parseDateField(order.date);
+    if (parsed) return parsed >= fromDate && parsed <= toDate;
+  }
+
+  // Fallback to created_at
+  if (order.created_at) {
+    const d = new Date(order.created_at);
+    return d >= fromDate && d <= toDate;
+  }
+
+  return false;
+}
+
 export default function DashboardKPIs() {
   const [period, setPeriod] = useState<'today' | 'yesterday' | 'week' | 'month'>('today');
   const [lastRefresh, setLastRefresh] = useState('');
@@ -77,13 +108,16 @@ export default function DashboardKPIs() {
       const supabase = createClient();
       const { from, to } = getDateRange(p);
 
-      const { data: orders, error } = await supabase
+      // Fetch ALL orders — filter client-side because created_at may be NULL
+      // and date field is stored as DD/MM/YYYY text
+      const { data: allOrders, error } = await supabase
         .from('zahranship_orders')
-        .select('id, status, total, subtotal, shipping_fee, created_at')
-        .gte('created_at', from)
-        .lte('created_at', to);
+        .select('id, status, total, subtotal, shipping_fee, date, created_at');
 
-      if (!error && orders) {
+      if (!error && allOrders) {
+        // Filter by period using date text field or created_at fallback
+        const orders = allOrders.filter(o => orderInPeriod(o, from, to));
+
         const totalOrders = orders.length;
         const shippingOrders = orders.filter(o => o.status === 'shipping').length;
         const pendingOrders = orders.filter(o => ['new', 'preparing', 'warehouse'].includes(o.status)).length;
