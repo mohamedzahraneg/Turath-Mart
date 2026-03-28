@@ -11,6 +11,7 @@ interface WeekDay { day: string; orders: number; delivered: number; returned: nu
 interface RegionData { region: string; orders: number; delivered: number; pending: number }
 
 const DAY_NAMES = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+const MONTH_NAMES = ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر'];
 
 const CustomTooltipArea = ({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number; name: string; color: string }>; label?: string }) => {
   if (active && payload && payload.length) {
@@ -61,53 +62,62 @@ export default function DashboardCharts() {
       const pad = (n: number) => n.toString().padStart(2, '0');
       const fmtDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
-      // Last 8 days
-      const start8 = new Date(now); start8.setDate(now.getDate() - 7);
+      // Last 8 days using created_at (TIMESTAMPTZ) — reliable date filtering
+      const start8 = new Date(now);
+      start8.setDate(now.getDate() - 7);
+      start8.setHours(0, 0, 0, 0);
+
       const { data: orders } = await supabase
         .from('zahranship_orders')
-        .select('date, status, total, region')
-        .gte('date', fmtDate(start8))
-        .lte('date', fmtDate(now));
+        .select('created_at, status, total, region')
+        .gte('created_at', start8.toISOString())
+        .lte('created_at', `${fmtDate(now)}T23:59:59`);
 
       if (!orders) return;
 
-      // Build area data (last 8 days)
-      const areaMap: Record<string, { total: number; shipping: number; label?: string }> = {};
+      // Build area data (last 8 days) — key by YYYY-MM-DD from created_at
+      const areaMap: Record<string, { total: number; shipping: number; label: string }> = {};
       for (let i = 7; i >= 0; i--) {
         const d = new Date(now); d.setDate(now.getDate() - i);
         const key = fmtDate(d);
-        const label = `${pad(d.getDate())} ${['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر'][d.getMonth()]}`;
+        const label = `${pad(d.getDate())} ${MONTH_NAMES[d.getMonth()]}`;
         areaMap[key] = { total: 0, shipping: 0, label };
       }
+
       orders.forEach(o => {
-        if (areaMap[o.date]) {
-          areaMap[o.date].total += 1;
-          areaMap[o.date].shipping += Number(o.total || 0);
+        // Extract YYYY-MM-DD from created_at ISO string
+        const dayKey = o.created_at ? String(o.created_at).slice(0, 10) : '';
+        if (areaMap[dayKey]) {
+          areaMap[dayKey].total += 1;
+          areaMap[dayKey].shipping += Number(o.total || 0);
         }
       });
+
       const areaArr = Object.entries(areaMap).map(([, v]) => ({
-        date: v.label || '',
+        date: v.label,
         total: v.total,
         shipping: v.shipping,
       }));
       setAreaData(areaArr);
 
-      // Build weekly data (last 7 days by day name)
+      // Build weekly data (last 7 days by day name) — key by YYYY-MM-DD from created_at
       const weekMap: Record<string, { orders: number; delivered: number; returned: number }> = {};
       for (let i = 6; i >= 0; i--) {
         const d = new Date(now); d.setDate(now.getDate() - i);
-        const key = fmtDate(d);
-        weekMap[key] = { orders: 0, delivered: 0, returned: 0 };
+        weekMap[fmtDate(d)] = { orders: 0, delivered: 0, returned: 0 };
       }
+
       orders.forEach(o => {
-        if (weekMap[o.date]) {
-          weekMap[o.date].orders += 1;
-          if (o.status === 'delivered') weekMap[o.date].delivered += 1;
-          if (o.status === 'returned') weekMap[o.date].returned += 1;
+        const dayKey = o.created_at ? String(o.created_at).slice(0, 10) : '';
+        if (weekMap[dayKey]) {
+          weekMap[dayKey].orders += 1;
+          if (o.status === 'delivered') weekMap[dayKey].delivered += 1;
+          if (o.status === 'returned') weekMap[dayKey].returned += 1;
         }
       });
+
       const weekArr = Object.entries(weekMap).map(([dateStr, v]) => {
-        const d = new Date(dateStr);
+        const d = new Date(dateStr + 'T12:00:00');
         return { day: DAY_NAMES[d.getDay()], ...v };
       });
       setWeeklyData(weekArr);

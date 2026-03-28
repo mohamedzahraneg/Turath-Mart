@@ -36,17 +36,26 @@ export default function RecentOrdersTable() {
   const fetchOrders = useCallback(async () => {
     try {
       const supabase = createClient();
-      const today = new Date().toISOString().slice(0, 10);
+      // Use created_at for today's count — date column stores DD/MM/YYYY which won't match ISO format
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const todayEnd = new Date();
+      todayEnd.setHours(23, 59, 59, 999);
 
       const { data, error } = await supabase
         .from('zahranship_orders')
-        .select('id, order_num, customer, phone, region, products, total, status, time, date')
+        .select('id, order_num, customer, phone, region, products, total, status, time, date, created_at')
         .order('created_at', { ascending: false })
         .limit(10);
 
       if (!error && data) {
         setOrders(data as RecentOrder[]);
-        const todayCount = data.filter((o: RecentOrder) => o.date === today).length;
+        // Count today's orders using created_at
+        const todayCount = data.filter((o: RecentOrder & { created_at?: string }) => {
+          if (!o.created_at) return false;
+          const d = new Date(o.created_at);
+          return d >= todayStart && d <= todayEnd;
+        }).length;
         setTotalToday(todayCount);
       }
     } catch {

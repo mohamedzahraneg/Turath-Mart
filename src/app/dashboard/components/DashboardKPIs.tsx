@@ -91,19 +91,25 @@ export default function DashboardKPIs() {
         const cancelledOrders = orders.filter(o => o.status === 'cancelled').length;
         const deliveredOrders = orders.filter(o => o.status === 'delivered').length;
 
-        // Total collection = sum of totals for delivered orders
+        // Delivered orders list
         const deliveredList = orders.filter(o => o.status === 'delivered');
+
+        // Total collection = sum of totals for delivered orders (actual collected money)
         const totalCollection = deliveredList.reduce((sum, o) => sum + Number(o.total || 0), 0);
 
-        // Cash = subtotal of delivered, Credit = shipping fees of delivered (approximation based on real fields)
-        // Better: total collection is the real number; split is subtotal vs shipping_fee
+        // Product value = subtotal of delivered orders
         const cashCollection = deliveredList.reduce((sum, o) => sum + Number(o.subtotal || 0), 0);
+
+        // Shipping fees = shipping_fee of delivered orders
         const creditCollection = deliveredList.reduce((sum, o) => sum + Number(o.shipping_fee || 0), 0);
 
-        // Deposited: sum of all delivered orders' totals (they are collected)
-        // Remaining: orders in shipping (not yet collected)
+        // Deposited = same as totalCollection (delivered = collected)
         const dailyDeposited = totalCollection;
-        const shippingTotal = orders.filter(o => o.status === 'shipping').reduce((sum, o) => sum + Number(o.total || 0), 0);
+
+        // Remaining = total value of orders still in shipping (not yet collected)
+        const shippingTotal = orders
+          .filter(o => o.status === 'shipping')
+          .reduce((sum, o) => sum + Number(o.total || 0), 0);
         const dailyRemaining = shippingTotal;
 
         setData({
