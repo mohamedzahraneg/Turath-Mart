@@ -377,7 +377,7 @@ export default function OrdersTableSection() {
             time: row.time,
             day: row.day || '',
             notes: row.notes || undefined,
-            ip: row.ip || '',
+            ip: row.created_by_ip || '',
             delegateName: row.delegate_name || undefined,
           }));
         }

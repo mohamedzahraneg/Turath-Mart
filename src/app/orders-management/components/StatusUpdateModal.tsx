@@ -58,9 +58,9 @@ interface Props {
 
 export default function StatusUpdateModal({ order, onClose }: Props) {
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const { currentRole } = useAuth();
+  const { currentRole, currentRoleId } = useAuth();
 
-  const canUpdate = ALLOWED_ROLES.includes(currentRole);
+  const canUpdate = ALLOWED_ROLES.includes(currentRole) || currentRoleId != null;
 
   // Get current user info from localStorage
   const getCurrentUser = () => {
@@ -126,7 +126,7 @@ export default function StatusUpdateModal({ order, onClose }: Props) {
       await supabase
         .from('zahranship_orders')
         .update({ status: data.newStatus })
-        .eq('order_num', order.orderNum);
+        .eq('id', order.id);
     } catch {
       // Supabase sync failed, status updated in localStorage only
     }

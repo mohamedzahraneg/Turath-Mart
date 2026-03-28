@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { Toaster } from 'sonner';
 import { X, Trash2, Package, User, MapPin, Phone, FileText, Zap, Calculator, ChevronDown, DollarSign, Plus, Minus, CheckCircle, Eye } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface ProductItem {
   productType: string;
@@ -79,9 +80,6 @@ export const ADMIN_SETTINGS = {
   EXPRESS_FEE: 100,
   DISABLED_DISTRICTS: [] as string[],
 };
-
-const CURRENT_USER_ROLE: 'admin' | 'supervisor' | 'customer_service' | 'delegate' = 'customer_service';
-const IS_ADMIN = CURRENT_USER_ROLE === 'admin';
 
 function getDeviceType(): string {
   const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
@@ -203,6 +201,21 @@ export default function AddOrderModal({ onClose }: Props) {
   const [step, setStep] = useState(1);
   const [orderSuccess, setOrderSuccess] = useState(false);
   const [successOrderNum, setSuccessOrderNum] = useState('');
+  const { currentRole, currentRoleId } = useAuth();
+  const isAdmin = currentRole === 'manager' || currentRoleId != null;
+
+  // Get current user name from localStorage
+  const getCurrentUserName = (): string => {
+    if (typeof window === 'undefined') return 'موظف';
+    try {
+      const stored = localStorage.getItem('current_user');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        return parsed?.name || parsed?.email || 'موظف';
+      }
+    } catch {}
+    return 'موظف';
+  };
 
   // Form fields
   const [customerName, setCustomerName] = useState('');
@@ -304,7 +317,7 @@ export default function AddOrderModal({ onClose }: Props) {
     .filter(d => !ADMIN_SETTINGS.DISABLED_DISTRICTS.includes(d));
 
   const shippingCost = expressShipping ? ADMIN_SETTINGS.EXPRESS_FEE : ADMIN_SETTINGS.SHIPPING_FEE;
-  const extraFeeAmount = IS_ADMIN ? extraShippingFee : 0;
+  const extraFeeAmount = isAdmin ? extraShippingFee : 0;
   const subtotal = lines.reduce((s, l) => s + lineTotal(l), 0);
   const grandTotal = subtotal + shippingCost + extraFeeAmount;
 
@@ -371,7 +384,7 @@ export default function AddOrderModal({ onClose }: Props) {
     const newOrder = {
       id: `order-${Date.now()}`,
       orderNum,
-      createdBy: 'موظف خدمة عملاء',
+      createdBy: getCurrentUserName(),
       createdByDevice: deviceType,
       customer: customerName,
       phone,
@@ -383,7 +396,7 @@ export default function AddOrderModal({ onClose }: Props) {
       quantity: lines.reduce((s, l) => s + l.quantity, 0),
       subtotal,
       shippingFee: shippingCost,
-      extraShippingFee: IS_ADMIN ? extraShippingFee : 0,
+      extraShippingFee: isAdmin ? extraShippingFee : 0,
       expressShipping,
       total: grandTotal,
       status: 'new',
@@ -440,7 +453,7 @@ export default function AddOrderModal({ onClose }: Props) {
         quantity: newOrder.quantity,
         subtotal: newOrder.subtotal,
         shipping_fee: newOrder.shippingFee,
-        extra_shipping_fee: newOrder.extraShippingFee || 0,
+        extra_shipping_fee: isAdmin ? extraShippingFee : 0,
         express_shipping: newOrder.expressShipping || false,
         total: newOrder.total,
         status: newOrder.status,
@@ -942,7 +955,7 @@ export default function AddOrderModal({ onClose }: Props) {
                 </div>
 
                 {/* Extra shipping fee — ADMIN ONLY */}
-                {IS_ADMIN && (
+                {isAdmin && (
                   <div className="border border-orange-200 bg-orange-50 rounded-2xl p-4">
                     <div className="flex items-center gap-2 mb-2">
                       <DollarSign size={16} className="text-orange-600" />
@@ -1007,7 +1020,7 @@ export default function AddOrderModal({ onClose }: Props) {
                       <span className="text-[hsl(var(--muted-foreground))]">{expressShipping ? '⚡ شحن سريع:' : 'الشحن:'}</span>
                       <span className={`font-mono ${expressShipping ? 'text-amber-700' : ''}`}>{shippingCost} ج.م</span>
                     </div>
-                    {IS_ADMIN && extraShippingFee > 0 && (
+                    {isAdmin && extraShippingFee > 0 && (
                       <div className="flex justify-between text-orange-700"><span>مصاريف إضافية:</span><span className="font-mono">+ {extraShippingFee.toLocaleString('en-US')} ج.م</span></div>
                     )}
                     <div className="border-t border-[hsl(var(--primary))]/20 pt-2 flex justify-between">
@@ -1148,7 +1161,7 @@ export default function AddOrderModal({ onClose }: Props) {
                       </span>
                       <span className={`font-mono ${expressShipping ? 'text-amber-700' : ''}`}>{shippingCost} ج.م</span>
                     </div>
-                    {IS_ADMIN && extraShippingFee > 0 && (
+                    {isAdmin && extraShippingFee > 0 && (
                       <div className="flex justify-between text-orange-700">
                         <span>مصاريف إضافية:</span>
                         <span className="font-mono">+ {extraShippingFee.toLocaleString('en-US')} ج.م</span>

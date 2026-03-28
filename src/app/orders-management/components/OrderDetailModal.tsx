@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { Toaster } from 'sonner';
 import { X, User, Phone, MapPin, Package, FileText, MessageCircle, Mail, Printer, CheckCircle, Shield, Monitor, Smartphone, Tablet, Link, Copy, Clock, History } from 'lucide-react';
 import AuditLogModal, { getAuditLogs, AuditEntry } from './AuditLogModal';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface OrderLine {
   productType: string;
@@ -49,35 +50,6 @@ interface Order {
   delegate?: string;
   lines?: OrderLine[];
 }
-
-// Simulated current user role — in real app comes from auth context
-const CURRENT_USER_ROLE: 'admin' | 'supervisor' | 'delegate' | 'customer_service' | 'manager' = 'admin';
-const CAN_SEE_SENSITIVE = ['admin', 'supervisor', 'delegate', 'manager'].includes(CURRENT_USER_ROLE);
-const IS_ADMIN = CURRENT_USER_ROLE === 'admin';
-
-const STATUS_BADGE_MAP: Record<string, { label: string; cls: string }> = {
-  new: { label: 'جديد', cls: 'status-new' },
-  preparing: { label: 'جاري التجهيز', cls: 'status-preparing' },
-  warehouse: { label: 'في المستودع', cls: 'status-warehouse' },
-  shipping: { label: 'جاري الشحن', cls: 'status-shipping' },
-  delivered: { label: 'تم التسليم', cls: 'status-delivered' },
-  cancelled: { label: 'ملغي', cls: 'status-cancelled' },
-  returned: { label: 'مرتجع', cls: 'status-returned' },
-};
-
-const MOCK_STATUS_HISTORY = [
-  { id: 'dh-001', status: 'new', label: 'جديد', date: '27/03/2026', time: '09:32:14', day: 'الجمعة', by: 'محمد حسن', note: 'تم تسجيل الأوردر', device: 'كمبيوتر' },
-  { id: 'dh-002', status: 'preparing', label: 'جاري التجهيز', date: '27/03/2026', time: '11:15:42', day: 'الجمعة', by: 'أحمد السيد (مدير)', note: 'تم تجهيز الطلب', device: 'موبايل' },
-  { id: 'dh-003', status: 'shipping', label: 'جاري الشحن', date: '27/03/2026', time: '13:40:07', day: 'الجمعة', by: 'علي محمود (مندوب)', note: 'الطلب في الطريق', device: 'موبايل' },
-];
-
-// Mock notifications log
-const MOCK_NOTIFICATIONS = [
-  { id: 'notif-001', type: 'status_change', message: 'تم تغيير حالة الأوردر إلى "جاري الشحن"', date: '27/03/2026', time: '13:40:07', by: 'علي محمود' },
-  { id: 'notif-002', type: 'whatsapp', message: 'تم إرسال رسالة واتساب للعميل مع رابط التتبع', date: '27/03/2026', time: '13:41:22', by: 'النظام' },
-  { id: 'notif-003', type: 'status_change', message: 'تم تغيير حالة الأوردر إلى "جاري التجهيز"', date: '27/03/2026', time: '11:15:42', by: 'أحمد السيد' },
-  { id: 'notif-004', type: 'order_created', message: 'تم إنشاء الأوردر بنجاح', date: '27/03/2026', time: '09:32:14', by: 'محمد حسن' },
-];
 
 const TABS = [
   { id: 'tab-details', label: 'تفاصيل الأوردر' },
@@ -126,6 +98,9 @@ export default function OrderDetailModal({ order, onClose }: Props) {
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [auditLogs, setAuditLogs] = useState<AuditEntry[]>([]);
   const [liveOrder, setLiveOrder] = useState(order);
+  const { currentRole, currentRoleId } = useAuth();
+  const isAdmin = currentRole === 'manager' || currentRoleId != null;
+  const canSeeSensitive = isAdmin || currentRole === 'supervisor' || currentRole === 'shipping';
 
   // Load audit logs and listen for real-time updates
   useEffect(() => {
@@ -463,7 +438,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                     </span>
                     <span className={`font-mono ${liveOrder.expressShipping ? 'text-amber-700 font-semibold' : ''}`}>{liveOrder.shippingFee.toLocaleString('en-US')} ج.م</span>
                   </div>
-                  {IS_ADMIN && extraFee > 0 && (
+                  {isAdmin && extraFee > 0 && (
                     <div className="flex justify-between py-1.5 border-b border-[hsl(var(--border))] text-orange-700">
                       <span>مصاريف شحن إضافية (أدمن):</span>
                       <span className="font-mono">+ {extraFee.toLocaleString('en-US')} ج.م</span>
@@ -476,7 +451,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 </div>
               </div>
 
-              {CAN_SEE_SENSITIVE && (
+              {canSeeSensitive && (
                 <div className="border border-amber-200 bg-amber-50 rounded-xl p-4">
                   <div className="flex items-center gap-2 mb-3">
                     <Shield size={14} className="text-amber-600" />
@@ -598,7 +573,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                           <span className="text-xs text-[hsl(var(--muted-foreground))] font-mono">{h.day} {h.date} — {h.time}</span>
                         </div>
                         <p className="text-xs text-[hsl(var(--muted-foreground))]">بواسطة: <span className="font-semibold text-[hsl(var(--foreground))]">{h.by}</span></p>
-                        {CAN_SEE_SENSITIVE && (
+                        {canSeeSensitive && (
                           <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1 flex items-center gap-1">
                             <DeviceIcon device={h.device} />
                             <span>{h.device}</span>
@@ -733,7 +708,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                         <span className="col-span-2 text-center">—</span>
                         <span className="col-span-3 text-left font-mono">{liveOrder.shippingFee.toLocaleString('en-US')} ج.م</span>
                       </div>
-                      {IS_ADMIN && extraFee > 0 && (
+                      {isAdmin && extraFee > 0 && (
                         <div className="grid grid-cols-12 gap-2 px-4 py-3 text-sm border-t border-[hsl(var(--border))] text-orange-700">
                           <span className="col-span-5">مصاريف شحن إضافية</span>
                           <span className="col-span-2 text-center">—</span>
