@@ -62,11 +62,14 @@ export default function DashboardCharts() {
       const pad = (n: number) => n.toString().padStart(2, '0');
       const fmtDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
-      // Fetch ALL orders — filter client-side because created_at may be NULL
-      // date field is stored as DD/MM/YYYY text
-      const { data: allOrders } = await supabase
+      // Fetch ALL orders — filter client-side because date field is stored as DD/MM/YYYY text
+      const { data: allOrders, error } = await supabase
         .from('zahranship_orders')
         .select('date, created_at, status, total, region');
+
+      if (error) {
+        console.error('[DashboardCharts] Supabase error:', error);
+      }
 
       if (!allOrders) return;
 
@@ -90,8 +93,15 @@ export default function DashboardCharts() {
         last8Keys.add(fmtDate(d));
       }
 
+      console.log('[DashboardCharts] allOrders count:', allOrders.length);
+      console.log('[DashboardCharts] last8Keys:', [...last8Keys]);
+      if (allOrders.length > 0) {
+        console.log('[DashboardCharts] sample order dates:', allOrders.slice(0, 3).map(o => ({ date: o.date, key: getOrderDateKey(o) })));
+      }
+
       // Filter orders to last 8 days
       const orders = allOrders.filter(o => last8Keys.has(getOrderDateKey(o)));
+      console.log('[DashboardCharts] filtered orders count:', orders.length);
 
       // Build area data (last 8 days)
       const areaMap: Record<string, { total: number; shipping: number; label: string }> = {};

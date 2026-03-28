@@ -48,48 +48,45 @@ function getDateRange(period: string): { from: string; to: string } {
 
   if (period === 'today') {
     const t = fmtDate(now);
-    return { from: `${t}T00:00:00`, to: `${t}T23:59:59` };
+    return { from: t, to: t };
   }
   if (period === 'yesterday') {
     const y = new Date(now); y.setDate(y.getDate() - 1);
     const ys = fmtDate(y);
-    return { from: `${ys}T00:00:00`, to: `${ys}T23:59:59` };
+    return { from: ys, to: ys };
   }
   if (period === 'week') {
     const start = new Date(now); start.setDate(now.getDate() - 6);
-    return { from: `${fmtDate(start)}T00:00:00`, to: `${fmtDate(now)}T23:59:59` };
+    return { from: fmtDate(start), to: fmtDate(now) };
   }
   // month
   const start = new Date(now); start.setDate(now.getDate() - 29);
-  return { from: `${fmtDate(start)}T00:00:00`, to: `${fmtDate(now)}T23:59:59` };
+  return { from: fmtDate(start), to: fmtDate(now) };
 }
 
-// Parse DD/MM/YYYY text date to a comparable Date object
-function parseDateField(dateStr: string): Date | null {
-  if (!dateStr) return null;
+// Convert DD/MM/YYYY to YYYY-MM-DD for comparison
+function dateFieldToISO(dateStr: string): string {
+  if (!dateStr) return '';
   const parts = dateStr.split('/');
   if (parts.length === 3) {
     const [d, m, y] = parts;
-    return new Date(`${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}T12:00:00`);
+    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
   }
-  return null;
+  return '';
 }
 
 // Check if an order falls within the period using date text field or created_at fallback
 function orderInPeriod(order: { date?: string; created_at?: string }, from: string, to: string): boolean {
-  const fromDate = new Date(from);
-  const toDate = new Date(to);
-
-  // Try text date field first (DD/MM/YYYY)
+  // Try text date field first (DD/MM/YYYY → YYYY-MM-DD)
   if (order.date) {
-    const parsed = parseDateField(order.date);
-    if (parsed) return parsed >= fromDate && parsed <= toDate;
+    const iso = dateFieldToISO(order.date);
+    if (iso) return iso >= from && iso <= to;
   }
 
-  // Fallback to created_at
+  // Fallback to created_at (slice to YYYY-MM-DD)
   if (order.created_at) {
-    const d = new Date(order.created_at);
-    return d >= fromDate && d <= toDate;
+    const iso = String(order.created_at).slice(0, 10);
+    return iso >= from && iso <= to;
   }
 
   return false;
@@ -108,15 +105,26 @@ export default function DashboardKPIs() {
       const supabase = createClient();
       const { from, to } = getDateRange(p);
 
-      // Fetch ALL orders — filter client-side because created_at may be NULL
-      // and date field is stored as DD/MM/YYYY text
+      // Fetch ALL orders — filter client-side because date field is stored as DD/MM/YYYY text
       const { data: allOrders, error } = await supabase
         .from('zahranship_orders')
         .select('id, status, total, subtotal, shipping_fee, date, created_at');
 
+      if (error) {
+        console.error('[DashboardKPIs] Supabase error:', error);
+      }
+
+      console.log('[DashboardKPIs] period:', p, '| range:', from, '→', to);
+      console.log('[DashboardKPIs] allOrders count:', allOrders?.length ?? 0);
+      if (allOrders && allOrders.length > 0) {
+        console.log('[DashboardKPIs] sample order dates:', allOrders.slice(0, 3).map(o => ({ date: o.date, created_at: o.created_at })));
+      }
+
       if (!error && allOrders) {
         // Filter by period using date text field or created_at fallback
         const orders = allOrders.filter(o => orderInPeriod(o, from, to));
+
+        console.log('[DashboardKPIs] filtered orders count:', orders.length);
 
         const totalOrders = orders.length;
         const shippingOrders = orders.filter(o => o.status === 'shipping').length;
