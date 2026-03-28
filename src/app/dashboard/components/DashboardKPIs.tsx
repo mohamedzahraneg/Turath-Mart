@@ -48,20 +48,20 @@ function getDateRange(period: string): { from: string; to: string } {
 
   if (period === 'today') {
     const t = fmtDate(now);
-    return { from: t, to: t };
+    return { from: `${t}T00:00:00`, to: `${t}T23:59:59` };
   }
   if (period === 'yesterday') {
     const y = new Date(now); y.setDate(y.getDate() - 1);
     const ys = fmtDate(y);
-    return { from: ys, to: ys };
+    return { from: `${ys}T00:00:00`, to: `${ys}T23:59:59` };
   }
   if (period === 'week') {
     const start = new Date(now); start.setDate(now.getDate() - 6);
-    return { from: fmtDate(start), to: fmtDate(now) };
+    return { from: `${fmtDate(start)}T00:00:00`, to: `${fmtDate(now)}T23:59:59` };
   }
   // month
   const start = new Date(now); start.setDate(now.getDate() - 29);
-  return { from: fmtDate(start), to: fmtDate(now) };
+  return { from: `${fmtDate(start)}T00:00:00`, to: `${fmtDate(now)}T23:59:59` };
 }
 
 export default function DashboardKPIs() {
@@ -79,9 +79,9 @@ export default function DashboardKPIs() {
 
       const { data: orders, error } = await supabase
         .from('zahranship_orders')
-        .select('id, status, total, subtotal, shipping_fee, date')
-        .gte('date', from)
-        .lte('date', to);
+        .select('id, status, total, subtotal, shipping_fee, created_at')
+        .gte('created_at', from)
+        .lte('created_at', to);
 
       if (!error && orders) {
         const totalOrders = orders.length;
