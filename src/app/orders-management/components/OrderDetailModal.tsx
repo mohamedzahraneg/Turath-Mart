@@ -108,7 +108,27 @@ export default function OrderDetailModal({ order, onClose }: Props) {
     loadAudit();
 
     const handleAudit = () => loadAudit();
-    const handleOrders = () => {
+    const handleOrders = async () => {
+      // Try Supabase first for latest status
+      try {
+        const { createClient } = await import('@/lib/supabase/client');
+        const supabase = createClient();
+        const { data } = await supabase
+          .from('zahranship_orders')
+          .select('*')
+          .eq('id', order.id)
+          .single();
+        if (data) {
+          setLiveOrder(prev => ({
+            ...prev,
+            status: data.status,
+            delegateName: data.delegate_name || prev.delegateName,
+            notes: data.notes || prev.notes,
+          }));
+          return;
+        }
+      } catch { /* fall back to localStorage */ }
+
       try {
         const saved = JSON.parse(localStorage.getItem('zahranship_orders') || '[]');
         const updated = saved.find((o: { id: string }) => o.id === order.id);

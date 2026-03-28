@@ -109,30 +109,37 @@ export default function StatusUpdateModal({ order, onClose }: Props) {
       note,
     });
 
-    // Update order status in localStorage
+    // Sync status update to Supabase FIRST (source of truth)
+    let supabaseSuccess = false;
+    try {
+      const supabase = createClient();
+      const { error } = await supabase
+        .from('zahranship_orders')
+        .update({ status: data.newStatus })
+        .eq('id', order.id);
+      if (!error) supabaseSuccess = true;
+    } catch {
+      // Supabase sync failed
+    }
+
+    // Update order status in localStorage to stay in sync
     try {
       const orders = JSON.parse(localStorage.getItem('zahranship_orders') || '[]');
       const idx = orders.findIndex((o: { id: string }) => o.id === order.id);
       if (idx !== -1) {
         orders[idx].status = data.newStatus;
         localStorage.setItem('zahranship_orders', JSON.stringify(orders));
-        window.dispatchEvent(new CustomEvent('zahranship_orders_updated'));
       }
     } catch {}
 
-    // Sync status update to Supabase for cross-origin tracking
-    try {
-      const supabase = createClient();
-      await supabase
-        .from('zahranship_orders')
-        .update({ status: data.newStatus })
-        .eq('id', order.id);
-    } catch {
-      // Supabase sync failed, status updated in localStorage only
-    }
+    window.dispatchEvent(new CustomEvent('zahranship_orders_updated'));
 
-    await new Promise((r) => setTimeout(r, 600));
-    toast.success(`تم تحديث حالة الأوردر ${order.orderNum} إلى: ${statusLabel}`);
+    await new Promise((r) => setTimeout(r, 400));
+    if (supabaseSuccess) {
+      toast.success(`تم تحديث حالة الأوردر ${order.orderNum} إلى: ${statusLabel}`);
+    } else {
+      toast.success(`تم تحديث حالة الأوردر ${order.orderNum} إلى: ${statusLabel} (محلياً)`);
+    }
     setIsSubmitting(false);
     onClose();
   };

@@ -137,54 +137,73 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [currentRoleId, setCurrentRoleId] = useState<string | null>(null);
   const [roleLoading, setRoleLoading] = useState(true);
 
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const stored = localStorage.getItem('current_user');
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          if (parsed?.roleId) {
-            setCurrentRoleId(parsed.roleId);
-            // Determine role type from roleId
-            const roleType = isManagerRole(parsed.roleId) ? 'manager' : (parsed.role || 'data_entry');
-            setCurrentRole(roleType);
-          } else if (parsed?.role) {
-            setCurrentRole(parsed.role);
-            setCurrentRoleId(null);
-          } else {
-            setCurrentRole(null);
-            setCurrentRoleId(null);
-          }
+  const loadCurrentUser = () => {
+    if (typeof window === 'undefined') return;
+    try {
+      const stored = localStorage.getItem('current_user');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed?.roleId) {
+          setCurrentRoleId(parsed.roleId);
+          const roleType = isManagerRole(parsed.roleId) ? 'manager' : (parsed.role || 'data_entry');
+          setCurrentRole(roleType);
+        } else if (parsed?.role) {
+          setCurrentRole(parsed.role);
+          setCurrentRoleId(null);
         } else {
           setCurrentRole(null);
           setCurrentRoleId(null);
         }
-      } catch {
+      } else {
         setCurrentRole(null);
         setCurrentRoleId(null);
       }
-      setRoleLoading(false);
-    }
-
-    try {
-      const supabase = createClient();
-      if (!supabase) { setLoading(false); return; }
-
-      supabase.auth.getSession().then(({ data: { session } }) => {
-        setSession(session);
-        setUser(session?.user ?? null);
-        setLoading(false);
-      }).catch(() => { setLoading(false); });
-
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-        setSession(session);
-        setUser(session?.user ?? null);
-        setLoading(false);
-      });
-
-      return () => subscription.unsubscribe();
     } catch {
-      setLoading(false);
+      setCurrentRole(null);
+      setCurrentRoleId(null);
+    }
+    setRoleLoading(false);
+  };
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      loadCurrentUser();
+
+      // Listen for role changes (when roles are updated in the roles page)
+      const handleRolesUpdated = () => {
+        loadCurrentUser();
+      };
+      window.addEventListener('turath_roles_updated', handleRolesUpdated);
+      window.addEventListener('storage', handleRolesUpdated);
+
+      try {
+        const supabase = createClient();
+        if (!supabase) { setLoading(false); return; }
+
+        supabase.auth.getSession().then(({ data: { session } }) => {
+          setSession(session);
+          setUser(session?.user ?? null);
+          setLoading(false);
+        }).catch(() => { setLoading(false); });
+
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+          setSession(session);
+          setUser(session?.user ?? null);
+          setLoading(false);
+        });
+
+        return () => {
+          subscription.unsubscribe();
+          window.removeEventListener('turath_roles_updated', handleRolesUpdated);
+          window.removeEventListener('storage', handleRolesUpdated);
+        };
+      } catch {
+        setLoading(false);
+        return () => {
+          window.removeEventListener('turath_roles_updated', handleRolesUpdated);
+          window.removeEventListener('storage', handleRolesUpdated);
+        };
+      }
     }
   }, []);
 

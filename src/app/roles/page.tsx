@@ -687,6 +687,10 @@ export default function RolesPage() {
       const exists = prev.find(r => r.id === role.id);
       const updated = exists ? prev.map(r => r.id === role.id ? role : r) : [...prev, role];
       saveRolesToStorage(updated);
+      // Dispatch event so AuthContext and other components can react
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('turath_roles_updated'));
+      }
       return updated;
     });
     setEditRole(undefined);
@@ -897,7 +901,14 @@ export default function RolesPage() {
                     </div>
                     <div className="flex gap-1">
                       <button onClick={() => setEditRole(role)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted))] transition-colors"><Edit2 size={14} /></button>
-                      <button onClick={() => setRoles(prev => { const updated = prev.filter(r => r.id !== role.id); saveRolesToStorage(updated); return updated; })} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"><Trash2 size={14} /></button>
+                      <button onClick={() => setRoles(prev => {
+                        const updated = prev.filter(r => r.id !== role.id);
+                        saveRolesToStorage(updated);
+                        if (typeof window !== 'undefined') {
+                          window.dispatchEvent(new CustomEvent('turath_roles_updated'));
+                        }
+                        return updated;
+                      })} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"><Trash2 size={14} /></button>
                     </div>
                   </div>
                   <p className="text-xs text-[hsl(var(--muted-foreground))] mb-3">{role.description}</p>

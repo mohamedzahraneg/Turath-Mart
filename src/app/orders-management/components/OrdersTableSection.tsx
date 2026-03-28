@@ -341,11 +341,9 @@ export default function OrdersTableSection() {
 
   const loadOrders = useCallback(async () => {
     try {
-      // 1. Load from localStorage
-      const saved = JSON.parse(localStorage.getItem('zahranship_orders') || '[]') as Order[];
-
-      // 2. Load from Supabase
+      // 1. Try Supabase first (source of truth)
       let supabaseOrders: Order[] = [];
+      let supabaseLoaded = false;
       try {
         const supabase = createClient();
         const { data } = await supabase
@@ -380,22 +378,29 @@ export default function OrdersTableSection() {
             ip: row.created_by_ip || '',
             delegateName: row.delegate_name || undefined,
           }));
+          supabaseLoaded = true;
         }
       } catch {
-        // Supabase fetch failed, continue with localStorage only
+        // Supabase fetch failed, fall back to localStorage
       }
 
-      // 3. Merge: Supabase + localStorage (no mock data)
-      const mergedMap = new Map<string, Order>();
-      supabaseOrders.forEach((o) => mergedMap.set(o.id, o));
-      saved.forEach((o) => mergedMap.set(o.id, o));
-
-      const realOrders = Array.from(mergedMap.values());
-      setAllOrders(realOrders);
+      if (supabaseLoaded) {
+        // Supabase is source of truth — use its data directly
+        // Also sync localStorage to match Supabase
+        try {
+          localStorage.setItem('zahranship_orders', JSON.stringify(supabaseOrders));
+        } catch { /* ignore */ }
+        setAllOrders(supabaseOrders);
+      } else {
+        // Supabase unavailable — fall back to localStorage
+        const saved = JSON.parse(localStorage.getItem('zahranship_orders') || '[]') as Order[];
+        setAllOrders(saved);
+      }
 
       // Set default selected delegate if not set
-      if (realOrders.length > 0) {
-        const delegates = [...new Set(realOrders.map(o => o.delegateName).filter(Boolean))] as string[];
+      const ordersToUse = supabaseLoaded ? supabaseOrders : (JSON.parse(localStorage.getItem('zahranship_orders') || '[]') as Order[]);
+      if (ordersToUse.length > 0) {
+        const delegates = [...new Set(ordersToUse.map(o => o.delegateName).filter(Boolean))] as string[];
         if (delegates.length > 0) {
           setSelectedDelegate(prev => prev || delegates[0]);
         }
@@ -527,13 +532,15 @@ export default function OrdersTableSection() {
       localStorage.setItem('zahranship_orders', JSON.stringify(saved.filter(o => o.id !== order.id)));
     } catch { /* ignore */ }
 
-    // Delete from Supabase in background (fire and forget)
-    try {
-      const supabase = createClient();
-      supabase.from('zahranship_orders').delete().eq('id', order.id).then(() => {
+    // Delete from Supabase
+    const supabase = createClient();
+    supabase.from('zahranship_orders').delete().eq('id', order.id).then(({ error }) => {
+      if (!error) {
         window.dispatchEvent(new CustomEvent('zahranship_orders_updated'));
-      });
-    } catch { /* ignore */ }
+      }
+    }).catch(() => {
+      // Supabase delete failed — order already removed from local state and localStorage
+    });
   };
 
   return (
