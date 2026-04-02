@@ -405,13 +405,19 @@ export default function CRMPage() {
 
         const custArray = Array.from(map.values());
         custArray.forEach((c) => {
-          // Calc Tier
-          if (c.totalOrders >= 10 || c.totalSpent >= 5000) c.tier = 'vip';
-          else if (c.totalOrders >= 5 || c.totalSpent >= 2000) c.tier = 'gold';
-          else if (c.totalOrders >= 2 || c.totalSpent >= 500) c.tier = 'silver';
+          // ─── 1. Refined Segmentation Logic ───
+          // VIP: > 15 orders OR > 10,000 EGP
+          // Gold: > 7 orders OR > 4,000 EGP
+          // Silver: > 3 orders OR > 1,500 EGP
+          if (c.totalOrders >= 15 || c.totalSpent >= 10000) c.tier = 'vip';
+          else if (c.totalOrders >= 7 || c.totalSpent >= 4000) c.tier = 'gold';
+          else if (c.totalOrders >= 3 || c.totalSpent >= 1500) c.tier = 'silver';
+          else c.tier = 'regular';
 
-          // Link Complaints
-          if (cData) c.complaints = cData.filter((comp) => comp.customer_phone === c.phone);
+          // ─── 2. Link & Summary Complaints ───
+          if (cData) {
+            c.complaints = cData.filter((comp) => comp.customer_phone === c.phone);
+          }
         });
 
         setCustomers(custArray.sort((a, b) => b.totalSpent - a.totalSpent));
@@ -582,11 +588,17 @@ export default function CRMPage() {
                     >
                       {tier.label}
                     </span>
-                    {openComps.length > 0 && (
-                      <div className="w-5 h-5 rounded-full bg-red-100 text-red-600 flex items-center justify-center text-[10px] font-bold border border-red-200 animate-bounce">
-                        {openComps.length}
-                      </div>
-                    )}
+                    <div className="flex gap-1">
+                      {c.complaints.length > 0 && (
+                        <div
+                          className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-bold border ${openComps.length > 0 ? 'bg-red-50 text-red-600 border-red-100 animate-pulse' : 'bg-green-50 text-green-600 border-green-100'}`}
+                          title={`${c.complaints.length} شكوى إجمالاً`}
+                        >
+                          <AlertCircle size={10} />
+                          {openComps.length > 0 ? `${openComps.length} مفتوحة` : 'محلولة'}
+                        </div>
+                      )}
+                    </div>
                   </div>
                   <p className="text-[9px] text-gray-400 font-bold">
                     {new Date(c.lastOrderDate).toLocaleDateString('en-GB', {

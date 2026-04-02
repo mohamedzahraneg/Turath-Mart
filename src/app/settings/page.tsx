@@ -285,7 +285,16 @@ function ShippingTab() {
   );
 }
 
-// ─── Products Tab ─────────────────────────────────────────────────────────────
+interface ProductSetting {
+  value: string;
+  label: string;
+  basePrice: number;
+  emoji: string;
+  hasColor: boolean;
+  enabled: boolean;
+  image: string;
+}
+
 function ProductsTab() {
   const {
     data: products,
@@ -294,53 +303,7 @@ function ProductsTab() {
     saving,
     success,
     save,
-  } = useSettingsSync('settings_products', [
-    {
-      value: 'holder',
-      label: 'حامل مصحف',
-      basePrice: 300,
-      emoji: '📿',
-      hasColor: true,
-      enabled: true,
-      image: '',
-    },
-    {
-      value: 'flashlight',
-      label: 'كشاف',
-      basePrice: 150,
-      emoji: '🔦',
-      hasColor: false,
-      enabled: true,
-      image: '',
-    },
-    {
-      value: 'chair',
-      label: 'كرسي',
-      basePrice: 600,
-      emoji: '🪑',
-      hasColor: false,
-      enabled: true,
-      image: '',
-    },
-    {
-      value: 'quran',
-      label: 'مصحف',
-      basePrice: 140,
-      emoji: '📖',
-      hasColor: false,
-      enabled: true,
-      image: '',
-    },
-    {
-      value: 'kaaba',
-      label: 'كعبة',
-      basePrice: 450,
-      emoji: '🕋',
-      hasColor: false,
-      enabled: true,
-      image: '',
-    },
-  ]);
+  } = useSettingsSync<ProductSetting[]>('settings_products', []);
 
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({});
 

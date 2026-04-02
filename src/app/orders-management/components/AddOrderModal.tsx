@@ -46,13 +46,8 @@ interface OrderFormData {
   warranty: string;
 }
 
-export const PRODUCT_TYPES = [
-  { value: 'holder', label: 'حامل مصحف', basePrice: 300, emoji: '📿', hasColor: true },
-  { value: 'flashlight', label: 'كشاف', basePrice: 150, emoji: '🔦', hasColor: false },
-  { value: 'chair', label: 'كرسي', basePrice: 600, emoji: '🪑', hasColor: false },
-  { value: 'quran', label: 'مصحف', basePrice: 140, emoji: '📖', hasColor: false },
-  { value: 'kaaba', label: 'كعبة', basePrice: 450, emoji: '🕋', hasColor: false },
-];
+// Removed hardcoded PRODUCT_TYPES. Products are الآن fetched directly from the Inventory table.
+
 
 export const HOLDER_COLORS = [
   { value: 'brown', label: 'بني', hex: '#8B4513' },
@@ -303,6 +298,12 @@ export default function AddOrderModal({ onClose }: Props) {
   const [notes, setNotes] = useState('');
   const [warranty, setWarranty] = useState('بدون ضمان');
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [historyMatch, setHistoryMatch] = useState<{
+    customer: string;
+    address: string;
+    district: string;
+    governorate: string;
+  } | null>(null);
 
   // Order lines
   const [lines, setLines] = useState<OrderLine[]>([]);
@@ -324,10 +325,9 @@ export default function AddOrderModal({ onClose }: Props) {
       const { data: sData } = await supabase.from('zahranship_settings').select('*');
       const settingsMap = new Map((sData || []).map((s) => [s.key, s.value]));
 
-      // 2. Extract Products
+      // 2. Extract Products (optional, if there are non-inventory services)
       const dbProducts =
-        (settingsMap.get('settings_products') as any[]) ||
-        PRODUCT_TYPES.map((p) => ({ ...p, enabled: true }));
+        (settingsMap.get('settings_products') as any[]) || [];
 
       // 3. Extract Shipping
       const dbShipping = (settingsMap.get('settings_shipping') as any) || {};
@@ -335,36 +335,39 @@ export default function AddOrderModal({ onClose }: Props) {
       // 4. Extract Disabled Districts
       const dbDistricts = (settingsMap.get('settings_disabled_districts') as string[]) || [];
 
-      // 5. Update Product Cards
-      const defaultCards: ProductCard[] = dbProducts
-        .filter((p) => p.enabled !== false)
+      // 5. Fetch Inventory from Supabase (Source of Truth)
+      const { data: invData, error: invError } = await supabase
+        .from('zahranship_inventory')
+        .select('*')
+        .gt('available', 0);
+
+      if (invError) {
+        console.error('Inventory Fetch Error:', invError);
+      }
+
+      const inventoryCards: ProductCard[] = (invData || []).map((item) => ({
+        value: item.id || '',
+        label: item.name || 'منتج غير معروف',
+        basePrice: item.price || 0,
+        emoji: '📦',
+        hasColor: (item.colors?.length || 0) > 0,
+        image: item.images?.[0] || '',
+        isInventory: true,
+        colors: item.colors || [],
+      }));
+
+      const serviceCards: ProductCard[] = (Array.isArray(dbProducts) ? dbProducts : [])
+        .filter((p) => p && p.enabled !== false)
         .map((p) => ({
-          value: p.value,
-          label: p.label,
-          basePrice: p.basePrice,
-          emoji: p.emoji,
-          hasColor: p.hasColor,
-          image: p.image,
+          value: p.value || '',
+          label: p.label || 'خدمة غير معروفة',
+          basePrice: p.basePrice || 0,
+          emoji: p.emoji || '🛠️',
+          hasColor: p.hasColor || false,
+          image: p.image || '',
         }));
 
-      // NOTE: Inventory is still legacy here, but let's keep it for compatibility
-      // or fetch from DB if needed later. For now, focus on the settings migration.
-      const inventoryItems = loadLS<InventoryItem[]>('zahranship_inventory', []);
-      const defaultValues = new Set(defaultCards.map((c) => c.value));
-      const inventoryCards: ProductCard[] = inventoryItems
-        .filter((item) => item.available > 0 && !defaultValues.has(item.id))
-        .map((item) => ({
-          value: item.id,
-          label: item.name,
-          basePrice: item.price,
-          emoji: '📦',
-          hasColor: (item.colors?.length || 0) > 0,
-          image: item.images?.[0],
-          isInventory: true,
-          colors: item.colors,
-        }));
-
-      setProductCards([...defaultCards, ...inventoryCards]);
+      setProductCards([...inventoryCards, ...serviceCards]);
 
       // 6. Apply Global Admin Settings
       ADMIN_SETTINGS.DISABLED_DISTRICTS.length = 0;
@@ -406,6 +409,47 @@ export default function AddOrderModal({ onClose }: Props) {
   useEffect(() => {
     setDistrict('');
   }, [governorate]);
+
+  // Search for history when phone changes
+  useEffect(() => {
+    if (phone.length === 11 && /^01[0-9]{9}$/.test(phone)) {
+      const searchHistory = async () => {
+        const supabase = createClient();
+        const { data } = await supabase
+          .from('zahranship_orders')
+          .select('customer, address, district, region')
+          .eq('phone', phone)
+          .order('created_at', { ascending: false })
+          .limit(1);
+
+        if (data && data.length > 0) {
+          setHistoryMatch({
+            customer: data[0].customer,
+            address: data[0].address,
+            district: data[0].district || '',
+            governorate: data[0].region || '',
+          });
+        }
+      };
+      searchHistory();
+    } else {
+      setHistoryMatch(null);
+    }
+  }, [phone]);
+
+  const applyHistory = () => {
+    if (historyMatch) {
+      setCustomerName(historyMatch.customer);
+      setAddress(historyMatch.address);
+      setGovernorate(historyMatch.governorate);
+      // We set a timeout for district to ensure the governorate's district list is available
+      setTimeout(() => {
+        setDistrict(historyMatch.district);
+      }, 50);
+      setHistoryMatch(null);
+      toast.success('تم تحميل بيانات العميل السابقة بنجاح');
+    }
+  };
 
   const availableDistricts = (GOVERNORATES_DISTRICTS[governorate] || []).filter(
     (d) => !ADMIN_SETTINGS.DISABLED_DISTRICTS.includes(d)
@@ -762,6 +806,30 @@ export default function AddOrderModal({ onClose }: Props) {
                         />
                       </div>
                       {errors.phone && <p className="text-red-500 text-xs mt-1">{errors.phone}</p>}
+                      {historyMatch && (
+                        <div className="mt-2 animate-in slide-in-from-top-2 duration-300">
+                          <button
+                            type="button"
+                            onClick={applyHistory}
+                            className="w-full flex items-center justify-between p-3 bg-blue-50 border border-blue-200 rounded-xl hover:bg-blue-100 transition-all text-right group"
+                          >
+                            <div className="flex-1">
+                              <p className="text-[10px] font-bold text-blue-600 uppercase mb-0.5">
+                                العميل موجود مسبقاً
+                              </p>
+                              <p className="text-xs font-bold text-gray-800">
+                                {historyMatch.customer}
+                              </p>
+                              <p className="text-[9px] text-gray-400 mt-0.5 line-clamp-1">
+                                {historyMatch.governorate} — {historyMatch.district}
+                              </p>
+                            </div>
+                            <div className="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center group-hover:scale-110 transition-transform shadow-lg shadow-blue-200">
+                              <Zap size={14} />
+                            </div>
+                          </button>
+                        </div>
+                      )}
                     </div>
 
                     <div>

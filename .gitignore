@@ -34,4 +34,4 @@ jest-test-results.json
 .idea/
 
 # Optional: if using TurboRepo or monorepo
-turbo/
+turbo/deploy_vps.sh
