@@ -109,26 +109,24 @@ export default function StatusUpdateModal({ order, onClose }: Props) {
       note,
     });
 
-    // Update order status in localStorage
-    try {
-      const orders = JSON.parse(localStorage.getItem('zahranship_orders') || '[]');
-      const idx = orders.findIndex((o: { id: string }) => o.id === order.id);
-      if (idx !== -1) {
-        orders[idx].status = data.newStatus;
-        localStorage.setItem('zahranship_orders', JSON.stringify(orders));
-        window.dispatchEvent(new CustomEvent('zahranship_orders_updated'));
-      }
-    } catch {}
-
-    // Sync status update to Supabase for cross-origin tracking
+    // Sync status update to Supabase
     try {
       const supabase = createClient();
-      await supabase
+      const { error } = await supabase
         .from('zahranship_orders')
         .update({ status: data.newStatus })
         .eq('order_num', order.orderNum);
-    } catch {
-      // Supabase sync failed, status updated in localStorage only
+
+      if (error) {
+        throw error;
+      }
+      
+      window.dispatchEvent(new CustomEvent('zahranship_orders_updated'));
+    } catch (err) {
+      console.error('Supabase update error:', err);
+      toast.error('حدث خطأ أثناء تحديث الحالة في قاعدة البيانات');
+      setIsSubmitting(false);
+      return;
     }
 
     await new Promise((r) => setTimeout(r, 600));

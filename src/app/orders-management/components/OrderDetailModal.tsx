@@ -51,7 +51,7 @@ interface Order {
 }
 
 // Simulated current user role — in real app comes from auth context
-const CURRENT_USER_ROLE: 'admin' | 'supervisor' | 'delegate' | 'customer_service' | 'manager' = 'admin';
+const CURRENT_USER_ROLE: string = 'admin';
 const CAN_SEE_SENSITIVE = ['admin', 'supervisor', 'delegate', 'manager'].includes(CURRENT_USER_ROLE);
 const IS_ADMIN = CURRENT_USER_ROLE === 'admin';
 
@@ -133,12 +133,52 @@ export default function OrderDetailModal({ order, onClose }: Props) {
     loadAudit();
 
     const handleAudit = () => loadAudit();
-    const handleOrders = () => {
+    const handleOrders = async () => {
       try {
-        const saved = JSON.parse(localStorage.getItem('zahranship_orders') || '[]');
-        const updated = saved.find((o: { id: string }) => o.id === order.id);
-        if (updated) setLiveOrder(updated);
-      } catch {}
+        const supabase = createClient();
+        const { data, error } = await supabase
+          .from('zahranship_orders')
+          .select('*')
+          .eq('id', order.id)
+          .single();
+
+        if (data && !error) {
+          // Map DB snake_case columns back to the Order interface camelCase
+          const mappedOrder: Order = {
+            id: data.id,
+            orderNum: data.order_num,
+            createdBy: data.created_by,
+            createdByIp: data.created_by_ip || undefined,
+            createdByLocation: data.created_by_location || undefined,
+            createdByDevice: data.created_by_device || undefined,
+            customer: data.customer,
+            phone: data.phone,
+            phone2: data.phone2 || undefined,
+            region: data.region,
+            district: data.district || undefined,
+            address: data.address,
+            products: data.products,
+            quantity: data.quantity,
+            subtotal: data.subtotal,
+            shippingFee: data.shipping_fee,
+            extraShippingFee: data.extra_shipping_fee || undefined,
+            expressShipping: data.express_shipping || undefined,
+            total: data.total,
+            status: data.status,
+            date: data.date,
+            time: data.time,
+            day: data.day || '',
+            notes: data.notes || undefined,
+            ip: data.ip_address || '',
+            warranty: data.warranty || undefined,
+            delegate: data.delegate || undefined,
+            lines: data.lines || [],
+          };
+          setLiveOrder(mappedOrder);
+        }
+      } catch (err) {
+        console.error('Failed to reload order:', err);
+      }
     };
 
     window.addEventListener('zahranship_audit_updated', handleAudit);

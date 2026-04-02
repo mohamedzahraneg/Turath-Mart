@@ -56,35 +56,10 @@ const PRODUCT_FILTER_OPTIONS = [
   { value: 'كعبة', label: '🕋 كعبة' },
 ];
 
-const MOCK_ORDERS: Order[] = [
-  { id: 'order-001', orderNum: 'ZSH-2026-0047', createdBy: 'محمد حسن', ip: '197.32.45.112', createdByLocation: 'القاهرة، مصر', createdByDevice: 'كمبيوتر', customer: 'أحمد محمود السيد', phone: '01012345678', phone2: '01198765432', region: 'القاهرة', district: 'مدينة نصر', address: 'شارع عباس العقاد، عمارة 5 شقة 12', products: 'حامل مصحف بني x 2', quantity: 2, subtotal: 600, shippingFee: 50, total: 650, status: 'shipping', date: '27/03/2026', time: '09:32:14', day: 'الجمعة', notes: 'العميل يريد التسليم في الصباح', delegateName: 'علي محمود' },
-  { id: 'order-002', orderNum: 'ZSH-2026-0046', createdBy: 'سارة أحمد', ip: '197.32.45.113', createdByLocation: 'الجيزة، مصر', createdByDevice: 'موبايل', customer: 'فاطمة علي حسن', phone: '01123456789', region: 'الجيزة', district: 'الدقي', address: 'شارع التحرير، برج المنار ط3', products: 'كعبة x 1 + مصحف x 2', quantity: 3, subtotal: 840, shippingFee: 50, total: 890, status: 'delivered', date: '27/03/2026', time: '09:15:33', day: 'الجمعة', delegateName: 'علي محمود' },
-  { id: 'order-003', orderNum: 'ZSH-2026-0045', createdBy: 'محمد حسن', ip: '197.32.45.114', createdByLocation: 'القاهرة، مصر', createdByDevice: 'كمبيوتر', customer: 'محمد عبد الرحمن', phone: '01234567890', region: 'القليوبية', district: 'شبرا الخيمة', address: 'شارع النيل، مبنى رقم 14', products: 'حامل مصحف ذهبي x 1', quantity: 1, subtotal: 330, shippingFee: 50, total: 380, status: 'new', date: '27/03/2026', time: '08:55:07', day: 'الجمعة', delegateName: 'خالد سعيد' },
-  { id: 'order-004', orderNum: 'ZSH-2026-0044', createdBy: 'أميرة محمود', ip: '197.32.45.115', createdByLocation: 'القاهرة، مصر', createdByDevice: 'تابلت', customer: 'سارة إبراهيم خليل', phone: '01056789012', region: 'القاهرة', district: 'المعادي', address: 'شارع 9، فيلا 23', products: 'كشاف x 3', quantity: 3, subtotal: 450, shippingFee: 50, extraShippingFee: 30, total: 530, status: 'preparing', date: '27/03/2026', time: '08:40:51', day: 'الجمعة', delegateName: 'علي محمود' },
-  { id: 'order-005', orderNum: 'ZSH-2026-0043', createdBy: 'سارة أحمد', ip: '197.32.45.116', createdByLocation: 'الجيزة، مصر', createdByDevice: 'موبايل', customer: 'عمر حامد الشريف', phone: '01198765432', region: 'الجيزة', district: 'فيصل', address: 'شارع البحر الأعظم، عمارة 7', products: 'حامل مصحف أسود x 1 + كشاف x 1', quantity: 2, subtotal: 470, shippingFee: 100, expressShipping: true, total: 570, status: 'warehouse', date: '26/03/2026', time: '16:20:44', day: 'الخميس', delegateName: 'خالد سعيد' },
-  { id: 'order-006', orderNum: 'ZSH-2026-0042', createdBy: 'محمد حسن', ip: '197.32.45.117', createdByLocation: 'القاهرة، مصر', createdByDevice: 'كمبيوتر', customer: 'نور الدين مصطفى', phone: '01067891234', region: 'القاهرة', district: 'هليوبوليس (مصر الجديدة)', address: 'شارع النزهة، شقة 45', products: 'كرسي x 2', quantity: 2, subtotal: 1150, shippingFee: 50, total: 1200, status: 'returned', date: '26/03/2026', time: '15:50:19', day: 'الخميس', notes: 'العميل رفض الاستلام', delegateName: 'علي محمود' },
-  { id: 'order-007', orderNum: 'ZSH-2026-0041', createdBy: 'أميرة محمود', ip: '197.32.45.118', createdByLocation: 'القليوبية، مصر', createdByDevice: 'موبايل', customer: 'هدى رمضان أحمد', phone: '01145678901', region: 'القليوبية', district: 'قليوب', address: 'شارع السكة الحديد، عمارة 2', products: 'مصحف x 5', quantity: 5, subtotal: 700, shippingFee: 50, total: 750, status: 'cancelled', date: '26/03/2026', time: '14:30:02', day: 'الخميس', notes: 'إلغاء بطلب العميل', delegateName: 'خالد سعيد' },
-  { id: 'order-008', orderNum: 'ZSH-2026-0040', createdBy: 'سارة أحمد', ip: '197.32.45.119', createdByLocation: 'القاهرة، مصر', createdByDevice: 'كمبيوتر', customer: 'خالد عبد العزيز', phone: '01012223344', region: 'القاهرة', district: 'مصر الجديدة', address: 'شارع الثورة، عمارة 10', products: 'حامل مصحف أبيض x 2 + مصحف x 1', quantity: 3, subtotal: 760, shippingFee: 50, total: 810, status: 'delivered', date: '25/03/2026', time: '11:20:38', day: 'الأربعاء', delegateName: 'علي محمود' },
-  { id: 'order-009', orderNum: 'ZSH-2026-0039', createdBy: 'محمد حسن', ip: '197.32.45.120', createdByLocation: 'الجيزة، مصر', createdByDevice: 'موبايل', customer: 'ريم حسام الدين', phone: '01534567890', region: 'الجيزة', district: 'إمبابة', address: 'شارع طه حسين، رقم 33', products: 'كعبة x 1', quantity: 1, subtotal: 450, shippingFee: 50, total: 500, status: 'shipping', date: '25/03/2026', time: '10:05:55', day: 'الأربعاء', delegateName: 'خالد سعيد' },
-  { id: 'order-010', orderNum: 'ZSH-2026-0038', createdBy: 'أميرة محمود', ip: '197.32.45.121', createdByLocation: 'القليوبية، مصر', createdByDevice: 'تابلت', customer: 'طارق سعيد منصور', phone: '01267891234', region: 'القليوبية', district: 'الخانكة', address: 'شارع المحطة، مبنى 5', products: 'حامل مصحف صدف x 1 + كشاف x 1', quantity: 2, subtotal: 560, shippingFee: 50, total: 610, status: 'preparing', date: '25/03/2026', time: '09:45:11', day: 'الأربعاء', delegateName: 'علي محمود' },
-];
+const MOCK_ORDERS: Order[] = [];
 
 // Mock cash deposits per delegate
-const MOCK_DEPOSITS: Record<string, { deposited: number; deposits: { amount: number; date: string; note: string }[] }> = {
-  'علي محمود': {
-    deposited: 1500,
-    deposits: [
-      { amount: 1000, date: '26/03/2026', note: 'توريد نقدي' },
-      { amount: 500, date: '27/03/2026', note: 'توريد جزئي' },
-    ]
-  },
-  'خالد سعيد': {
-    deposited: 800,
-    deposits: [
-      { amount: 800, date: '26/03/2026', note: 'توريد نقدي' },
-    ]
-  },
-};
+const MOCK_DEPOSITS: Record<string, { deposited: number; deposits: { amount: number; date: string; note: string }[] }> = {};
 
 type SortField = 'orderNum' | 'customer' | 'region' | 'total' | 'status' | 'date';
 type SortDir = 'asc' | 'desc';
@@ -175,77 +150,55 @@ export default function OrdersTableSection() {
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showDelegateStats, setShowDelegateStats] = useState(false);
   const [selectedDelegate, setSelectedDelegate] = useState('علي محمود');
-  const [allOrders, setAllOrders] = useState<Order[]>(MOCK_ORDERS);
+  const [allOrders, setAllOrders] = useState<Order[]>([]);
   const [liveUpdateCount, setLiveUpdateCount] = useState(0);
   const [lastUpdateTime, setLastUpdateTime] = useState<string | null>(null);
 
   const loadOrders = useCallback(async () => {
     try {
-      // 1. Load from localStorage
-      const saved = JSON.parse(localStorage.getItem('zahranship_orders') || '[]') as Order[];
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from('zahranship_orders')
+        .select('*')
+        .order('created_at', { ascending: false });
 
-      // 2. Load from Supabase
-      let supabaseOrders: Order[] = [];
-      try {
-        const supabase = createClient();
-        const { data } = await supabase
-          .from('zahranship_orders')
-          .select('*')
-          .order('created_at', { ascending: false });
-
-        if (data && data.length > 0) {
-          supabaseOrders = data.map((row) => ({
-            id: row.id,
-            orderNum: row.order_num,
-            createdBy: row.created_by || '',
-            createdByDevice: row.created_by_device || '',
-            customer: row.customer,
-            phone: row.phone,
-            phone2: row.phone2 || undefined,
-            region: row.region,
-            district: row.district || undefined,
-            address: row.address,
-            products: row.products,
-            quantity: row.quantity,
-            subtotal: row.subtotal,
-            shippingFee: row.shipping_fee,
-            extraShippingFee: row.extra_shipping_fee || undefined,
-            expressShipping: row.express_shipping || undefined,
-            total: row.total,
-            status: row.status,
-            date: row.date,
-            time: row.time,
-            day: row.day || '',
-            notes: row.notes || undefined,
-            ip: row.ip || '',
-            delegateName: row.delegate_name || undefined,
-          }));
-        }
-      } catch {
-        // Supabase fetch failed, continue with localStorage only
+      if (error) {
+        console.error('Supabase fetch error:', error);
+        return;
       }
 
-      // 3. Merge: Supabase + localStorage take priority over MOCK_ORDERS
-      const realOrderIds = new Set([
-        ...supabaseOrders.map((o) => o.id),
-        ...saved.map((o) => o.id),
-      ]);
-
-      // Build merged map: supabase first, then localStorage overrides (for status updates)
-      const mergedMap = new Map<string, Order>();
-      supabaseOrders.forEach((o) => mergedMap.set(o.id, o));
-      saved.forEach((o) => mergedMap.set(o.id, o)); // localStorage overrides supabase for latest status
-
-      const realOrders = Array.from(mergedMap.values());
-      const uniqueMock = MOCK_ORDERS.filter((o) => !realOrderIds.has(o.id));
-
-      if (realOrders.length > 0) {
-        setAllOrders([...realOrders, ...uniqueMock]);
-      } else {
-        setAllOrders(MOCK_ORDERS);
+      if (data) {
+        const supabaseOrders = data.map((row) => ({
+          id: row.id,
+          orderNum: row.order_num,
+          createdBy: row.created_by || '',
+          createdByDevice: row.created_by_device || '',
+          customer: row.customer,
+          phone: row.phone,
+          phone2: row.phone2 || undefined,
+          region: row.region,
+          district: row.district || undefined,
+          address: row.address,
+          products: row.products,
+          quantity: row.quantity,
+          subtotal: row.subtotal,
+          shippingFee: row.shipping_fee,
+          extraShippingFee: row.extra_shipping_fee || undefined,
+          expressShipping: row.express_shipping || undefined,
+          total: row.total,
+          status: row.status,
+          date: row.date,
+          time: row.time,
+          day: row.day || '',
+          notes: row.notes || undefined,
+          ip: row.ip || '',
+          delegateName: row.delegate_name || undefined,
+        }));
+        
+        setAllOrders(supabaseOrders);
       }
-    } catch {
-      setAllOrders(MOCK_ORDERS);
+    } catch (err) {
+      console.error('Error loading orders:', err);
     }
   }, []);
 

@@ -2,38 +2,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { RefreshCw, Download, TrendingUp, TrendingDown, Minus, Filter, X } from 'lucide-react';
 
-// ─── Mock data per period ──────────────────────────────────────────────────────
-const PERIOD_DATA: Record<string, {
-  totalOrders: number; shippingOrders: number; totalCollection: number;
-  netDeposit: number; pendingOrders: number; returnedOrders: number;
-  cashCollection: number; creditCollection: number; dailyDeposited: number;
-  dailyRemaining: number;
-}> = {
-  today: {
-    totalOrders: 47, shippingOrders: 18, totalCollection: 24350,
-    netDeposit: 21990, pendingOrders: 7, returnedOrders: 3,
-    cashCollection: 18200, creditCollection: 6150, dailyDeposited: 15000,
-    dailyRemaining: 9350,
-  },
-  yesterday: {
-    totalOrders: 42, shippingOrders: 15, totalCollection: 21800,
-    netDeposit: 19700, pendingOrders: 5, returnedOrders: 2,
-    cashCollection: 16000, creditCollection: 5800, dailyDeposited: 14000,
-    dailyRemaining: 7800,
-  },
-  week: {
-    totalOrders: 312, shippingOrders: 89, totalCollection: 156400,
-    netDeposit: 141800, pendingOrders: 23, returnedOrders: 14,
-    cashCollection: 112000, creditCollection: 44400, dailyDeposited: 98000,
-    dailyRemaining: 58400,
-  },
-  month: {
-    totalOrders: 1248, shippingOrders: 342, totalCollection: 624800,
-    netDeposit: 566600, pendingOrders: 87, returnedOrders: 52,
-    cashCollection: 448000, creditCollection: 176800, dailyDeposited: 390000,
-    dailyRemaining: 234800,
-  },
-};
+import { createClient } from '@/lib/supabase/client';
 
 const PERIOD_LABELS: Record<string, string> = {
   today: 'اليوم', yesterday: 'أمس', week: 'هذا الأسبوع', month: 'هذا الشهر',
@@ -52,25 +21,108 @@ const colorMap: Record<string, { bg: string; icon: string }> = {
 
 function fmt(n: number) { return n.toLocaleString('en-US'); }
 
+type KPIData = {
+  totalOrders: number; shippingOrders: number; totalCollection: number;
+  netDeposit: number; pendingOrders: number; returnedOrders: number;
+  cashCollection: number; creditCollection: number; dailyDeposited: number;
+  dailyRemaining: number;
+};
+
+const EMPTY_KPI: KPIData = {
+  totalOrders: 0, shippingOrders: 0, totalCollection: 0,
+  netDeposit: 0, pendingOrders: 0, returnedOrders: 0,
+  cashCollection: 0, creditCollection: 0, dailyDeposited: 0,
+  dailyRemaining: 0,
+};
+
 export default function DashboardKPIs() {
   const [period, setPeriod] = useState<'today' | 'yesterday' | 'week' | 'month'>('today');
   const [lastRefresh, setLastRefresh] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showFilter, setShowFilter] = useState(false);
+  const [kpiData, setKpiData] = useState<KPIData>(EMPTY_KPI);
 
-  const data = PERIOD_DATA[period];
-
-  const refresh = useCallback(() => {
+  const refresh = useCallback(async () => {
     setIsRefreshing(true);
-    setTimeout(() => {
+    
+    try {
+      const supabase = createClient();
+      
+      const now = new Date();
+      let startDateStr = new Date().toISOString();
+      let endDateStr = new Date().toISOString();
+      
+      if (period === 'today') {
+        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        startDateStr = start.toISOString();
+        endDateStr = new Date(start.getTime() + 24 * 60 * 60 * 1000).toISOString();
+      } else if (period === 'yesterday') {
+        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+        startDateStr = start.toISOString();
+        endDateStr = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+      } else if (period === 'week') {
+        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7);
+        startDateStr = start.toISOString();
+        endDateStr = now.toISOString();
+      } else if (period === 'month') {
+        const start = new Date(now.getFullYear(), now.getMonth(), 1);
+        startDateStr = start.toISOString();
+        const end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+        endDateStr = end.toISOString();
+      }
+
+      // Fetch aggregated data manually since there are no direct RPC aggregations yet
+      const { data, error } = await supabase
+        .from('zahranship_orders')
+        .select('status, total, created_at')
+        .gte('created_at', startDateStr)
+        .lt('created_at', endDateStr);
+
+      if (!error && data) {
+        let totalOrders = 0;
+        let shippingOrders = 0;
+        let pendingOrders = 0;
+        let returnedOrders = 0;
+        let totalCollection = 0;
+        
+        data.forEach(order => {
+          totalOrders++;
+          if (order.status === 'shipping') shippingOrders++;
+          else if (order.status === 'new') pendingOrders++;
+          else if (order.status === 'returned') returnedOrders++;
+          
+          if (order.status !== 'cancelled' && order.status !== 'returned') {
+            totalCollection += Number(order.total || 0);
+          }
+        });
+
+        // Some stats are simulated for now as they're not in DB schema yet (like cash vs credit, deposit)
+        const dailyDeposited = Math.floor(totalCollection * 0.6); // mock 60%
+        
+        setKpiData({
+          totalOrders,
+          shippingOrders,
+          totalCollection,
+          netDeposit: totalCollection * 0.9,
+          pendingOrders,
+          returnedOrders,
+          cashCollection: Math.floor(totalCollection * 0.8),
+          creditCollection: totalCollection - Math.floor(totalCollection * 0.8),
+          dailyDeposited,
+          dailyRemaining: totalCollection - dailyDeposited,
+        });
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
       setIsRefreshing(false);
       const now = new Date();
       const h = now.getHours().toString().padStart(2, '0');
       const m = now.getMinutes().toString().padStart(2, '0');
       const s = now.getSeconds().toString().padStart(2, '0');
       setLastRefresh(`${h}:${m}:${s}`);
-    }, 600);
-  }, []);
+    }
+  }, [period]);
 
   useEffect(() => {
     refresh();
@@ -80,47 +132,47 @@ export default function DashboardKPIs() {
 
   const kpis = [
     {
-      id: 'total', title: 'إجمالي الأوردرات', value: fmt(data.totalOrders),
+      id: 'total', title: 'إجمالي الأوردرات', value: fmt(kpiData.totalOrders),
       sub: PERIOD_LABELS[period], color: 'blue', span: true,
       icon: '📦', change: period === 'today' ? 12.5 : 8.2,
     },
     {
-      id: 'shipping', title: 'جاري الشحن', value: fmt(data.shippingOrders),
+      id: 'shipping', title: 'جاري الشحن', value: fmt(kpiData.shippingOrders),
       sub: 'أوردر في الطريق', color: 'orange', span: false,
       icon: '🚚', change: 5.2,
     },
     {
-      id: 'collection', title: 'إجمالي التحصيل', value: fmt(data.totalCollection),
+      id: 'collection', title: 'إجمالي التحصيل', value: fmt(kpiData.totalCollection),
       sub: 'ج.م', color: 'green', span: false,
       icon: '💰', change: 8.7,
     },
     {
-      id: 'cash', title: 'تحصيل كاش', value: fmt(data.cashCollection),
+      id: 'cash', title: 'تحصيل كاش', value: fmt(kpiData.cashCollection),
       sub: 'ج.م نقداً', color: 'teal', span: false,
       icon: '💵', change: 6.3,
     },
     {
-      id: 'credit', title: 'تحصيل آجل', value: fmt(data.creditCollection),
+      id: 'credit', title: 'تحصيل آجل', value: fmt(kpiData.creditCollection),
       sub: 'ج.م آجل', color: 'indigo', span: false,
       icon: '🏦', change: -1.2,
     },
     {
-      id: 'deposited', title: 'تم التوريد', value: fmt(data.dailyDeposited),
+      id: 'deposited', title: 'تم التوريد', value: fmt(kpiData.dailyDeposited),
       sub: 'ج.م — تم توريده', color: 'purple', span: false,
       icon: '✅', change: 4.1,
     },
     {
-      id: 'remaining', title: 'المتبقي للتوريد', value: fmt(data.dailyRemaining),
+      id: 'remaining', title: 'المتبقي للتوريد', value: fmt(kpiData.dailyRemaining),
       sub: 'ج.م — لم يُوَرَّد', color: 'amber', span: false,
-      icon: '⏳', change: -3.5, alert: data.dailyRemaining > 8000,
+      icon: '⏳', change: -3.5, alert: kpiData.dailyRemaining > 8000,
     },
     {
-      id: 'pending', title: 'أوردرات معلقة', value: fmt(data.pendingOrders),
+      id: 'pending', title: 'أوردرات معلقة', value: fmt(kpiData.pendingOrders),
       sub: 'تحتاج مراجعة', color: 'red', span: false,
       icon: '⚠️', change: 40, alert: true,
     },
     {
-      id: 'returned', title: 'مرتجعات', value: fmt(data.returnedOrders),
+      id: 'returned', title: 'مرتجعات', value: fmt(kpiData.returnedOrders),
       sub: 'بانتظار معالجة', color: 'amber', span: false,
       icon: '↩️', change: 0,
     },
@@ -129,15 +181,15 @@ export default function DashboardKPIs() {
   const handleExport = () => {
     const rows = [
       ['المؤشر', 'القيمة', 'الفترة'],
-      ['إجمالي الأوردرات', data.totalOrders, PERIOD_LABELS[period]],
-      ['جاري الشحن', data.shippingOrders, PERIOD_LABELS[period]],
-      ['إجمالي التحصيل (ج.م)', data.totalCollection, PERIOD_LABELS[period]],
-      ['تحصيل كاش (ج.م)', data.cashCollection, PERIOD_LABELS[period]],
-      ['تحصيل آجل (ج.م)', data.creditCollection, PERIOD_LABELS[period]],
-      ['تم التوريد (ج.م)', data.dailyDeposited, PERIOD_LABELS[period]],
-      ['المتبقي للتوريد (ج.م)', data.dailyRemaining, PERIOD_LABELS[period]],
-      ['أوردرات معلقة', data.pendingOrders, PERIOD_LABELS[period]],
-      ['مرتجعات', data.returnedOrders, PERIOD_LABELS[period]],
+      ['إجمالي الأوردرات', kpiData.totalOrders, PERIOD_LABELS[period]],
+      ['جاري الشحن', kpiData.shippingOrders, PERIOD_LABELS[period]],
+      ['إجمالي التحصيل (ج.م)', kpiData.totalCollection, PERIOD_LABELS[period]],
+      ['تحصيل كاش (ج.م)', kpiData.cashCollection, PERIOD_LABELS[period]],
+      ['تحصيل آجل (ج.م)', kpiData.creditCollection, PERIOD_LABELS[period]],
+      ['تم التوريد (ج.م)', kpiData.dailyDeposited, PERIOD_LABELS[period]],
+      ['المتبقي للتوريد (ج.م)', kpiData.dailyRemaining, PERIOD_LABELS[period]],
+      ['أوردرات معلقة', kpiData.pendingOrders, PERIOD_LABELS[period]],
+      ['مرتجعات', kpiData.returnedOrders, PERIOD_LABELS[period]],
     ];
     const csv = rows.map(r => r.join(',')).join('\n');
     const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
@@ -274,28 +326,28 @@ export default function DashboardKPIs() {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="bg-gradient-to-l from-green-50 to-teal-50 border border-green-200 rounded-xl p-4">
           <p className="text-xs font-bold text-green-700 mb-1">إجمالي التحصيل اليومي</p>
-          <p className="text-2xl font-bold font-mono text-green-800">{fmt(data.totalCollection)} <span className="text-sm font-normal">ج.م</span></p>
+          <p className="text-2xl font-bold font-mono text-green-800">{fmt(kpiData.totalCollection)} <span className="text-sm font-normal">ج.م</span></p>
           <div className="flex gap-3 mt-2 text-xs">
-            <span className="text-teal-700">💵 كاش: <strong>{fmt(data.cashCollection)}</strong></span>
-            <span className="text-indigo-700">🏦 آجل: <strong>{fmt(data.creditCollection)}</strong></span>
+            <span className="text-teal-700">💵 كاش: <strong>{fmt(kpiData.cashCollection)}</strong></span>
+            <span className="text-indigo-700">🏦 آجل: <strong>{fmt(kpiData.creditCollection)}</strong></span>
           </div>
         </div>
         <div className="bg-gradient-to-l from-purple-50 to-blue-50 border border-purple-200 rounded-xl p-4">
           <p className="text-xs font-bold text-purple-700 mb-1">تم التوريد</p>
-          <p className="text-2xl font-bold font-mono text-purple-800">{fmt(data.dailyDeposited)} <span className="text-sm font-normal">ج.م</span></p>
+          <p className="text-2xl font-bold font-mono text-purple-800">{fmt(kpiData.dailyDeposited)} <span className="text-sm font-normal">ج.م</span></p>
           <div className="mt-2">
             <div className="w-full bg-purple-100 rounded-full h-1.5">
               <div
                 className="bg-purple-500 h-1.5 rounded-full transition-all"
-                style={{ width: `${Math.min(100, (data.dailyDeposited / data.totalCollection) * 100).toFixed(0)}%` }}
+                style={{ width: `${Math.min(100, kpiData.totalCollection ? (kpiData.dailyDeposited / kpiData.totalCollection) * 100 : 0).toFixed(0)}%` }}
               />
             </div>
-            <p className="text-[10px] text-purple-600 mt-1">{((data.dailyDeposited / data.totalCollection) * 100).toFixed(0)}% من الإجمالي</p>
+            <p className="text-[10px] text-purple-600 mt-1">{kpiData.totalCollection ? ((kpiData.dailyDeposited / kpiData.totalCollection) * 100).toFixed(0) : 0}% من الإجمالي</p>
           </div>
         </div>
         <div className="bg-gradient-to-l from-amber-50 to-orange-50 border border-amber-200 rounded-xl p-4">
           <p className="text-xs font-bold text-amber-700 mb-1">المتبقي للتوريد</p>
-          <p className="text-2xl font-bold font-mono text-amber-800">{fmt(data.dailyRemaining)} <span className="text-sm font-normal">ج.م</span></p>
+          <p className="text-2xl font-bold font-mono text-amber-800">{fmt(kpiData.dailyRemaining)} <span className="text-sm font-normal">ج.م</span></p>
           <p className="text-[10px] text-amber-600 mt-2">⏳ لم يُوَرَّد بعد — {PERIOD_LABELS[period]}</p>
         </div>
       </div>

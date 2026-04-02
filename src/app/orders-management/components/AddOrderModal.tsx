@@ -80,7 +80,7 @@ export const ADMIN_SETTINGS = {
   DISABLED_DISTRICTS: [] as string[],
 };
 
-const CURRENT_USER_ROLE: 'admin' | 'supervisor' | 'customer_service' | 'delegate' = 'customer_service';
+const CURRENT_USER_ROLE: string = 'customer_service';
 const IS_ADMIN = CURRENT_USER_ROLE === 'admin';
 
 function getDeviceType(): string {
@@ -411,21 +411,10 @@ export default function AddOrderModal({ onClose }: Props) {
       }),
     };
 
-    // Save to localStorage
-    try {
-      const existing = JSON.parse(localStorage.getItem('zahranship_orders') || '[]');
-      existing.unshift(newOrder);
-      localStorage.setItem('zahranship_orders', JSON.stringify(existing));
-      // Notify other components that orders have been updated
-      window.dispatchEvent(new CustomEvent('zahranship_orders_updated'));
-    } catch {
-      // ignore storage errors
-    }
-
-    // Save to Supabase for cross-origin tracking
+    // Save to Supabase
     try {
       const supabase = createClient();
-      await supabase.from('zahranship_orders').upsert({
+      const { error } = await supabase.from('zahranship_orders').upsert({
         id: newOrder.id,
         order_num: newOrder.orderNum,
         created_by: newOrder.createdBy,
@@ -451,14 +440,23 @@ export default function AddOrderModal({ onClose }: Props) {
         warranty: newOrder.warranty || null,
         lines: newOrder.lines || null,
       }, { onConflict: 'id' });
-    } catch {
-      // Supabase save failed, order still saved in localStorage
-    }
 
-    await new Promise((r) => setTimeout(r, 800));
-    setIsSubmitting(false);
-    setSuccessOrderNum(orderNum);
-    setOrderSuccess(true);
+      if (error) {
+        throw error;
+      }
+
+      // Notify other components that orders have been updated
+      window.dispatchEvent(new CustomEvent('zahranship_orders_updated'));
+      
+      await new Promise((r) => setTimeout(r, 800));
+      setIsSubmitting(false);
+      setSuccessOrderNum(orderNum);
+      setOrderSuccess(true);
+    } catch (err) {
+      console.error('Supabase save error:', err);
+      toast.error('حدث خطأ أثناء حفظ الأوردر في قاعدة البيانات');
+      setIsSubmitting(false);
+    }
   };
 
   const warrantyOptions = loadLS<string[]>('settings_warranty', ['بدون ضمان', '3 أشهر', '6 أشهر', 'سنة', 'سنتان']);

@@ -33,40 +33,8 @@ interface StoredRole {
   color?: string;
 }
 
-// Default employees always available as fallback
-const DEFAULT_EMPLOYEES: StoredEmployee[] = [
-  { id: 'e1', name: 'محمد الزهراني', username: 'admin', password: 'Admin@123', roleId: 'r1', status: 'active', createdAt: '01/01/2026' },
-  { id: 'e2', name: 'أحمد علي', username: 'ahmed.ali', password: 'Ahmed@2026', roleId: 'r3', status: 'active', createdAt: '15/01/2026' },
-  { id: 'e3', name: 'سارة محمود', username: 'sara.m', password: 'Sara@2026', roleId: 'r5', status: 'active', createdAt: '20/01/2026' },
-];
-
-// Default roles always available as fallback
-const DEFAULT_ROLES: StoredRole[] = [
-  { id: 'r1', name: 'مدير النظام', permissions: ['view_dashboard','view_orders','create_orders','edit_orders','delete_orders','update_status','view_shipping','manage_shipping','assign_courier','view_inventory','edit_inventory','view_reports','export_reports','manage_users','manage_roles','view_customers','manage_customers','customer_support','system_settings'] },
-  { id: 'r2', name: 'مشرف النظام', permissions: ['view_dashboard','view_orders','edit_orders','update_status','view_shipping','manage_shipping','view_inventory','view_reports','export_reports','manage_users'] },
-  { id: 'r3', name: 'مشرف شحن', permissions: ['view_dashboard','view_orders','create_orders','edit_orders','update_status','view_shipping','manage_shipping','assign_courier','view_inventory','view_reports'] },
-  { id: 'r4', name: 'مندوب شحن', permissions: ['view_orders','update_status','view_shipping'] },
-  { id: 'r5', name: 'مدير خدمة عملاء', permissions: ['view_dashboard','view_orders','view_shipping','view_reports','export_reports','view_customers','manage_customers','customer_support'] },
-  { id: 'r6', name: 'خدمة عملاء', permissions: ['view_orders','view_shipping','view_customers','customer_support'] },
-];
-
-// Static base credentials (email-based login)
-const BASE_CREDENTIALS = [
-  { roleId: 'r1', email: 'manager@turathmart.com', password: 'Turath@2026', label: 'مدير النظام' },
-  { roleId: 'r6', email: 'staff@turathmart.com', password: 'Staff@2026', label: 'خدمة عملاء' },
-  { roleId: 'r4', email: 'driver@turathmart.com', password: 'Driver@2026', label: 'مندوب شحن' },
-  { roleId: 'r2', email: 'supervisor@turathmart.com', password: 'Super@2026', label: 'مشرف النظام' },
-  { roleId: 'r1', email: 'manager@zahranship.com', password: 'Zahran@2026', label: 'مدير النظام' },
-  { roleId: 'r6', email: 'staff@zahranship.com', password: 'Staff@2026', label: 'خدمة عملاء' },
-  { roleId: 'r4', email: 'driver@zahranship.com', password: 'Driver@2026', label: 'مندوب شحن' },
-  { roleId: 'r2', email: 'supervisor@zahranship.com', password: 'Super@2026', label: 'مشرف النظام' },
-];
-
-const STATS = [
-  { icon: <Package size={22} />, value: '١٢,٤٨٧', label: 'أوردر محلّى' },
-  { icon: <Truck size={22} />, value: '٩٨.٢٪', label: 'نسبة التسليم' },
-  { icon: <BarChart3 size={22} />, value: '٣ مناطق', label: 'تغطية القاهرة الكبرى' },
-];
+import { useAuth } from '@/contexts/AuthContext';
+import { createClient } from '@/lib/supabase/client';
 
 function getDeviceType(): string {
   const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
@@ -81,55 +49,19 @@ function DeviceIcon({ device }: { device: string }) {
   return <Monitor size={14} className="text-[hsl(var(--muted-foreground))]" />;
 }
 
-// Load roles from localStorage, merge with defaults
-function loadAllRoles(): StoredRole[] {
-  if (typeof window === 'undefined') return DEFAULT_ROLES;
-  try {
-    const raw = localStorage.getItem('turath_roles');
-    if (!raw) return DEFAULT_ROLES;
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed) || parsed.length === 0) return DEFAULT_ROLES;
-    const storedIds = new Set(parsed.map((r: StoredRole) => r.id));
-    return [...parsed, ...DEFAULT_ROLES.filter(r => !storedIds.has(r.id))];
-  } catch {
-    return DEFAULT_ROLES;
-  }
-}
-
-// Load employees from localStorage, merge with defaults
-function loadAllEmployees(): StoredEmployee[] {
-  if (typeof window === 'undefined') return DEFAULT_EMPLOYEES;
-  try {
-    const raw = localStorage.getItem('turath_employees');
-    if (!raw) return DEFAULT_EMPLOYEES;
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return DEFAULT_EMPLOYEES;
-    const storedIds = new Set(parsed.map((e: StoredEmployee) => e.id));
-    return [...parsed, ...DEFAULT_EMPLOYEES.filter(e => !storedIds.has(e.id))];
-  } catch {
-    return DEFAULT_EMPLOYEES;
-  }
-}
-
-// Determine role type string from roleId (for legacy routing)
-function getRoleTypeFromId(roleId: string): string {
-  if (roleId === 'r1') return 'manager';
-  const roles = loadAllRoles();
-  const role = roles.find(r => r.id === roleId);
-  if (!role) return 'data_entry';
-  const perms = role.permissions;
-  if (perms.includes('system_settings') && perms.includes('manage_roles')) return 'manager';
-  if (perms.includes('view_dashboard') && perms.includes('manage_users')) return 'supervisor';
-  if (perms.includes('view_shipping') && !perms.includes('view_dashboard')) return 'shipping';
-  if (perms.includes('view_dashboard')) return 'supervisor';
-  return 'data_entry';
-}
-
 export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [deviceType, setDeviceType] = useState('كمبيوتر');
+  
+  const { signIn } = useAuth();
+
+  const STATS = [
+    { icon: <Package className="w-8 h-8" />, value: '+5,000', label: 'طلب شهري' },
+    { icon: <Truck className="w-8 h-8" />, value: '98%', label: 'نسبة التوصيل' },
+    { icon: <BarChart3 className="w-8 h-8" />, value: '4.9', label: 'تقييم العملاء' },
+  ];
 
   useEffect(() => {
     setDeviceType(getDeviceType());
@@ -147,69 +79,36 @@ export default function LoginPage() {
     setIsLoading(true);
     setLoginError('');
 
-    const inputValue = data.email.trim();
-    const inputPassword = data.password;
+    try {
+      const authData = await signIn(data.email.trim(), data.password);
+      
+      const supabase = createClient();
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', authData.user.id)
+        .single();
 
-    // ── Step 1: Check base credentials (email-based static list) ──────────────
-    const validBase = BASE_CREDENTIALS.find(
-      (c) => c.email === inputValue && c.password === inputPassword
-    );
+      const userRole = profile?.role || 'employee';
 
-    if (validBase) {
-      const roleType = getRoleTypeFromId(validBase.roleId);
-      const permissions = getPermissionsForRoleId(validBase.roleId);
-      const redirect = getDefaultRouteForPermissions(permissions);
-
+      // Setting localStorage purely for Legacy AuthContext support
       if (typeof window !== 'undefined') {
         localStorage.setItem('current_user', JSON.stringify({
-          email: validBase.email,
-          name: validBase.label,
-          role: roleType,
-          roleId: validBase.roleId,
+          email: authData.user.email,
+          name: authData.user.user_metadata?.full_name || 'مستخدم',
+          role: userRole,
+          roleId: userRole === 'admin' ? 'r1' : 'r3', 
         }));
       }
-      toast.success(`مرحباً! تم تسجيل الدخول كـ ${validBase.label} — ${deviceType}`);
-      setTimeout(() => { window.location.href = redirect; }, 800);
+
+      toast.success(`مرحباً! تم تسجيل الدخول — ${deviceType}`);
+      setTimeout(() => { window.location.href = '/dashboard'; }, 800);
+    } catch (err: any) {
+      setLoginError('بيانات الدخول غير صحيحة. تأكد من البريد الإلكتروني وكلمة المرور');
+      toast.error('فشل تسجيل الدخول — تحقق من البيانات');
+    } finally {
       setIsLoading(false);
-      return;
     }
-
-    // ── Step 2: Check employees (username or email) ────────────────────────────
-    const allEmployees = loadAllEmployees();
-
-    const emp = allEmployees.find(
-      (e) =>
-        e.status === 'active' &&
-        e.password === inputPassword &&
-        (
-          e.username === inputValue ||
-          e.username === inputValue.split('@')[0] ||
-          (e.email && e.email === inputValue)
-        )
-    );
-
-    if (emp) {
-      const roleType = getRoleTypeFromId(emp.roleId);
-      const permissions = getPermissionsForRoleId(emp.roleId);
-      const redirect = getDefaultRouteForPermissions(permissions);
-
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('current_user', JSON.stringify({
-          email: inputValue,
-          name: emp.name,
-          role: roleType,
-          roleId: emp.roleId,
-        }));
-      }
-      toast.success(`مرحباً ${emp.name}! تم تسجيل الدخول — ${deviceType}`);
-      setTimeout(() => { window.location.href = redirect; }, 800);
-      setIsLoading(false);
-      return;
-    }
-
-    setLoginError('بيانات الدخول غير صحيحة. تأكد من اسم المستخدم وكلمة المرور');
-    toast.error('فشل تسجيل الدخول — تحقق من البيانات');
-    setIsLoading(false);
   };
 
   return (
