@@ -66,7 +66,7 @@ interface Props {
 export function getAuditLogs(orderId: string): AuditEntry[] {
   if (typeof window === 'undefined') return [];
   try {
-    const all = JSON.parse(localStorage.getItem('zahranship_audit_logs') || '[]') as AuditEntry[];
+    const all = JSON.parse(localStorage.getItem('turath_masr_audit_logs') || '[]') as AuditEntry[];
     return all
       .filter((e) => e.orderId === orderId)
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -78,7 +78,7 @@ export function getAuditLogs(orderId: string): AuditEntry[] {
 export function addAuditLog(entry: Omit<AuditEntry, 'id' | 'createdAt'>) {
   if (typeof window === 'undefined') return;
   try {
-    const all = JSON.parse(localStorage.getItem('zahranship_audit_logs') || '[]') as AuditEntry[];
+    const all = JSON.parse(localStorage.getItem('turath_masr_audit_logs') || '[]') as AuditEntry[];
     const newEntry: AuditEntry = {
       ...entry,
       id: `audit-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -87,9 +87,9 @@ export function addAuditLog(entry: Omit<AuditEntry, 'id' | 'createdAt'>) {
     all.unshift(newEntry);
     // Keep last 500 entries
     const trimmed = all.slice(0, 500);
-    localStorage.setItem('zahranship_audit_logs', JSON.stringify(trimmed));
+    localStorage.setItem('turath_masr_audit_logs', JSON.stringify(trimmed));
     window.dispatchEvent(
-      new CustomEvent('zahranship_audit_updated', { detail: { orderId: entry.orderId } })
+      new CustomEvent('turath_masr_audit_updated', { detail: { orderId: entry.orderId } })
     );
   } catch {}
 }
@@ -105,8 +105,8 @@ export default function AuditLogModal({ orderId, orderNum, onClose }: Props) {
       const detail = (e as CustomEvent).detail;
       if (!detail?.orderId || detail.orderId === orderId) loadLogs();
     };
-    window.addEventListener('zahranship_audit_updated', handler);
-    return () => window.removeEventListener('zahranship_audit_updated', handler);
+    window.addEventListener('turath_masr_audit_updated', handler);
+    return () => window.removeEventListener('turath_masr_audit_updated', handler);
   }, [orderId]);
 
   const formatDate = (iso: string) => {

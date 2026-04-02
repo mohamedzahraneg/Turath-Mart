@@ -119,7 +119,7 @@ export default function ReportsPage() {
       try {
         const supabase = createClient();
         const { data, error } = await supabase
-          .from('zahranship_orders')
+          .from('turath_masr_orders')
           .select('id, created_at, status, total, shipping_fee, products, region')
           .order('created_at', { ascending: true });
 

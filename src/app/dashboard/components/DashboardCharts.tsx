@@ -76,7 +76,7 @@ export default function DashboardCharts() {
         const eightDaysAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7);
 
         const { data: rawOrders, error } = await supabase
-          .from('zahranship_orders')
+          .from('turath_masr_orders')
           .select('created_at, status, total, region')
           .gte('created_at', eightDaysAgo.toISOString())
           .order('created_at', { ascending: true });

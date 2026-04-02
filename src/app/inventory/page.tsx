@@ -445,8 +445,8 @@ export default function InventoryPage() {
       const supabase = createClient();
 
       const [invRes, ordRes] = await Promise.all([
-        supabase.from('zahranship_inventory').select('*').order('created_at', { ascending: false }),
-        supabase.from('zahranship_orders').select('products, status'),
+        supabase.from('turath_masr_inventory').select('*').order('created_at', { ascending: false }),
+        supabase.from('turath_masr_orders').select('products, status'),
       ]);
 
       if (!invRes.error && invRes.data) {
@@ -518,9 +518,9 @@ export default function InventoryPage() {
       };
 
       if (item.id.startsWith('inv-')) {
-        await supabase.from('zahranship_inventory').insert([dbItem]);
+        await supabase.from('turath_masr_inventory').insert([dbItem]);
       } else {
-        await supabase.from('zahranship_inventory').update(dbItem).eq('id', item.id);
+        await supabase.from('turath_masr_inventory').update(dbItem).eq('id', item.id);
       }
       fetchInventoryAndOrders();
       setEditItem(undefined);
@@ -531,7 +531,7 @@ export default function InventoryPage() {
 
   const handleDelete = async (id: string) => {
     const supabase = createClient();
-    await supabase.from('zahranship_inventory').delete().eq('id', id);
+    await supabase.from('turath_masr_inventory').delete().eq('id', id);
     fetchInventoryAndOrders();
   };
 

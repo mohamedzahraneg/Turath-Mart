@@ -130,7 +130,7 @@ function exportToCSV(orders: Order[]) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `zahranship-orders-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = `turath_masr-orders-${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -160,7 +160,7 @@ function exportToPDF(orders: Order[]) {
     .join('');
   win.document.write(`
     <!DOCTYPE html><html dir="rtl" lang="ar">
-    <head><meta charset="UTF-8"><title>تقرير الأوردرات - Turath Mart</title>
+    <head><meta charset="UTF-8"><title>تقرير الأوردرات - Turath Masr</title>
     <style>
       body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;direction:rtl;padding:20px;font-size:12px;}
       h1{font-size:20px;margin-bottom:4px;color:#1e3a5f;}
@@ -172,7 +172,7 @@ function exportToPDF(orders: Order[]) {
       @media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
     </style></head>
     <body>
-      <h1>Turath Mart — تقرير الأوردرات</h1>
+      <h1>Turath Masr — تقرير الأوردرات</h1>
       <p class="sub">تاريخ التصدير: ${new Date().toLocaleDateString('en-US')} — إجمالي: ${orders.length} أوردر</p>
       <table>
         <thead><tr><th>رقم الأوردر</th><th>العميل</th><th>الموبايل</th><th>المنطقة</th><th>المنتجات</th><th>الكمية</th><th>الإجمالي</th><th>الحالة</th><th>التاريخ والوقت</th></tr></thead>
@@ -210,7 +210,7 @@ export default function OrdersTableSection() {
     try {
       const supabase = createClient();
       const { data, error } = await supabase
-        .from('zahranship_orders')
+        .from('turath_masr_orders')
         .select('*')
         .order('created_at', { ascending: false });
 
@@ -267,7 +267,7 @@ export default function OrdersTableSection() {
         })
       );
     };
-    window.addEventListener('zahranship_orders_updated', handleUpdate);
+    window.addEventListener('turath_masr_orders_updated', handleUpdate);
     window.addEventListener('storage', handleUpdate);
 
     // Poll Supabase every 15 seconds for new orders from other sessions
@@ -276,7 +276,7 @@ export default function OrdersTableSection() {
     }, 15000);
 
     return () => {
-      window.removeEventListener('zahranship_orders_updated', handleUpdate);
+      window.removeEventListener('turath_masr_orders_updated', handleUpdate);
       window.removeEventListener('storage', handleUpdate);
       clearInterval(interval);
     };

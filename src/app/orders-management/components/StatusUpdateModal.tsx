@@ -120,7 +120,7 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
     try {
       const supabase = createClient();
       const { error } = await supabase
-        .from('zahranship_orders')
+        .from('turath_masr_orders')
         .update({ status: data.newStatus })
         .eq('order_num', order.orderNum);
 
@@ -129,7 +129,7 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
       }
 
       // Create a system notification
-      await supabase.from('zahranship_notifications').insert({
+      await supabase.from('turath_masr_notifications').insert({
         type: 'status_change',
         title: 'تحديث حالة الأوردر 🔄',
         message: `تم تغيير حالة الأوردر ${order.orderNum} إلى ${statusLabel}`,
@@ -138,7 +138,7 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
         created_by: user.name,
       });
 
-      window.dispatchEvent(new CustomEvent('zahranship_orders_updated'));
+      window.dispatchEvent(new CustomEvent('turath_masr_orders_updated'));
     } catch (err) {
       console.error('Supabase update error:', err);
       toast.error('حدث خطأ أثناء تحديث الحالة في قاعدة البيانات');

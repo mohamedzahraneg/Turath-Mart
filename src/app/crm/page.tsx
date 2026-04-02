@@ -118,7 +118,7 @@ function SupportChatPanel({ customer, onClose }: { customer: Customer; onClose: 
 
   const fetchMessages = useCallback(async () => {
     const { data, error } = await supabase
-      .from('zahranship_crm_chat')
+      .from('turath_masr_crm_chat')
       .select('*')
       .eq('customer_phone', customer.phone)
       .order('created_at', { ascending: true });
@@ -136,7 +136,7 @@ function SupportChatPanel({ customer, onClose }: { customer: Customer; onClose: 
         {
           event: 'INSERT',
           schema: 'public',
-          table: 'zahranship_crm_chat',
+          table: 'turath_masr_crm_chat',
           filter: `customer_phone=eq.${customer.phone}`,
         },
         (payload) => {
@@ -158,7 +158,7 @@ function SupportChatPanel({ customer, onClose }: { customer: Customer; onClose: 
     const msg = input.trim();
     setInput('');
     const { error } = await supabase
-      .from('zahranship_crm_chat')
+      .from('turath_masr_crm_chat')
       .insert({ customer_phone: customer.phone, sender: 'support', message: msg });
 
     if (error) console.error(error);
@@ -263,7 +263,7 @@ function ComplaintModal({
     if (!subject) return;
     setLoading(true);
     const { error } = await supabase
-      .from('zahranship_crm_complaints')
+      .from('turath_masr_crm_complaints')
       .insert({ customer_phone: customer.phone, subject, notes, status });
 
     if (!error) {
@@ -362,13 +362,13 @@ export default function CRMPage() {
 
       // 1. Fetch Orders to build customer profiles
       const { data: oData } = await supabase
-        .from('zahranship_orders')
+        .from('turath_masr_orders')
         .select('*')
         .order('created_at', { ascending: false });
 
       // 2. Fetch all Complaints
       const { data: cData } = await supabase
-        .from('zahranship_crm_complaints')
+        .from('turath_masr_crm_complaints')
         .select('*')
         .order('created_at', { ascending: false });
 

@@ -198,8 +198,8 @@ export default function LoginPage() {
           <div className="flex items-center gap-3 mb-12">
             <AppLogo size={48} />
             <div>
-              <h1 className="text-3xl font-bold text-white tracking-tight">تراث مارت</h1>
-              <p className="text-amber-200 text-sm">Turath Mart — نظام الإدارة المتكامل</p>
+              <h1 className="text-3xl font-bold text-white tracking-tight">تراث مصر</h1>
+              <p className="text-amber-200 text-sm">Turath Masr — نظام الإدارة المتكامل</p>
             </div>
           </div>
 
@@ -240,13 +240,13 @@ export default function LoginPage() {
           {/* Mobile logo */}
           <div className="flex items-center gap-2 mb-8 lg:hidden">
             <AppLogo size={36} />
-            <span className="font-bold text-xl text-[hsl(var(--primary))]">تراث مارت</span>
+            <span className="font-bold text-xl text-[hsl(var(--primary))]">تراث مصر</span>
           </div>
 
           <div className="mb-8">
             <h2 className="text-2xl font-bold text-[hsl(var(--foreground))]">تسجيل الدخول</h2>
             <p className="text-[hsl(var(--muted-foreground))] text-sm mt-1">
-              أدخل بياناتك للوصول إلى نظام تراث مارت
+              أدخل بياناتك للوصول إلى نظام تراث مصر
             </p>
           </div>
 
@@ -343,7 +343,7 @@ export default function LoginPage() {
           </form>
 
           <p className="text-center text-xs text-[hsl(var(--muted-foreground))] mt-8">
-            تراث مارت — Turath Mart &copy; {new Date().getFullYear()}
+            تراث مصر — Turath Masr &copy; {new Date().getFullYear()}
           </p>
         </div>
       </div>

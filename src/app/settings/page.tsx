@@ -7,29 +7,24 @@ import {
   Bell,
   Palette,
   Save,
-  ChevronLeft,
   Globe,
   Phone,
   Mail,
   MapPin,
   Lock,
-  Eye,
-  EyeOff,
-  Package,
-  ToggleLeft,
-  ToggleRight,
-  Image as ImageIcon,
-  Shield,
   MessageCircle,
   Clock,
   Loader2,
+  Plus,
+  Trash2,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 
 type TabKey =
   | 'company'
   | 'shipping'
-  | 'products'
   | 'districts'
   | 'notifications'
   | 'appearance'
@@ -45,8 +40,7 @@ interface Tab {
 const tabs: Tab[] = [
   { id: 'company', label: 'بيانات الشركة', icon: <Building2 size={18} /> },
   { id: 'shipping', label: 'إعدادات الشحن', icon: <Truck size={18} /> },
-  { id: 'products', label: 'المنتجات والأسعار', icon: <Package size={18} /> },
-  { id: 'districts', label: 'المناطق', icon: <MapPin size={18} /> },
+  { id: 'districts', label: 'المناطق والشحن', icon: <MapPin size={18} /> },
   { id: 'notifications', label: 'الإشعارات', icon: <Bell size={18} /> },
   { id: 'whatsapp', label: 'رسالة الواتساب', icon: <MessageCircle size={18} /> },
   { id: 'appearance', label: 'المظهر', icon: <Palette size={18} /> },
@@ -57,7 +51,7 @@ const DEFAULT_WA_TEMPLATE = `مرحبا {customerName}،
 تم استلام طلبك رقم {orderNum} بإجمالي {total} ج.م.
 يمكنك تتبع شحنتك عبر الرابط: {trackingLink}
 سيتواصل معك المندوب قريباً.
-شكراً لثقتك في Turath Mart 🚚`;
+شكراً لثقتك في Turath Masr 🚚`;
 
 // ─── Shared Storage Hook ──────────────────────────────────────────────────────
 
@@ -71,7 +65,7 @@ function useSettingsSync<T>(key: string, initial: T) {
 
   const load = useCallback(async () => {
     const { data: row, error } = await supabase
-      .from('zahranship_settings')
+      .from('turath_masr_settings')
       .select('value')
       .eq('key', key)
       .single();
@@ -79,18 +73,18 @@ function useSettingsSync<T>(key: string, initial: T) {
       setData(row.value as T);
     }
     setLoading(false);
-  }, [key, supabase]);
+  }, [key]);
 
   const save = async (newData?: T) => {
     setSaving(true);
-    const toSave = newData || data;
+    const toSave = newData !== undefined ? newData : data;
     const { error } = await supabase
-      .from('zahranship_settings')
+      .from('turath_masr_settings')
       .upsert({ key, value: toSave, updated_at: new Date().toISOString() });
     if (!error) {
       setSuccess(true);
       setTimeout(() => setSuccess(false), 2000);
-      if (newData) setData(newData);
+      if (newData !== undefined) setData(newData);
     }
     setSaving(false);
   };
@@ -285,78 +279,28 @@ function ShippingTab() {
   );
 }
 
-// ─── Products Tab ─────────────────────────────────────────────────────────────
-function ProductsTab() {
+// ─── Districts Tab ────────────────────────────────────────────────────────────
+interface Region {
+  id: string;
+  name: string;
+  fee: number;
+  districts: string[];
+}
+
+function DistrictsTab() {
   const {
-    data: products,
-    setData: setProducts,
+    data: regions,
+    setData: setRegions,
     loading,
     saving,
     success,
     save,
-  } = useSettingsSync('settings_products', [
-    {
-      value: 'holder',
-      label: 'حامل مصحف',
-      basePrice: 300,
-      emoji: '📿',
-      hasColor: true,
-      enabled: true,
-      image: '',
-    },
-    {
-      value: 'flashlight',
-      label: 'كشاف',
-      basePrice: 150,
-      emoji: '🔦',
-      hasColor: false,
-      enabled: true,
-      image: '',
-    },
-    {
-      value: 'chair',
-      label: 'كرسي',
-      basePrice: 600,
-      emoji: '🪑',
-      hasColor: false,
-      enabled: true,
-      image: '',
-    },
-    {
-      value: 'quran',
-      label: 'مصحف',
-      basePrice: 140,
-      emoji: '📖',
-      hasColor: false,
-      enabled: true,
-      image: '',
-    },
-    {
-      value: 'kaaba',
-      label: 'كعبة',
-      basePrice: 450,
-      emoji: '🕋',
-      hasColor: false,
-      enabled: true,
-      image: '',
-    },
+  } = useSettingsSync<Region[]>('settings_regions', [
+    { id: '1', name: 'القاهرة', fee: 50, districts: ['مدينة نصر', 'المعادي', 'التجمع'] },
+    { id: '2', name: 'الجيزة', fee: 50, districts: ['الدقي', 'الهرم', 'فيصل'] },
   ]);
 
-  const fileRefs = useRef<Record<string, HTMLInputElement | null>>({});
-
-  const handleImageUpload = (idx: number, e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      if (ev.target?.result) {
-        const updated = [...products];
-        updated[idx] = { ...updated[idx], image: ev.target!.result as string };
-        setProducts(updated);
-      }
-    };
-    reader.readAsDataURL(file);
-  };
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   if (loading)
     return (
@@ -365,94 +309,150 @@ function ProductsTab() {
       </div>
     );
 
+  const addRegion = () => {
+    const newRegion: Region = {
+      id: Date.now().toString(),
+      name: 'محافظة جديدة',
+      fee: 50,
+      districts: [],
+    };
+    setRegions([...regions, newRegion]);
+    setExpanded(newRegion.id);
+  };
+
+  const removeRegion = (id: string) => {
+    setRegions(regions.filter((r) => r.id !== id));
+  };
+
+  const updateRegion = (id: string, patch: Partial<Region>) => {
+    setRegions(regions.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  };
+
   return (
     <div className="space-y-8 fade-in">
-      <div className="bg-amber-50/50 border-2 border-amber-100 rounded-[2rem] p-6 text-sm text-amber-800 flex items-start gap-4">
-        <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-600 flex items-center justify-center flex-shrink-0">
-          <Package size={20} />
-        </div>
+      <div className="flex items-center justify-between">
         <div>
-          <p className="font-black text-lg tracking-tight mb-1">كاتالوج المنتجات الافتراضي</p>
-          <p className="text-xs text-amber-600/70 font-medium">
-            تعديل الأسعار والصور هنا يتم مزامنته تلقائياً مع جميع شاشات إضافة الطلبات.
+          <h3 className="text-xl font-black text-gray-900">المناطق وتكاليف الشحن</h3>
+          <p className="text-xs text-gray-500 font-bold uppercase tracking-widest mt-1">
+            تخصيص أسعار شحن مختلفة لكل محافظة ومنطقة
           </p>
         </div>
+        <button
+          onClick={addRegion}
+          className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-xl text-xs font-black hover:bg-gray-800 transition-all active:scale-95"
+        >
+          <Plus size={14} />
+          إضافة محافظة
+        </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {products.map((product, i) => (
+      <div className="space-y-4">
+        {regions.map((region) => (
           <div
-            key={product.value}
-            className="bg-white border-2 border-gray-50 rounded-3xl p-6 hover:shadow-xl transition-all group flex flex-col gap-6"
+            key={region.id}
+            className={`border-2 rounded-[2rem] transition-all overflow-hidden ${expanded === region.id ? 'border-blue-500 bg-white shadow-xl' : 'border-gray-50 bg-gray-50/30 hover:border-gray-100 hover:bg-gray-50/50'}`}
           >
-            <div className="flex items-center gap-5">
-              <div className="relative">
-                <div className="w-16 h-16 rounded-2xl bg-gray-50 border-2 border-dashed border-gray-100 overflow-hidden flex items-center justify-center transition-all group-hover:scale-105 group-hover:bg-amber-50">
-                  {product.image ? (
-                    <img
-                      src={product.image}
-                      className="w-full h-full object-cover"
-                      alt={product.label}
-                    />
-                  ) : (
-                    <span className="text-3xl grayscale group-hover:grayscale-0 transition-all">
-                      {product.emoji}
-                    </span>
-                  )}
-                </div>
-                <button
-                  onClick={() => fileRefs.current[product.value]?.click()}
-                  className="absolute -bottom-2 -right-2 w-8 h-8 bg-amber-600 text-white rounded-xl flex items-center justify-center shadow-lg hover:bg-amber-700 active:scale-90 transition-all"
+            <div
+              onClick={() => setExpanded(expanded === region.id ? null : region.id)}
+              className="px-8 py-6 flex items-center justify-between cursor-pointer"
+            >
+              <div className="flex items-center gap-6">
+                <div
+                  className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black ${expanded === region.id ? 'bg-blue-600 text-white' : 'bg-white text-gray-400 border border-gray-100'}`}
                 >
-                  <ImageIcon size={14} />
-                </button>
-                <input
-                  ref={(el) => {
-                    fileRefs.current[product.value] = el;
+                  <MapPin size={20} />
+                </div>
+                <div>
+                  <h4 className="font-black text-gray-900">{region.name}</h4>
+                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-0.5">
+                    {region.districts.length} منطقة — {region.fee} ج.م شحن
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removeRegion(region.id);
                   }}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(e) => handleImageUpload(i, e)}
-                />
+                  className="p-2 text-gray-400 hover:text-red-500 transition-colors"
+                >
+                  <Trash2 size={18} />
+                </button>
+                {expanded === region.id ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
               </div>
-              <div className="flex-1">
-                <h4 className="font-black text-gray-900 uppercase tracking-tight">
-                  {product.label}
-                </h4>
-                <p className="text-[10px] font-bold text-gray-400 tracking-[0.1em]">
-                  {product.hasColor ? 'متعدد الألوان' : 'قطعة أساسية'}
-                </p>
-              </div>
-              <button
-                onClick={() => {
-                  const updated = [...products];
-                  updated[i].enabled = !updated[i].enabled;
-                  setProducts(updated);
-                }}
-                className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${product.enabled ? 'bg-emerald-50 text-emerald-600' : 'bg-gray-100 text-gray-400'}`}
-              >
-                {product.enabled ? <ToggleRight size={24} /> : <ToggleLeft size={24} />}
-              </button>
             </div>
 
-            <div className="flex items-center gap-4 bg-gray-50/50 p-4 rounded-2xl">
-              <label className="text-xs font-black text-gray-400 uppercase whitespace-nowrap">
-                السعر الأساسي
-              </label>
-              <input
-                type="number"
-                value={product.basePrice}
-                onChange={(e) => {
-                  const updated = [...products];
-                  updated[i].basePrice = Number(e.target.value);
-                  setProducts(updated);
-                }}
-                className="flex-1 bg-transparent border-b-2 border-gray-100 focus:border-amber-500/50 text-sm font-mono font-black outline-none px-2 py-1 text-center"
-                dir="ltr"
-              />
-              <span className="text-[10px] font-bold text-gray-400 uppercase">ج.م</span>
-            </div>
+            {expanded === region.id && (
+              <div className="px-8 pb-8 space-y-6 fade-in">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-gray-400 uppercase px-1">
+                      اسم المحافظة
+                    </label>
+                    <input
+                      type="text"
+                      value={region.name}
+                      onChange={(e) => updateRegion(region.id, { name: e.target.value })}
+                      className="w-full px-4 py-3 bg-gray-50 border-2 border-gray-50 rounded-2xl text-sm font-bold focus:outline-none focus:border-blue-500/50 transition-all"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-gray-400 uppercase px-1">
+                      تكلفة الشحن لهذه المحافظة
+                    </label>
+                    <input
+                      type="number"
+                      value={region.fee}
+                      onChange={(e) => updateRegion(region.id, { fee: Number(e.target.value) })}
+                      className="w-full px-4 py-3 bg-gray-50 border-2 border-gray-50 rounded-2xl text-sm font-bold focus:outline-none focus:border-blue-500/50 transition-all font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-black text-gray-400 uppercase px-1">
+                      المناطق والأحياء
+                    </label>
+                    <button
+                      onClick={() =>
+                        updateRegion(region.id, { districts: [...region.districts, ''] })
+                      }
+                      className="text-[10px] font-black text-blue-600 hover:text-blue-700 transition-colors"
+                    >
+                      + إضافة منطقة
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                    {region.districts.map((district, idx) => (
+                      <div key={idx} className="relative group">
+                        <input
+                          type="text"
+                          value={district}
+                          onChange={(e) => {
+                            const newDistricts = [...region.districts];
+                            newDistricts[idx] = e.target.value;
+                            updateRegion(region.id, { districts: newDistricts });
+                          }}
+                          className="w-full pl-4 pr-10 py-3 bg-white border-2 border-gray-100 rounded-xl text-xs font-medium focus:outline-none focus:border-blue-500/30 transition-all"
+                          placeholder="اسم المنطقة..."
+                        />
+                        <button
+                          onClick={() => {
+                            const newDistricts = region.districts.filter((_, i) => i !== idx);
+                            updateRegion(region.id, { districts: newDistricts });
+                          }}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 hover:text-red-500 transition-colors"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -460,7 +460,7 @@ function ProductsTab() {
       <button
         disabled={saving}
         onClick={() => save()}
-        className={`flex items-center gap-3 px-8 py-4 rounded-2xl text-sm font-black transition-all shadow-lg active:scale-95 ${success ? 'bg-green-500 text-white shadow-green-100' : 'bg-amber-600 text-white shadow-amber-100 hover:bg-amber-700'}`}
+        className={`flex items-center gap-3 px-8 py-4 rounded-2xl text-sm font-black transition-all shadow-lg active:scale-95 ${success ? 'bg-green-500 text-white shadow-green-100' : 'bg-gray-900 text-white shadow-gray-200 hover:bg-gray-800'}`}
       >
         {saving ? (
           <Loader2 className="animate-spin" size={18} />
@@ -469,7 +469,111 @@ function ProductsTab() {
         ) : (
           <Save size={18} />
         )}
-        {success ? 'تم حفظ التعديلات' : 'تحديث قائمة المنتجات'}
+        {success ? 'تم حفظ المناطق بنجاح' : 'حفظ إعدادات المناطق'}
+      </button>
+    </div>
+  );
+}
+
+// ─── WhatsApp Tab ─────────────────────────────────────────────────────────────
+function WhatsAppTab() {
+  const {
+    data: template,
+    setData: setTemplate,
+    loading,
+    saving,
+    success,
+    save,
+  } = useSettingsSync('settings_whatsapp_template', DEFAULT_WA_TEMPLATE);
+
+  if (loading)
+    return (
+      <div className="p-10 flex justify-center">
+        <Loader2 className="animate-spin text-gray-300" />
+      </div>
+    );
+
+  const placeholders = [
+    { key: '{customerName}', label: 'اسم العميل' },
+    { key: '{orderNum}', label: 'رقم الأوردر' },
+    { key: '{total}', label: 'إجمالي المبلغ' },
+    { key: '{trackingLink}', label: 'رابط التتبع' },
+  ];
+
+  return (
+    <div className="space-y-8 fade-in">
+      <div>
+        <h3 className="text-xl font-black text-gray-900">قالب رسالة الواتساب</h3>
+        <p className="text-xs text-gray-500 font-bold uppercase tracking-widest mt-1">
+          هذه الرسالة تظهر للموظف عند الضغط على أيقونة الواتساب للأوردرات
+        </p>
+      </div>
+
+      <div className="flex flex-col lg:flex-row gap-8">
+        <div className="flex-1 space-y-4">
+          <div className="relative group">
+            <textarea
+              value={template}
+              onChange={(e) => setTemplate(e.target.value)}
+              className="w-full h-80 px-6 py-6 bg-gray-50 border-2 border-gray-50 rounded-[2rem] text-sm font-medium focus:outline-none focus:border-green-500/50 focus:bg-white transition-all leading-relaxed resize-none"
+              dir="rtl"
+            />
+            <div className="absolute top-6 left-6 text-green-500">
+              <MessageCircle size={24} />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            {placeholders.map((p) => (
+              <button
+                key={p.key}
+                onClick={() => setTemplate(template + p.key)}
+                className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-[10px] font-black text-gray-600 transition-all"
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="lg:w-80 flex-shrink-0">
+          <div className="bg-[#E4F2E4] rounded-[2.5rem] p-6 relative overflow-hidden h-full">
+            <div className="absolute top-0 right-0 p-4 opacity-10">
+              <MessageCircle size={100} className="text-green-900" />
+            </div>
+            <div className="relative z-10 space-y-4">
+              <p className="text-[10px] font-black text-green-800/50 uppercase tracking-widest">
+                استعراض الرسالة (تجريبي)
+              </p>
+              <div className="bg-white rounded-2xl p-4 shadow-sm text-xs leading-relaxed text-gray-700 whitespace-pre-wrap border-r-4 border-green-500">
+                {template
+                  .replace('{customerName}', 'محمد الزهراني')
+                  .replace('{orderNum}', '2603271')
+                  .replace('{total}', '1450')
+                  .replace('{trackingLink}', 'turathmasr.com/track/2603271')}
+              </div>
+              <div className="pt-4 flex items-center gap-2 text-[10px] font-bold text-green-800/40">
+                <Clock size={12} />
+                <span>يتم التحديث فورياً أثناء الكتابة</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <button
+        disabled={saving}
+        onClick={() => save()}
+        className={`flex items-center gap-3 px-8 py-4 rounded-2xl text-sm font-black transition-all shadow-lg active:scale-95 ${success ? 'bg-green-500 text-white shadow-green-100' : 'bg-green-600 text-white shadow-green-100 hover:bg-green-700'}`}
+      >
+        {saving ? (
+          <Loader2 className="animate-spin" size={18} />
+        ) : success ? (
+          <Check size={18} />
+        ) : (
+          <Save size={18} />
+        )}
+        {success ? 'تم حفظ القالب بنجاح' : 'حفظ قالب الرسالة'}
       </button>
     </div>
   );
@@ -483,30 +587,21 @@ export default function SettingsPage() {
   const tabContent: Record<TabKey, React.ReactNode> = {
     company: <CompanyTab />,
     shipping: <ShippingTab />,
-    products: <ProductsTab />,
-    districts: (
-      <div className="p-8 bg-gray-50 rounded-3xl text-center text-gray-400 italic">
-        جاري تهيئة واجهة إدارة المناطق المركزية...
-      </div>
-    ),
+    districts: <DistrictsTab />,
+    whatsapp: <WhatsAppTab />,
     notifications: (
-      <div className="p-8 bg-gray-50 rounded-3xl text-center text-gray-400 italic">
-        جاري مزامنة إعدادات الإشعارات السحابية...
-      </div>
-    ),
-    whatsapp: (
-      <div className="p-8 bg-gray-50 rounded-3xl text-center text-gray-400 italic">
-        جاري تحميل قوالب الواتساب المحفوظة...
+      <div className="p-8 bg-gray-50 rounded-3xl text-center text-gray-400 italic font-bold text-sm">
+        قريباً: واجهة متقدمة لإدارة قنوات الإشعارات (إيميل، SMS، نظام داخلي).
       </div>
     ),
     appearance: (
-      <div className="p-8 bg-gray-50 rounded-3xl text-center text-gray-400 italic">
-        يتم التحكم في المظهر من إعدادات النظام...
+      <div className="p-8 bg-gray-50 rounded-3xl text-center text-gray-400 italic font-bold text-sm">
+        قريباً: تخصيص ألوان الواجهة، اختيار الخطوط، وتحميل اللوجو المتقدم.
       </div>
     ),
     security: (
-      <div className="p-8 bg-gray-50 rounded-3xl text-center text-gray-400 italic">
-        يرجى مراجعة مدير النظام لتحديث كلمة المرور...
+      <div className="p-8 bg-gray-50 rounded-3xl text-center text-gray-400 italic font-bold text-sm">
+        قريباً: إدارة جلسات المستخدمين، سجلات تسجيل الدخول، وتغيير كلمات السر.
       </div>
     ),
   };
@@ -520,7 +615,7 @@ export default function SettingsPage() {
               إعدادات النظام <span className="text-blue-600">المركزية</span>
             </h1>
             <p className="text-sm text-gray-500 mt-1 uppercase tracking-widest font-bold">
-              إدارة هوية الشركة، أسعار الشحن، وسجلات الكاتالوج الموحد
+              إدارة هوية الشركة، أسعار الشحن الإقليمية، وقوالب التواصل الموحدة
             </p>
           </div>
           <div className="flex bg-gray-100/50 p-2 rounded-2xl items-center gap-3">
@@ -574,3 +669,4 @@ const Check = ({ size }: { size: number }) => (
     <polyline points="20 6 9 17 4 12" />
   </svg>
 );
+

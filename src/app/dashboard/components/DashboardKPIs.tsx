@@ -89,13 +89,13 @@ export default function DashboardKPIs() {
 
       // 1. Current Stats
       const { data: orders, error } = await supabase
-        .from('zahranship_orders')
+        .from('turath_masr_orders')
         .select('status, total, region, created_at')
         .gte('created_at', start.toISOString());
 
       // 2. Previous Stats for Growth
       const { data: prevOrders } = await supabase
-        .from('zahranship_orders')
+        .from('turath_masr_orders')
         .select('status, total')
         .gte('created_at', prevStart.toISOString())
         .lt('created_at', prevEnd.toISOString());
