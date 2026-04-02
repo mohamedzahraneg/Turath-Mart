@@ -6,15 +6,17 @@
 
 # [1] Configuration
 VPS_IP="72.60.184.79"
+VPS_PORT="874"
 VPS_USER="root"
 VPS_PASS='ooVamjz6RFzP46CHv(7I)'
 REMOTE_DIR="/root/turath-mart" # Adjust if your path is different (e.g., /var/www/...)
 
-echo "🚀 Starting Deployment to $VPS_IP..."
+echo "🚀 Starting Deployment to $VPS_IP:$VPS_PORT..."
 
 # [2] Synchronize Files (Excluding Cache and Node Modules)
 echo "📦 Uploading local changes to VPS..."
 sshpass -p "$VPS_PASS" rsync -avz --progress \
+  -e "ssh -p $VPS_PORT -o StrictHostKeyChecking=no" \
   --exclude '.next' \
   --exclude 'node_modules' \
   --exclude '.git' \
@@ -31,7 +33,7 @@ echo "✅ Files uploaded successfully."
 
 # [3] Remote Execution (Install, Build, Restart)
 echo "⚙️ Preparing remote server..."
-sshpass -p "$VPS_PASS" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_IP" << EOF
+sshpass -p "$VPS_PASS" ssh -p "$VPS_PORT" -o StrictHostKeyChecking=no "$VPS_USER@$VPS_IP" << EOF
   cd $REMOTE_DIR
   
   # Install dependencies if needed
