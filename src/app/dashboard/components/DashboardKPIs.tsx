@@ -1,354 +1,410 @@
 'use client';
 import React, { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Download, TrendingUp, TrendingDown, Minus, Filter, X } from 'lucide-react';
-
+import {
+  RefreshCw,
+  TrendingUp,
+  TrendingDown,
+  Package,
+  Truck,
+  CheckCircle,
+  AlertCircle,
+  DollarSign,
+  MapPin,
+  Loader2,
+} from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+interface KPIData {
+  totalOrders: number;
+  deliveredOrders: number;
+  shippingOrders: number;
+  pendingOrders: number;
+  returnedOrders: number;
+  totalRevenue: number;
+  successRate: number;
+  topRegion: { name: string; count: number };
+  previousData?: {
+    totalOrders: number;
+    deliveredOrders: number;
+    totalRevenue: number;
+  };
+}
+
+const TARGET_DAILY_ORDERS = 20;
+
 const PERIOD_LABELS: Record<string, string> = {
-  today: 'اليوم', yesterday: 'أمس', week: 'هذا الأسبوع', month: 'هذا الشهر',
+  today: 'اليوم',
+  yesterday: 'أمس',
+  week: 'آخر 7 أيام',
+  month: 'هذا الشهر',
 };
 
-const colorMap: Record<string, { bg: string; icon: string }> = {
-  blue: { bg: 'bg-blue-50', icon: 'text-blue-600' },
-  green: { bg: 'bg-green-50', icon: 'text-green-600' },
-  amber: { bg: 'bg-amber-50', icon: 'text-amber-600' },
-  red: { bg: 'bg-red-50', icon: 'text-red-600' },
-  purple: { bg: 'bg-purple-50', icon: 'text-purple-600' },
-  orange: { bg: 'bg-orange-50', icon: 'text-orange-600' },
-  teal: { bg: 'bg-teal-50', icon: 'text-teal-600' },
-  indigo: { bg: 'bg-indigo-50', icon: 'text-indigo-600' },
-};
-
-function fmt(n: number) { return n.toLocaleString('en-US'); }
-
-type KPIData = {
-  totalOrders: number; shippingOrders: number; totalCollection: number;
-  netDeposit: number; pendingOrders: number; returnedOrders: number;
-  cashCollection: number; creditCollection: number; dailyDeposited: number;
-  dailyRemaining: number;
-};
-
-const EMPTY_KPI: KPIData = {
-  totalOrders: 0, shippingOrders: 0, totalCollection: 0,
-  netDeposit: 0, pendingOrders: 0, returnedOrders: 0,
-  cashCollection: 0, creditCollection: 0, dailyDeposited: 0,
-  dailyRemaining: 0,
-};
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export default function DashboardKPIs() {
   const [period, setPeriod] = useState<'today' | 'yesterday' | 'week' | 'month'>('today');
-  const [lastRefresh, setLastRefresh] = useState('');
+  const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [showFilter, setShowFilter] = useState(false);
-  const [kpiData, setKpiData] = useState<KPIData>(EMPTY_KPI);
+  const [lastUpdated, setLastUpdated] = useState<string>('');
+  const [data, setData] = useState<KPIData>({
+    totalOrders: 0,
+    deliveredOrders: 0,
+    shippingOrders: 0,
+    pendingOrders: 0,
+    returnedOrders: 0,
+    totalRevenue: 0,
+    successRate: 0,
+    topRegion: { name: '—', count: 0 },
+  });
+  const [dbError, setDbError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
+  const fetchData = useCallback(async () => {
     setIsRefreshing(true);
-    
     try {
       const supabase = createClient();
-      
       const now = new Date();
-      let startDateStr = new Date().toISOString();
-      let endDateStr = new Date().toISOString();
-      
+      let start = new Date();
+      let prevStart = new Date();
+      let prevEnd = new Date();
+
       if (period === 'today') {
-        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        startDateStr = start.toISOString();
-        endDateStr = new Date(start.getTime() + 24 * 60 * 60 * 1000).toISOString();
+        start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        prevStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+        prevEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate());
       } else if (period === 'yesterday') {
-        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-        startDateStr = start.toISOString();
-        endDateStr = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+        start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+        prevStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 2);
+        prevEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
       } else if (period === 'week') {
-        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7);
-        startDateStr = start.toISOString();
-        endDateStr = now.toISOString();
+        start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        prevStart = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+        prevEnd = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
       } else if (period === 'month') {
-        const start = new Date(now.getFullYear(), now.getMonth(), 1);
-        startDateStr = start.toISOString();
-        const end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-        endDateStr = end.toISOString();
+        start = new Date(now.getFullYear(), now.getMonth(), 1);
+        prevStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        prevEnd = new Date(now.getFullYear(), now.getMonth(), 1);
       }
 
-      // Fetch aggregated data manually since there are no direct RPC aggregations yet
-      const { data, error } = await supabase
+      // 1. Current Stats
+      const { data: orders, error } = await supabase
         .from('zahranship_orders')
-        .select('status, total, created_at')
-        .gte('created_at', startDateStr)
-        .lt('created_at', endDateStr);
+        .select('status, total, region, created_at')
+        .gte('created_at', start.toISOString());
 
-      if (!error && data) {
-        let totalOrders = 0;
-        let shippingOrders = 0;
-        let pendingOrders = 0;
-        let returnedOrders = 0;
-        let totalCollection = 0;
-        
-        data.forEach(order => {
-          totalOrders++;
-          if (order.status === 'shipping') shippingOrders++;
-          else if (order.status === 'new') pendingOrders++;
-          else if (order.status === 'returned') returnedOrders++;
-          
-          if (order.status !== 'cancelled' && order.status !== 'returned') {
-            totalCollection += Number(order.total || 0);
-          }
+      // 2. Previous Stats for Growth
+      const { data: prevOrders } = await supabase
+        .from('zahranship_orders')
+        .select('status, total')
+        .gte('created_at', prevStart.toISOString())
+        .lt('created_at', prevEnd.toISOString());
+
+      if (error) throw error;
+
+      if (orders) {
+        const stats = {
+          total: orders.length,
+          delivered: orders.filter((o) => o.status === 'delivered').length,
+          shipping: orders.filter((o) => o.status === 'shipping').length,
+          returned: orders.filter((o) => ['returned', 'cancelled'].includes(o.status)).length,
+          revenue: orders
+            .filter((o) => o.status === 'delivered')
+            .reduce((s, o) => s + (o.total || 0), 0),
+        };
+
+        const prevStats = {
+          totalOrders: prevOrders?.length || 0,
+          deliveredOrders: prevOrders?.filter((o) => o.status === 'delivered').length || 0,
+          totalRevenue:
+            prevOrders
+              ?.filter((o) => o.status === 'delivered')
+              .reduce((s, o) => s + (o.total || 0), 0) || 0,
+        };
+
+        const regions: Record<string, number> = {};
+        orders.forEach((o) => {
+          if (o.region) regions[o.region] = (regions[o.region] || 0) + 1;
         });
+        const topR = Object.entries(regions).sort((a, b) => b[1] - a[1])[0] || ['—', 0];
 
-        // Some stats are simulated for now as they're not in DB schema yet (like cash vs credit, deposit)
-        const dailyDeposited = Math.floor(totalCollection * 0.6); // mock 60%
-        
-        setKpiData({
-          totalOrders,
-          shippingOrders,
-          totalCollection,
-          netDeposit: totalCollection * 0.9,
-          pendingOrders,
-          returnedOrders,
-          cashCollection: Math.floor(totalCollection * 0.8),
-          creditCollection: totalCollection - Math.floor(totalCollection * 0.8),
-          dailyDeposited,
-          dailyRemaining: totalCollection - dailyDeposited,
+        setData({
+          totalOrders: stats.total,
+          deliveredOrders: stats.delivered,
+          shippingOrders: stats.shipping,
+          pendingOrders: Math.max(
+            0,
+            stats.total - stats.delivered - stats.returned - stats.shipping
+          ),
+          returnedOrders: stats.returned,
+          totalRevenue: stats.revenue,
+          successRate: stats.total > 0 ? Math.round((stats.delivered / stats.total) * 100) : 0,
+          topRegion: { name: topR[0], count: topR[1] as number },
+          previousData: prevStats,
         });
       }
-    } catch (e) {
-      console.error(e);
+      setLastUpdated(
+        new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+      );
+    } catch (err: any) {
+      console.error('KPI Fetch Error:', err);
+      if (err.message?.includes('relation') || err.code === '42P01') {
+        setDbError('Missing Tables: Please run crm-schema.sql in Supabase SQL Editor.');
+      }
     } finally {
+      setLoading(false);
       setIsRefreshing(false);
-      const now = new Date();
-      const h = now.getHours().toString().padStart(2, '0');
-      const m = now.getMinutes().toString().padStart(2, '0');
-      const s = now.getSeconds().toString().padStart(2, '0');
-      setLastRefresh(`${h}:${m}:${s}`);
     }
   }, [period]);
 
   useEffect(() => {
-    refresh();
-    const interval = setInterval(refresh, 30000); // auto-refresh every 30s
-    return () => clearInterval(interval);
-  }, [refresh]);
+    fetchData();
+  }, [fetchData]);
 
-  const kpis = [
+  const calcGrowth = (current: number, previous: number) => {
+    if (previous === 0) return current > 0 ? 100 : 0;
+    return Math.round(((current - previous) / previous) * 100);
+  };
+
+  const cards = [
     {
-      id: 'total', title: 'إجمالي الأوردرات', value: fmt(kpiData.totalOrders),
-      sub: PERIOD_LABELS[period], color: 'blue', span: true,
-      icon: '📦', change: period === 'today' ? 12.5 : 8.2,
+      label: 'إجمالي الطلبات',
+      value: data.totalOrders,
+      icon: <Package size={20} />,
+      color: 'blue',
+      sub: 'طلب',
+      growth: calcGrowth(data.totalOrders, data.previousData?.totalOrders || 0),
     },
     {
-      id: 'shipping', title: 'جاري الشحن', value: fmt(kpiData.shippingOrders),
-      sub: 'أوردر في الطريق', color: 'orange', span: false,
-      icon: '🚚', change: 5.2,
+      label: 'تم التسليم',
+      value: data.deliveredOrders,
+      icon: <CheckCircle size={20} />,
+      color: 'green',
+      sub: 'ناجح',
+      growth: calcGrowth(data.deliveredOrders, data.previousData?.deliveredOrders || 0),
     },
     {
-      id: 'collection', title: 'إجمالي التحصيل', value: fmt(kpiData.totalCollection),
-      sub: 'ج.م', color: 'green', span: false,
-      icon: '💰', change: 8.7,
+      label: 'جاري الشحن',
+      value: data.shippingOrders,
+      icon: <Truck size={20} />,
+      color: 'orange',
+      sub: 'في الطريق',
     },
     {
-      id: 'cash', title: 'تحصيل كاش', value: fmt(kpiData.cashCollection),
-      sub: 'ج.م نقداً', color: 'teal', span: false,
-      icon: '💵', change: 6.3,
-    },
-    {
-      id: 'credit', title: 'تحصيل آجل', value: fmt(kpiData.creditCollection),
-      sub: 'ج.م آجل', color: 'indigo', span: false,
-      icon: '🏦', change: -1.2,
-    },
-    {
-      id: 'deposited', title: 'تم التوريد', value: fmt(kpiData.dailyDeposited),
-      sub: 'ج.م — تم توريده', color: 'purple', span: false,
-      icon: '✅', change: 4.1,
-    },
-    {
-      id: 'remaining', title: 'المتبقي للتوريد', value: fmt(kpiData.dailyRemaining),
-      sub: 'ج.م — لم يُوَرَّد', color: 'amber', span: false,
-      icon: '⏳', change: -3.5, alert: kpiData.dailyRemaining > 8000,
-    },
-    {
-      id: 'pending', title: 'أوردرات معلقة', value: fmt(kpiData.pendingOrders),
-      sub: 'تحتاج مراجعة', color: 'red', span: false,
-      icon: '⚠️', change: 40, alert: true,
-    },
-    {
-      id: 'returned', title: 'مرتجعات', value: fmt(kpiData.returnedOrders),
-      sub: 'بانتظار معالجة', color: 'amber', span: false,
-      icon: '↩️', change: 0,
+      label: 'إجمالي التحصيل',
+      value: data.totalRevenue.toLocaleString('en-US'),
+      icon: <DollarSign size={20} />,
+      color: 'emerald',
+      sub: 'ج.م',
+      growth: calcGrowth(data.totalRevenue, data.previousData?.totalRevenue || 0),
     },
   ];
 
-  const handleExport = () => {
-    const rows = [
-      ['المؤشر', 'القيمة', 'الفترة'],
-      ['إجمالي الأوردرات', kpiData.totalOrders, PERIOD_LABELS[period]],
-      ['جاري الشحن', kpiData.shippingOrders, PERIOD_LABELS[period]],
-      ['إجمالي التحصيل (ج.م)', kpiData.totalCollection, PERIOD_LABELS[period]],
-      ['تحصيل كاش (ج.م)', kpiData.cashCollection, PERIOD_LABELS[period]],
-      ['تحصيل آجل (ج.م)', kpiData.creditCollection, PERIOD_LABELS[period]],
-      ['تم التوريد (ج.م)', kpiData.dailyDeposited, PERIOD_LABELS[period]],
-      ['المتبقي للتوريد (ج.م)', kpiData.dailyRemaining, PERIOD_LABELS[period]],
-      ['أوردرات معلقة', kpiData.pendingOrders, PERIOD_LABELS[period]],
-      ['مرتجعات', kpiData.returnedOrders, PERIOD_LABELS[period]],
-    ];
-    const csv = rows.map(r => r.join(',')).join('\n');
-    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `dashboard-${period}-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
   return (
-    <div className="space-y-4">
-      {/* Filter bar */}
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="flex items-center gap-1 bg-[hsl(var(--muted))] rounded-xl p-1">
-          {(Object.keys(PERIOD_LABELS) as Array<keyof typeof PERIOD_LABELS>).map(p => (
-            <button
-              key={p}
-              onClick={() => { setPeriod(p as typeof period); refresh(); }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${period === p ? 'bg-white shadow text-[hsl(var(--primary))]' : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'}`}
-            >
-              {PERIOD_LABELS[p]}
-            </button>
-          ))}
-        </div>
-        <button
-          onClick={() => setShowFilter(!showFilter)}
-          className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl border font-semibold transition-all ${showFilter ? 'bg-[hsl(var(--primary))] text-white border-[hsl(var(--primary))]' : 'border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]'}`}
-        >
-          <Filter size={13} />
-          فلتر
-        </button>
-        <button
-          onClick={handleExport}
-          className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl border border-[hsl(var(--border))] font-semibold hover:bg-[hsl(var(--muted))] transition-all"
-        >
-          <Download size={13} />
-          تصدير CSV
-        </button>
-        <button
-          onClick={refresh}
-          className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl bg-[hsl(var(--primary))] text-white font-semibold hover:opacity-90 transition-all ${isRefreshing ? 'opacity-70' : ''}`}
-        >
-          <RefreshCw size={13} className={isRefreshing ? 'animate-spin' : ''} />
-          تحديث
-        </button>
-        {lastRefresh && (
-          <span className="text-[11px] text-[hsl(var(--muted-foreground))] flex items-center gap-1">
-            <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
-            آخر تحديث: {lastRefresh}
-          </span>
-        )}
-      </div>
-
-      {/* Filter panel */}
-      {showFilter && (
-        <div className="bg-[hsl(var(--muted))]/40 border border-[hsl(var(--border))] rounded-xl p-4 flex flex-wrap gap-4 items-end">
-          <div>
-            <label className="block text-xs font-semibold mb-1.5 text-[hsl(var(--muted-foreground))]">من تاريخ</label>
-            <input type="date" className="px-3 py-2 border border-[hsl(var(--border))] rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30" dir="ltr" />
+    <div className="space-y-6">
+      {dbError && (
+        <div className="bg-red-50 border-2 border-red-100 rounded-2xl p-6 flex flex-col items-center text-center gap-4 animate-in fade-in slide-in-from-top-4 duration-500">
+          <div className="w-16 h-16 rounded-full bg-red-100 text-red-600 flex items-center justify-center shadow-inner">
+            <AlertCircle size={32} />
           </div>
           <div>
-            <label className="block text-xs font-semibold mb-1.5 text-[hsl(var(--muted-foreground))]">إلى تاريخ</label>
-            <input type="date" className="px-3 py-2 border border-[hsl(var(--border))] rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30" dir="ltr" />
+            <h3 className="text-lg font-black text-red-900 mb-1">تنبيه: جداول البيانات مفقودة</h3>
+            <p className="text-sm text-red-600 font-bold max-w-md mx-auto leading-relaxed">
+              يرجى التوجه إلى Supabase SQL Editor وتشغيل ملفات{' '}
+              <code className="bg-red-100 px-2 py-0.5 rounded">crm-schema.sql</code> و{' '}
+              <code className="bg-red-100 px-2 py-0.5 rounded">create-notifications.sql</code>{' '}
+              لتفعيل مميزات النظام الاحترافية.
+            </p>
           </div>
-          <div>
-            <label className="block text-xs font-semibold mb-1.5 text-[hsl(var(--muted-foreground))]">المحافظة</label>
-            <select className="px-3 py-2 border border-[hsl(var(--border))] rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30">
-              <option value="">الكل</option>
-              <option>القاهرة</option>
-              <option>الجيزة</option>
-              <option>القليوبية</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs font-semibold mb-1.5 text-[hsl(var(--muted-foreground))]">الحالة</label>
-            <select className="px-3 py-2 border border-[hsl(var(--border))] rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30">
-              <option value="">الكل</option>
-              <option>جديد</option>
-              <option>جاري الشحن</option>
-              <option>تم التسليم</option>
-              <option>مرتجع</option>
-            </select>
-          </div>
-          <button onClick={() => setShowFilter(false)} className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-xl bg-[hsl(var(--primary))] text-white font-semibold hover:opacity-90">
-            تطبيق الفلتر
-          </button>
-          <button onClick={() => setShowFilter(false)} className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-xl border border-[hsl(var(--border))] font-semibold hover:bg-[hsl(var(--muted))]">
-            <X size={12} /> إغلاق
-          </button>
         </div>
       )}
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        {kpis.map((kpi) => {
-          const colors = colorMap[kpi.color];
-          const isPositive = kpi.change > 0;
-          const isNegative = kpi.change < 0;
-          const isNeutral = kpi.change === 0;
-          return (
-            <div
-              key={kpi.id}
-              className={`kpi-card relative overflow-hidden ${kpi.span ? 'sm:col-span-2' : ''} ${kpi.alert ? 'border-red-200 bg-red-50/30' : ''}`}
-            >
-              {kpi.alert && <div className="absolute top-0 right-0 w-1 h-full bg-red-500 rounded-r-2xl" />}
-              <div className="flex items-start justify-between mb-4">
-                <div className={`w-11 h-11 rounded-xl ${colors.bg} ${colors.icon} flex items-center justify-center flex-shrink-0 text-xl`}>
-                  {kpi.icon}
-                </div>
-                {kpi.change !== undefined && (
-                  <div className={`flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-lg ${
-                    isPositive && !kpi.alert ? 'bg-green-50 text-green-700' : isNegative ?'bg-red-50 text-red-600' : kpi.alert && isPositive ?'bg-red-50 text-red-600' :'bg-gray-100 text-gray-600'
-                  }`}>
-                    {isNeutral ? <Minus size={12} /> : isPositive && !kpi.alert ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
-                    <span>{Math.abs(kpi.change)}%</span>
-                  </div>
-                )}
-              </div>
-              <div>
-                <p className="text-[13px] font-medium text-[hsl(var(--muted-foreground))] mb-1 tracking-wide">{kpi.title}</p>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-3xl font-bold text-[hsl(var(--foreground))] font-mono tabular-nums" style={{ fontVariantNumeric: 'tabular-nums' }}>{kpi.value}</span>
-                  {kpi.sub && <span className="text-sm text-[hsl(var(--muted-foreground))]">{kpi.sub}</span>}
-                </div>
-              </div>
-            </div>
-          );
-        })}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
+        <div className="flex items-center gap-3">
+          <div className="flex bg-gray-100 p-1 rounded-xl gap-1 shadow-inner">
+            {Object.keys(PERIOD_LABELS).map((p) => (
+              <button
+                key={p}
+                onClick={() => setPeriod(p as any)}
+                className={`text-[11px] px-4 py-1.5 rounded-lg font-bold transition-all ${period === p ? 'bg-white text-[hsl(var(--primary))] shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}
+              >
+                {PERIOD_LABELS[p]}
+              </button>
+            ))}
+          </div>
+          <div className="h-4 w-px bg-gray-200 hidden sm:block" />
+          <p className="text-[10px] text-gray-400 font-medium hidden sm:block">
+            آخر تحديث: {lastUpdated}
+          </p>
+        </div>
+        <button
+          onClick={fetchData}
+          disabled={isRefreshing}
+          className="flex items-center gap-2 text-[11px] font-bold text-[hsl(var(--primary))] hover:bg-[hsl(var(--primary))]/5 px-3 py-1.5 rounded-lg transition-colors"
+        >
+          <RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} />
+          تحديث المعلومات
+        </button>
       </div>
 
-      {/* Daily collections summary bar */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <div className="bg-gradient-to-l from-green-50 to-teal-50 border border-green-200 rounded-xl p-4">
-          <p className="text-xs font-bold text-green-700 mb-1">إجمالي التحصيل اليومي</p>
-          <p className="text-2xl font-bold font-mono text-green-800">{fmt(kpiData.totalCollection)} <span className="text-sm font-normal">ج.م</span></p>
-          <div className="flex gap-3 mt-2 text-xs">
-            <span className="text-teal-700">💵 كاش: <strong>{fmt(kpiData.cashCollection)}</strong></span>
-            <span className="text-indigo-700">🏦 آجل: <strong>{fmt(kpiData.creditCollection)}</strong></span>
-          </div>
-        </div>
-        <div className="bg-gradient-to-l from-purple-50 to-blue-50 border border-purple-200 rounded-xl p-4">
-          <p className="text-xs font-bold text-purple-700 mb-1">تم التوريد</p>
-          <p className="text-2xl font-bold font-mono text-purple-800">{fmt(kpiData.dailyDeposited)} <span className="text-sm font-normal">ج.م</span></p>
-          <div className="mt-2">
-            <div className="w-full bg-purple-100 rounded-full h-1.5">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+        {cards.map((card, i) => (
+          <div
+            key={i}
+            className="bg-white border border-gray-100 rounded-3xl p-6 hover:shadow-xl hover:-translate-y-1 transition-all group overflow-hidden relative"
+          >
+            <div
+              className={`absolute top-0 right-0 w-1.5 h-full ${
+                card.color === 'blue'
+                  ? 'bg-blue-500'
+                  : card.color === 'green'
+                    ? 'bg-green-500'
+                    : card.color === 'orange'
+                      ? 'bg-orange-500'
+                      : 'bg-emerald-500'
+              }`}
+            />
+            <div className="flex items-start justify-between mb-4">
               <div
-                className="bg-purple-500 h-1.5 rounded-full transition-all"
-                style={{ width: `${Math.min(100, kpiData.totalCollection ? (kpiData.dailyDeposited / kpiData.totalCollection) * 100 : 0).toFixed(0)}%` }}
+                className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-transform group-hover:scale-110 ${
+                  card.color === 'blue'
+                    ? 'bg-blue-50 text-blue-600'
+                    : card.color === 'green'
+                      ? 'bg-green-50 text-green-600'
+                      : card.color === 'orange'
+                        ? 'bg-orange-50 text-orange-600'
+                        : 'bg-emerald-50 text-emerald-600'
+                } shadow-lg shadow-current/5`}
+              >
+                {card.icon}
+              </div>
+              <div className="text-right">
+                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">
+                  {card.label}
+                </p>
+                <div className="flex items-baseline gap-1 justify-end">
+                  <span className="text-2xl font-bold text-gray-900 font-mono tracking-tighter">
+                    {loading ? (
+                      <Loader2 className="animate-spin text-gray-300" size={16} />
+                    ) : (
+                      card.value
+                    )}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-end justify-between mt-2">
+              <span className="text-[10px] font-bold text-gray-400">{card.sub}</span>
+              {card.growth !== undefined && !loading && (
+                <div
+                  className={`flex items-center gap-0.5 px-2 py-0.5 rounded-lg text-[10px] font-bold ${
+                    card.growth >= 0
+                      ? 'bg-green-50 text-green-600 border border-green-100'
+                      : 'bg-red-50 text-red-600 border border-red-100'
+                  }`}
+                >
+                  {card.growth >= 0 ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
+                  {Math.abs(card.growth)}٪
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {/* Daily Goal Progress Bar Card */}
+        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm flex flex-col justify-between">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center shadow-lg shadow-purple-100">
+                <TrendingUp size={20} />
+              </div>
+              <div>
+                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                  هدف اليوم
+                </p>
+                <p className="text-lg font-bold text-gray-900">
+                  {loading ? '—' : data.totalOrders} / {TARGET_DAILY_ORDERS}
+                </p>
+              </div>
+            </div>
+            <div className="text-left">
+              <p className="text-[10px] font-bold text-gray-400 uppercase">النسبة</p>
+              <p className="text-sm font-bold text-purple-600">
+                {loading
+                  ? '0%'
+                  : Math.min(100, Math.round((data.totalOrders / TARGET_DAILY_ORDERS) * 100))}
+                %
+              </p>
+            </div>
+          </div>
+          <div>
+            <div className="w-full bg-gray-100 h-2.5 rounded-full overflow-hidden mb-2">
+              <div
+                className="h-full bg-gradient-to-l from-purple-600 to-purple-400 rounded-full transition-all duration-1000 shadow-[0_0_12px_rgba(168,85,247,0.3)]"
+                style={{
+                  width: `${loading ? 0 : Math.min(100, (data.totalOrders / TARGET_DAILY_ORDERS) * 100)}%`,
+                }}
               />
             </div>
-            <p className="text-[10px] text-purple-600 mt-1">{kpiData.totalCollection ? ((kpiData.dailyDeposited / kpiData.totalCollection) * 100).toFixed(0) : 0}% من الإجمالي</p>
+            <p className="text-[9px] text-gray-400 font-medium">
+              متبقي{' '}
+              <span className="font-bold text-purple-600">
+                {Math.max(0, TARGET_DAILY_ORDERS - data.totalOrders)}
+              </span>{' '}
+              طلب لتحقيق الهدف اليومي
+            </p>
           </div>
         </div>
-        <div className="bg-gradient-to-l from-amber-50 to-orange-50 border border-amber-200 rounded-xl p-4">
-          <p className="text-xs font-bold text-amber-700 mb-1">المتبقي للتوريد</p>
-          <p className="text-2xl font-bold font-mono text-amber-800">{fmt(kpiData.dailyRemaining)} <span className="text-sm font-normal">ج.م</span></p>
-          <p className="text-[10px] text-amber-600 mt-2">⏳ لم يُوَرَّد بعد — {PERIOD_LABELS[period]}</p>
+
+        {/* Returns Summary */}
+        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-red-50 text-red-600 flex items-center justify-center shadow-lg shadow-red-100">
+              <AlertCircle size={22} />
+            </div>
+            <div>
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                المرتجعات والتوالي
+              </p>
+              <p className="text-xl font-bold text-gray-900">
+                {loading ? '—' : data.returnedOrders}{' '}
+                <span className="text-[10px] text-gray-400">طلب</span>
+              </p>
+              <div className="flex items-center gap-1.5 mt-1">
+                <p className="text-[10px] font-bold text-red-600">
+                  {data.totalOrders > 0
+                    ? ((data.returnedOrders / data.totalOrders) * 100).toFixed(1)
+                    : 0}
+                  %
+                </p>
+                <p className="text-[10px] text-gray-400 font-medium">معدل الارتجاع الكلي</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Top Region Card */}
+        <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-orange-50 text-orange-600 flex items-center justify-center shadow-lg shadow-orange-100">
+              <MapPin size={22} />
+            </div>
+            <div>
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                سوق المحافظات النشطة
+              </p>
+              <p className="text-xl font-bold text-gray-900">
+                {loading ? '—' : data.topRegion.name}
+              </p>
+              <div className="flex items-center gap-1.5 mt-1">
+                <p className="text-[10px] font-bold text-orange-600">{data.topRegion.count} طلب</p>
+                <p className="text-[10px] text-gray-400 font-medium">منطقة الاستلام الأولى</p>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>

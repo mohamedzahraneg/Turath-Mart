@@ -1,48 +1,97 @@
 'use client';
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import AppLayout from '@/components/AppLayout';
 import {
-  AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
+  AreaChart,
+  Area,
+  BarChart,
+  Bar,
+  PieChart,
+  Pie,
+  Cell,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  Legend,
 } from 'recharts';
-import { TrendingUp, TrendingDown, Package, DollarSign, RotateCcw, Download, FileSpreadsheet, FileText, X } from 'lucide-react';
+import {
+  TrendingUp,
+  TrendingDown,
+  Package,
+  DollarSign,
+  RotateCcw,
+  Download,
+  FileSpreadsheet,
+  FileText,
+  X,
+  Loader2,
+  Truck,
+  XCircle,
+  Wallet,
+  CheckCircle,
+  Clock,
+  Hash,
+} from 'lucide-react';
+import { createClient } from '@/lib/supabase/client';
 
-const ALL_DATA = [
-  { month: 'أكتوبر', orders: 320, delivered: 290, returned: 18, revenue: 96000, period: 'q4' },
-  { month: 'نوفمبر', orders: 410, delivered: 375, returned: 22, revenue: 123000, period: 'q4' },
-  { month: 'ديسمبر', orders: 520, delivered: 480, returned: 28, revenue: 156000, period: 'q4' },
-  { month: 'يناير', orders: 380, delivered: 345, returned: 20, revenue: 114000, period: 'q1' },
-  { month: 'فبراير', orders: 460, delivered: 420, returned: 25, revenue: 138000, period: 'q1' },
-  { month: 'مارس', orders: 490, delivered: 450, returned: 21, revenue: 147000, period: 'q1' },
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+interface Order {
+  id: string;
+  created_at: string;
+  status: string;
+  total: number;
+  shipping_fee: number;
+  products: string;
+  region: string;
+}
+
+interface MonthlyStat {
+  month: string;
+  orders: number;
+  delivered: number;
+  returned: number;
+  revenue: number;
+  m: number; // Month index 1-12
+  year: number;
+}
+
+const MONTH_NAMES = [
+  'يناير',
+  'فبراير',
+  'مارس',
+  'أبريل',
+  'مايو',
+  'يونيو',
+  'يوليو',
+  'أغسطس',
+  'سبتمبر',
+  'أكتوبر',
+  'نوفمبر',
+  'ديسمبر',
 ];
 
-const statusData = [
-  { name: 'تم التسليم', value: 450, color: 'hsl(142,71%,35%)' },
-  { name: 'جاري الشحن', value: 18, color: 'hsl(211,67%,28%)' },
-  { name: 'معلق', value: 15, color: 'hsl(38,92%,50%)' },
-  { name: 'مرتجع', value: 7, color: 'hsl(0,72%,51%)' },
-];
+// ─── Components ──────────────────────────────────────────────────────────────
 
-const topProducts = [
-  { name: 'حامل مصحف بني', orders: 187, revenue: 56100 },
-  { name: 'مصحف', orders: 154, revenue: 46200 },
-  { name: 'كشاف', orders: 132, revenue: 39600 },
-  { name: 'حامل مصحف أسود', orders: 98, revenue: 29400 },
-  { name: 'كعبة', orders: 76, revenue: 22800 },
-];
-
-const CustomTooltip = ({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number; name: string; color: string }>; label?: string }) => {
+const CustomTooltip = ({ active, payload, label }: any) => {
   if (active && payload && payload.length) {
     return (
-      <div className="bg-white border border-[hsl(var(--border))] rounded-xl shadow-lg p-3 text-sm" dir="rtl">
+      <div
+        className="bg-white border border-[hsl(var(--border))] rounded-xl shadow-lg p-3 text-sm"
+        dir="rtl"
+      >
         <p className="font-semibold text-[hsl(var(--foreground))] mb-2">{label}</p>
-        {payload.map((entry, i) => (
-          <div key={i} className="flex items-center gap-2 mb-1">
-            <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: entry.color }} />
-            <span className="text-[hsl(var(--muted-foreground))]">{entry.name}:</span>
-            <span className="font-semibold">{entry.value.toLocaleString('en-US')}</span>
-          </div>
-        ))}
+        <div className="space-y-1.5">
+          {payload.map((entry: any, i: number) => (
+            <div key={i} className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }} />
+              <span className="text-[hsl(var(--muted-foreground))] text-xs">{entry.name}:</span>
+              <span className="font-bold text-xs">{entry.value.toLocaleString('en-US')}</span>
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
@@ -56,78 +105,169 @@ const PERIOD_OPTIONS = [
   { key: 'year', label: 'هذا العام', months: 12 },
 ];
 
-function exportReportCSV(data: typeof ALL_DATA) {
-  const headers = ['الشهر', 'الأوردرات', 'المسلمة', 'المرتجعة', 'الإيرادات (ج.م)'];
-  const rows = data.map(d => [d.month, d.orders, d.delivered, d.returned, d.revenue]);
-  const csv = '\uFEFF' + [headers, ...rows].map(r => r.map(c => `"${c}"`).join(',')).join('\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `zahranship-report-${new Date().toISOString().slice(0, 10)}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function exportReportPDF(data: typeof ALL_DATA, period: string) {
-  const win = window.open('', '_blank', 'width=900,height=600');
-  if (!win) return;
-  const rows = data.map(d => `
-    <tr>
-      <td>${d.month}</td>
-      <td>${d.orders.toLocaleString('en-US')}</td>
-      <td>${d.delivered.toLocaleString('en-US')}</td>
-      <td>${d.returned.toLocaleString('en-US')}</td>
-      <td>${d.revenue.toLocaleString('en-US')} ج.م</td>
-    </tr>
-  `).join('');
-  win.document.write(`
-    <!DOCTYPE html><html dir="rtl" lang="ar">
-    <head><meta charset="UTF-8"><title>تقرير Turath Mart</title>
-    <style>
-      body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;direction:rtl;padding:24px;font-size:13px;}
-      h1{font-size:22px;color:#1e3a5f;margin-bottom:4px;}
-      .sub{color:#6b7280;margin-bottom:20px;}
-      table{width:100%;border-collapse:collapse;}
-      th{background:#1e3a5f;color:white;padding:10px 12px;text-align:right;}
-      td{padding:9px 12px;border-bottom:1px solid #e5e7eb;}
-      tr:nth-child(even){background:#f9fafb;}
-      .footer{margin-top:20px;text-align:center;color:#9ca3af;font-size:11px;}
-      @media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
-    </style></head>
-    <body>
-      <h1>Turath Mart — تقرير الأداء</h1>
-      <p class="sub">الفترة: ${period} — تاريخ التصدير: ${new Date().toLocaleDateString('en-US')}</p>
-      <table>
-        <thead><tr><th>الشهر</th><th>الأوردرات</th><th>المسلمة</th><th>المرتجعة</th><th>الإيرادات</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-      <div class="footer">Turath Mart — نظام إدارة الشحن</div>
-      <script>window.onload=function(){window.print();window.close();}<\/script>
-    </body></html>
-  `);
-  win.document.close();
-}
-
 export default function ReportsPage() {
   const [activePeriod, setActivePeriod] = useState('6months');
   const [regionFilter, setRegionFilter] = useState('الكل');
-  const [showExportMenu, setShowExportMenu] = useState(false);
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+  const [dbOrders, setDbOrders] = useState<Order[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const monthlyData = useMemo(() => {
-    // If date range is set, filter by date range
+  useEffect(() => {
+    const fetchOrders = async () => {
+      setLoading(true);
+      try {
+        const supabase = createClient();
+        const { data, error } = await supabase
+          .from('zahranship_orders')
+          .select('id, created_at, status, total, shipping_fee, products, region')
+          .order('created_at', { ascending: true });
+
+        if (error) throw error;
+        if (data) setDbOrders(data);
+      } catch (err) {
+        console.error('Error fetching orders for reports:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchOrders();
+  }, []);
+
+  const aggregatedData = useMemo(() => {
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth();
+
+    const monthsData: MonthlyStat[] = [];
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(currentYear, currentMonth - i, 1);
+      monthsData.push({
+        month: MONTH_NAMES[d.getMonth()],
+        m: d.getMonth() + 1,
+        year: d.getFullYear(),
+        orders: 0,
+        delivered: 0,
+        returned: 0,
+        revenue: 0,
+      });
+    }
+
+    const stats = {
+      delivered: 0,
+      shipping: 0,
+      pending: 0,
+      returned: 0,
+      cancelled: 0,
+      shippingFees: 0,
+    };
+    const prodMap: Record<string, { orders: number; revenue: number }> = {};
+
+    dbOrders.forEach((o) => {
+      if (regionFilter !== 'الكل' && o.region !== regionFilter) return;
+
+      const date = new Date(o.created_at);
+      const m = date.getMonth() + 1;
+      const y = date.getFullYear();
+
+      const targetMonth = monthsData.find((x) => x.m === m && x.year === y);
+      if (targetMonth) {
+        targetMonth.orders += 1;
+        if (o.status === 'delivered') {
+          targetMonth.delivered += 1;
+          targetMonth.revenue += o.total;
+        } else if (o.status === 'returned') {
+          targetMonth.returned += 1;
+        }
+      }
+
+      if (o.status === 'delivered') stats.delivered++;
+      else if (o.status === 'shipping') stats.shipping++;
+      else if (o.status === 'returned') stats.returned++;
+      else if (o.status === 'cancelled') stats.cancelled++;
+      else stats.pending++;
+
+      stats.shippingFees += o.shipping_fee || 0;
+
+      if (o.products) {
+        const pNames = o.products.split('+').map((s) => s.trim());
+        pNames.forEach((p) => {
+          const match = p.match(/(.*?)\s*[x×]\s*(\d+)/i);
+          const name = match ? match[1].trim() : p.trim();
+          const count = match ? parseInt(match[2], 10) : 1;
+
+          if (!prodMap[name]) prodMap[name] = { orders: 0, revenue: 0 };
+          prodMap[name].orders += count;
+          if (o.status === 'delivered') {
+            prodMap[name].revenue += Math.floor(o.total / pNames.length);
+          }
+        });
+      }
+    });
+
+    const topP = Object.entries(prodMap)
+      .map(([name, data]) => ({ name, ...data }))
+      .sort((a, b) => b.orders - a.orders)
+      .slice(0, 5);
+
+    const totalStats =
+      stats.delivered + stats.shipping + stats.returned + stats.cancelled + stats.pending;
+
+    return {
+      monthly: monthsData,
+      status: [
+        {
+          name: 'تم التسليم',
+          value: stats.delivered,
+          color: '#15803d',
+          icon: <CheckCircle size={14} />,
+          pct: totalStats > 0 ? Math.round((stats.delivered / totalStats) * 100) : 0,
+        },
+        {
+          name: 'جاري الشحن',
+          value: stats.shipping,
+          color: '#1e3a8a',
+          icon: <Truck size={14} />,
+          pct: totalStats > 0 ? Math.round((stats.shipping / totalStats) * 100) : 0,
+        },
+        {
+          name: 'مرتجع',
+          value: stats.returned,
+          color: '#dc2626',
+          icon: <RotateCcw size={14} />,
+          pct: totalStats > 0 ? Math.round((stats.returned / totalStats) * 100) : 0,
+        },
+        {
+          name: 'ملغي',
+          value: stats.cancelled,
+          color: '#94a3b8',
+          icon: <XCircle size={14} />,
+          pct: totalStats > 0 ? Math.round((stats.cancelled / totalStats) * 100) : 0,
+        },
+        {
+          name: 'معلق',
+          value: stats.pending,
+          color: '#f59e0b',
+          icon: <Clock size={14} />,
+          pct: totalStats > 0 ? Math.round((stats.pending / totalStats) * 100) : 0,
+        },
+      ],
+      products: topP,
+      financials: {
+        totalShipping: stats.shippingFees,
+        remaining: Math.max(
+          0,
+          dbOrders.filter((o) => o.status === 'delivered').reduce((s, o) => s + (o.total || 0), 0) -
+            stats.shippingFees
+        ),
+      },
+    };
+  }, [dbOrders, regionFilter]);
+
+  const filteredMonthly = useMemo(() => {
     if (dateFrom || dateTo) {
-      return ALL_DATA.filter(d => {
-        // Map month names to approximate dates for filtering
-        const monthMap: Record<string, number> = {
-          'أكتوبر': 9, 'نوفمبر': 10, 'ديسمبر': 11,
-          'يناير': 0, 'فبراير': 1, 'مارس': 2,
-        };
-        const monthIdx = monthMap[d.month];
-        const year = monthIdx >= 9 ? 2025 : 2026;
-        const monthDate = new Date(year, monthIdx, 1);
+      return aggregatedData.monthly.filter((d) => {
+        const monthDate = new Date(d.year, d.m - 1, 1);
         let match = true;
         if (dateFrom) {
           const from = new Date(dateFrom);
@@ -141,264 +281,457 @@ export default function ReportsPage() {
         return match;
       });
     }
-    const p = PERIOD_OPTIONS.find(p => p.key === activePeriod);
-    const months = p?.months || 6;
-    return ALL_DATA.slice(-months);
-  }, [activePeriod, dateFrom, dateTo]);
 
-  const totalOrders = monthlyData.reduce((s, d) => s + d.orders, 0);
-  const totalDelivered = monthlyData.reduce((s, d) => s + d.delivered, 0);
-  const totalReturned = monthlyData.reduce((s, d) => s + d.returned, 0);
-  const totalRevenue = monthlyData.reduce((s, d) => s + d.revenue, 0);
-  const deliveryRate = Math.round((totalDelivered / totalOrders) * 100);
-  const returnRate = Math.round((totalReturned / totalOrders) * 100);
-  const currentPeriodLabel = PERIOD_OPTIONS.find(p => p.key === activePeriod)?.label || '';
+    const p = PERIOD_OPTIONS.find((p) => p.key === activePeriod);
+    const months = p?.months || 6;
+    return aggregatedData.monthly.slice(-months);
+  }, [activePeriod, dateFrom, dateTo, aggregatedData]);
+
+  const totals = useMemo(() => {
+    const orders = filteredMonthly.reduce((s, d) => s + d.orders, 0);
+    const delivered = filteredMonthly.reduce((s, d) => s + d.delivered, 0);
+    const returned = filteredMonthly.reduce((s, d) => s + d.returned, 0);
+    const revenue = filteredMonthly.reduce((s, d) => s + d.revenue, 0);
+
+    return {
+      orders,
+      delivered,
+      returned,
+      revenue,
+      deliveryRate: orders > 0 ? Math.round((delivered / orders) * 100) : 0,
+      returnRate: orders > 0 ? Math.round((returned / orders) * 100) : 0,
+    };
+  }, [filteredMonthly]);
+
+  const exportCSV = () => {
+    const headers = ['الشهر', 'السنة', 'الأوردرات', 'المسلمة', 'المرتجعة', 'الإيرادات'];
+    const rows = filteredMonthly.map((d) => [
+      d.month,
+      d.year,
+      d.orders,
+      d.delivered,
+      d.returned,
+      d.revenue,
+    ]);
+    const csvContent = '\uFEFF' + [headers, ...rows].map((e) => e.join(',')).join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.setAttribute(
+      'download',
+      `report-${activePeriod}-${new Date().toISOString().slice(0, 10)}.csv`
+    );
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  if (loading) {
+    return (
+      <AppLayout currentPath="/reports">
+        <div className="flex flex-col items-center justify-center py-40 space-y-4">
+          <Loader2 className="w-10 h-10 text-[hsl(var(--primary))] animate-spin" />
+          <p className="text-sm text-[hsl(var(--muted-foreground))] font-bold uppercase tracking-widest animate-pulse">
+            جاري تحضير التقارير الإحصائية...
+          </p>
+        </div>
+      </AppLayout>
+    );
+  }
 
   return (
     <AppLayout currentPath="/reports">
-      <div className="space-y-6 fade-in">
+      <div className="space-y-8 fade-in pb-20 pt-2">
         {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
           <div>
-            <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">التقارير والإحصائيات</h1>
-            <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">تحليل شامل لأداء الشحن والمبيعات</p>
+            <h1 className="text-3xl font-black text-gray-900 tracking-tight">
+              التقارير التحليلية <span className="text-[hsl(var(--primary))]">المركزية</span>
+            </h1>
+            <p className="text-sm text-gray-500 mt-1 uppercase tracking-wider font-bold">
+              بناءً على {dbOrders.length} أوردر مسجل في قاعدة البيانات
+            </p>
           </div>
           <div className="flex items-center gap-3 flex-wrap">
-            {/* Period filter */}
-            <div className="flex bg-[hsl(var(--muted))] rounded-xl p-1 gap-1">
+            <div className="flex bg-gray-100 rounded-2xl p-1 gap-1 shadow-inner">
               {PERIOD_OPTIONS.map((p) => (
                 <button
                   key={p.key}
-                  onClick={() => setActivePeriod(p.key)}
-                  className={`text-xs px-3 py-1.5 rounded-lg font-semibold transition-all ${activePeriod === p.key ? 'bg-white text-[hsl(var(--primary))] shadow-sm' : 'text-[hsl(var(--muted-foreground))]'}`}
+                  onClick={() => {
+                    setActivePeriod(p.key);
+                    setDateFrom('');
+                    setDateTo('');
+                  }}
+                  className={`text-[11px] px-4 py-2 rounded-xl font-bold transition-all ${activePeriod === p.key && !dateFrom && !dateTo ? 'bg-white text-[hsl(var(--primary))] shadow-sm' : 'text-gray-400'}`}
                 >
                   {p.label}
                 </button>
               ))}
             </div>
-            {/* Region filter */}
+            <button
+              onClick={exportCSV}
+              className="flex items-center gap-2 px-6 py-3 bg-[hsl(var(--primary))] text-white rounded-2xl text-xs font-bold hover:shadow-lg transition-all active:scale-95"
+            >
+              <Download size={16} />
+              تحميل التقرير
+            </button>
+          </div>
+        </div>
+
+        {/* Filters */}
+        <div className="bg-white border-2 border-gray-50 rounded-[2rem] p-6 flex flex-wrap items-center gap-8 shadow-sm">
+          <div className="flex items-center gap-4">
+            <span className="text-xs font-black text-gray-400 uppercase tracking-widest whitespace-nowrap">
+              تصفية التاريخ:
+            </span>
+            <div className="flex items-center gap-2">
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+                className="px-4 py-2 border-2 border-gray-50 rounded-xl text-xs outline-none focus:border-[hsl(var(--primary))]/50 bg-gray-50 font-bold"
+                dir="ltr"
+              />
+              <div className="h-px w-3 bg-gray-200" />
+              <input
+                type="date"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+                className="px-4 py-2 border-2 border-gray-50 rounded-xl text-xs outline-none focus:border-[hsl(var(--primary))]/50 bg-gray-50 font-bold"
+                dir="ltr"
+              />
+            </div>
+            {(dateFrom || dateTo) && (
+              <button
+                onClick={() => {
+                  setDateFrom('');
+                  setDateTo('');
+                }}
+                className="p-2 hover:bg-red-50 text-red-500 rounded-xl transition-all"
+              >
+                <X size={16} />
+              </button>
+            )}
+          </div>
+          <div className="h-8 w-px bg-gray-100 hidden md:block" />
+          <div className="flex items-center gap-4">
+            <span className="text-xs font-black text-gray-400 uppercase tracking-widest whitespace-nowrap">
+              المحافظة:
+            </span>
             <select
-              className="input-field w-auto text-sm"
+              className="px-6 py-2 border-2 border-gray-50 rounded-xl text-xs font-bold focus:outline-none focus:border-[hsl(var(--primary))]/50 bg-gray-50 text-gray-600"
               value={regionFilter}
               onChange={(e) => setRegionFilter(e.target.value)}
             >
-              {['الكل', 'القاهرة', 'الجيزة', 'القليوبية'].map(r => (
-                <option key={r} value={r}>{r}</option>
-              ))}
+              <option value="الكل">كل المحافظات</option>
+              <option>القاهرة</option>
+              <option>الجيزة</option>
+              <option>القليوبية</option>
             </select>
-            {/* Export */}
-            <div className="relative">
-              <button
-                className="flex items-center gap-2 px-4 py-2 bg-[hsl(var(--primary))] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
-                onClick={() => setShowExportMenu(!showExportMenu)}
-              >
-                <Download size={16} />
-                تصدير
-              </button>
-              {showExportMenu && (
-                <div className="absolute left-0 top-full mt-1 bg-white border border-[hsl(var(--border))] rounded-xl shadow-lg z-20 min-w-[170px] overflow-hidden">
-                  <button
-                    className="w-full flex items-center gap-2 px-4 py-2.5 text-sm hover:bg-[hsl(var(--muted))] transition-colors text-right"
-                    onClick={() => { exportReportCSV(monthlyData); setShowExportMenu(false); }}
-                  >
-                    <FileSpreadsheet size={15} className="text-green-600" />
-                    تصدير Excel (CSV)
-                  </button>
-                  <button
-                    className="w-full flex items-center gap-2 px-4 py-2.5 text-sm hover:bg-[hsl(var(--muted))] transition-colors text-right border-t border-[hsl(var(--border))]"
-                    onClick={() => { exportReportPDF(monthlyData, currentPeriodLabel); setShowExportMenu(false); }}
-                  >
-                    <FileText size={15} className="text-red-500" />
-                    تصدير PDF
-                  </button>
-                </div>
-              )}
-            </div>
           </div>
         </div>
 
-        {/* Date range filter */}
-        <div className="card-section p-4">
-          <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-xs font-semibold text-[hsl(var(--muted-foreground))]">فلتر التاريخ:</span>
-            <div className="flex items-center gap-2">
-              <label className="text-xs text-[hsl(var(--muted-foreground))]">من</label>
-              <input
-                type="date"
-                className="input-field w-auto text-sm py-1.5"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-                dir="ltr"
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <label className="text-xs text-[hsl(var(--muted-foreground))]">إلى</label>
-              <input
-                type="date"
-                className="input-field w-auto text-sm py-1.5"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-                dir="ltr"
-              />
-            </div>
-            {(dateFrom || dateTo) && (
-              <button
-                className="text-xs text-red-500 hover:underline"
-                onClick={() => { setDateFrom(''); setDateTo(''); }}
-              >
-                مسح الفلتر
-              </button>
-            )}
-            {(dateFrom || dateTo) && (
-              <span className="text-xs bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))] px-2 py-1 rounded-lg font-semibold">
-                {monthlyData.length} شهر في النتائج
-              </span>
-            )}
-          </div>
-        </div>
-
-        {/* Active filters indicator */}
-        {regionFilter !== 'الكل' && (
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-[hsl(var(--muted-foreground))]">فلاتر نشطة:</span>
-            <span className="flex items-center gap-1 bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))] text-xs px-2 py-1 rounded-lg font-semibold">
-              {regionFilter}
-              <button onClick={() => setRegionFilter('الكل')}><X size={12} /></button>
-            </span>
-          </div>
-        )}
-
-        {/* KPI Cards */}
-        <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+        {/* Detailed KPI Cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-6">
           {[
-            { label: 'إجمالي الأوردرات', value: totalOrders.toLocaleString('en-US'), icon: <Package size={22} />, color: 'blue', change: 8.2 },
-            { label: 'إجمالي الإيرادات', value: `${(totalRevenue / 1000).toFixed(0)}K ج.م`, icon: <DollarSign size={22} />, color: 'green', change: 12.5 },
-            { label: 'نسبة التسليم', value: `${deliveryRate}%`, icon: <TrendingUp size={22} />, color: 'purple', change: 2.1 },
-            { label: 'نسبة المرتجعات', value: `${returnRate}%`, icon: <RotateCcw size={22} />, color: 'red', change: -1.3 },
+            {
+              label: 'إجمالي الطلبات',
+              value: dbOrders.length.toLocaleString('en-US'),
+              sub: 'تحليل شامل',
+              icon: <Package size={22} />,
+              color: 'blue',
+            },
+            {
+              label: 'إجمالي التحصيل',
+              value: dbOrders
+                .filter((o) => o.status === 'delivered')
+                .reduce((s, o) => s + (o.total || 0), 0)
+                .toLocaleString('en-US'),
+              sub: 'قيمة نقدية (صافي)',
+              icon: <DollarSign size={22} />,
+              color: 'emerald',
+            },
+            {
+              label: 'مصروفات الشحن',
+              value: aggregatedData.financials.totalShipping.toLocaleString('en-US'),
+              sub: 'مرصودة (صافي)',
+              icon: <Truck size={22} />,
+              color: 'orange',
+            },
+            {
+              label: 'المتبقي (الصافي)',
+              value: aggregatedData.financials.remaining.toLocaleString('en-US'),
+              sub: 'بعد خصم الشحن',
+              icon: <Wallet size={22} />,
+              color: 'purple',
+            },
           ].map((kpi, i) => (
-            <div key={i} className="kpi-card">
-              <div className="flex items-start justify-between mb-3">
-                <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
-                  kpi.color === 'blue' ? 'bg-blue-50 text-blue-600' :
-                  kpi.color === 'green' ? 'bg-green-50 text-green-600' :
-                  kpi.color === 'purple' ? 'bg-purple-50 text-purple-600' : 'bg-red-50 text-red-600'
-                }`}>
+            <div
+              key={i}
+              className="bg-white border-2 border-gray-50 rounded-[2.5rem] p-6 relative overflow-hidden group hover:shadow-2xl transition-all hover:border-[hsl(var(--primary))]/10"
+            >
+              <div
+                className={`absolute top-0 right-0 w-2 h-full ${
+                  kpi.color === 'blue'
+                    ? 'bg-blue-500'
+                    : kpi.color === 'emerald'
+                      ? 'bg-emerald-500'
+                      : kpi.color === 'orange'
+                        ? 'bg-orange-500'
+                        : 'bg-purple-500'
+                }`}
+              />
+              <div className="flex items-start justify-between mb-4">
+                <div
+                  className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-transform group-hover:scale-110 ${
+                    kpi.color === 'blue'
+                      ? 'bg-blue-50 text-blue-600 shadow-blue-100'
+                      : kpi.color === 'emerald'
+                        ? 'bg-emerald-50 text-emerald-600 shadow-emerald-100'
+                        : kpi.color === 'orange'
+                          ? 'bg-orange-50 text-orange-600 shadow-orange-100'
+                          : 'bg-purple-50 text-purple-600 shadow-purple-100'
+                  } shadow-lg shadow-current/10`}
+                >
                   {kpi.icon}
                 </div>
-                <span className={`text-xs font-semibold px-2 py-1 rounded-lg flex items-center gap-1 ${kpi.change > 0 ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
-                  {kpi.change > 0 ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
-                  {Math.abs(kpi.change)}%
-                </span>
               </div>
-              <p className="text-xs text-[hsl(var(--muted-foreground))] mb-1">{kpi.label}</p>
-              <p className="text-2xl font-bold text-[hsl(var(--foreground))] font-mono">{kpi.value}</p>
+              <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">
+                {kpi.label}
+              </p>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-3xl font-black text-gray-900 font-mono tracking-tighter">
+                  {kpi.value}
+                </span>
+                <span className="text-[10px] text-gray-400 font-bold uppercase">{kpi.sub}</span>
+              </div>
             </div>
           ))}
         </div>
 
-        {/* Charts Row */}
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-          <div className="xl:col-span-2 card-section p-5">
-            <div className="mb-5">
-              <h3 className="text-base font-bold text-[hsl(var(--foreground))]">اتجاه الأوردرات والإيرادات</h3>
-              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">{currentPeriodLabel}</p>
+        {/* Charts and Breakdown */}
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
+          <div className="xl:col-span-2 bg-white border-2 border-gray-50 rounded-[2.5rem] p-8 shadow-sm">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-10 gap-4">
+              <div>
+                <h3 className="text-lg font-black text-gray-900 tracking-tight">
+                  نظرة تاريخية على نمو الأداء
+                </h3>
+                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mt-1">
+                  المقارنة الشهرية بين الطلبات الواردة والطلبات الناجحة
+                </p>
+              </div>
+              <div className="flex gap-6 items-center">
+                <div className="flex items-center gap-2 text-[10px] font-black text-gray-500">
+                  <div className="w-3 h-3 rounded bg-[#1e3a8a]" />
+                  <span>الوارد</span>
+                </div>
+                <div className="flex items-center gap-2 text-[10px] font-black text-gray-500">
+                  <div className="w-3 h-3 rounded bg-[#15803d]" />
+                  <span>الناجح</span>
+                </div>
+              </div>
             </div>
-            <ResponsiveContainer width="100%" height={250}>
-              <AreaChart data={monthlyData} margin={{ top: 5, right: 5, left: -10, bottom: 5 }}>
-                <defs>
-                  <linearGradient id="gradOrders2" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="hsl(211,67%,28%)" stopOpacity={0.2} />
-                    <stop offset="95%" stopColor="hsl(211,67%,28%)" stopOpacity={0} />
-                  </linearGradient>
-                  <linearGradient id="gradDelivered2" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="hsl(142,71%,35%)" stopOpacity={0.2} />
-                    <stop offset="95%" stopColor="hsl(142,71%,35%)" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(214,20%,92%)" />
-                <XAxis dataKey="month" tick={{ fontSize: 11, fontFamily: 'Cairo', fill: 'hsl(215,15%,50%)' }} />
-                <YAxis tick={{ fontSize: 11, fontFamily: 'Cairo', fill: 'hsl(215,15%,50%)' }} />
-                <Tooltip content={<CustomTooltip />} />
-                <Legend wrapperStyle={{ fontFamily: 'Cairo', fontSize: '12px' }} />
-                <Area type="monotone" dataKey="orders" name="الأوردرات" stroke="hsl(211,67%,28%)" fill="url(#gradOrders2)" strokeWidth={2.5} />
-                <Area type="monotone" dataKey="delivered" name="المسلمة" stroke="hsl(142,71%,35%)" fill="url(#gradDelivered2)" strokeWidth={2.5} />
-              </AreaChart>
-            </ResponsiveContainer>
+            <div className="h-[320px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart
+                  data={filteredMonthly}
+                  margin={{ top: 0, right: 0, left: -20, bottom: 0 }}
+                >
+                  <defs>
+                    <linearGradient id="colorOrdersRec" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#1e3a8a" stopOpacity={0.15} />
+                      <stop offset="95%" stopColor="#1e3a8a" stopOpacity={0.01} />
+                    </linearGradient>
+                    <linearGradient id="colorDeliveredRec" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#15803d" stopOpacity={0.15} />
+                      <stop offset="95%" stopColor="#15803d" stopOpacity={0.01} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis
+                    dataKey="month"
+                    tick={{ fontSize: 10, fontWeight: 700, fill: '#94a3b8' }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    tick={{ fontSize: 10, fontWeight: 700, fill: '#94a3b8' }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Area
+                    type="monotone"
+                    dataKey="orders"
+                    name="الأوردرات"
+                    stroke="#1e3a8a"
+                    strokeWidth={3}
+                    fillOpacity={1}
+                    fill="url(#colorOrdersRec)"
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="delivered"
+                    name="المسلمة"
+                    stroke="#15803d"
+                    strokeWidth={3}
+                    fillOpacity={1}
+                    fill="url(#colorDeliveredRec)"
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
           </div>
 
-          <div className="card-section p-5">
-            <div className="mb-5">
-              <h3 className="text-base font-bold text-[hsl(var(--foreground))]">توزيع حالات الأوردرات</h3>
-              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">الشهر الحالي</p>
+          <div className="bg-white border-2 border-gray-50 rounded-[2.5rem] p-8 shadow-sm">
+            <h3 className="text-lg font-black text-gray-900 tracking-tight mb-1">
+              تحليل الحالات والنسب
+            </h3>
+            <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mb-10">
+              توزيع الطلبات حسب الحالة التشغيلية
+            </p>
+            <div className="h-[220px] w-full relative">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={aggregatedData.status}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={65}
+                    outerRadius={90}
+                    paddingAngle={6}
+                    dataKey="value"
+                    stroke="none"
+                  >
+                    {aggregatedData.status.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                <span className="text-3xl font-black text-gray-900 font-mono tracking-tighter">
+                  {dbOrders.length}
+                </span>
+                <span className="text-[8px] text-gray-400 font-black uppercase tracking-[0.2em] mt-1 text-center">
+                  إجمالي
+                  <br />
+                  العمليات
+                </span>
+              </div>
             </div>
-            <ResponsiveContainer width="100%" height={200}>
-              <PieChart>
-                <Pie data={statusData} cx="50%" cy="50%" innerRadius={55} outerRadius={85} paddingAngle={3} dataKey="value">
-                  {statusData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={entry.color} />
-                  ))}
-                </Pie>
-                <Tooltip formatter={(value: number) => [value.toLocaleString('en-US'), '']} />
-              </PieChart>
-            </ResponsiveContainer>
-            <div className="space-y-2 mt-2">
-              {statusData.map((s, i) => (
-                <div key={i} className="flex items-center justify-between text-sm">
-                  <div className="flex items-center gap-2">
-                    <div className="w-3 h-3 rounded-full" style={{ backgroundColor: s.color }} />
-                    <span className="text-[hsl(var(--muted-foreground))]">{s.name}</span>
+            <div className="space-y-4 mt-10">
+              {aggregatedData.status.map((s, i) => (
+                <div key={i} className="flex flex-col gap-2 group">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div
+                        className="w-3 h-3 rounded-md shadow-sm"
+                        style={{ backgroundColor: s.color }}
+                      />
+                      <span className="text-xs font-black text-gray-700 uppercase tracking-tight">
+                        {s.name}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-mono font-black text-gray-900">
+                        {s.value.toLocaleString('en-US')}
+                      </span>
+                      <span className="text-[10px] font-black text-gray-400">({s.pct}%)</span>
+                    </div>
                   </div>
-                  <span className="font-semibold">{s.value.toLocaleString('en-US')}</span>
+                  <div className="w-full bg-gray-50 h-1.5 rounded-full overflow-hidden border border-gray-100/50">
+                    <div
+                      className="h-full rounded-full transition-all duration-1000 shadow-sm"
+                      style={{ backgroundColor: s.color, width: `${s.pct}%` }}
+                    />
+                  </div>
                 </div>
               ))}
             </div>
           </div>
         </div>
 
-        {/* Monthly Bar + Top Products */}
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          <div className="card-section p-5">
-            <div className="mb-5">
-              <h3 className="text-base font-bold text-[hsl(var(--foreground))]">المقارنة الشهرية</h3>
-              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">المستلمة / المسلمة / المرتجعة</p>
-            </div>
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={monthlyData} margin={{ top: 5, right: 5, left: -10, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(214,20%,92%)" />
-                <XAxis dataKey="month" tick={{ fontSize: 11, fontFamily: 'Cairo', fill: 'hsl(215,15%,50%)' }} />
-                <YAxis tick={{ fontSize: 11, fontFamily: 'Cairo', fill: 'hsl(215,15%,50%)' }} />
-                <Tooltip content={<CustomTooltip />} />
-                <Legend wrapperStyle={{ fontFamily: 'Cairo', fontSize: '12px' }} />
-                <Bar dataKey="orders" name="مستلمة" fill="hsl(211,67%,28%)" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="delivered" name="مسلمة" fill="hsl(142,71%,35%)" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="returned" name="مرتجعة" fill="hsl(0,72%,51%)" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-
-          <div className="card-section p-5">
-            <div className="mb-5">
-              <h3 className="text-base font-bold text-[hsl(var(--foreground))]">أكثر المنتجات مبيعا</h3>
-              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">هذا الشهر</p>
-            </div>
-            <div className="space-y-3">
-              {topProducts.map((p, i) => (
-                <div key={i} className="flex items-center gap-3">
-                  <span className="w-6 h-6 rounded-full bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))] text-xs font-bold flex items-center justify-center flex-shrink-0">
-                    {i + 1}
-                  </span>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-sm font-semibold text-[hsl(var(--foreground))] truncate">{p.name}</span>
-                      <span className="text-xs text-[hsl(var(--muted-foreground))] mr-2 flex-shrink-0">{p.orders.toLocaleString('en-US')} أوردر</span>
+        {/* Bottom Comparison */}
+        <div className="bg-white border-2 border-gray-50 rounded-[2.5rem] p-10 shadow-sm">
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-16">
+            <div className="space-y-6">
+              <div className="flex items-center gap-3 border-b-2 border-gray-50 pb-4">
+                <TrendingUp size={20} className="text-emerald-500" />
+                <p className="text-sm font-black text-gray-900 uppercase tracking-widest">
+                  أكثر المنتجات طلباً هذا الموسم
+                </p>
+              </div>
+              <div className="space-y-5">
+                {aggregatedData.products.map((p, i) => (
+                  <div key={i} className="space-y-2">
+                    <div className="flex items-center justify-between text-xs font-black">
+                      <span className="text-gray-600 truncate max-w-[200px]">{p.name}</span>
+                      <span className="text-[hsl(var(--primary))] font-mono">
+                        {p.orders} <span className="text-[10px] text-gray-400">أوردر</span>
+                      </span>
                     </div>
-                    <div className="w-full bg-gray-100 rounded-full h-1.5">
-                      <div className="h-1.5 rounded-full bg-[hsl(var(--primary))]" style={{ width: `${(p.orders / topProducts[0].orders) * 100}%` }} />
+                    <div className="w-full bg-gray-50 h-2.5 rounded-full overflow-hidden border border-gray-100/50 shadow-inner">
+                      <div
+                        className="h-full bg-gradient-to-l from-[hsl(var(--primary))] to-[hsl(var(--primary))]/60 rounded-full transition-all duration-1000"
+                        style={{
+                          width: `${(p.orders / (aggregatedData.products[0]?.orders || 1)) * 100}%`,
+                        }}
+                      />
                     </div>
                   </div>
-                  <span className="text-xs font-bold text-green-600 flex-shrink-0">{(p.revenue / 1000).toFixed(0)}K</span>
-                </div>
-              ))}
+                ))}
+              </div>
+            </div>
+            <div className="space-y-6">
+              <div className="flex items-center gap-3 border-b-2 border-gray-50 pb-4">
+                <Hash size={20} className="text-blue-500" />
+                <p className="text-sm font-black text-gray-900 uppercase tracking-widest">
+                  مقارنة زمنية مفصلة
+                </p>
+              </div>
+              <div className="h-[240px] w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={filteredMonthly}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                    <XAxis
+                      dataKey="month"
+                      tick={{ fontSize: 10, fontWeight: 700, fill: '#94a3b8' }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <YAxis
+                      tick={{ fontSize: 10, fontWeight: 700, fill: '#94a3b8' }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <Tooltip content={<CustomTooltip />} />
+                    <Bar
+                      dataKey="orders"
+                      name="مستلم"
+                      fill="#1e3a8a"
+                      radius={[4, 4, 0, 0]}
+                      barSize={18}
+                    />
+                    <Bar
+                      dataKey="delivered"
+                      name="مسلم"
+                      fill="#15803d"
+                      radius={[4, 4, 0, 0]}
+                      barSize={18}
+                    />
+                    <Bar
+                      dataKey="returned"
+                      name="مرتجع"
+                      fill="#dc2626"
+                      radius={[4, 4, 0, 0]}
+                      barSize={18}
+                    />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
             </div>
           </div>
         </div>

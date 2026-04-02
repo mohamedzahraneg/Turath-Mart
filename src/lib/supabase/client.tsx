@@ -16,18 +16,25 @@ const canUseCookies = (() => {
 })();
 
 const fromCookies = () =>
-  typeof document === 'undefined' ? [] :
-  document.cookie.split(';').filter(Boolean).map((c) => {
-    const [name, ...rest] = c.trim().split('=');
-    return { name: name.trim(), value: decodeURIComponent(rest.join('=')) };
-  }).filter((c) => c.name);
+  typeof document === 'undefined'
+    ? []
+    : document.cookie
+        .split(';')
+        .filter(Boolean)
+        .map((c) => {
+          const [name, ...rest] = c.trim().split('=');
+          return { name: name.trim(), value: decodeURIComponent(rest.join('=')) };
+        })
+        .filter((c) => c.name);
 
 const fromStorage = () => {
   try {
     return Object.keys(localStorage)
       .filter((k) => k.startsWith(PFX))
       .map((k) => ({ name: k.slice(PFX.length), value: localStorage.getItem(k) || '' }));
-  } catch { return []; }
+  } catch {
+    return [];
+  }
 };
 
 const setCookie = (name: string, value: string, options?: any) => {
@@ -44,20 +51,26 @@ export function createClient() {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        getAll: () => canUseCookies() ? fromCookies() : fromStorage(),
+        getAll: () => (canUseCookies() ? fromCookies() : fromStorage()),
         setAll(cookiesToSet) {
           if (typeof document === 'undefined') return;
           if (canUseCookies()) {
             cookiesToSet.forEach(({ name, value, options }) =>
-              value ? setCookie(name, value, options)
-                    : (document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=None; Secure`)
+              value
+                ? setCookie(name, value, options)
+                : (document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=None; Secure`)
             );
           } else {
             cookiesToSet.forEach(({ name, value, options }) => {
               try {
-                value ? localStorage.setItem(`${PFX}${name}`, value)
-                      : localStorage.removeItem(`${PFX}${name}`);
-              } catch {}
+                if (value) {
+                  localStorage.setItem(`${PFX}${name}`, value);
+                } else {
+                  localStorage.removeItem(`${PFX}${name}`);
+                }
+              } catch (err) {
+                console.error(err);
+              }
               if (value) setCookie(name, value, options);
             });
           }

@@ -25,13 +25,29 @@ const ROLE_LABEL: Record<string, string> = {
 };
 
 const ACTION_CONFIG: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
-  status_change: { label: 'تغيير الحالة', color: 'bg-blue-50 border-blue-200 text-blue-700', icon: <RefreshCw size={13} /> },
-  order_created: { label: 'إنشاء الأوردر', color: 'bg-green-50 border-green-200 text-green-700', icon: <Edit2 size={13} /> },
-  order_edited: { label: 'تعديل الأوردر', color: 'bg-amber-50 border-amber-200 text-amber-700', icon: <Edit2 size={13} /> },
-  order_deleted: { label: 'حذف الأوردر', color: 'bg-red-50 border-red-200 text-red-700', icon: <AlertCircle size={13} /> },
+  status_change: {
+    label: 'تغيير الحالة',
+    color: 'bg-blue-50 border-blue-200 text-blue-700',
+    icon: <RefreshCw size={13} />,
+  },
+  order_created: {
+    label: 'إنشاء الأوردر',
+    color: 'bg-green-50 border-green-200 text-green-700',
+    icon: <Edit2 size={13} />,
+  },
+  order_edited: {
+    label: 'تعديل الأوردر',
+    color: 'bg-amber-50 border-amber-200 text-amber-700',
+    icon: <Edit2 size={13} />,
+  },
+  order_deleted: {
+    label: 'حذف الأوردر',
+    color: 'bg-red-50 border-red-200 text-red-700',
+    icon: <AlertCircle size={13} />,
+  },
 };
 
-const STATUS_LABELS: Record<string, string> = {
+export const STATUS_LABELS: Record<string, string> = {
   new: 'جديد',
   preparing: 'جاري التجهيز',
   warehouse: 'في المستودع',
@@ -51,8 +67,12 @@ export function getAuditLogs(orderId: string): AuditEntry[] {
   if (typeof window === 'undefined') return [];
   try {
     const all = JSON.parse(localStorage.getItem('zahranship_audit_logs') || '[]') as AuditEntry[];
-    return all.filter(e => e.orderId === orderId).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  } catch { return []; }
+    return all
+      .filter((e) => e.orderId === orderId)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  } catch {
+    return [];
+  }
 }
 
 export function addAuditLog(entry: Omit<AuditEntry, 'id' | 'createdAt'>) {
@@ -68,7 +88,9 @@ export function addAuditLog(entry: Omit<AuditEntry, 'id' | 'createdAt'>) {
     // Keep last 500 entries
     const trimmed = all.slice(0, 500);
     localStorage.setItem('zahranship_audit_logs', JSON.stringify(trimmed));
-    window.dispatchEvent(new CustomEvent('zahranship_audit_updated', { detail: { orderId: entry.orderId } }));
+    window.dispatchEvent(
+      new CustomEvent('zahranship_audit_updated', { detail: { orderId: entry.orderId } })
+    );
   } catch {}
 }
 
@@ -90,9 +112,14 @@ export default function AuditLogModal({ orderId, orderNum, onClose }: Props) {
   const formatDate = (iso: string) => {
     try {
       const d = new Date(iso);
-      return d.toLocaleDateString('ar-EG', { year: 'numeric', month: 'short', day: 'numeric' })
-        + ' — ' + d.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    } catch { return iso; }
+      return (
+        d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) +
+        ' — ' +
+        d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      );
+    } catch {
+      return iso;
+    }
   };
 
   return (
@@ -107,10 +134,16 @@ export default function AuditLogModal({ orderId, orderNum, onClose }: Props) {
             </div>
             <div>
               <h3 className="text-base font-bold text-[hsl(var(--foreground))]">سجل التعديلات</h3>
-              <p className="text-xs text-[hsl(var(--muted-foreground))] font-mono mt-0.5">{orderNum}</p>
+              <p className="text-xs text-[hsl(var(--muted-foreground))] font-mono mt-0.5">
+                {orderNum}
+              </p>
             </div>
           </div>
-          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))] transition-colors" aria-label="إغلاق">
+          <button
+            onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))] transition-colors"
+            aria-label="إغلاق"
+          >
             <X size={16} />
           </button>
         </div>
@@ -122,35 +155,55 @@ export default function AuditLogModal({ orderId, orderNum, onClose }: Props) {
               <div className="w-12 h-12 bg-[hsl(var(--muted))] rounded-2xl flex items-center justify-center">
                 <Clock size={24} className="text-[hsl(var(--muted-foreground))]" />
               </div>
-              <p className="text-sm font-semibold text-[hsl(var(--foreground))]">لا توجد تعديلات مسجلة</p>
-              <p className="text-xs text-[hsl(var(--muted-foreground))] text-center">ستظهر هنا جميع التعديلات التي تُجرى على هذا الأوردر</p>
+              <p className="text-sm font-semibold text-[hsl(var(--foreground))]">
+                لا توجد تعديلات مسجلة
+              </p>
+              <p className="text-xs text-[hsl(var(--muted-foreground))] text-center">
+                ستظهر هنا جميع التعديلات التي تُجرى على هذا الأوردر
+              </p>
             </div>
           ) : (
             <div className="relative">
               <div className="absolute right-4 top-0 bottom-0 w-0.5 bg-[hsl(var(--border))]" />
               <div className="space-y-4">
                 {logs.map((log, i) => {
-                  const cfg = ACTION_CONFIG[log.action] || { label: log.action, color: 'bg-gray-50 border-gray-200 text-gray-700', icon: <Edit2 size={13} /> };
+                  const cfg = ACTION_CONFIG[log.action] || {
+                    label: log.action,
+                    color: 'bg-gray-50 border-gray-200 text-gray-700',
+                    icon: <Edit2 size={13} />,
+                  };
                   return (
                     <div key={log.id} className="flex items-start gap-4 relative">
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center z-10 flex-shrink-0 ${i === 0 ? 'bg-[hsl(var(--primary))] text-white' : 'bg-white border-2 border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))]'}`}>
+                      <div
+                        className={`w-8 h-8 rounded-full flex items-center justify-center z-10 flex-shrink-0 ${i === 0 ? 'bg-[hsl(var(--primary))] text-white' : 'bg-white border-2 border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))]'}`}
+                      >
                         {cfg.icon}
                       </div>
                       <div className={`flex-1 border rounded-xl p-3 ${cfg.color}`}>
                         <div className="flex items-center justify-between gap-2 mb-1.5 flex-wrap">
-                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-white/60">{cfg.label}</span>
-                          <span className="text-[10px] font-mono opacity-70">{formatDate(log.createdAt)}</span>
+                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-white/60">
+                            {cfg.label}
+                          </span>
+                          <span className="text-[10px] font-mono opacity-70">
+                            {formatDate(log.createdAt)}
+                          </span>
                         </div>
                         <div className="flex items-center gap-1.5 text-xs mb-1">
                           <User size={11} />
                           <span className="font-semibold">{log.changedBy}</span>
-                          <span className="opacity-60">({ROLE_LABEL[log.changedByRole] || log.changedByRole})</span>
+                          <span className="opacity-60">
+                            ({ROLE_LABEL[log.changedByRole] || log.changedByRole})
+                          </span>
                         </div>
                         {log.action === 'status_change' && log.oldValue && log.newValue && (
                           <div className="flex items-center gap-2 text-xs mt-1.5 bg-white/50 rounded-lg px-2 py-1">
-                            <span className="line-through opacity-60">{STATUS_LABELS[log.oldValue] || log.oldValue}</span>
+                            <span className="line-through opacity-60">
+                              {STATUS_LABELS[log.oldValue] || log.oldValue}
+                            </span>
                             <span className="opacity-60">←</span>
-                            <span className="font-bold">{STATUS_LABELS[log.newValue] || log.newValue}</span>
+                            <span className="font-bold">
+                              {STATUS_LABELS[log.newValue] || log.newValue}
+                            </span>
                           </div>
                         )}
                         {log.action === 'order_edited' && log.fieldChanged && (
@@ -158,7 +211,10 @@ export default function AuditLogModal({ orderId, orderNum, onClose }: Props) {
                             <span className="opacity-70">الحقل: </span>
                             <span className="font-semibold">{log.fieldChanged}</span>
                             {log.oldValue && log.newValue && (
-                              <span className="opacity-70"> ({log.oldValue} ← {log.newValue})</span>
+                              <span className="opacity-70">
+                                {' '}
+                                ({log.oldValue} ← {log.newValue})
+                              </span>
                             )}
                           </div>
                         )}
@@ -176,7 +232,8 @@ export default function AuditLogModal({ orderId, orderNum, onClose }: Props) {
 
         <div className="p-4 border-t border-[hsl(var(--border))]">
           <p className="text-xs text-center text-[hsl(var(--muted-foreground))]">
-            إجمالي التعديلات: <span className="font-bold text-[hsl(var(--foreground))]">{logs.length}</span>
+            إجمالي التعديلات:{' '}
+            <span className="font-bold text-[hsl(var(--foreground))]">{logs.length}</span>
           </p>
         </div>
       </div>

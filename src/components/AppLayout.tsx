@@ -3,7 +3,11 @@
 import React, { useEffect } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import Sidebar from './Sidebar';
-import { useAuth, getDefaultRouteForPermissions, getPermissionsForRoleId } from '@/contexts/AuthContext';
+import {
+  useAuth,
+  getDefaultRouteForPermissions,
+  getPermissionsForRoleId,
+} from '@/contexts/AuthContext';
 
 interface AppLayoutProps {
   children: React.ReactNode;
@@ -29,15 +33,14 @@ export default function AppLayout({ children, currentPath = '' }: AppLayoutProps
       return;
     }
 
-    // Manager has FULL access — skip all route guards
-    if (currentRole === 'manager') return;
+    // Manager/Admin has FULL access — skip all route guards
+    if (currentRoleId === 'r1') return;
 
     if (!hasAccess(activePath)) {
       // Redirect to the default route based on permissions
       const permissions = currentRoleId ? getPermissionsForRoleId(currentRoleId) : [];
-      const defaultRoute = permissions.length > 0
-        ? getDefaultRouteForPermissions(permissions)
-        : '/shipping';
+      const defaultRoute =
+        permissions.length > 0 ? getDefaultRouteForPermissions(permissions) : '/shipping';
       router.replace(defaultRoute);
     }
   }, [activePath, currentRole, currentRoleId, hasAccess, roleLoading, router]);

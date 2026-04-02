@@ -34,11 +34,58 @@ const ALL_PERMISSIONS = Object.keys(PERMISSION_ROUTE_MAP);
 // Default roles — always available as fallback when localStorage is empty
 const DEFAULT_ROLES: Array<{ id: string; name: string; permissions: string[] }> = [
   { id: 'r1', name: 'مدير النظام', permissions: ALL_PERMISSIONS },
-  { id: 'r2', name: 'مشرف النظام', permissions: ['view_dashboard', 'view_orders', 'edit_orders', 'update_status', 'view_shipping', 'manage_shipping', 'view_inventory', 'view_reports', 'export_reports', 'manage_users'] },
-  { id: 'r3', name: 'مشرف شحن', permissions: ['view_dashboard', 'view_orders', 'create_orders', 'edit_orders', 'update_status', 'view_shipping', 'manage_shipping', 'assign_courier', 'view_inventory', 'view_reports'] },
+  {
+    id: 'r2',
+    name: 'مشرف النظام',
+    permissions: [
+      'view_dashboard',
+      'view_orders',
+      'edit_orders',
+      'update_status',
+      'view_shipping',
+      'manage_shipping',
+      'view_inventory',
+      'view_reports',
+      'export_reports',
+      'manage_users',
+    ],
+  },
+  {
+    id: 'r3',
+    name: 'مشرف شحن',
+    permissions: [
+      'view_dashboard',
+      'view_orders',
+      'create_orders',
+      'edit_orders',
+      'update_status',
+      'view_shipping',
+      'manage_shipping',
+      'assign_courier',
+      'view_inventory',
+      'view_reports',
+    ],
+  },
   { id: 'r4', name: 'مندوب شحن', permissions: ['view_orders', 'update_status', 'view_shipping'] },
-  { id: 'r5', name: 'مدير خدمة عملاء', permissions: ['view_dashboard', 'view_orders', 'view_shipping', 'view_reports', 'export_reports', 'view_customers', 'manage_customers', 'customer_support'] },
-  { id: 'r6', name: 'خدمة عملاء', permissions: ['view_orders', 'view_shipping', 'view_customers', 'customer_support'] },
+  {
+    id: 'r5',
+    name: 'مدير خدمة عملاء',
+    permissions: [
+      'view_dashboard',
+      'view_orders',
+      'view_shipping',
+      'view_reports',
+      'export_reports',
+      'view_customers',
+      'manage_customers',
+      'customer_support',
+    ],
+  },
+  {
+    id: 'r6',
+    name: 'خدمة عملاء',
+    permissions: ['view_orders', 'view_shipping', 'view_customers', 'customer_support'],
+  },
 ];
 
 // Default redirect per first available permission
@@ -72,7 +119,7 @@ function loadRoles(): Array<{ id: string; name: string; permissions: string[] }>
     if (!Array.isArray(parsed) || parsed.length === 0) return DEFAULT_ROLES;
     // Merge: stored roles take priority, add defaults not in stored
     const storedIds = new Set(parsed.map((r: any) => r.id));
-    const merged = [...parsed, ...DEFAULT_ROLES.filter(r => !storedIds.has(r.id))];
+    const merged = [...parsed, ...DEFAULT_ROLES.filter((r) => !storedIds.has(r.id))];
     return merged;
   } catch {
     return DEFAULT_ROLES;
@@ -82,7 +129,7 @@ function loadRoles(): Array<{ id: string; name: string; permissions: string[] }>
 // Get permissions for a roleId
 export function getPermissionsForRoleId(roleId: string): string[] {
   const roles = loadRoles();
-  const role = roles.find(r => r.id === roleId);
+  const role = roles.find((r) => r.id === roleId);
   return role?.permissions ?? [];
 }
 
@@ -92,16 +139,16 @@ function getAllowedRoutesForRoleId(roleId: string): string[] {
   const routes = new Set<string>(['/track']); // track always allowed
   for (const perm of permissions) {
     const permRoutes = PERMISSION_ROUTE_MAP[perm] ?? [];
-    permRoutes.forEach(r => routes.add(r));
+    permRoutes.forEach((r) => routes.add(r));
   }
   return Array.from(routes);
 }
 
-// Check if a roleId has full/manager-level access
 function isManagerRole(roleId: string): boolean {
+  // Only true Admins (r1) should bypass all security
   if (roleId === 'r1') return true;
   const permissions = getPermissionsForRoleId(roleId);
-  // Has system_settings = admin-level
+  // Has BOTH system_settings and manage_roles = admin-level
   return permissions.includes('system_settings') && permissions.includes('manage_roles');
 }
 
@@ -146,10 +193,14 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           if (parsed?.roleId) {
             setCurrentRoleId(parsed.roleId);
             // Determine role type from roleId
-            const roleType = isManagerRole(parsed.roleId) ? 'manager' : (parsed.role || 'data_entry');
+            const roleType = isManagerRole(parsed.roleId)
+              ? 'manager'
+              : parsed.role === 'admin'
+                ? 'manager'
+                : 'employee';
             setCurrentRole(roleType);
           } else if (parsed?.role) {
-            setCurrentRole(parsed.role);
+            setCurrentRole(parsed.role === 'admin' ? 'manager' : 'employee');
             setCurrentRoleId(null);
           } else {
             setCurrentRole(null);
@@ -168,15 +219,25 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     try {
       const supabase = createClient();
-      if (!supabase) { setLoading(false); return; }
-
-      supabase.auth.getSession().then(({ data: { session } }) => {
-        setSession(session);
-        setUser(session?.user ?? null);
+      if (!supabase) {
         setLoading(false);
-      }).catch(() => { setLoading(false); });
+        return;
+      }
 
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      supabase.auth
+        .getSession()
+        .then(({ data: { session } }) => {
+          setSession(session);
+          setUser(session?.user ?? null);
+          setLoading(false);
+        })
+        .catch(() => {
+          setLoading(false);
+        });
+
+      const {
+        data: { subscription },
+      } = supabase.auth.onAuthStateChange((_event, session) => {
         setSession(session);
         setUser(session?.user ?? null);
         setLoading(false);
@@ -188,33 +249,43 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     }
   }, []);
 
-  // Check if current user can access a given path
   const hasAccess = (path: string): boolean => {
-    if (roleLoading) return true;
+    // If loading, block until we know the role
+    if (roleLoading) return false;
     if (currentRole === null && currentRoleId === null) return false;
 
-    // Manager (r1 or system_settings+manage_roles) has FULL access
-    if (currentRole === 'manager') return true;
+    // Manager (r1 or system_settings+manage_roles defined in isManagerRole) has FULL access
     if (currentRoleId && isManagerRole(currentRoleId)) return true;
 
     // Permission-based access using roleId
     if (currentRoleId) {
       const allowedRoutes = getAllowedRoutesForRoleId(currentRoleId);
-      return allowedRoutes.some(route =>
-        path === route || path.startsWith(route + '/') || path.startsWith(route + '?')
+      return allowedRoutes.some(
+        (route) => path === route || path.startsWith(route + '/') || path.startsWith(route + '?')
       );
     }
 
     // Fallback: if only legacy role string, allow basic access
     const legacyMap: Record<string, string[]> = {
-      manager: ['/dashboard', '/orders-management', '/shipping', '/inventory', '/reports', '/users', '/roles', '/settings', '/track', '/crm'],
+      manager: [
+        '/dashboard',
+        '/orders-management',
+        '/shipping',
+        '/inventory',
+        '/reports',
+        '/users',
+        '/roles',
+        '/settings',
+        '/track',
+        '/crm',
+      ],
       supervisor: ['/dashboard', '/orders-management', '/shipping', '/track', '/reports'],
       data_entry: ['/orders-management', '/shipping', '/track'],
       shipping: ['/shipping', '/track'],
     };
     const allowed = legacyMap[currentRole ?? ''] ?? [];
-    return allowed.some(route =>
-      path === route || path.startsWith(route + '/') || path.startsWith(route + '?')
+    return allowed.some(
+      (route) => path === route || path.startsWith(route + '/') || path.startsWith(route + '?')
     );
   };
 
@@ -227,10 +298,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       options: {
         data: {
           full_name: (metadata as any)?.fullName || '',
-          avatar_url: (metadata as any)?.avatarUrl || ''
+          avatar_url: (metadata as any)?.avatarUrl || '',
         },
-        emailRedirectTo: `${window.location.origin}/auth/callback`
-      }
+        emailRedirectTo: `${window.location.origin}/auth/callback`,
+      },
     });
     if (error) throw error;
     return data;
@@ -262,7 +333,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     try {
       const supabase = createClient();
       if (!supabase) return null;
-      const { data: { user }, error } = await supabase.auth.getUser();
+      const {
+        data: { user },
+        error,
+      } = await supabase.auth.getUser();
       if (error) throw error;
       return user;
     } catch {

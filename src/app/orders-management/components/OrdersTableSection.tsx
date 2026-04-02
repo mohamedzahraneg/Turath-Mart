@@ -1,6 +1,22 @@
 'use client';
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { Search, ChevronDown, ChevronUp, Eye, Trash2, FileText, ChevronRight, ChevronLeft, CheckSquare, TrendingUp, DollarSign, Truck, ArrowDownCircle, History, Zap } from 'lucide-react';
+import {
+  Search,
+  ChevronDown,
+  ChevronUp,
+  Eye,
+  Trash2,
+  FileText,
+  ChevronRight,
+  ChevronLeft,
+  CheckSquare,
+  TrendingUp,
+  DollarSign,
+  Truck,
+  ArrowDownCircle,
+  History,
+  Zap,
+} from 'lucide-react';
 import StatusUpdateModal from './StatusUpdateModal';
 import OrderDetailModal from './OrderDetailModal';
 import AuditLogModal from './AuditLogModal';
@@ -59,7 +75,10 @@ const PRODUCT_FILTER_OPTIONS = [
 const MOCK_ORDERS: Order[] = [];
 
 // Mock cash deposits per delegate
-const MOCK_DEPOSITS: Record<string, { deposited: number; deposits: { amount: number; date: string; note: string }[] }> = {};
+const MOCK_DEPOSITS: Record<
+  string,
+  { deposited: number; deposits: { amount: number; date: string; note: string }[] }
+> = {};
 
 type SortField = 'orderNum' | 'customer' | 'region' | 'total' | 'status' | 'date';
 type SortDir = 'asc' | 'desc';
@@ -71,13 +90,42 @@ function parseDateStr(dateStr: string): Date {
 }
 
 function exportToCSV(orders: Order[]) {
-  const headers = ['رقم الأوردر', 'العميل', 'الموبايل', 'المنطقة', 'المنطقة الفرعية', 'المنتجات', 'الكمية', 'المنتجات (ج.م)', 'الشحن (ج.م)', 'الإجمالي (ج.م)', 'الحالة', 'التاريخ', 'الوقت', 'المسجل', 'المندوب'];
-  const rows = orders.map(o => [
-    o.orderNum, o.customer, o.phone, o.region, o.district || '', o.products,
-    o.quantity, o.subtotal, o.shippingFee, o.total,
-    STATUS_MAP[o.status]?.label || o.status, o.date, o.time, o.createdBy, o.delegateName || ''
+  const headers = [
+    'رقم الأوردر',
+    'العميل',
+    'الموبايل',
+    'المنطقة',
+    'المنطقة الفرعية',
+    'المنتجات',
+    'الكمية',
+    'المنتجات (ج.م)',
+    'الشحن (ج.م)',
+    'الإجمالي (ج.م)',
+    'الحالة',
+    'التاريخ',
+    'الوقت',
+    'المسجل',
+    'المندوب',
+  ];
+  const rows = orders.map((o) => [
+    o.orderNum,
+    o.customer,
+    o.phone,
+    o.region,
+    o.district || '',
+    o.products,
+    o.quantity,
+    o.subtotal,
+    o.shippingFee,
+    o.total,
+    STATUS_MAP[o.status]?.label || o.status,
+    o.date,
+    o.time,
+    o.createdBy,
+    o.delegateName || '',
   ]);
-  const csvContent = '\uFEFF' + [headers, ...rows].map(r => r.map(c => `"${c}"`).join(',')).join('\n');
+  const csvContent =
+    '\uFEFF' + [headers, ...rows].map((r) => r.map((c) => `"${c}"`).join(',')).join('\n');
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -93,7 +141,9 @@ function exportToPDF(orders: Order[]) {
     alert('يرجى السماح بالنوافذ المنبثقة في إعدادات المتصفح');
     return;
   }
-  const rows = orders.map(o => `
+  const rows = orders
+    .map(
+      (o) => `
     <tr>
       <td>${o.orderNum}</td>
       <td>${o.customer}</td>
@@ -105,7 +155,9 @@ function exportToPDF(orders: Order[]) {
       <td>${STATUS_MAP[o.status]?.label || o.status}</td>
       <td>${o.date} ${o.time}</td>
     </tr>
-  `).join('');
+  `
+    )
+    .join('');
   win.document.write(`
     <!DOCTYPE html><html dir="rtl" lang="ar">
     <head><meta charset="UTF-8"><title>تقرير الأوردرات - Turath Mart</title>
@@ -194,7 +246,7 @@ export default function OrdersTableSection() {
           ip: row.ip || '',
           delegateName: row.delegate_name || undefined,
         }));
-        
+
         setAllOrders(supabaseOrders);
       }
     } catch (err) {
@@ -206,8 +258,14 @@ export default function OrdersTableSection() {
     loadOrders();
     const handleUpdate = () => {
       loadOrders();
-      setLiveUpdateCount(prev => prev + 1);
-      setLastUpdateTime(new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+      setLiveUpdateCount((prev) => prev + 1);
+      setLastUpdateTime(
+        new Date().toLocaleTimeString('en-US', {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        })
+      );
     };
     window.addEventListener('zahranship_orders_updated', handleUpdate);
     window.addEventListener('storage', handleUpdate);
@@ -226,40 +284,50 @@ export default function OrdersTableSection() {
 
   const handleSort = (field: SortField) => {
     if (sortField === field) setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
-    else { setSortField(field); setSortDir('asc'); }
+    else {
+      setSortField(field);
+      setSortDir('asc');
+    }
   };
 
   const filtered = useMemo(() => {
-    return allOrders.filter((o) => {
-      const matchSearch = !search || o.customer.includes(search) || o.orderNum.includes(search) || o.phone.includes(search);
-      const matchRegion = regionFilter === 'الكل' || o.region === regionFilter;
-      const matchStatus = statusFilter === 'الكل' || o.status === statusFilter;
-      const matchProduct = productFilter === 'الكل' || o.products.includes(productFilter);
-      // Date filter
-      let matchDate = true;
-      if (dateFrom || dateTo) {
-        const orderDate = parseDateStr(o.date);
-        if (dateFrom) {
-          const from = new Date(dateFrom);
-          if (orderDate < from) matchDate = false;
+    return allOrders
+      .filter((o) => {
+        const matchSearch =
+          !search ||
+          o.customer.includes(search) ||
+          o.orderNum.includes(search) ||
+          o.phone.includes(search);
+        const matchRegion = regionFilter === 'الكل' || o.region === regionFilter;
+        const matchStatus = statusFilter === 'الكل' || o.status === statusFilter;
+        const matchProduct = productFilter === 'الكل' || o.products.includes(productFilter);
+        // Date filter
+        let matchDate = true;
+        if (dateFrom || dateTo) {
+          const orderDate = parseDateStr(o.date);
+          if (dateFrom) {
+            const from = new Date(dateFrom);
+            if (orderDate < from) matchDate = false;
+          }
+          if (dateTo && matchDate) {
+            const to = new Date(dateTo);
+            to.setHours(23, 59, 59);
+            if (orderDate > to) matchDate = false;
+          }
         }
-        if (dateTo && matchDate) {
-          const to = new Date(dateTo);
-          to.setHours(23, 59, 59);
-          if (orderDate > to) matchDate = false;
-        }
-      }
-      return matchSearch && matchRegion && matchStatus && matchProduct && matchDate;
-    }).sort((a, b) => {
-      let cmp = 0;
-      if (sortField === 'orderNum') cmp = a.orderNum.localeCompare(b.orderNum);
-      else if (sortField === 'customer') cmp = a.customer.localeCompare(b.customer);
-      else if (sortField === 'region') cmp = a.region.localeCompare(b.region);
-      else if (sortField === 'total') cmp = a.total - b.total;
-      else if (sortField === 'status') cmp = a.status.localeCompare(b.status);
-      else if (sortField === 'date') cmp = parseDateStr(a.date).getTime() - parseDateStr(b.date).getTime();
-      return sortDir === 'asc' ? cmp : -cmp;
-    });
+        return matchSearch && matchRegion && matchStatus && matchProduct && matchDate;
+      })
+      .sort((a, b) => {
+        let cmp = 0;
+        if (sortField === 'orderNum') cmp = a.orderNum.localeCompare(b.orderNum);
+        else if (sortField === 'customer') cmp = a.customer.localeCompare(b.customer);
+        else if (sortField === 'region') cmp = a.region.localeCompare(b.region);
+        else if (sortField === 'total') cmp = a.total - b.total;
+        else if (sortField === 'status') cmp = a.status.localeCompare(b.status);
+        else if (sortField === 'date')
+          cmp = parseDateStr(a.date).getTime() - parseDateStr(b.date).getTime();
+        return sortDir === 'asc' ? cmp : -cmp;
+      });
   }, [allOrders, search, regionFilter, statusFilter, dateFrom, dateTo, sortField, sortDir]);
 
   const totalPages = Math.ceil(filtered.length / perPage);
@@ -267,7 +335,8 @@ export default function OrdersTableSection() {
 
   const toggleRow = (id: string) => {
     const s = new Set(selectedRows);
-    if (s.has(id)) s.delete(id); else s.add(id);
+    if (s.has(id)) s.delete(id);
+    else s.add(id);
     setSelectedRows(s);
   };
 
@@ -278,14 +347,20 @@ export default function OrdersTableSection() {
 
   const SortIcon = ({ field }: { field: SortField }) => {
     if (sortField !== field) return <ChevronDown size={12} className="opacity-30" />;
-    return sortDir === 'asc' ? <ChevronUp size={12} className="text-[hsl(var(--primary))]" /> : <ChevronDown size={12} className="text-[hsl(var(--primary))]" />;
+    return sortDir === 'asc' ? (
+      <ChevronUp size={12} className="text-[hsl(var(--primary))]" />
+    ) : (
+      <ChevronDown size={12} className="text-[hsl(var(--primary))]" />
+    );
   };
 
   const statusOptions = ['الكل', ...Object.keys(STATUS_MAP)];
 
   // Delegate stats calculation
-  const delegates = [...new Set(allOrders.map(o => o.delegateName).filter(Boolean))] as string[];
-  const delegateOrders = allOrders.filter(o => o.delegateName === selectedDelegate && ['shipping', 'delivered'].includes(o.status));
+  const delegates = [...new Set(allOrders.map((o) => o.delegateName).filter(Boolean))] as string[];
+  const delegateOrders = allOrders.filter(
+    (o) => o.delegateName === selectedDelegate && ['shipping', 'delivered'].includes(o.status)
+  );
   const delegateTotalOrders = delegateOrders.length;
   const delegateTotalValue = delegateOrders.reduce((s, o) => s + o.total, 0);
   const delegateShippingIncome = delegateOrders.reduce((s, o) => s + o.shippingFee, 0);
@@ -317,18 +392,25 @@ export default function OrdersTableSection() {
           >
             <div className="flex items-center gap-2">
               <Truck size={16} className="text-[hsl(var(--primary))]" />
-              <span className="text-sm font-bold text-[hsl(var(--foreground))]">إحصائيات المندوبين والتوريدات</span>
+              <span className="text-sm font-bold text-[hsl(var(--foreground))]">
+                إحصائيات المندوبين والتوريدات
+              </span>
             </div>
-            <ChevronDown size={16} className={`text-[hsl(var(--muted-foreground))] transition-transform ${showDelegateStats ? 'rotate-180' : ''}`} />
+            <ChevronDown
+              size={16}
+              className={`text-[hsl(var(--muted-foreground))] transition-transform ${showDelegateStats ? 'rotate-180' : ''}`}
+            />
           </button>
 
           {showDelegateStats && (
             <div className="px-4 pb-4 space-y-4 fade-in">
               {/* Delegate selector */}
               <div className="flex items-center gap-3 flex-wrap">
-                <span className="text-xs font-semibold text-[hsl(var(--muted-foreground))]">المندوب:</span>
+                <span className="text-xs font-semibold text-[hsl(var(--muted-foreground))]">
+                  المندوب:
+                </span>
                 <div className="flex gap-2 flex-wrap">
-                  {delegates.map(d => (
+                  {delegates.map((d) => (
                     <button
                       key={d}
                       onClick={() => setSelectedDelegate(d)}
@@ -354,22 +436,33 @@ export default function OrdersTableSection() {
                     <DollarSign size={13} className="text-green-600" />
                     <p className="text-[11px] font-semibold text-green-700">إجمالي القيمة</p>
                   </div>
-                  <p className="text-xl font-bold font-mono text-green-800">{delegateTotalValue.toLocaleString('en-US')} <span className="text-xs">ج.م</span></p>
+                  <p className="text-xl font-bold font-mono text-green-800">
+                    {delegateTotalValue.toLocaleString('en-US')}{' '}
+                    <span className="text-xs">ج.م</span>
+                  </p>
                 </div>
                 <div className="bg-purple-50 border border-purple-100 rounded-xl p-3">
                   <div className="flex items-center gap-1.5 mb-1">
                     <TrendingUp size={13} className="text-purple-600" />
                     <p className="text-[11px] font-semibold text-purple-700">صافي دخل الشحن</p>
                   </div>
-                  <p className="text-xl font-bold font-mono text-purple-800">{delegateNetIncome.toLocaleString('en-US')} <span className="text-xs">ج.م</span></p>
-                  {delegateExtraFees > 0 && <p className="text-[10px] text-orange-600 mt-0.5">بعد خصم {delegateExtraFees} ج.م مصاريف إضافية</p>}
+                  <p className="text-xl font-bold font-mono text-purple-800">
+                    {delegateNetIncome.toLocaleString('en-US')} <span className="text-xs">ج.م</span>
+                  </p>
+                  {delegateExtraFees > 0 && (
+                    <p className="text-[10px] text-orange-600 mt-0.5">
+                      بعد خصم {delegateExtraFees} ج.م مصاريف إضافية
+                    </p>
+                  )}
                 </div>
                 <div className="bg-red-50 border border-red-100 rounded-xl p-3">
                   <div className="flex items-center gap-1.5 mb-1">
                     <ArrowDownCircle size={13} className="text-red-600" />
                     <p className="text-[11px] font-semibold text-red-700">المطلوب توريده</p>
                   </div>
-                  <p className="text-xl font-bold font-mono text-red-800">{delegateAmountDue.toLocaleString('en-US')} <span className="text-xs">ج.م</span></p>
+                  <p className="text-xl font-bold font-mono text-red-800">
+                    {delegateAmountDue.toLocaleString('en-US')} <span className="text-xs">ج.م</span>
+                  </p>
                 </div>
               </div>
 
@@ -378,22 +471,35 @@ export default function OrdersTableSection() {
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
                     <ArrowDownCircle size={14} className="text-[hsl(var(--primary))]" />
-                    <span className="text-sm font-bold">التوريدات النقدية — {selectedDelegate}</span>
+                    <span className="text-sm font-bold">
+                      التوريدات النقدية — {selectedDelegate}
+                    </span>
                   </div>
                   <div className="flex gap-3 text-xs">
-                    <span className="bg-green-50 text-green-700 px-2 py-1 rounded-lg font-semibold">تم توريده: {depositInfo.deposited.toLocaleString('en-US')} ج.م</span>
-                    <span className="bg-red-50 text-red-700 px-2 py-1 rounded-lg font-semibold">المتبقي: {delegateAmountDue.toLocaleString('en-US')} ج.م</span>
+                    <span className="bg-green-50 text-green-700 px-2 py-1 rounded-lg font-semibold">
+                      تم توريده: {depositInfo.deposited.toLocaleString('en-US')} ج.م
+                    </span>
+                    <span className="bg-red-50 text-red-700 px-2 py-1 rounded-lg font-semibold">
+                      المتبقي: {delegateAmountDue.toLocaleString('en-US')} ج.م
+                    </span>
                   </div>
                 </div>
                 {depositInfo.deposits.length === 0 ? (
-                  <p className="text-xs text-[hsl(var(--muted-foreground))] text-center py-2">لا توجد توريدات مسجلة</p>
+                  <p className="text-xs text-[hsl(var(--muted-foreground))] text-center py-2">
+                    لا توجد توريدات مسجلة
+                  </p>
                 ) : (
                   <div className="space-y-2">
                     {depositInfo.deposits.map((dep, i) => (
-                      <div key={`dep-${i}`} className="flex items-center justify-between text-xs bg-[hsl(var(--muted))]/30 rounded-lg px-3 py-2">
+                      <div
+                        key={`dep-${i}`}
+                        className="flex items-center justify-between text-xs bg-[hsl(var(--muted))]/30 rounded-lg px-3 py-2"
+                      >
                         <span className="font-semibold">{dep.note}</span>
                         <span className="text-[hsl(var(--muted-foreground))]">{dep.date}</span>
-                        <span className="font-mono font-bold text-green-700">+ {dep.amount.toLocaleString('en-US')} ج.م</span>
+                        <span className="font-mono font-bold text-green-700">
+                          + {dep.amount.toLocaleString('en-US')} ج.م
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -407,32 +513,63 @@ export default function OrdersTableSection() {
         <div className="p-4 border-b border-[hsl(var(--border))] space-y-3">
           <div className="flex flex-col sm:flex-row gap-3">
             <div className="relative flex-1">
-              <Search size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]" />
+              <Search
+                size={16}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]"
+              />
               <input
                 type="text"
                 className="input-field pr-9"
                 placeholder="بحث بالاسم، رقم الأوردر، أو الموبايل..."
                 value={search}
-                onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setPage(1);
+                }}
               />
             </div>
             <div className="flex gap-2 flex-wrap">
-              <select className="input-field w-auto text-sm" value={regionFilter} onChange={(e) => { setRegionFilter(e.target.value); setPage(1); }}>
-                {REGIONS.map((r) => <option key={`region-filter-${r}`} value={r}>{r}</option>)}
+              <select
+                className="input-field w-auto text-sm"
+                value={regionFilter}
+                onChange={(e) => {
+                  setRegionFilter(e.target.value);
+                  setPage(1);
+                }}
+              >
+                {REGIONS.map((r) => (
+                  <option key={`region-filter-${r}`} value={r}>
+                    {r}
+                  </option>
+                ))}
               </select>
-              <select className="input-field w-auto text-sm" value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}>
+              <select
+                className="input-field w-auto text-sm"
+                value={statusFilter}
+                onChange={(e) => {
+                  setStatusFilter(e.target.value);
+                  setPage(1);
+                }}
+              >
                 {statusOptions.map((s) => (
-                  <option key={`status-filter-${s}`} value={s}>{s === 'الكل' ? 'كل الحالات' : STATUS_MAP[s]?.label || s}</option>
+                  <option key={`status-filter-${s}`} value={s}>
+                    {s === 'الكل' ? 'كل الحالات' : STATUS_MAP[s]?.label || s}
+                  </option>
                 ))}
               </select>
               {/* Product filter */}
               <select
                 className="input-field w-auto text-sm"
                 value={productFilter}
-                onChange={(e) => { setProductFilter(e.target.value); setPage(1); }}
+                onChange={(e) => {
+                  setProductFilter(e.target.value);
+                  setPage(1);
+                }}
               >
                 {PRODUCT_FILTER_OPTIONS.map((p) => (
-                  <option key={`product-filter-${p.value}`} value={p.value}>{p.label}</option>
+                  <option key={`product-filter-${p.value}`} value={p.value}>
+                    {p.label}
+                  </option>
                 ))}
               </select>
               {/* Export */}
@@ -448,13 +585,19 @@ export default function OrdersTableSection() {
                   <div className="absolute left-0 top-full mt-1 bg-white border border-[hsl(var(--border))] rounded-xl shadow-lg z-20 min-w-[160px] overflow-hidden">
                     <button
                       className="w-full flex items-center gap-2 px-4 py-2.5 text-sm hover:bg-[hsl(var(--muted))] transition-colors text-right"
-                      onClick={() => { exportToCSV(filtered); setShowExportMenu(false); }}
+                      onClick={() => {
+                        exportToCSV(filtered);
+                        setShowExportMenu(false);
+                      }}
                     >
                       📊 تصدير Excel (CSV)
                     </button>
                     <button
                       className="w-full flex items-center gap-2 px-4 py-2.5 text-sm hover:bg-[hsl(var(--muted))] transition-colors text-right border-t border-[hsl(var(--border))]"
-                      onClick={() => { exportToPDF(filtered); setShowExportMenu(false); }}
+                      onClick={() => {
+                        exportToPDF(filtered);
+                        setShowExportMenu(false);
+                      }}
                     >
                       📄 تصدير PDF
                     </button>
@@ -465,14 +608,19 @@ export default function OrdersTableSection() {
           </div>
           {/* Date range filter — ACTIVE */}
           <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-xs text-[hsl(var(--muted-foreground))] font-semibold">فلتر التاريخ:</span>
+            <span className="text-xs text-[hsl(var(--muted-foreground))] font-semibold">
+              فلتر التاريخ:
+            </span>
             <div className="flex items-center gap-2">
               <label className="text-xs text-[hsl(var(--muted-foreground))]">من</label>
               <input
                 type="date"
                 className="input-field w-auto text-sm py-1.5"
                 value={dateFrom}
-                onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
+                onChange={(e) => {
+                  setDateFrom(e.target.value);
+                  setPage(1);
+                }}
                 dir="ltr"
               />
             </div>
@@ -482,14 +630,28 @@ export default function OrdersTableSection() {
                 type="date"
                 className="input-field w-auto text-sm py-1.5"
                 value={dateTo}
-                onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
+                onChange={(e) => {
+                  setDateTo(e.target.value);
+                  setPage(1);
+                }}
                 dir="ltr"
               />
             </div>
             {(dateFrom || dateTo) && (
-              <button className="text-xs text-red-500 hover:underline" onClick={() => { setDateFrom(''); setDateTo(''); setPage(1); }}>مسح</button>
+              <button
+                className="text-xs text-red-500 hover:underline"
+                onClick={() => {
+                  setDateFrom('');
+                  setDateTo('');
+                  setPage(1);
+                }}
+              >
+                مسح
+              </button>
             )}
-            <span className="text-xs text-[hsl(var(--muted-foreground))] mr-auto">{filtered.length} نتيجة</span>
+            <span className="text-xs text-[hsl(var(--muted-foreground))] mr-auto">
+              {filtered.length} نتيجة
+            </span>
           </div>
         </div>
 
@@ -498,15 +660,24 @@ export default function OrdersTableSection() {
           <div className="bg-[hsl(var(--primary))] text-white px-4 py-3 flex items-center justify-between slide-up">
             <span className="text-sm font-semibold">تم تحديد {selectedRows.size} أوردر</span>
             <div className="flex gap-2">
-              <button className="bg-white/20 hover:bg-white/30 text-white text-xs px-3 py-1.5 rounded-lg transition-colors font-medium">تحديث الحالة</button>
+              <button className="bg-white/20 hover:bg-white/30 text-white text-xs px-3 py-1.5 rounded-lg transition-colors font-medium">
+                تحديث الحالة
+              </button>
               <button
                 className="bg-white/20 hover:bg-white/30 text-white text-xs px-3 py-1.5 rounded-lg transition-colors font-medium"
-                onClick={() => exportToCSV(allOrders.filter(o => selectedRows.has(o.id)))}
+                onClick={() => exportToCSV(allOrders.filter((o) => selectedRows.has(o.id)))}
               >
                 تصدير المحدد
               </button>
-              <button className="bg-red-500/80 hover:bg-red-600 text-white text-xs px-3 py-1.5 rounded-lg transition-colors font-medium">حذف المحدد</button>
-              <button className="bg-white/20 hover:bg-white/30 text-white text-xs px-3 py-1.5 rounded-lg transition-colors font-medium" onClick={() => setSelectedRows(new Set())}>إلغاء التحديد</button>
+              <button className="bg-red-500/80 hover:bg-red-600 text-white text-xs px-3 py-1.5 rounded-lg transition-colors font-medium">
+                حذف المحدد
+              </button>
+              <button
+                className="bg-white/20 hover:bg-white/30 text-white text-xs px-3 py-1.5 rounded-lg transition-colors font-medium"
+                onClick={() => setSelectedRows(new Set())}
+              >
+                إلغاء التحديد
+              </button>
             </div>
           </div>
         )}
@@ -517,28 +688,64 @@ export default function OrdersTableSection() {
             <thead>
               <tr className="border-b border-[hsl(var(--border))]">
                 <th className="table-header w-10">
-                  <input type="checkbox" checked={selectedRows.size === paginated.length && paginated.length > 0} onChange={toggleAll} className="w-4 h-4 rounded" aria-label="تحديد الكل" />
+                  <input
+                    type="checkbox"
+                    checked={selectedRows.size === paginated.length && paginated.length > 0}
+                    onChange={toggleAll}
+                    className="w-4 h-4 rounded"
+                    aria-label="تحديد الكل"
+                  />
                 </th>
-                <th className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors" onClick={() => handleSort('orderNum')}>
-                  <div className="flex items-center gap-1">رقم الأوردر <SortIcon field="orderNum" /></div>
+                <th
+                  className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors"
+                  onClick={() => handleSort('orderNum')}
+                >
+                  <div className="flex items-center gap-1">
+                    رقم الأوردر <SortIcon field="orderNum" />
+                  </div>
                 </th>
                 <th className="table-header">المسجِّل</th>
-                <th className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors" onClick={() => handleSort('customer')}>
-                  <div className="flex items-center gap-1">العميل <SortIcon field="customer" /></div>
+                <th
+                  className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors"
+                  onClick={() => handleSort('customer')}
+                >
+                  <div className="flex items-center gap-1">
+                    العميل <SortIcon field="customer" />
+                  </div>
                 </th>
                 <th className="table-header">الموبايل</th>
-                <th className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors" onClick={() => handleSort('region')}>
-                  <div className="flex items-center gap-1">المنطقة <SortIcon field="region" /></div>
+                <th
+                  className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors"
+                  onClick={() => handleSort('region')}
+                >
+                  <div className="flex items-center gap-1">
+                    المنطقة <SortIcon field="region" />
+                  </div>
                 </th>
                 <th className="table-header">المنتجات</th>
-                <th className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors" onClick={() => handleSort('total')}>
-                  <div className="flex items-center gap-1">الإجمالي <SortIcon field="total" /></div>
+                <th
+                  className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors"
+                  onClick={() => handleSort('total')}
+                >
+                  <div className="flex items-center gap-1">
+                    الإجمالي <SortIcon field="total" />
+                  </div>
                 </th>
-                <th className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors" onClick={() => handleSort('status')}>
-                  <div className="flex items-center gap-1">الحالة <SortIcon field="status" /></div>
+                <th
+                  className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors"
+                  onClick={() => handleSort('status')}
+                >
+                  <div className="flex items-center gap-1">
+                    الحالة <SortIcon field="status" />
+                  </div>
                 </th>
-                <th className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors" onClick={() => handleSort('date')}>
-                  <div className="flex items-center gap-1">التاريخ <SortIcon field="date" /></div>
+                <th
+                  className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors"
+                  onClick={() => handleSort('date')}
+                >
+                  <div className="flex items-center gap-1">
+                    التاريخ <SortIcon field="date" />
+                  </div>
                 </th>
                 <th className="table-header">إجراءات</th>
               </tr>
@@ -551,8 +758,12 @@ export default function OrdersTableSection() {
                       <div className="w-14 h-14 bg-[hsl(var(--muted))] rounded-2xl flex items-center justify-center">
                         <CheckSquare size={28} className="text-[hsl(var(--muted-foreground))]" />
                       </div>
-                      <p className="text-base font-semibold text-[hsl(var(--foreground))]">لا توجد أوردرات</p>
-                      <p className="text-sm text-[hsl(var(--muted-foreground))]">لم يتم العثور على أوردرات بهذه المعايير.</p>
+                      <p className="text-base font-semibold text-[hsl(var(--foreground))]">
+                        لا توجد أوردرات
+                      </p>
+                      <p className="text-sm text-[hsl(var(--muted-foreground))]">
+                        لم يتم العثور على أوردرات بهذه المعايير.
+                      </p>
                     </div>
                   </td>
                 </tr>
@@ -561,12 +772,23 @@ export default function OrdersTableSection() {
                   const st = STATUS_MAP[order.status] || STATUS_MAP['new'];
                   const isSelected = selectedRows.has(order.id);
                   return (
-                    <tr key={order.id} className={`transition-colors duration-150 group ${isSelected ? 'bg-blue-50' : 'hover:bg-[hsl(var(--muted))]/50'}`}>
+                    <tr
+                      key={order.id}
+                      className={`transition-colors duration-150 group ${isSelected ? 'bg-blue-50' : 'hover:bg-[hsl(var(--muted))]/50'}`}
+                    >
                       <td className="table-cell w-10">
-                        <input type="checkbox" checked={isSelected} onChange={() => toggleRow(order.id)} className="w-4 h-4 rounded" aria-label={`تحديد أوردر ${order.orderNum}`} />
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleRow(order.id)}
+                          className="w-4 h-4 rounded"
+                          aria-label={`تحديد أوردر ${order.orderNum}`}
+                        />
                       </td>
                       <td className="table-cell">
-                        <span className="font-mono text-xs font-bold text-[hsl(var(--primary))]">{order.orderNum}</span>
+                        <span className="font-mono text-xs font-bold text-[hsl(var(--primary))]">
+                          {order.orderNum}
+                        </span>
                       </td>
                       <td className="table-cell">
                         <p className="text-xs font-medium">{order.createdBy}</p>
@@ -575,7 +797,10 @@ export default function OrdersTableSection() {
                         <div>
                           <p className="font-semibold text-sm">{order.customer}</p>
                           {order.notes && (
-                            <p className="text-[10px] text-amber-600 truncate max-w-[140px]" title={order.notes}>
+                            <p
+                              className="text-[10px] text-amber-600 truncate max-w-[140px]"
+                              title={order.notes}
+                            >
                               ملاحظة: {order.notes}
                             </p>
                           )}
@@ -584,50 +809,87 @@ export default function OrdersTableSection() {
                       <td className="table-cell">
                         <div>
                           <p className="text-sm font-mono">{order.phone}</p>
-                          {order.phone2 && <p className="text-xs text-[hsl(var(--muted-foreground))] font-mono">{order.phone2}</p>}
+                          {order.phone2 && (
+                            <p className="text-xs text-[hsl(var(--muted-foreground))] font-mono">
+                              {order.phone2}
+                            </p>
+                          )}
                         </div>
                       </td>
                       <td className="table-cell">
                         <div>
-                          <span className="text-sm bg-[hsl(var(--muted))] px-2 py-0.5 rounded-lg text-[hsl(var(--foreground))] font-medium">{order.region}</span>
-                          {order.district && <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">{order.district}</p>}
+                          <span className="text-sm bg-[hsl(var(--muted))] px-2 py-0.5 rounded-lg text-[hsl(var(--foreground))] font-medium">
+                            {order.region}
+                          </span>
+                          {order.district && (
+                            <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
+                              {order.district}
+                            </p>
+                          )}
                         </div>
                       </td>
                       <td className="table-cell max-w-[160px]">
-                        <p className="text-sm truncate" title={order.products}>{order.products}</p>
-                        <p className="text-xs text-[hsl(var(--muted-foreground))]">{order.quantity} قطعة</p>
+                        <p className="text-sm truncate" title={order.products}>
+                          {order.products}
+                        </p>
+                        <p className="text-xs text-[hsl(var(--muted-foreground))]">
+                          {order.quantity} قطعة
+                        </p>
                       </td>
                       <td className="table-cell">
                         <div>
-                          <p className="font-bold font-mono text-sm">{order.total.toLocaleString('en-US')} ج.م</p>
+                          <p className="font-bold font-mono text-sm">
+                            {order.total.toLocaleString('en-US')} ج.م
+                          </p>
                           <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
                             {order.expressShipping ? 'شحن سريع' : 'شحن'}: {order.shippingFee} ج.م
                           </p>
                         </div>
                       </td>
                       <td className="table-cell">
-                        <button className={`badge ${st.cls} cursor-pointer hover:opacity-80 transition-opacity`} onClick={() => setStatusModal({ order })} title="انقر لتغيير الحالة">
+                        <button
+                          className={`badge ${st.cls} cursor-pointer hover:opacity-80 transition-opacity`}
+                          onClick={() => setStatusModal({ order })}
+                          title="انقر لتغيير الحالة"
+                        >
                           {st.label}
                         </button>
                       </td>
                       <td className="table-cell">
                         <div>
                           <p className="text-xs font-medium">{order.date}</p>
-                          <p className="text-[10px] text-[hsl(var(--muted-foreground))] font-mono">{order.time}</p>
+                          <p className="text-[10px] text-[hsl(var(--muted-foreground))] font-mono">
+                            {order.time}
+                          </p>
                         </div>
                       </td>
                       <td className="table-cell">
                         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
-                          <button onClick={() => setDetailModal({ order })} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-blue-600 transition-colors" title="عرض التفاصيل">
+                          <button
+                            onClick={() => setDetailModal({ order })}
+                            className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-blue-600 transition-colors"
+                            title="عرض التفاصيل"
+                          >
                             <Eye size={14} />
                           </button>
-                          <button onClick={() => setAuditModal({ order })} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-amber-50 text-amber-600 transition-colors" title="سجل التعديلات">
+                          <button
+                            onClick={() => setAuditModal({ order })}
+                            className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-amber-50 text-amber-600 transition-colors"
+                            title="سجل التعديلات"
+                          >
                             <History size={14} />
                           </button>
-                          <button onClick={() => setDetailModal({ order })} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-green-50 text-green-600 transition-colors" title="عرض الفاتورة PDF">
+                          <button
+                            onClick={() => setDetailModal({ order })}
+                            className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-green-50 text-green-600 transition-colors"
+                            title="عرض الفاتورة PDF"
+                          >
                             <FileText size={14} />
                           </button>
-                          <button className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors" title="حذف الأوردر">
+                          <button
+                            className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
+                            title="حذف الأوردر"
+                          >
                             <Trash2 size={14} />
                           </button>
                         </div>
@@ -644,29 +906,84 @@ export default function OrdersTableSection() {
         <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-4 py-3 border-t border-[hsl(var(--border))] bg-[hsl(var(--muted))]/30">
           <div className="flex items-center gap-2 text-sm text-[hsl(var(--muted-foreground))]">
             <span>عرض</span>
-            <select className="input-field w-auto text-sm py-1" value={perPage} onChange={(e) => { setPerPage(Number(e.target.value)); setPage(1); }}>
-              {[5, 8, 10, 20, 50].map((n) => <option key={`perpage-${n}`} value={n}>{n}</option>)}
+            <select
+              className="input-field w-auto text-sm py-1"
+              value={perPage}
+              onChange={(e) => {
+                setPerPage(Number(e.target.value));
+                setPage(1);
+              }}
+            >
+              {[5, 8, 10, 20, 50].map((n) => (
+                <option key={`perpage-${n}`} value={n}>
+                  {n}
+                </option>
+              ))}
             </select>
             <span>من {filtered.length} أوردر</span>
           </div>
           <div className="flex items-center gap-1">
-            <button className="w-8 h-8 flex items-center justify-center rounded-lg border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" onClick={() => setPage(1)} disabled={page === 1} aria-label="الصفحة الأولى"><ChevronRight size={14} /></button>
-            <button className="w-8 h-8 flex items-center justify-center rounded-lg border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" onClick={() => setPage(page - 1)} disabled={page === 1} aria-label="الصفحة السابقة"><ChevronRight size={14} /></button>
+            <button
+              className="w-8 h-8 flex items-center justify-center rounded-lg border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              onClick={() => setPage(1)}
+              disabled={page === 1}
+              aria-label="الصفحة الأولى"
+            >
+              <ChevronRight size={14} />
+            </button>
+            <button
+              className="w-8 h-8 flex items-center justify-center rounded-lg border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              onClick={() => setPage(page - 1)}
+              disabled={page === 1}
+              aria-label="الصفحة السابقة"
+            >
+              <ChevronRight size={14} />
+            </button>
             {Array.from({ length: Math.min(totalPages, 5) }, (_, i) => {
               const pageNum = i + 1;
               return (
-                <button key={`page-btn-${pageNum}`} className={`w-8 h-8 flex items-center justify-center rounded-lg border text-sm font-semibold transition-colors ${page === pageNum ? 'bg-[hsl(var(--primary))] text-white border-[hsl(var(--primary))]' : 'border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]'}`} onClick={() => setPage(pageNum)}>{pageNum}</button>
+                <button
+                  key={`page-btn-${pageNum}`}
+                  className={`w-8 h-8 flex items-center justify-center rounded-lg border text-sm font-semibold transition-colors ${page === pageNum ? 'bg-[hsl(var(--primary))] text-white border-[hsl(var(--primary))]' : 'border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]'}`}
+                  onClick={() => setPage(pageNum)}
+                >
+                  {pageNum}
+                </button>
               );
             })}
-            <button className="w-8 h-8 flex items-center justify-center rounded-lg border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" onClick={() => setPage(page + 1)} disabled={page === totalPages || totalPages === 0} aria-label="الصفحة التالية"><ChevronLeft size={14} /></button>
-            <button className="w-8 h-8 flex items-center justify-center rounded-lg border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" onClick={() => setPage(totalPages)} disabled={page === totalPages || totalPages === 0} aria-label="الصفحة الأخيرة"><ChevronLeft size={14} /></button>
+            <button
+              className="w-8 h-8 flex items-center justify-center rounded-lg border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              onClick={() => setPage(page + 1)}
+              disabled={page === totalPages || totalPages === 0}
+              aria-label="الصفحة التالية"
+            >
+              <ChevronLeft size={14} />
+            </button>
+            <button
+              className="w-8 h-8 flex items-center justify-center rounded-lg border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              onClick={() => setPage(totalPages)}
+              disabled={page === totalPages || totalPages === 0}
+              aria-label="الصفحة الأخيرة"
+            >
+              <ChevronLeft size={14} />
+            </button>
           </div>
         </div>
       </div>
 
-      {statusModal && <StatusUpdateModal order={statusModal.order} onClose={() => setStatusModal(null)} />}
-      {detailModal && <OrderDetailModal order={detailModal.order} onClose={() => setDetailModal(null)} />}
-      {auditModal && <AuditLogModal orderId={auditModal.order.id} orderNum={auditModal.order.orderNum} onClose={() => setAuditModal(null)} />}
+      {statusModal && (
+        <StatusUpdateModal order={statusModal.order} onClose={() => setStatusModal(null)} />
+      )}
+      {detailModal && (
+        <OrderDetailModal order={detailModal.order} onClose={() => setDetailModal(null)} />
+      )}
+      {auditModal && (
+        <AuditLogModal
+          orderId={auditModal.order.id}
+          orderNum={auditModal.order.orderNum}
+          onClose={() => setAuditModal(null)}
+        />
+      )}
     </>
   );
 }

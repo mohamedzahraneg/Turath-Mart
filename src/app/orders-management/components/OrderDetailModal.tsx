@@ -2,8 +2,29 @@
 import React, { useState, useEffect } from 'react';
 import { toast } from 'sonner';
 import { Toaster } from 'sonner';
-import { X, User, Phone, MapPin, Package, FileText, MessageCircle, Mail, Printer, CheckCircle, Shield, Monitor, Smartphone, Tablet, Link, Copy, Clock, History } from 'lucide-react';
+import {
+  X,
+  User,
+  Phone,
+  MapPin,
+  Package,
+  FileText,
+  MessageCircle,
+  Mail,
+  Printer,
+  CheckCircle,
+  Shield,
+  Monitor,
+  Smartphone,
+  Tablet,
+  Link,
+  Copy,
+  Clock,
+  History,
+} from 'lucide-react';
 import AuditLogModal, { getAuditLogs, AuditEntry } from './AuditLogModal';
+import { createClient } from '@/lib/supabase/client';
+import { STATUS_LABELS } from './AuditLogModal';
 
 interface OrderLine {
   productType: string;
@@ -52,7 +73,9 @@ interface Order {
 
 // Simulated current user role — in real app comes from auth context
 const CURRENT_USER_ROLE: string = 'admin';
-const CAN_SEE_SENSITIVE = ['admin', 'supervisor', 'delegate', 'manager'].includes(CURRENT_USER_ROLE);
+const CAN_SEE_SENSITIVE = ['admin', 'supervisor', 'delegate', 'manager'].includes(
+  CURRENT_USER_ROLE
+);
 const IS_ADMIN = CURRENT_USER_ROLE === 'admin';
 
 const STATUS_BADGE_MAP: Record<string, { label: string; cls: string }> = {
@@ -65,20 +88,7 @@ const STATUS_BADGE_MAP: Record<string, { label: string; cls: string }> = {
   returned: { label: 'مرتجع', cls: 'status-returned' },
 };
 
-const MOCK_STATUS_HISTORY = [
-  { id: 'dh-001', status: 'new', label: 'جديد', date: '27/03/2026', time: '09:32:14', day: 'الجمعة', by: 'محمد حسن', note: 'تم تسجيل الأوردر', device: 'كمبيوتر' },
-  { id: 'dh-002', status: 'preparing', label: 'جاري التجهيز', date: '27/03/2026', time: '11:15:42', day: 'الجمعة', by: 'أحمد السيد (مدير)', note: 'تم تجهيز الطلب', device: 'موبايل' },
-  { id: 'dh-003', status: 'shipping', label: 'جاري الشحن', date: '27/03/2026', time: '13:40:07', day: 'الجمعة', by: 'علي محمود (مندوب)', note: 'الطلب في الطريق', device: 'موبايل' },
-];
-
-// Mock notifications log
-const MOCK_NOTIFICATIONS = [
-  { id: 'notif-001', type: 'status_change', message: 'تم تغيير حالة الأوردر إلى "جاري الشحن"', date: '27/03/2026', time: '13:40:07', by: 'علي محمود' },
-  { id: 'notif-002', type: 'whatsapp', message: 'تم إرسال رسالة واتساب للعميل مع رابط التتبع', date: '27/03/2026', time: '13:41:22', by: 'النظام' },
-  { id: 'notif-003', type: 'status_change', message: 'تم تغيير حالة الأوردر إلى "جاري التجهيز"', date: '27/03/2026', time: '11:15:42', by: 'أحمد السيد' },
-  { id: 'notif-004', type: 'order_created', message: 'تم إنشاء الأوردر بنجاح', date: '27/03/2026', time: '09:32:14', by: 'محمد حسن' },
-];
-
+// Tabs configuration
 const TABS = [
   { id: 'tab-details', label: 'تفاصيل الأوردر' },
   { id: 'tab-tracking', label: 'رابط التتبع' },
@@ -107,7 +117,9 @@ function getWATemplate(): string {
   try {
     const saved = localStorage.getItem('settings_wa_template');
     return saved ? JSON.parse(saved) : '';
-  } catch { return ''; }
+  } catch {
+    return '';
+  }
 }
 
 const DEFAULT_WA_TEMPLATE = `مرحبا {customerName}،
@@ -125,7 +137,9 @@ export default function OrderDetailModal({ order, onClose }: Props) {
   const [activeTab, setActiveTab] = useState('tab-details');
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [auditLogs, setAuditLogs] = useState<AuditEntry[]>([]);
+  const [systemNotifications, setSystemNotifications] = useState<any[]>([]);
   const [liveOrder, setLiveOrder] = useState(order);
+  const [loadingNotifs, setLoadingNotifs] = useState(true);
 
   // Load audit logs and listen for real-time updates
   useEffect(() => {
@@ -181,11 +195,52 @@ export default function OrderDetailModal({ order, onClose }: Props) {
       }
     };
 
+    const fetchOrderNotifications = async () => {
+      try {
+        const supabase = createClient();
+        const { data, error } = await supabase
+          .from('zahranship_notifications')
+          .select('*')
+          .eq('order_id', order.id)
+          .order('created_at', { ascending: false });
+
+        if (!error && data) {
+          setSystemNotifications(data);
+        }
+      } catch (err) {
+        console.error('Failed to fetch order notifications:', err);
+      } finally {
+        setLoadingNotifs(false);
+      }
+    };
+
+    fetchOrderNotifications();
+
+    const handleNotifs = () => fetchOrderNotifications();
+
     window.addEventListener('zahranship_audit_updated', handleAudit);
     window.addEventListener('zahranship_orders_updated', handleOrders);
+
+    // Subscribe to notification changes for this order
+    const supabase = createClient();
+    const notifSub = supabase
+      .channel(`order-notifs-${order.id}`)
+      .on(
+        'postgres_changes' as any,
+        {
+          event: '*',
+          schema: 'public',
+          table: 'zahranship_notifications',
+          filter: `order_id=eq.${order.id}`,
+        },
+        handleNotifs
+      )
+      .subscribe();
+
     return () => {
       window.removeEventListener('zahranship_audit_updated', handleAudit);
       window.removeEventListener('zahranship_orders_updated', handleOrders);
+      supabase.removeChannel(notifSub);
     };
   }, [order.id]);
 
@@ -227,20 +282,29 @@ export default function OrderDetailModal({ order, onClose }: Props) {
       toast.error('يرجى السماح بالنوافذ المنبثقة في إعدادات المتصفح');
       return;
     }
-    const warrantyRow = liveOrder.warranty && liveOrder.warranty !== 'بدون ضمان'
-      ? `<tr><td colspan="3">فترة الضمان</td><td>—</td><td>${liveOrder.warranty}</td></tr>`
-      : '';
+    const warrantyRow =
+      liveOrder.warranty && liveOrder.warranty !== 'بدون ضمان'
+        ? `<tr><td colspan="3">فترة الضمان</td><td>—</td><td>${liveOrder.warranty}</td></tr>`
+        : '';
 
-    const productRows = liveOrder.lines && liveOrder.lines.length > 0
-      ? liveOrder.lines.map(line => {
-          const hasImg = line.image && (line.image.startsWith('data:') || line.image.startsWith('http') || line.image.startsWith('/'));
-          const imgHtml = hasImg
-            ? `<img src="${line.image}" alt="${line.label}" style="width:40px;height:40px;object-fit:cover;border-radius:6px;border:1px solid #e5e7eb;" />`
-            : `<span style="font-size:24px;">${line.emoji || '📦'}</span>`;
-          const noteHtml = line.note ? `<br/><span style="font-size:11px;color:#d97706;font-style:italic;">ملاحظة: ${line.note}</span>` : '';
-          const colorHtml = line.color ? ` (${line.color})` : '';
-          const flashHtml = line.includeFlashlight ? ' + كشاف' : '';
-          return `<tr>
+    const productRows =
+      liveOrder.lines && liveOrder.lines.length > 0
+        ? liveOrder.lines
+            .map((line) => {
+              const hasImg =
+                line.image &&
+                (line.image.startsWith('data:') ||
+                  line.image.startsWith('http') ||
+                  line.image.startsWith('/'));
+              const imgHtml = hasImg
+                ? `<img src="${line.image}" alt="${line.label}" style="width:40px;height:40px;object-fit:cover;border-radius:6px;border:1px solid #e5e7eb;" />`
+                : `<span style="font-size:24px;">${line.emoji || '📦'}</span>`;
+              const noteHtml = line.note
+                ? `<br/><span style="font-size:11px;color:#d97706;font-style:italic;">ملاحظة: ${line.note}</span>`
+                : '';
+              const colorHtml = line.color ? ` (${line.color})` : '';
+              const flashHtml = line.includeFlashlight ? ' + كشاف' : '';
+              return `<tr>
             <td style="display:flex;align-items:center;gap:10px;padding:10px 12px;">
               ${imgHtml}
               <div>
@@ -251,8 +315,9 @@ export default function OrderDetailModal({ order, onClose }: Props) {
             <td>${line.unitPrice.toLocaleString('en-US')} ج.م</td>
             <td>${line.total.toLocaleString('en-US')} ج.م</td>
           </tr>`;
-        }).join('')
-      : `<tr><td>${liveOrder.products}</td><td>${liveOrder.quantity}</td><td>—</td><td>${liveOrder.subtotal.toLocaleString('en-US')} ج.م</td></tr>`;
+            })
+            .join('')
+        : `<tr><td>${liveOrder.products}</td><td>${liveOrder.quantity}</td><td>—</td><td>${liveOrder.subtotal.toLocaleString('en-US')} ج.م</td></tr>`;
 
     win.document.write(`
       <!DOCTYPE html>
@@ -347,32 +412,52 @@ export default function OrderDetailModal({ order, onClose }: Props) {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="text-base font-bold text-[hsl(var(--foreground))]">{liveOrder.orderNum}</h3>
+                <h3 className="text-base font-bold text-[hsl(var(--foreground))]">
+                  {liveOrder.orderNum}
+                </h3>
                 <span className={`badge ${statusInfo.cls}`}>{statusInfo.label}</span>
               </div>
-              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 font-mono">{liveOrder.day} {liveOrder.date} — {liveOrder.time}</p>
+              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 font-mono">
+                {liveOrder.day} {liveOrder.date} — {liveOrder.time}
+              </p>
             </div>
           </div>
-          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))] transition-colors" aria-label="إغلاق">
+          <button
+            onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))] transition-colors"
+            aria-label="إغلاق"
+          >
             <X size={16} />
           </button>
         </div>
 
         {/* Quick actions */}
         <div className="flex gap-2 px-5 py-3 bg-[hsl(var(--muted))]/30 border-b border-[hsl(var(--border))] flex-wrap">
-          <button onClick={handleSendWhatsApp} className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 text-white text-xs px-3 py-1.5 rounded-xl font-semibold transition-colors">
+          <button
+            onClick={handleSendWhatsApp}
+            className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 text-white text-xs px-3 py-1.5 rounded-xl font-semibold transition-colors"
+          >
             <MessageCircle size={13} />
             إرسال واتساب + تتبع
           </button>
-          <button onClick={handleSendEmail} className="flex items-center gap-1.5 bg-blue-500 hover:bg-blue-600 text-white text-xs px-3 py-1.5 rounded-xl font-semibold transition-colors">
+          <button
+            onClick={handleSendEmail}
+            className="flex items-center gap-1.5 bg-blue-500 hover:bg-blue-600 text-white text-xs px-3 py-1.5 rounded-xl font-semibold transition-colors"
+          >
             <Mail size={13} />
             إرسال بريد
           </button>
-          <button onClick={handleCopyTracking} className="flex items-center gap-1.5 bg-purple-500 hover:bg-purple-600 text-white text-xs px-3 py-1.5 rounded-xl font-semibold transition-colors">
+          <button
+            onClick={handleCopyTracking}
+            className="flex items-center gap-1.5 bg-purple-500 hover:bg-purple-600 text-white text-xs px-3 py-1.5 rounded-xl font-semibold transition-colors"
+          >
             <Link size={13} />
             نسخ رابط التتبع
           </button>
-          <button onClick={handlePrintInvoice} className="flex items-center gap-1.5 btn-secondary text-xs py-1.5">
+          <button
+            onClick={handlePrintInvoice}
+            className="flex items-center gap-1.5 btn-secondary text-xs py-1.5"
+          >
             <Printer size={13} />
             طباعة / PDF
           </button>
@@ -388,7 +473,9 @@ export default function OrderDetailModal({ order, onClose }: Props) {
             >
               {tab.label}
               {tab.id === 'tab-audit' && auditLogs.length > 0 && (
-                <span className="mr-1.5 bg-amber-100 text-amber-700 text-[10px] font-bold px-1.5 py-0.5 rounded-full">{auditLogs.length}</span>
+                <span className="mr-1.5 bg-amber-100 text-amber-700 text-[10px] font-bold px-1.5 py-0.5 rounded-full">
+                  {auditLogs.length}
+                </span>
               )}
             </button>
           ))}
@@ -410,21 +497,32 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                     <p className="font-semibold">{liveOrder.customer}</p>
                   </div>
                   <div>
-                    <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-0.5">المنطقة</p>
-                    <p className="font-semibold">{liveOrder.region}{liveOrder.district ? ` - ${liveOrder.district}` : ''}</p>
+                    <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-0.5">
+                      المنطقة
+                    </p>
+                    <p className="font-semibold">
+                      {liveOrder.region}
+                      {liveOrder.district ? ` - ${liveOrder.district}` : ''}
+                    </p>
                   </div>
                   <div>
-                    <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-0.5 flex items-center gap-1"><Phone size={10} /> الموبايل</p>
+                    <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-0.5 flex items-center gap-1">
+                      <Phone size={10} /> الموبايل
+                    </p>
                     <p className="font-mono font-semibold">{liveOrder.phone}</p>
                   </div>
                   {liveOrder.phone2 && (
                     <div>
-                      <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-0.5">موبايل إضافي</p>
+                      <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-0.5">
+                        موبايل إضافي
+                      </p>
                       <p className="font-mono">{liveOrder.phone2}</p>
                     </div>
                   )}
                   <div className="col-span-2">
-                    <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-0.5 flex items-center gap-1"><MapPin size={10} /> العنوان</p>
+                    <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-0.5 flex items-center gap-1">
+                      <MapPin size={10} /> العنوان
+                    </p>
                     <p className="leading-relaxed">{liveOrder.address}</p>
                   </div>
                 </div>
@@ -438,29 +536,46 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 {liveOrder.lines && liveOrder.lines.length > 0 ? (
                   <div className="space-y-2">
                     {liveOrder.lines.map((line, idx) => {
-                      const hasImg = line.image && (line.image.startsWith('data:') || line.image.startsWith('http') || line.image.startsWith('/'));
+                      const hasImg =
+                        line.image &&
+                        (line.image.startsWith('data:') ||
+                          line.image.startsWith('http') ||
+                          line.image.startsWith('/'));
                       return (
-                        <div key={`detail-line-${idx}`} className="flex items-center gap-3 bg-[hsl(var(--muted))]/40 rounded-xl p-3 border border-[hsl(var(--border))]">
+                        <div
+                          key={`detail-line-${idx}`}
+                          className="flex items-center gap-3 bg-[hsl(var(--muted))]/40 rounded-xl p-3 border border-[hsl(var(--border))]"
+                        >
                           <div className="w-12 h-12 rounded-xl overflow-hidden flex-shrink-0 bg-white border border-[hsl(var(--border))] flex items-center justify-center">
                             {hasImg ? (
-                              <img src={line.image!} alt={line.label} className="w-full h-full object-cover" />
+                              <img
+                                src={line.image!}
+                                alt={line.label}
+                                className="w-full h-full object-cover"
+                              />
                             ) : (
                               <span className="text-2xl">{line.emoji || '📦'}</span>
                             )}
                           </div>
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-semibold text-[hsl(var(--foreground))] truncate">
-                              {line.label}{line.color ? ` — ${line.color}` : ''}{line.includeFlashlight ? ' + كشاف' : ''}
+                              {line.label}
+                              {line.color ? ` — ${line.color}` : ''}
+                              {line.includeFlashlight ? ' + كشاف' : ''}
                             </p>
                             {line.note && (
-                              <p className="text-xs text-amber-600 italic mt-0.5">ملاحظة: {line.note}</p>
+                              <p className="text-xs text-amber-600 italic mt-0.5">
+                                ملاحظة: {line.note}
+                              </p>
                             )}
                             <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
                               {line.quantity} × {line.unitPrice.toLocaleString('en-US')} ج.م
                             </p>
                           </div>
                           <div className="text-left flex-shrink-0">
-                            <p className="text-sm font-bold font-mono text-[hsl(var(--primary))]">{line.total.toLocaleString('en-US')} ج.م</p>
+                            <p className="text-sm font-bold font-mono text-[hsl(var(--primary))]">
+                              {line.total.toLocaleString('en-US')} ج.م
+                            </p>
                           </div>
                         </div>
                       );
@@ -468,18 +583,24 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                     {liveOrder.warranty && liveOrder.warranty !== 'بدون ضمان' && (
                       <div className="flex items-center gap-1.5 mt-2 text-xs text-green-700 bg-green-50 border border-green-200 rounded-lg px-2 py-1 w-fit">
                         <Clock size={11} />
-                        <span>فترة الضمان: <strong>{liveOrder.warranty}</strong></span>
+                        <span>
+                          فترة الضمان: <strong>{liveOrder.warranty}</strong>
+                        </span>
                       </div>
                     )}
                   </div>
                 ) : (
                   <div className="bg-[hsl(var(--muted))]/40 rounded-xl p-3">
                     <p className="text-sm font-medium">{liveOrder.products}</p>
-                    <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">إجمالي الكمية: {liveOrder.quantity} قطعة</p>
+                    <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">
+                      إجمالي الكمية: {liveOrder.quantity} قطعة
+                    </p>
                     {liveOrder.warranty && liveOrder.warranty !== 'بدون ضمان' && (
                       <div className="flex items-center gap-1.5 mt-2 text-xs text-green-700 bg-green-50 border border-green-200 rounded-lg px-2 py-1 w-fit">
                         <Clock size={11} />
-                        <span>فترة الضمان: <strong>{liveOrder.warranty}</strong></span>
+                        <span>
+                          فترة الضمان: <strong>{liveOrder.warranty}</strong>
+                        </span>
                       </div>
                     )}
                   </div>
@@ -494,14 +615,24 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between py-1.5 border-b border-[hsl(var(--border))]">
                     <span className="text-[hsl(var(--muted-foreground))]">المنتجات:</span>
-                    <span className="font-mono font-semibold">{liveOrder.subtotal.toLocaleString('en-US')} ج.م</span>
+                    <span className="font-mono font-semibold">
+                      {liveOrder.subtotal.toLocaleString('en-US')} ج.م
+                    </span>
                   </div>
                   <div className="flex justify-between py-1.5 border-b border-[hsl(var(--border))]">
                     <span className="text-[hsl(var(--muted-foreground))]">
                       {shippingLabel}:
-                      {liveOrder.expressShipping && <span className="text-[10px] text-amber-600 mr-1">(بدلاً من الشحن الافتراضي)</span>}
+                      {liveOrder.expressShipping && (
+                        <span className="text-[10px] text-amber-600 mr-1">
+                          (بدلاً من الشحن الافتراضي)
+                        </span>
+                      )}
                     </span>
-                    <span className={`font-mono ${liveOrder.expressShipping ? 'text-amber-700 font-semibold' : ''}`}>{liveOrder.shippingFee.toLocaleString('en-US')} ج.م</span>
+                    <span
+                      className={`font-mono ${liveOrder.expressShipping ? 'text-amber-700 font-semibold' : ''}`}
+                    >
+                      {liveOrder.shippingFee.toLocaleString('en-US')} ج.م
+                    </span>
                   </div>
                   {IS_ADMIN && extraFee > 0 && (
                     <div className="flex justify-between py-1.5 border-b border-[hsl(var(--border))] text-orange-700">
@@ -511,7 +642,9 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                   )}
                   <div className="flex justify-between py-1.5">
                     <span className="font-bold">الإجمالي الكلي:</span>
-                    <span className="font-mono font-bold text-lg text-[hsl(var(--primary))]">{liveOrder.total.toLocaleString('en-US')} ج.م</span>
+                    <span className="font-mono font-bold text-lg text-[hsl(var(--primary))]">
+                      {liveOrder.total.toLocaleString('en-US')} ج.م
+                    </span>
                   </div>
                 </div>
               </div>
@@ -520,7 +653,9 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 <div className="border border-amber-200 bg-amber-50 rounded-xl p-4">
                   <div className="flex items-center gap-2 mb-3">
                     <Shield size={14} className="text-amber-600" />
-                    <h4 className="text-sm font-bold text-amber-800">معلومات التسجيل (للمفوضين فقط)</h4>
+                    <h4 className="text-sm font-bold text-amber-800">
+                      معلومات التسجيل (للمفوضين فقط)
+                    </h4>
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
                     <div className="bg-white rounded-lg p-2.5 border border-amber-100">
@@ -532,11 +667,17 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                       <p className="font-mono">{liveOrder.ip || liveOrder.createdByIp || '—'}</p>
                     </div>
                     <div className="bg-white rounded-lg p-2.5 border border-amber-100">
-                      <p className="text-[hsl(var(--muted-foreground))] mb-1 flex items-center gap-1"><MapPin size={10} /> الموقع</p>
-                      <p className="font-semibold">{liveOrder.createdByLocation || 'القاهرة، مصر'}</p>
+                      <p className="text-[hsl(var(--muted-foreground))] mb-1 flex items-center gap-1">
+                        <MapPin size={10} /> الموقع
+                      </p>
+                      <p className="font-semibold">
+                        {liveOrder.createdByLocation || 'القاهرة، مصر'}
+                      </p>
                     </div>
                     <div className="bg-white rounded-lg p-2.5 border border-amber-100">
-                      <p className="text-[hsl(var(--muted-foreground))] mb-1 flex items-center gap-1"><Monitor size={10} /> الجهاز</p>
+                      <p className="text-[hsl(var(--muted-foreground))] mb-1 flex items-center gap-1">
+                        <Monitor size={10} /> الجهاز
+                      </p>
                       <p className="font-semibold flex items-center gap-1">
                         <DeviceIcon device={liveOrder.createdByDevice} />
                         {liveOrder.createdByDevice || 'كمبيوتر'}
@@ -563,9 +704,14 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                   <Link size={16} className="text-blue-600" />
                   <h4 className="text-sm font-bold text-blue-800">رابط تتبع الشحنة</h4>
                 </div>
-                <p className="text-xs text-blue-600 mb-3">هذا الرابط فريد لهذا الأوردر. يمكن إرساله للعميل عبر الواتساب أو البريد الإلكتروني.</p>
+                <p className="text-xs text-blue-600 mb-3">
+                  هذا الرابط فريد لهذا الأوردر. يمكن إرساله للعميل عبر الواتساب أو البريد
+                  الإلكتروني.
+                </p>
                 <div className="flex items-center gap-2 bg-white border border-blue-200 rounded-xl p-3">
-                  <p className="flex-1 text-sm font-mono text-[hsl(var(--foreground))] break-all">{trackingLink}</p>
+                  <p className="flex-1 text-sm font-mono text-[hsl(var(--foreground))] break-all">
+                    {trackingLink}
+                  </p>
                   <button
                     onClick={handleCopyTracking}
                     className="flex-shrink-0 flex items-center gap-1.5 bg-blue-600 text-white text-xs px-3 py-1.5 rounded-lg font-semibold hover:bg-blue-700 transition-colors"
@@ -584,17 +730,28 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 </div>
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <div className="bg-[hsl(var(--muted))]/40 rounded-xl p-3">
-                    <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">اسم المندوب</p>
+                    <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">
+                      اسم المندوب
+                    </p>
                     <p className="font-semibold">{liveOrder.delegate || 'لم يُعيَّن بعد'}</p>
                   </div>
                   <div className="bg-[hsl(var(--muted))]/40 rounded-xl p-3">
-                    <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">حالة التوصيل</p>
+                    <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">
+                      حالة التوصيل
+                    </p>
                     <span className={`badge ${statusInfo.cls} text-xs`}>{statusInfo.label}</span>
                   </div>
                   <div className="col-span-2 bg-[hsl(var(--muted))]/40 rounded-xl p-3">
-                    <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1 flex items-center gap-1"><MapPin size={10} /> موقع المندوب الحالي</p>
-                    <p className="text-sm font-medium">{liveOrder.region}{liveOrder.district ? ` — ${liveOrder.district}` : ''}</p>
-                    <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">آخر تحديث: {liveOrder.time} — {liveOrder.date}</p>
+                    <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1 flex items-center gap-1">
+                      <MapPin size={10} /> موقع المندوب الحالي
+                    </p>
+                    <p className="text-sm font-medium">
+                      {liveOrder.region}
+                      {liveOrder.district ? ` — ${liveOrder.district}` : ''}
+                    </p>
+                    <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">
+                      آخر تحديث: {liveOrder.time} — {liveOrder.date}
+                    </p>
                   </div>
                 </div>
               </div>
@@ -604,7 +761,9 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 <div className="flex items-center gap-2 mb-3">
                   <MessageCircle size={15} className="text-green-600" />
                   <h4 className="text-sm font-bold">معاينة رسالة الواتساب</h4>
-                  <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded-full">تتضمن رابط التتبع</span>
+                  <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
+                    تتضمن رابط التتبع
+                  </span>
                 </div>
                 <div className="bg-[#dcf8c6] rounded-2xl rounded-tl-sm p-4 text-sm leading-relaxed whitespace-pre-wrap font-sans shadow-sm border border-green-200 max-w-sm">
                   {buildWAMessage()}
@@ -623,31 +782,62 @@ export default function OrderDetailModal({ order, onClose }: Props) {
           {/* History Tab */}
           {activeTab === 'tab-history' && (
             <div className="space-y-3 fade-in">
-              <p className="text-sm text-[hsl(var(--muted-foreground))] mb-4">سجل كامل لجميع تحديثات الحالة مع التوقيت الكامل والمسؤول</p>
+              <p className="text-sm text-[hsl(var(--muted-foreground))] mb-4">
+                سجل كامل لجميع تحديثات الحالة مع التوقيت الكامل والمسؤول
+              </p>
               <div className="relative">
                 <div className="absolute right-4 top-0 bottom-0 w-0.5 bg-[hsl(var(--border))]" />
                 <div className="space-y-4">
-                  {MOCK_STATUS_HISTORY.map((h, i) => (
-                    <div key={h.id} className="flex items-start gap-4 relative">
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center z-10 flex-shrink-0 ${i === MOCK_STATUS_HISTORY.length - 1 ? 'bg-[hsl(var(--primary))] text-white' : 'bg-green-100 text-green-600'}`}>
-                        <CheckCircle size={16} />
-                      </div>
-                      <div className="flex-1 bg-white border border-[hsl(var(--border))] rounded-xl p-3">
-                        <div className="flex items-center justify-between mb-1.5">
-                          <span className={`badge ${STATUS_BADGE_MAP[h.status]?.cls || 'status-new'} text-[11px]`}>{h.label}</span>
-                          <span className="text-xs text-[hsl(var(--muted-foreground))] font-mono">{h.day} {h.date} — {h.time}</span>
+                  {auditLogs
+                    .filter((l) => l.action === 'status_change')
+                    .map((h, i, arr) => {
+                      const d = new Date(h.createdAt);
+                      const days = [
+                        'الأحد',
+                        'الاثنين',
+                        'الثلاثاء',
+                        'الأربعاء',
+                        'الخميس',
+                        'الجمعة',
+                        'السبت',
+                      ];
+                      return (
+                        <div key={h.id} className="flex items-start gap-4 relative">
+                          <div
+                            className={`w-8 h-8 rounded-full flex items-center justify-center z-10 flex-shrink-0 ${i === 0 ? 'bg-[hsl(var(--primary))] text-white' : 'bg-green-100 text-green-600'}`}
+                          >
+                            <CheckCircle size={16} />
+                          </div>
+                          <div className="flex-1 bg-white border border-[hsl(var(--border))] rounded-xl p-3">
+                            <div className="flex items-center justify-between mb-1.5">
+                              <span
+                                className={`badge ${STATUS_BADGE_MAP[h.newValue || '']?.cls || 'status-new'} text-[11px]`}
+                              >
+                                {STATUS_LABELS[h.newValue || ''] || h.newValue}
+                              </span>
+                              <span className="text-xs text-[hsl(var(--muted-foreground))] font-mono">
+                                {days[d.getDay()]} {d.toLocaleDateString('en-US')} —{' '}
+                                {d.toLocaleTimeString('en-US', {
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                })}
+                              </span>
+                            </div>
+                            <p className="text-xs text-[hsl(var(--muted-foreground))]">
+                              بواسطة:{' '}
+                              <span className="font-semibold text-[hsl(var(--foreground))]">
+                                {h.changedBy}
+                              </span>
+                            </p>
+                            {h.note && (
+                              <p className="text-xs text-[hsl(var(--foreground))] mt-1.5 bg-[hsl(var(--muted))]/50 rounded-lg px-2 py-1 italic">
+                                "{h.note}"
+                              </p>
+                            )}
+                          </div>
                         </div>
-                        <p className="text-xs text-[hsl(var(--muted-foreground))]">بواسطة: <span className="font-semibold text-[hsl(var(--foreground))]">{h.by}</span></p>
-                        {CAN_SEE_SENSITIVE && (
-                          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1 flex items-center gap-1">
-                            <DeviceIcon device={h.device} />
-                            <span>{h.device}</span>
-                          </p>
-                        )}
-                        {h.note && <p className="text-xs text-[hsl(var(--foreground))] mt-1.5 bg-[hsl(var(--muted))]/50 rounded-lg px-2 py-1 italic">"{h.note}"</p>}
-                      </div>
-                    </div>
-                  ))}
+                      );
+                    })}
                 </div>
               </div>
             </div>
@@ -656,33 +846,69 @@ export default function OrderDetailModal({ order, onClose }: Props) {
           {/* Notifications Tab */}
           {activeTab === 'tab-notifications' && (
             <div className="space-y-3 fade-in">
-              <p className="text-sm text-[hsl(var(--muted-foreground))] mb-4">سجل جميع الإشعارات المرتبطة بهذا الأوردر</p>
+              <p className="text-sm text-[hsl(var(--muted-foreground))] mb-4">
+                سجل جميع الإشعارات المرتبطة بهذا الأوردر
+              </p>
               <div className="space-y-3">
-                {MOCK_NOTIFICATIONS.map((notif) => {
-                  const typeConfig: Record<string, { color: string; label: string }> = {
-                    status_change: { color: 'bg-blue-50 border-blue-200 text-blue-700', label: 'تغيير حالة' },
-                    whatsapp: { color: 'bg-green-50 border-green-200 text-green-700', label: 'واتساب' },
-                    order_created: { color: 'bg-purple-50 border-purple-200 text-purple-700', label: 'إنشاء أوردر' },
-                  };
-                  const cfg = typeConfig[notif.type] || { color: 'bg-gray-50 border-gray-200 text-gray-700', label: 'إشعار' };
-                  return (
-                    <div key={notif.id} className={`border rounded-xl p-3 ${cfg.color}`}>
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/60">{cfg.label}</span>
-                            <span className="text-xs font-semibold">{notif.message}</span>
+                {loadingNotifs ? (
+                  <div className="p-10 text-center text-xs text-[hsl(var(--muted-foreground))]">
+                    جاري التحميل...
+                  </div>
+                ) : systemNotifications.length === 0 ? (
+                  <div className="p-10 text-center text-xs text-[hsl(var(--muted-foreground))]">
+                    لا توجد إشعارات مسجلة لهذا الأوردر
+                  </div>
+                ) : (
+                  systemNotifications.map((notif) => {
+                    const typeConfig: Record<string, { color: string; label: string }> = {
+                      status_change: {
+                        color: 'bg-blue-50 border-blue-200 text-blue-700',
+                        label: 'تغيير حالة',
+                      },
+                      whatsapp: {
+                        color: 'bg-green-50 border-green-200 text-green-700',
+                        label: 'واتساب',
+                      },
+                      new_order: {
+                        color: 'bg-purple-50 border-purple-200 text-purple-700',
+                        label: 'إنشاء أوردر',
+                      },
+                    };
+                    const cfg = typeConfig[notif.type] || {
+                      color: 'bg-gray-50 border-gray-200 text-gray-700',
+                      label: 'إشعار',
+                    };
+                    const d = new Date(notif.created_at);
+                    return (
+                      <div key={notif.id} className={`border rounded-xl p-3 ${cfg.color}`}>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/60">
+                                {cfg.label}
+                              </span>
+                              <span className="text-xs font-semibold">{notif.message}</span>
+                            </div>
+                            {notif.created_by && (
+                              <p className="text-[11px] opacity-80">بواسطة: {notif.created_by}</p>
+                            )}
                           </div>
-                          <p className="text-[11px] opacity-80">بواسطة: {notif.by}</p>
-                        </div>
-                        <div className="text-left flex-shrink-0">
-                          <p className="text-[10px] font-mono opacity-70">{notif.date}</p>
-                          <p className="text-[10px] font-mono opacity-70">{notif.time}</p>
+                          <div className="text-left flex-shrink-0">
+                            <p className="text-[10px] font-mono opacity-70">
+                              {d.toLocaleDateString('en-US')}
+                            </p>
+                            <p className="text-[10px] font-mono opacity-70">
+                              {d.toLocaleTimeString('en-US', {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </p>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })
+                )}
               </div>
             </div>
           )}
@@ -690,7 +916,10 @@ export default function OrderDetailModal({ order, onClose }: Props) {
           {/* Invoice Tab */}
           {activeTab === 'tab-invoice' && (
             <div className="fade-in">
-              <div id="invoice-print-area" className="border-2 border-[hsl(var(--border))] rounded-2xl overflow-hidden">
+              <div
+                id="invoice-print-area"
+                className="border-2 border-[hsl(var(--border))] rounded-2xl overflow-hidden"
+              >
                 <div className="bg-[hsl(var(--primary))] text-white p-6 text-center">
                   <h2 className="text-2xl font-bold">Turath Mart</h2>
                   <p className="text-blue-200 text-sm mt-1">فاتورة ضريبية مبسطة</p>
@@ -699,31 +928,52 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 <div className="p-6 space-y-4">
                   <div className="flex justify-between text-sm border-b border-[hsl(var(--border))] pb-4">
                     <div>
-                      <p className="text-[hsl(var(--muted-foreground))] text-xs mb-1">رقم الفاتورة</p>
-                      <p className="font-mono font-bold text-[hsl(var(--primary))]">{liveOrder.orderNum}</p>
+                      <p className="text-[hsl(var(--muted-foreground))] text-xs mb-1">
+                        رقم الفاتورة
+                      </p>
+                      <p className="font-mono font-bold text-[hsl(var(--primary))]">
+                        {liveOrder.orderNum}
+                      </p>
                     </div>
                     <div className="text-left">
-                      <p className="text-[hsl(var(--muted-foreground))] text-xs mb-1">تاريخ الإصدار</p>
-                      <p className="font-semibold">{liveOrder.day} {liveOrder.date}</p>
-                      <p className="text-xs font-mono text-[hsl(var(--muted-foreground))]">{liveOrder.time}</p>
+                      <p className="text-[hsl(var(--muted-foreground))] text-xs mb-1">
+                        تاريخ الإصدار
+                      </p>
+                      <p className="font-semibold">
+                        {liveOrder.day} {liveOrder.date}
+                      </p>
+                      <p className="text-xs font-mono text-[hsl(var(--muted-foreground))]">
+                        {liveOrder.time}
+                      </p>
                     </div>
                   </div>
 
                   <div className="text-sm">
-                    <p className="text-[hsl(var(--muted-foreground))] text-xs mb-2 font-bold uppercase tracking-wide">بيانات العميل</p>
+                    <p className="text-[hsl(var(--muted-foreground))] text-xs mb-2 font-bold uppercase tracking-wide">
+                      بيانات العميل
+                    </p>
                     <p className="font-bold text-base">{liveOrder.customer}</p>
-                    <p className="font-mono text-[hsl(var(--muted-foreground))]">{liveOrder.phone}</p>
-                    <p className="text-[hsl(var(--muted-foreground))] mt-1">{liveOrder.region}{liveOrder.district ? ` - ${liveOrder.district}` : ''} — {liveOrder.address}</p>
+                    <p className="font-mono text-[hsl(var(--muted-foreground))]">
+                      {liveOrder.phone}
+                    </p>
+                    <p className="text-[hsl(var(--muted-foreground))] mt-1">
+                      {liveOrder.region}
+                      {liveOrder.district ? ` - ${liveOrder.district}` : ''} — {liveOrder.address}
+                    </p>
                   </div>
 
                   {/* Tracking link in invoice */}
                   <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
-                    <p className="text-xs font-bold text-blue-700 mb-1 flex items-center gap-1"><Link size={11} /> رابط تتبع الشحنة</p>
+                    <p className="text-xs font-bold text-blue-700 mb-1 flex items-center gap-1">
+                      <Link size={11} /> رابط تتبع الشحنة
+                    </p>
                     <p className="text-xs font-mono text-blue-600 break-all">{trackingLink}</p>
                   </div>
 
                   <div>
-                    <p className="text-[hsl(var(--muted-foreground))] text-xs mb-2 font-bold uppercase tracking-wide">المنتجات</p>
+                    <p className="text-[hsl(var(--muted-foreground))] text-xs mb-2 font-bold uppercase tracking-wide">
+                      المنتجات
+                    </p>
                     <div className="bg-[hsl(var(--muted))]/40 rounded-xl overflow-hidden">
                       <div className="grid grid-cols-12 gap-2 px-4 py-2 bg-[hsl(var(--muted))] text-xs font-bold text-[hsl(var(--muted-foreground))]">
                         <span className="col-span-5">المنتج</span>
@@ -733,28 +983,49 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                       </div>
                       {liveOrder.lines && liveOrder.lines.length > 0 ? (
                         liveOrder.lines.map((line, idx) => {
-                          const hasImg = line.image && (line.image.startsWith('data:') || line.image.startsWith('http') || line.image.startsWith('/'));
+                          const hasImg =
+                            line.image &&
+                            (line.image.startsWith('data:') ||
+                              line.image.startsWith('http') ||
+                              line.image.startsWith('/'));
                           return (
-                            <div key={`inv-line-${idx}`} className="border-t border-[hsl(var(--border))]">
+                            <div
+                              key={`inv-line-${idx}`}
+                              className="border-t border-[hsl(var(--border))]"
+                            >
                               <div className="grid grid-cols-12 gap-2 px-4 py-3 text-sm items-center">
                                 <div className="col-span-5 flex items-center gap-2">
                                   <div className="w-9 h-9 rounded-lg overflow-hidden flex-shrink-0 bg-white border border-[hsl(var(--border))] flex items-center justify-center">
                                     {hasImg ? (
-                                      <img src={line.image!} alt={line.label} className="w-full h-full object-cover" />
+                                      <img
+                                        src={line.image!}
+                                        alt={line.label}
+                                        className="w-full h-full object-cover"
+                                      />
                                     ) : (
                                       <span className="text-lg">{line.emoji || '📦'}</span>
                                     )}
                                   </div>
                                   <div className="min-w-0">
                                     <p className="font-medium text-xs leading-tight truncate">
-                                      {line.label}{line.color ? ` (${line.color})` : ''}{line.includeFlashlight ? ' + كشاف' : ''}
+                                      {line.label}
+                                      {line.color ? ` (${line.color})` : ''}
+                                      {line.includeFlashlight ? ' + كشاف' : ''}
                                     </p>
-                                    {line.note && <p className="text-[10px] text-amber-600 italic truncate">ملاحظة: {line.note}</p>}
+                                    {line.note && (
+                                      <p className="text-[10px] text-amber-600 italic truncate">
+                                        ملاحظة: {line.note}
+                                      </p>
+                                    )}
                                   </div>
                                 </div>
                                 <span className="col-span-2 text-center">{line.quantity}</span>
-                                <span className="col-span-2 text-center font-mono text-xs">{line.unitPrice.toLocaleString('en-US')}</span>
-                                <span className="col-span-3 text-left font-mono font-semibold">{line.total.toLocaleString('en-US')} ج.م</span>
+                                <span className="col-span-2 text-center font-mono text-xs">
+                                  {line.unitPrice.toLocaleString('en-US')}
+                                </span>
+                                <span className="col-span-3 text-left font-mono font-semibold">
+                                  {line.total.toLocaleString('en-US')} ج.م
+                                </span>
                               </div>
                             </div>
                           );
@@ -764,30 +1035,44 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                           <span className="col-span-5">{liveOrder.products}</span>
                           <span className="col-span-2 text-center">{liveOrder.quantity}</span>
                           <span className="col-span-2 text-center">—</span>
-                          <span className="col-span-3 text-left font-mono">{liveOrder.subtotal.toLocaleString('en-US')} ج.م</span>
+                          <span className="col-span-3 text-left font-mono">
+                            {liveOrder.subtotal.toLocaleString('en-US')} ج.م
+                          </span>
                         </div>
                       )}
                       <div className="grid grid-cols-12 gap-2 px-4 py-3 text-sm border-t border-[hsl(var(--border))]">
-                        <span className={`col-span-5 text-[hsl(var(--muted-foreground))] ${liveOrder.expressShipping ? 'text-amber-700 font-semibold' : ''}`}>{shippingLabel}</span>
+                        <span
+                          className={`col-span-5 text-[hsl(var(--muted-foreground))] ${liveOrder.expressShipping ? 'text-amber-700 font-semibold' : ''}`}
+                        >
+                          {shippingLabel}
+                        </span>
                         <span className="col-span-2 text-center">—</span>
                         <span className="col-span-2 text-center">—</span>
-                        <span className="col-span-3 text-left font-mono">{liveOrder.shippingFee.toLocaleString('en-US')} ج.م</span>
+                        <span className="col-span-3 text-left font-mono">
+                          {liveOrder.shippingFee.toLocaleString('en-US')} ج.م
+                        </span>
                       </div>
                       {IS_ADMIN && extraFee > 0 && (
                         <div className="grid grid-cols-12 gap-2 px-4 py-3 text-sm border-t border-[hsl(var(--border))] text-orange-700">
                           <span className="col-span-5">مصاريف شحن إضافية</span>
                           <span className="col-span-2 text-center">—</span>
                           <span className="col-span-2 text-center">—</span>
-                          <span className="col-span-3 text-left font-mono">{extraFee.toLocaleString('en-US')} ج.م</span>
+                          <span className="col-span-3 text-left font-mono">
+                            {extraFee.toLocaleString('en-US')} ج.م
+                          </span>
                         </div>
                       )}
                       {/* Warranty row */}
                       {liveOrder.warranty && liveOrder.warranty !== 'بدون ضمان' && (
                         <div className="grid grid-cols-12 gap-2 px-4 py-3 text-sm border-t border-[hsl(var(--border))] bg-green-50">
-                          <span className="col-span-5 text-green-700 font-semibold flex items-center gap-1"><Clock size={12} /> فترة الضمان</span>
+                          <span className="col-span-5 text-green-700 font-semibold flex items-center gap-1">
+                            <Clock size={12} /> فترة الضمان
+                          </span>
                           <span className="col-span-2 text-center">—</span>
                           <span className="col-span-2 text-center">—</span>
-                          <span className="col-span-3 text-left font-semibold text-green-700">{liveOrder.warranty}</span>
+                          <span className="col-span-3 text-left font-semibold text-green-700">
+                            {liveOrder.warranty}
+                          </span>
                         </div>
                       )}
                     </div>
@@ -795,7 +1080,9 @@ export default function OrderDetailModal({ order, onClose }: Props) {
 
                   <div className="bg-[hsl(var(--primary))]/5 border border-[hsl(var(--primary))]/20 rounded-xl p-4 flex justify-between items-center">
                     <span className="font-bold text-lg">الإجمالي الكلي</span>
-                    <span className="font-mono font-bold text-2xl text-[hsl(var(--primary))]">{liveOrder.total.toLocaleString('en-US')} ج.م</span>
+                    <span className="font-mono font-bold text-2xl text-[hsl(var(--primary))]">
+                      {liveOrder.total.toLocaleString('en-US')} ج.م
+                    </span>
                   </div>
 
                   <p className="text-center text-xs text-[hsl(var(--muted-foreground))] pt-2">
@@ -809,7 +1096,10 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                   <Printer size={15} />
                   طباعة / تحميل PDF
                 </button>
-                <button onClick={handleSendWhatsApp} className="flex-1 flex items-center justify-center gap-2 bg-green-500 hover:bg-green-600 text-white px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors active:scale-95">
+                <button
+                  onClick={handleSendWhatsApp}
+                  className="flex-1 flex items-center justify-center gap-2 bg-green-500 hover:bg-green-600 text-white px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors active:scale-95"
+                >
                   <MessageCircle size={15} />
                   إرسال واتساب + تتبع
                 </button>
@@ -821,7 +1111,9 @@ export default function OrderDetailModal({ order, onClose }: Props) {
           {activeTab === 'tab-audit' && (
             <div className="space-y-3 fade-in">
               <div className="flex items-center justify-between mb-4">
-                <p className="text-sm text-[hsl(var(--muted-foreground))]">سجل كامل لجميع التعديلات مع اسم من عدّل</p>
+                <p className="text-sm text-[hsl(var(--muted-foreground))]">
+                  سجل كامل لجميع التعديلات مع اسم من عدّل
+                </p>
                 <button
                   onClick={() => setShowAuditModal(true)}
                   className="flex items-center gap-1.5 text-xs bg-amber-50 border border-amber-200 text-amber-700 px-3 py-1.5 rounded-xl font-semibold hover:bg-amber-100 transition-colors"
@@ -835,15 +1127,27 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                   <div className="w-12 h-12 bg-[hsl(var(--muted))] rounded-2xl flex items-center justify-center">
                     <Clock size={24} className="text-[hsl(var(--muted-foreground))]" />
                   </div>
-                  <p className="text-sm font-semibold text-[hsl(var(--foreground))]">لا توجد تعديلات مسجلة</p>
-                  <p className="text-xs text-[hsl(var(--muted-foreground))] text-center">ستظهر هنا جميع التعديلات عند تحديث الحالة أو تعديل الأوردر</p>
+                  <p className="text-sm font-semibold text-[hsl(var(--foreground))]">
+                    لا توجد تعديلات مسجلة
+                  </p>
+                  <p className="text-xs text-[hsl(var(--muted-foreground))] text-center">
+                    ستظهر هنا جميع التعديلات عند تحديث الحالة أو تعديل الأوردر
+                  </p>
                 </div>
               ) : (
                 <div className="space-y-3">
                   {auditLogs.slice(0, 10).map((log) => {
                     const d = new Date(log.createdAt);
-                    const dateStr = d.toLocaleDateString('ar-EG', { day: '2-digit', month: '2-digit', year: 'numeric' });
-                    const timeStr = d.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                    const dateStr = d.toLocaleDateString('en-US', {
+                      day: '2-digit',
+                      month: '2-digit',
+                      year: 'numeric',
+                    });
+                    const timeStr = d.toLocaleTimeString('en-US', {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit',
+                    });
                     const actionColors: Record<string, string> = {
                       status_change: 'bg-blue-50 border-blue-200',
                       order_created: 'bg-green-50 border-green-200',
@@ -857,24 +1161,48 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                       order_deleted: 'حذف الأوردر',
                     };
                     const statusLabels: Record<string, string> = {
-                      new: 'جديد', preparing: 'جاري التجهيز', warehouse: 'في المستودع',
-                      shipping: 'جاري الشحن', delivered: 'تم التسليم', cancelled: 'ملغي', returned: 'مرتجع',
+                      new: 'جديد',
+                      preparing: 'جاري التجهيز',
+                      warehouse: 'في المستودع',
+                      shipping: 'جاري الشحن',
+                      delivered: 'تم التسليم',
+                      cancelled: 'ملغي',
+                      returned: 'مرتجع',
                     };
                     return (
-                      <div key={log.id} className={`border rounded-xl p-3 ${actionColors[log.action] || 'bg-gray-50 border-gray-200'}`}>
+                      <div
+                        key={log.id}
+                        className={`border rounded-xl p-3 ${actionColors[log.action] || 'bg-gray-50 border-gray-200'}`}
+                      >
                         <div className="flex items-start justify-between gap-2">
                           <div className="flex-1">
                             <div className="flex items-center gap-2 mb-1 flex-wrap">
-                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/60 text-[hsl(var(--foreground))]">{actionLabels[log.action] || log.action}</span>
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/60 text-[hsl(var(--foreground))]">
+                                {actionLabels[log.action] || log.action}
+                              </span>
                               {log.action === 'status_change' && log.newValue && (
-                                <span className={`badge ${STATUS_BADGE_MAP[log.newValue]?.cls || 'status-new'} text-[10px]`}>{statusLabels[log.newValue] || log.newValue}</span>
+                                <span
+                                  className={`badge ${STATUS_BADGE_MAP[log.newValue]?.cls || 'status-new'} text-[10px]`}
+                                >
+                                  {statusLabels[log.newValue] || log.newValue}
+                                </span>
                               )}
                             </div>
-                            <p className="text-xs font-semibold text-[hsl(var(--foreground))]">{log.changedBy}</p>
-                            <p className="text-[11px] text-[hsl(var(--muted-foreground))]">
-                              {log.changedByRole === 'manager' ? 'مدير' : log.changedByRole === 'supervisor' ? 'مشرف شحن' : log.changedByRole === 'shipping' ? 'مندوب' : log.changedByRole}
+                            <p className="text-xs font-semibold text-[hsl(var(--foreground))]">
+                              {log.changedBy}
                             </p>
-                            {log.note && <p className="text-xs mt-1 italic opacity-80">"{log.note}"</p>}
+                            <p className="text-[11px] text-[hsl(var(--muted-foreground))]">
+                              {log.changedByRole === 'manager'
+                                ? 'مدير'
+                                : log.changedByRole === 'supervisor'
+                                  ? 'مشرف شحن'
+                                  : log.changedByRole === 'shipping'
+                                    ? 'مندوب'
+                                    : log.changedByRole}
+                            </p>
+                            {log.note && (
+                              <p className="text-xs mt-1 italic opacity-80">"{log.note}"</p>
+                            )}
                           </div>
                           <div className="text-left flex-shrink-0">
                             <p className="text-[10px] font-mono opacity-70">{dateStr}</p>
@@ -885,7 +1213,10 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                     );
                   })}
                   {auditLogs.length > 10 && (
-                    <button onClick={() => setShowAuditModal(true)} className="w-full text-xs text-[hsl(var(--primary))] font-semibold py-2 hover:underline">
+                    <button
+                      onClick={() => setShowAuditModal(true)}
+                      className="w-full text-xs text-[hsl(var(--primary))] font-semibold py-2 hover:underline"
+                    >
                       عرض {auditLogs.length - 10} تعديل إضافي...
                     </button>
                   )}

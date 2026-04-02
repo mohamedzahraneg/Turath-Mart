@@ -3,7 +3,22 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import AppLogo from '@/components/ui/AppLogo';
 import { useAuth } from '@/contexts/AuthContext';
-import { LayoutDashboard, Package, Truck, BarChart3, Warehouse, Settings, ChevronRight, ChevronLeft, Bell, LogOut, ShieldCheck, Users } from 'lucide-react';
+import {
+  LayoutDashboard,
+  Package,
+  Truck,
+  BarChart3,
+  Warehouse,
+  Settings,
+  ChevronRight,
+  ChevronLeft,
+  Bell,
+  LogOut,
+  ShieldCheck,
+  Users,
+} from 'lucide-react';
+import { useNotifications } from '@/contexts/NotificationContext';
+import NotificationDropdown from '@/components/NotificationDropdown';
 
 interface NavItem {
   id: string;
@@ -15,14 +30,62 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-  { id: 'nav-dashboard', label: 'لوحة التحكم', icon: <LayoutDashboard size={20} />, href: '/dashboard', group: 'رئيسي' },
-  { id: 'nav-orders', label: 'الأوردرات', icon: <Package size={20} />, href: '/orders-management', badge: 7, group: 'رئيسي' },
-  { id: 'nav-shipping', label: 'الشحن', icon: <Truck size={20} />, href: '/shipping', group: 'رئيسي' },
-  { id: 'nav-crm', label: 'إدارة العملاء (CRM)', icon: <Users size={20} />, href: '/crm', group: 'إدارة' },
-  { id: 'nav-inventory', label: 'المخزون', icon: <Warehouse size={20} />, href: '/inventory', group: 'إدارة' },
-  { id: 'nav-reports', label: 'التقارير', icon: <BarChart3 size={20} />, href: '/reports', group: 'إدارة' },
-  { id: 'nav-roles', label: 'المستخدمون والصلاحيات', icon: <ShieldCheck size={20} />, href: '/roles', group: 'النظام' },
-  { id: 'nav-settings', label: 'الإعدادات', icon: <Settings size={20} />, href: '/settings', group: 'النظام' },
+  {
+    id: 'nav-dashboard',
+    label: 'لوحة التحكم',
+    icon: <LayoutDashboard size={20} />,
+    href: '/dashboard',
+    group: 'رئيسي',
+  },
+  {
+    id: 'nav-orders',
+    label: 'الأوردرات',
+    icon: <Package size={20} />,
+    href: '/orders-management',
+    group: 'رئيسي',
+  },
+  {
+    id: 'nav-shipping',
+    label: 'الشحن',
+    icon: <Truck size={20} />,
+    href: '/shipping',
+    group: 'رئيسي',
+  },
+  {
+    id: 'nav-crm',
+    label: 'إدارة العملاء (CRM)',
+    icon: <Users size={20} />,
+    href: '/crm',
+    group: 'إدارة',
+  },
+  {
+    id: 'nav-inventory',
+    label: 'المخزون',
+    icon: <Warehouse size={20} />,
+    href: '/inventory',
+    group: 'إدارة',
+  },
+  {
+    id: 'nav-reports',
+    label: 'التقارير',
+    icon: <BarChart3 size={20} />,
+    href: '/reports',
+    group: 'إدارة',
+  },
+  {
+    id: 'nav-roles',
+    label: 'المستخدمون والصلاحيات',
+    icon: <ShieldCheck size={20} />,
+    href: '/roles',
+    group: 'النظام',
+  },
+  {
+    id: 'nav-settings',
+    label: 'الإعدادات',
+    icon: <Settings size={20} />,
+    href: '/settings',
+    group: 'النظام',
+  },
 ];
 
 const groups = ['رئيسي', 'إدارة', 'النظام'];
@@ -42,13 +105,13 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [userName, setUserName] = useState('المستخدم');
-  const { currentRole, hasAccess } = useAuth();
+  const [showNotifications, setShowNotifications] = useState(false);
+  const { currentRole, currentRoleId, hasAccess } = useAuth();
+  const { newOrdersCount, unreadCount } = useNotifications();
 
-  // Manager sees ALL nav items — no filtering whatsoever
-  const isManager = currentRole === 'manager';
-  const visibleNavItems = isManager
-    ? navItems
-    : navItems.filter((item) => hasAccess(item.href));
+  // Only True Admin (r1) sees EVERYTHING without filtering
+  const isSuperAdmin = currentRoleId === 'r1';
+  const visibleNavItems = isSuperAdmin ? navItems : navItems.filter((item) => hasAccess(item.href));
 
   const isActive = (href: string) => currentPath === href || currentPath.startsWith(href);
 
@@ -98,7 +161,9 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
         `}
       >
         {/* Logo */}
-        <div className={`flex items-center border-b border-[hsl(var(--border))] ${collapsed ? 'p-4 justify-center' : 'p-4 gap-3'}`}>
+        <div
+          className={`flex items-center border-b border-[hsl(var(--border))] ${collapsed ? 'p-4 justify-center' : 'p-4 gap-3'}`}
+        >
           <div className="flex items-center gap-2 flex-shrink-0">
             <AppLogo size={36} />
             {!collapsed && (
@@ -138,33 +203,36 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
                   </p>
                 )}
                 <ul className="space-y-1">
-                  {items.map((item) => (
-                    <li key={item.id}>
-                      <Link
-                        href={item.href}
-                        className={`sidebar-item ${isActive(item.href) ? 'sidebar-item-active' : 'sidebar-item-inactive'} ${collapsed ? 'justify-center px-2' : ''}`}
-                        title={collapsed ? item.label : undefined}
-                        onClick={() => setMobileOpen(false)}
-                      >
-                        <span className="flex-shrink-0">{item.icon}</span>
-                        {!collapsed && (
-                          <>
-                            <span className="flex-1 text-sm">{item.label}</span>
-                            {item.badge && (
-                              <span className="bg-[hsl(var(--accent))] text-white text-xs rounded-full px-2 py-0.5 font-bold min-w-[20px] text-center">
-                                {item.badge}
-                              </span>
-                            )}
-                          </>
-                        )}
-                        {collapsed && item.badge && (
-                          <span className="absolute top-1 left-1 bg-[hsl(var(--accent))] text-white text-[10px] rounded-full w-4 h-4 flex items-center justify-center font-bold">
-                            {item.badge}
-                          </span>
-                        )}
-                      </Link>
-                    </li>
-                  ))}
+                  {items.map((item) => {
+                    const badge = item.id === 'nav-orders' ? newOrdersCount : item.badge;
+                    return (
+                      <li key={item.id}>
+                        <Link
+                          href={item.href}
+                          className={`sidebar-item ${isActive(item.href) ? 'sidebar-item-active' : 'sidebar-item-inactive'} ${collapsed ? 'justify-center px-2' : ''}`}
+                          title={collapsed ? item.label : undefined}
+                          onClick={() => setMobileOpen(false)}
+                        >
+                          <span className="flex-shrink-0">{item.icon}</span>
+                          {!collapsed && (
+                            <>
+                              <span className="flex-1 text-sm">{item.label}</span>
+                              {(badge || 0) > 0 && (
+                                <span className="bg-[hsl(var(--accent))] text-white text-xs rounded-full px-2 py-0.5 font-bold min-w-[20px] text-center">
+                                  {badge}
+                                </span>
+                              )}
+                            </>
+                          )}
+                          {collapsed && (badge || 0) > 0 && (
+                            <span className="absolute top-1 left-1 bg-[hsl(var(--accent))] text-white text-[10px] rounded-full w-4 h-4 flex items-center justify-center font-bold">
+                              {badge}
+                            </span>
+                          )}
+                        </Link>
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             );
@@ -172,12 +240,23 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
         </nav>
 
         {/* Bottom: user + notifications */}
-        <div className="border-t border-[hsl(var(--border))] p-3 space-y-1">
-          <button className={`sidebar-item sidebar-item-inactive w-full ${collapsed ? 'justify-center' : ''}`}>
+        <div className="border-t border-[hsl(var(--border))] p-3 space-y-1 relative">
+          {showNotifications && (
+            <NotificationDropdown onClose={() => setShowNotifications(false)} />
+          )}
+
+          <button
+            className={`sidebar-item w-full ${showNotifications ? 'sidebar-item-active' : 'sidebar-item-inactive'} ${collapsed ? 'justify-center' : ''}`}
+            onClick={() => setShowNotifications(!showNotifications)}
+          >
             <Bell size={18} />
             {!collapsed && <span className="text-sm">الإشعارات</span>}
-            {!collapsed && (
-              <span className="mr-auto bg-red-500 text-white text-xs rounded-full px-1.5 py-0.5 font-bold">3</span>
+            {unreadCount > 0 && (
+              <span
+                className={`bg-red-500 text-white text-xs rounded-full font-bold flex items-center justify-center ${collapsed ? 'absolute top-1 left-1 w-4 h-4 text-[10px]' : 'mr-auto px-1.5 py-0.5'}`}
+              >
+                {unreadCount}
+              </span>
             )}
           </button>
 
@@ -188,16 +267,26 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-semibold truncate">{userName}</p>
-                <p className="text-xs text-[hsl(var(--muted-foreground))] truncate">{ROLE_LABELS[currentRole ?? ''] ?? currentRole}</p>
+                <p className="text-xs text-[hsl(var(--muted-foreground))] truncate">
+                  {ROLE_LABELS[currentRole ?? ''] ?? currentRole}
+                </p>
               </div>
-              <button onClick={handleLogout} className="text-[hsl(var(--muted-foreground))] hover:text-red-500 transition-colors" aria-label="تسجيل الخروج">
+              <button
+                onClick={handleLogout}
+                className="text-[hsl(var(--muted-foreground))] hover:text-red-500 transition-colors"
+                aria-label="تسجيل الخروج"
+              >
                 <LogOut size={16} />
               </button>
             </div>
           )}
 
           {collapsed && (
-            <button onClick={handleLogout} className="sidebar-item sidebar-item-inactive w-full justify-center" title="تسجيل الخروج">
+            <button
+              onClick={handleLogout}
+              className="sidebar-item sidebar-item-inactive w-full justify-center"
+              title="تسجيل الخروج"
+            >
               <LogOut size={18} />
             </button>
           )}

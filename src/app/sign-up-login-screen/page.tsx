@@ -5,9 +5,21 @@ import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import { Toaster } from 'sonner';
 import AppLogo from '@/components/ui/AppLogo';
-import { Eye, EyeOff, Mail, Lock, Truck, Package, BarChart3, Shield, LogIn, AlertCircle, Monitor, Smartphone, Tablet } from 'lucide-react';
-import { getDefaultRouteForPermissions, getPermissionsForRoleId } from '@/contexts/AuthContext';
-
+import {
+  Eye,
+  EyeOff,
+  Mail,
+  Lock,
+  Truck,
+  Package,
+  BarChart3,
+  Shield,
+  LogIn,
+  AlertCircle,
+  Monitor,
+  Smartphone,
+  Tablet,
+} from 'lucide-react';
 interface LoginForm {
   email: string;
   password: string;
@@ -33,7 +45,11 @@ interface StoredRole {
   color?: string;
 }
 
-import { useAuth } from '@/contexts/AuthContext';
+import {
+  useAuth,
+  getDefaultRouteForPermissions as getInitialRoute,
+  getPermissionsForRoleId,
+} from '@/contexts/AuthContext';
 import { createClient } from '@/lib/supabase/client';
 
 function getDeviceType(): string {
@@ -44,8 +60,10 @@ function getDeviceType(): string {
 }
 
 function DeviceIcon({ device }: { device: string }) {
-  if (device === 'موبايل') return <Smartphone size={14} className="text-[hsl(var(--muted-foreground))]" />;
-  if (device === 'تابلت') return <Tablet size={14} className="text-[hsl(var(--muted-foreground))]" />;
+  if (device === 'موبايل')
+    return <Smartphone size={14} className="text-[hsl(var(--muted-foreground))]" />;
+  if (device === 'تابلت')
+    return <Tablet size={14} className="text-[hsl(var(--muted-foreground))]" />;
   return <Monitor size={14} className="text-[hsl(var(--muted-foreground))]" />;
 }
 
@@ -54,7 +72,7 @@ export default function LoginPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [deviceType, setDeviceType] = useState('كمبيوتر');
-  
+
   const { signIn } = useAuth();
 
   const STATS = [
@@ -80,8 +98,16 @@ export default function LoginPage() {
     setLoginError('');
 
     try {
-      const authData = await signIn(data.email.trim(), data.password);
-      
+      let identifier = data.email.trim();
+      if (!identifier.includes('@')) {
+        if (identifier.toLowerCase() === 'admin') {
+          identifier = 'admin@turath-mart.com';
+        } else {
+          identifier = `${identifier}@turathmart.internal`;
+        }
+      }
+      const authData = await signIn(identifier, data.password);
+
       const supabase = createClient();
       const { data: profile } = await supabase
         .from('profiles')
@@ -91,21 +117,35 @@ export default function LoginPage() {
 
       const userRole = profile?.role || 'employee';
 
+      const finalRoleId =
+        authData.user.user_metadata?.role_id || (userRole === 'admin' ? 'r1' : 'r6');
+
       // Setting localStorage purely for Legacy AuthContext support
       if (typeof window !== 'undefined') {
-        localStorage.setItem('current_user', JSON.stringify({
-          email: authData.user.email,
-          name: authData.user.user_metadata?.full_name || 'مستخدم',
-          role: userRole,
-          roleId: userRole === 'admin' ? 'r1' : 'r3', 
-        }));
+        localStorage.setItem(
+          'current_user',
+          JSON.stringify({
+            email: authData.user.email,
+            name: authData.user.user_metadata?.full_name || 'مستخدم',
+            role: userRole,
+            roleId: finalRoleId,
+          })
+        );
       }
 
       toast.success(`مرحباً! تم تسجيل الدخول — ${deviceType}`);
-      setTimeout(() => { window.location.href = '/dashboard'; }, 800);
+
+      // Calculate landing page based on permissions
+      const permissions = getPermissionsForRoleId(finalRoleId);
+      const landingPage = getInitialRoute(permissions);
+
+      setTimeout(() => {
+        window.location.href = landingPage;
+      }, 800);
     } catch (err: any) {
-      setLoginError('بيانات الدخول غير صحيحة. تأكد من البريد الإلكتروني وكلمة المرور');
-      toast.error('فشل تسجيل الدخول — تحقق من البيانات');
+      console.error('Login exception:', err);
+      setLoginError(`بيانات غير صحيحة: ${err.message}`);
+      toast.error(`فشل تسجيل الدخول: ${err.message}`);
     } finally {
       setIsLoading(false);
     }
@@ -116,16 +156,38 @@ export default function LoginPage() {
       <Toaster position="top-center" richColors />
 
       {/* Right: Brand Panel */}
-      <div className="hidden lg:flex lg:w-[52%] relative overflow-hidden flex-col justify-between p-10"
-        style={{ background: 'linear-gradient(135deg, hsl(25,60%,20%) 0%, hsl(25,55%,35%) 60%, hsl(40,80%,45%) 100%)' }}>
-
+      <div
+        className="hidden lg:flex lg:w-[52%] relative overflow-hidden flex-col justify-between p-10"
+        style={{
+          background:
+            'linear-gradient(135deg, hsl(25,60%,20%) 0%, hsl(25,55%,35%) 60%, hsl(40,80%,45%) 100%)',
+        }}
+      >
         {/* Islamic geometric background pattern */}
         <div className="absolute inset-0 opacity-10">
           <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
             <defs>
-              <pattern id="islamic-star" x="0" y="0" width="80" height="80" patternUnits="userSpaceOnUse">
-                <polygon points="40,5 47,28 70,28 52,43 59,66 40,52 21,66 28,43 10,28 33,28" fill="none" stroke="white" strokeWidth="1.5"/>
-                <polygon points="40,15 44,28 58,28 47,36 51,50 40,42 29,50 33,36 22,28 36,28" fill="none" stroke="white" strokeWidth="0.8" opacity="0.5"/>
+              <pattern
+                id="islamic-star"
+                x="0"
+                y="0"
+                width="80"
+                height="80"
+                patternUnits="userSpaceOnUse"
+              >
+                <polygon
+                  points="40,5 47,28 70,28 52,43 59,66 40,52 21,66 28,43 10,28 33,28"
+                  fill="none"
+                  stroke="white"
+                  strokeWidth="1.5"
+                />
+                <polygon
+                  points="40,15 44,28 58,28 47,36 51,50 40,42 29,50 33,36 22,28 36,28"
+                  fill="none"
+                  stroke="white"
+                  strokeWidth="0.8"
+                  opacity="0.5"
+                />
               </pattern>
             </defs>
             <rect width="100%" height="100%" fill="url(#islamic-star)" />
@@ -142,18 +204,23 @@ export default function LoginPage() {
           </div>
 
           <h2 className="text-4xl font-bold text-white leading-relaxed mb-4">
-            إدارة نشاطك<br />
+            إدارة نشاطك
+            <br />
             <span className="text-[hsl(40,80%,72%)]">بكل احترافية</span>
           </h2>
           <p className="text-amber-100 text-lg leading-relaxed max-w-md">
-            منصة متكاملة لتسجيل الأوردرات، تتبع الشحن، إدارة المخزون، وتقارير مالية دقيقة — كل شيء في مكان واحد.
+            منصة متكاملة لتسجيل الأوردرات، تتبع الشحن، إدارة المخزون، وتقارير مالية دقيقة — كل شيء
+            في مكان واحد.
           </p>
         </div>
 
         {/* Stats */}
         <div className="relative z-10 grid grid-cols-3 gap-4">
           {STATS.map((stat, i) => (
-            <div key={`stat-${i + 1}`} className="bg-white/10 backdrop-blur-sm rounded-2xl p-4 border border-white/20">
+            <div
+              key={`stat-${i + 1}`}
+              className="bg-white/10 backdrop-blur-sm rounded-2xl p-4 border border-white/20"
+            >
               <div className="text-[hsl(40,80%,72%)] mb-2">{stat.icon}</div>
               <p className="text-2xl font-bold text-white">{stat.value}</p>
               <p className="text-amber-200 text-xs mt-1">{stat.label}</p>
@@ -178,13 +245,18 @@ export default function LoginPage() {
 
           <div className="mb-8">
             <h2 className="text-2xl font-bold text-[hsl(var(--foreground))]">تسجيل الدخول</h2>
-            <p className="text-[hsl(var(--muted-foreground))] text-sm mt-1">أدخل بياناتك للوصول إلى نظام تراث مارت</p>
+            <p className="text-[hsl(var(--muted-foreground))] text-sm mt-1">
+              أدخل بياناتك للوصول إلى نظام تراث مارت
+            </p>
           </div>
 
           {/* Device indicator */}
           <div className="flex items-center gap-2 bg-[hsl(var(--muted))]/50 rounded-xl px-3 py-2 mb-4 text-xs text-[hsl(var(--muted-foreground))]">
             <DeviceIcon device={deviceType} />
-            <span>الجهاز الحالي: <span className="font-semibold text-[hsl(var(--foreground))]">{deviceType}</span></span>
+            <span>
+              الجهاز الحالي:{' '}
+              <span className="font-semibold text-[hsl(var(--foreground))]">{deviceType}</span>
+            </span>
           </div>
 
           {/* Error */}
@@ -198,9 +270,14 @@ export default function LoginPage() {
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-5" noValidate>
             {/* Username / Email */}
             <div>
-              <label className="label-text" htmlFor="email">اسم المستخدم أو البريد الإلكتروني</label>
+              <label className="label-text" htmlFor="email">
+                اسم المستخدم أو البريد الإلكتروني
+              </label>
               <div className="relative">
-                <Mail size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]" />
+                <Mail
+                  size={16}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]"
+                />
                 <input
                   id="email"
                   type="text"
@@ -217,9 +294,14 @@ export default function LoginPage() {
 
             {/* Password */}
             <div>
-              <label className="label-text" htmlFor="password">كلمة المرور</label>
+              <label className="label-text" htmlFor="password">
+                كلمة المرور
+              </label>
               <div className="relative">
-                <Lock size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]" />
+                <Lock
+                  size={16}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]"
+                />
                 <input
                   id="password"
                   type={showPassword ? 'text' : 'password'}
@@ -239,7 +321,9 @@ export default function LoginPage() {
                   {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
-              {errors.password && <p className="text-red-500 text-xs mt-1">{errors.password.message}</p>}
+              {errors.password && (
+                <p className="text-red-500 text-xs mt-1">{errors.password.message}</p>
+              )}
             </div>
 
             <button

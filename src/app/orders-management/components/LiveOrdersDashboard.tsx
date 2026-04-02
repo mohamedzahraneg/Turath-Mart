@@ -1,9 +1,21 @@
 'use client';
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Truck, CheckCircle, Clock, Package, XCircle, RotateCcw,
-  Wifi, MapPin, TrendingUp, DollarSign, Users, Activity,
-  ChevronDown, RefreshCw, Zap
+  Truck,
+  CheckCircle,
+  Clock,
+  Package,
+  XCircle,
+  RotateCcw,
+  Wifi,
+  MapPin,
+  TrendingUp,
+  DollarSign,
+  Users,
+  Activity,
+  ChevronDown,
+  RefreshCw,
+  Zap,
 } from 'lucide-react';
 
 interface LiveOrder {
@@ -28,39 +40,72 @@ interface AgentLocation {
   lastUpdate: string;
 }
 
-const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; border: string; icon: React.ReactNode; pulse?: boolean }> = {
-  new: { label: 'جديد', color: 'text-blue-700', bg: 'bg-blue-50', border: 'border-blue-200', icon: <Package size={12} /> },
-  preparing: { label: 'جاري التجهيز', color: 'text-amber-700', bg: 'bg-amber-50', border: 'border-amber-200', icon: <Clock size={12} />, pulse: true },
-  warehouse: { label: 'في المستودع', color: 'text-purple-700', bg: 'bg-purple-50', border: 'border-purple-200', icon: <Package size={12} /> },
-  shipping: { label: 'جاري الشحن', color: 'text-indigo-700', bg: 'bg-indigo-50', border: 'border-indigo-200', icon: <Truck size={12} />, pulse: true },
-  delivered: { label: 'تم التسليم', color: 'text-green-700', bg: 'bg-green-50', border: 'border-green-200', icon: <CheckCircle size={12} /> },
-  cancelled: { label: 'ملغي', color: 'text-red-700', bg: 'bg-red-50', border: 'border-red-200', icon: <XCircle size={12} /> },
-  returned: { label: 'مرتجع', color: 'text-orange-700', bg: 'bg-orange-50', border: 'border-orange-200', icon: <RotateCcw size={12} /> },
+const STATUS_CONFIG: Record<
+  string,
+  {
+    label: string;
+    color: string;
+    bg: string;
+    border: string;
+    icon: React.ReactNode;
+    pulse?: boolean;
+  }
+> = {
+  new: {
+    label: 'جديد',
+    color: 'text-blue-700',
+    bg: 'bg-blue-50',
+    border: 'border-blue-200',
+    icon: <Package size={12} />,
+  },
+  preparing: {
+    label: 'جاري التجهيز',
+    color: 'text-amber-700',
+    bg: 'bg-amber-50',
+    border: 'border-amber-200',
+    icon: <Clock size={12} />,
+    pulse: true,
+  },
+  warehouse: {
+    label: 'في المستودع',
+    color: 'text-purple-700',
+    bg: 'bg-purple-50',
+    border: 'border-purple-200',
+    icon: <Package size={12} />,
+  },
+  shipping: {
+    label: 'جاري الشحن',
+    color: 'text-indigo-700',
+    bg: 'bg-indigo-50',
+    border: 'border-indigo-200',
+    icon: <Truck size={12} />,
+    pulse: true,
+  },
+  delivered: {
+    label: 'تم التسليم',
+    color: 'text-green-700',
+    bg: 'bg-green-50',
+    border: 'border-green-200',
+    icon: <CheckCircle size={12} />,
+  },
+  cancelled: {
+    label: 'ملغي',
+    color: 'text-red-700',
+    bg: 'bg-red-50',
+    border: 'border-red-200',
+    icon: <XCircle size={12} />,
+  },
+  returned: {
+    label: 'مرتجع',
+    color: 'text-orange-700',
+    bg: 'bg-orange-50',
+    border: 'border-orange-200',
+    icon: <RotateCcw size={12} />,
+  },
 };
 
-// Simulated live orders data
-const BASE_ORDERS_TEMPLATE = [
-  { id: 'o1', orderNum: 'ZSH-2026-0047', customer: 'أحمد محمود السيد', region: 'القاهرة', products: 'حامل مصحف بني x 2', total: 650, status: 'shipping', delegateName: 'علي محمود', time: '09:32' },
-  { id: 'o2', orderNum: 'ZSH-2026-0046', customer: 'فاطمة علي حسن', region: 'الجيزة', products: 'كعبة x 1 + مصحف x 2', total: 890, status: 'delivered', delegateName: 'علي محمود', time: '09:15' },
-  { id: 'o3', orderNum: 'ZSH-2026-0045', customer: 'محمد عبد الرحمن', region: 'القليوبية', products: 'حامل مصحف ذهبي x 1', total: 380, status: 'new', delegateName: 'خالد سعيد', time: '08:55' },
-  { id: 'o4', orderNum: 'ZSH-2026-0044', customer: 'سارة إبراهيم خليل', region: 'القاهرة', products: 'كشاف x 3', total: 530, status: 'preparing', delegateName: 'علي محمود', time: '08:40' },
-  { id: 'o5', orderNum: 'ZSH-2026-0043', customer: 'عمر حامد الشريف', region: 'الجيزة', products: 'حامل مصحف أسود x 1 + كشاف x 1', total: 570, status: 'warehouse', delegateName: 'خالد سعيد', time: '07:20' },
-  { id: 'o6', orderNum: 'ZSH-2026-0042', customer: 'نور الدين مصطفى', region: 'القاهرة', products: 'كرسي x 2', total: 1200, status: 'shipping', delegateName: 'علي محمود', time: '07:50' },
-];
-
-const AGENT_LOCATIONS: AgentLocation[] = [
-  { name: 'علي محمود', lat: 30.06, lng: 31.24, activeOrders: 4, status: 'active', lastUpdate: 'منذ دقيقتين' },
-  { name: 'خالد سعيد', lat: 30.02, lng: 31.21, activeOrders: 2, status: 'active', lastUpdate: 'منذ 5 دقائق' },
-  { name: 'محمد فاروق', lat: 30.08, lng: 31.28, activeOrders: 0, status: 'idle', lastUpdate: 'منذ 12 دقيقة' },
-];
-
-// Status cycle for simulation
-const STATUS_CYCLE: Record<string, string> = {
-  new: 'preparing',
-  preparing: 'warehouse',
-  warehouse: 'shipping',
-  shipping: 'delivered',
-};
+// Actual DB queries will replace mock datasets.
+import { createClient } from '@/lib/supabase/client';
 
 function timeAgo(date: Date | null): string {
   if (!date) return '';
@@ -71,9 +116,8 @@ function timeAgo(date: Date | null): string {
 }
 
 export default function LiveOrdersDashboard() {
-  const [orders, setOrders] = useState<LiveOrder[]>(() =>
-    BASE_ORDERS_TEMPLATE.map(o => ({ ...o, updatedAt: new Date(0) }))
-  );
+  const [orders, setOrders] = useState<LiveOrder[]>([]);
+  const [agentLocations, setAgentLocations] = useState<AgentLocation[]>([]);
   const [isLive, setIsLive] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [flashIds, setFlashIds] = useState<Set<string>>(new Set());
@@ -83,56 +127,103 @@ export default function LiveOrdersDashboard() {
 
   useEffect(() => {
     setMounted(true);
-    const now = new Date();
-    setOrders(BASE_ORDERS_TEMPLATE.map(o => ({ ...o, updatedAt: now })));
-    setLastUpdate(now);
   }, []);
 
-  // Simulate real-time updates
-  const simulateUpdate = useCallback(() => {
-    setOrders(prev => {
-      const updatable = prev.filter(o => STATUS_CYCLE[o.status]);
-      if (updatable.length === 0) return prev;
-      const target = updatable[Math.floor(Math.random() * updatable.length)];
-      const newStatus = STATUS_CYCLE[target.status];
-      if (!newStatus) return prev;
+  const fetchLiveOrders = useCallback(async () => {
+    if (!isLive) return;
+    try {
+      const supabase = createClient();
 
-      setFlashIds(ids => {
-        const next = new Set(ids);
-        next.add(target.id);
-        setTimeout(() => setFlashIds(f => { const n = new Set(f); n.delete(target.id); return n; }), 1500);
-        return next;
-      });
+      const today = new Date();
+      const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
-      return prev.map(o =>
-        o.id === target.id ? { ...o, status: newStatus, updatedAt: new Date() } : o
-      );
-    });
-    setLastUpdate(new Date());
-  }, []);
+      const { data, error } = await supabase
+        .from('zahranship_orders')
+        .select('*')
+        .gte('created_at', todayStr) // only today's orders or active orders
+        .order('updated_at', { ascending: false });
+
+      if (!error && data) {
+        setOrders((prev) => {
+          const formatted = data.map((o: any) => ({
+            id: o.id,
+            orderNum: o.order_num,
+            customer: o.customer,
+            region: o.region,
+            products: o.products,
+            total: o.total,
+            status: o.status,
+            delegateName: o.delegate_name || 'غير محدد',
+            time: o.time || o.created_at?.split('T')[1].substring(0, 5),
+            updatedAt: new Date(o.updated_at || o.created_at),
+          }));
+
+          // flash items whose status has changed
+          const newStatusHash = new Map(formatted.map((x) => [x.id, x.status]));
+          const oldStatusHash = new Map(prev.map((x) => [x.id, x.status]));
+          const changedIds = new Set<string>();
+          newStatusHash.forEach((status, id) => {
+            if (oldStatusHash.has(id) && oldStatusHash.get(id) !== status) changedIds.add(id);
+          });
+
+          if (changedIds.size > 0) {
+            setFlashIds(changedIds);
+            setTimeout(() => setFlashIds(new Set()), 1500);
+          }
+
+          return formatted;
+        });
+
+        // Compute agents
+        const agentsMap = new Map<string, number>();
+        data.forEach((o: any) => {
+          if (o.delegate_name && ['shipping', 'warehouse', 'preparing'].includes(o.status)) {
+            agentsMap.set(o.delegate_name, (agentsMap.get(o.delegate_name) || 0) + 1);
+          }
+        });
+
+        const locs: AgentLocation[] = [];
+        agentsMap.forEach((count, name) => {
+          locs.push({
+            name,
+            lat: 30.06,
+            lng: 31.24,
+            activeOrders: count,
+            status: count > 0 ? 'active' : 'idle',
+            lastUpdate: 'الآن',
+          });
+        });
+        setAgentLocations(locs);
+        setLastUpdate(new Date());
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  }, [isLive]);
 
   // Tick every second for timeAgo display
   useEffect(() => {
-    const interval = setInterval(() => setTick(t => t + 1), 1000);
+    const interval = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(interval);
   }, []);
 
-  // Simulate live updates every 6 seconds
+  // Poll live updates
   useEffect(() => {
+    fetchLiveOrders();
     if (!isLive) return;
-    const interval = setInterval(simulateUpdate, 6000);
+    const interval = setInterval(fetchLiveOrders, 10000);
     return () => clearInterval(interval);
-  }, [isLive, simulateUpdate]);
+  }, [isLive, fetchLiveOrders]);
 
   // Computed live stats
-  const deliveredToday = orders.filter(o => o.status === 'delivered').length;
-  const shippingNow = orders.filter(o => o.status === 'shipping').length;
-  const activeAgents = AGENT_LOCATIONS.filter(a => a.status === 'active').length;
+  const deliveredToday = orders.filter((o) => o.status === 'delivered').length;
+  const shippingNow = orders.filter((o) => o.status === 'shipping').length;
+  const activeAgents = agentLocations.filter((a) => a.status === 'active').length;
   const collectionTotal = orders
-    .filter(o => o.status === 'delivered')
+    .filter((o) => o.status === 'delivered')
     .reduce((sum, o) => sum + o.total, 0);
   const pendingCollection = orders
-    .filter(o => ['shipping', 'warehouse', 'preparing'].includes(o.status))
+    .filter((o) => ['shipping', 'warehouse', 'preparing'].includes(o.status))
     .reduce((sum, o) => sum + o.total, 0);
 
   // Status counts
@@ -150,9 +241,13 @@ export default function LiveOrdersDashboard() {
       >
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full ${isLive ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`} />
+            <div
+              className={`w-2 h-2 rounded-full ${isLive ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`}
+            />
             <Zap size={15} className="text-[hsl(var(--primary))]" />
-            <span className="text-sm font-bold text-[hsl(var(--foreground))]">لوحة المتابعة اللحظية</span>
+            <span className="text-sm font-bold text-[hsl(var(--foreground))]">
+              لوحة المتابعة اللحظية
+            </span>
           </div>
           {isLive && (
             <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-semibold border border-green-200">
@@ -165,13 +260,19 @@ export default function LiveOrdersDashboard() {
             آخر تحديث: {lastUpdate ? timeAgo(lastUpdate) : ''}
           </span>
           <button
-            onClick={(e) => { e.stopPropagation(); setIsLive(!isLive); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsLive(!isLive);
+            }}
             className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg font-semibold transition-all border ${isLive ? 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100' : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'}`}
           >
             {isLive ? <Wifi size={12} /> : <RefreshCw size={12} />}
             {isLive ? 'متصل' : 'إيقاف'}
           </button>
-          <ChevronDown size={16} className={`text-[hsl(var(--muted-foreground))] transition-transform ${collapsed ? '' : 'rotate-180'}`} />
+          <ChevronDown
+            size={16}
+            className={`text-[hsl(var(--muted-foreground))] transition-transform ${collapsed ? '' : 'rotate-180'}`}
+          />
         </div>
       </div>
 
@@ -215,7 +316,9 @@ export default function LiveOrdersDashboard() {
                 <p className="text-[11px] font-semibold text-purple-700">مندوبين نشطين</p>
               </div>
               <p className="text-2xl font-bold font-mono text-purple-800">{activeAgents}</p>
-              <p className="text-[10px] text-purple-600 mt-0.5">من {AGENT_LOCATIONS.length} مندوبين</p>
+              <p className="text-[10px] text-purple-600 mt-0.5">
+                من {agentLocations.length} مندوبين
+              </p>
             </div>
 
             {/* Collection Total */}
@@ -227,8 +330,12 @@ export default function LiveOrdersDashboard() {
                 <DollarSign size={13} className="text-amber-600" />
                 <p className="text-[11px] font-semibold text-amber-700">إجمالي التحصيل</p>
               </div>
-              <p className="text-xl font-bold font-mono text-amber-800">{collectionTotal.toLocaleString('en-US')}</p>
-              <p className="text-[10px] text-amber-600 mt-0.5">ج.م محصّل • {pendingCollection.toLocaleString('en-US')} ج.م متوقع</p>
+              <p className="text-xl font-bold font-mono text-amber-800">
+                {collectionTotal.toLocaleString('en-US')}
+              </p>
+              <p className="text-[10px] text-amber-600 mt-0.5">
+                ج.م محصّل • {pendingCollection.toLocaleString('en-US')} ج.م متوقع
+              </p>
             </div>
           </div>
 
@@ -237,16 +344,23 @@ export default function LiveOrdersDashboard() {
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-1.5">
                 <Activity size={13} className="text-[hsl(var(--primary))]" />
-                <span className="text-xs font-bold text-[hsl(var(--foreground))]">توزيع الحالات</span>
+                <span className="text-xs font-bold text-[hsl(var(--foreground))]">
+                  توزيع الحالات
+                </span>
               </div>
-              <span className="text-[10px] text-[hsl(var(--muted-foreground))]">{orders.length} أوردر إجمالي</span>
+              <span className="text-[10px] text-[hsl(var(--muted-foreground))]">
+                {orders.length} أوردر إجمالي
+              </span>
             </div>
             <div className="flex gap-2 flex-wrap">
               {Object.entries(STATUS_CONFIG).map(([key, cfg]) => {
                 const count = statusCounts[key] || 0;
                 if (count === 0) return null;
                 return (
-                  <div key={key} className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-semibold ${cfg.bg} ${cfg.border} ${cfg.color}`}>
+                  <div
+                    key={key}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-semibold ${cfg.bg} ${cfg.border} ${cfg.color}`}
+                  >
                     {cfg.icon}
                     <span>{cfg.label}</span>
                     <span className="font-mono font-bold">{count}</span>
@@ -261,10 +375,12 @@ export default function LiveOrdersDashboard() {
             <div>
               <div className="flex items-center gap-2 mb-2">
                 <Package size={13} className="text-[hsl(var(--primary))]" />
-                <span className="text-xs font-bold text-[hsl(var(--foreground))]">بطاقات الأوردرات اللحظية</span>
+                <span className="text-xs font-bold text-[hsl(var(--foreground))]">
+                  بطاقات الأوردرات اللحظية
+                </span>
               </div>
               <div className="space-y-2 max-h-[320px] overflow-y-auto scrollbar-thin pr-1">
-                {orders.map(order => {
+                {orders.map((order) => {
                   const cfg = STATUS_CONFIG[order.status] || STATUS_CONFIG['new'];
                   const isFlashing = flashIds.has(order.id);
                   return (
@@ -275,30 +391,48 @@ export default function LiveOrdersDashboard() {
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-1">
-                            <span className="font-mono text-xs font-bold text-[hsl(var(--primary))]">{order.orderNum}</span>
+                            <span className="font-mono text-xs font-bold text-[hsl(var(--primary))]">
+                              {order.orderNum}
+                            </span>
                             {isFlashing && (
-                              <span className="text-[9px] bg-green-500 text-white px-1.5 py-0.5 rounded-full animate-pulse font-bold">تحديث!</span>
+                              <span className="text-[9px] bg-green-500 text-white px-1.5 py-0.5 rounded-full animate-pulse font-bold">
+                                تحديث!
+                              </span>
                             )}
                           </div>
-                          <p className="text-xs font-semibold text-[hsl(var(--foreground))] truncate">{order.customer}</p>
-                          <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate">{order.products}</p>
+                          <p className="text-xs font-semibold text-[hsl(var(--foreground))] truncate">
+                            {order.customer}
+                          </p>
+                          <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate">
+                            {order.products}
+                          </p>
                           <div className="flex items-center gap-2 mt-1">
                             <span className="text-[10px] text-[hsl(var(--muted-foreground))]">
-                              <MapPin size={9} className="inline ml-0.5" />{order.region}
+                              <MapPin size={9} className="inline ml-0.5" />
+                              {order.region}
                             </span>
                             <span className="text-[10px] text-[hsl(var(--muted-foreground))]">
-                              <Truck size={9} className="inline ml-0.5" />{order.delegateName}
+                              <Truck size={9} className="inline ml-0.5" />
+                              {order.delegateName}
                             </span>
                           </div>
                         </div>
                         <div className="flex flex-col items-end gap-1.5 shrink-0">
-                          <div className={`flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] font-bold ${cfg.bg} ${cfg.border} ${cfg.color}`}>
-                            {cfg.pulse && <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />}
+                          <div
+                            className={`flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] font-bold ${cfg.bg} ${cfg.border} ${cfg.color}`}
+                          >
+                            {cfg.pulse && (
+                              <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
+                            )}
                             {cfg.icon}
                             <span>{cfg.label}</span>
                           </div>
-                          <span className="font-mono text-xs font-bold text-[hsl(var(--foreground))]">{order.total.toLocaleString('en-US')} ج.م</span>
-                          <span className="text-[9px] text-[hsl(var(--muted-foreground))]">{mounted ? timeAgo(order.updatedAt) : ''}</span>
+                          <span className="font-mono text-xs font-bold text-[hsl(var(--foreground))]">
+                            {order.total.toLocaleString('en-US')} ج.م
+                          </span>
+                          <span className="text-[9px] text-[hsl(var(--muted-foreground))]">
+                            {mounted ? timeAgo(order.updatedAt) : ''}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -311,12 +445,20 @@ export default function LiveOrdersDashboard() {
             <div>
               <div className="flex items-center gap-2 mb-2">
                 <MapPin size={13} className="text-[hsl(var(--primary))]" />
-                <span className="text-xs font-bold text-[hsl(var(--foreground))]">خريطة المندوبين النشطين</span>
+                <span className="text-xs font-bold text-[hsl(var(--foreground))]">
+                  خريطة المندوبين النشطين
+                </span>
               </div>
               {/* Stylized map with agent pins */}
-              <div className="relative bg-gradient-to-br from-blue-50 via-teal-50 to-green-50 border border-[hsl(var(--border))] rounded-xl overflow-hidden" style={{ height: '200px' }}>
+              <div
+                className="relative bg-gradient-to-br from-blue-50 via-teal-50 to-green-50 border border-[hsl(var(--border))] rounded-xl overflow-hidden"
+                style={{ height: '200px' }}
+              >
                 {/* Grid lines for map feel */}
-                <svg className="absolute inset-0 w-full h-full opacity-10" xmlns="http://www.w3.org/2000/svg">
+                <svg
+                  className="absolute inset-0 w-full h-full opacity-10"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
                   <defs>
                     <pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
                       <path d="M 30 0 L 0 0 0 30" fill="none" stroke="#1e3a5f" strokeWidth="0.5" />
@@ -325,17 +467,44 @@ export default function LiveOrdersDashboard() {
                   <rect width="100%" height="100%" fill="url(#grid)" />
                 </svg>
                 {/* Road lines */}
-                <svg className="absolute inset-0 w-full h-full opacity-20" xmlns="http://www.w3.org/2000/svg">
-                  <line x1="0" y1="100" x2="400" y2="100" stroke="#1e3a5f" strokeWidth="2" strokeDasharray="8,4" />
-                  <line x1="200" y1="0" x2="200" y2="200" stroke="#1e3a5f" strokeWidth="2" strokeDasharray="8,4" />
-                  <line x1="0" y1="50" x2="400" y2="150" stroke="#1e3a5f" strokeWidth="1" strokeDasharray="5,5" />
+                <svg
+                  className="absolute inset-0 w-full h-full opacity-20"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <line
+                    x1="0"
+                    y1="100"
+                    x2="400"
+                    y2="100"
+                    stroke="#1e3a5f"
+                    strokeWidth="2"
+                    strokeDasharray="8,4"
+                  />
+                  <line
+                    x1="200"
+                    y1="0"
+                    x2="200"
+                    y2="200"
+                    stroke="#1e3a5f"
+                    strokeWidth="2"
+                    strokeDasharray="8,4"
+                  />
+                  <line
+                    x1="0"
+                    y1="50"
+                    x2="400"
+                    y2="150"
+                    stroke="#1e3a5f"
+                    strokeWidth="1"
+                    strokeDasharray="5,5"
+                  />
                 </svg>
                 {/* Map label */}
                 <div className="absolute top-2 right-2 bg-white/80 backdrop-blur-sm rounded-lg px-2 py-1 text-[10px] font-semibold text-[hsl(var(--foreground))] border border-[hsl(var(--border))]">
                   القاهرة الكبرى
                 </div>
                 {/* Agent pins */}
-                {AGENT_LOCATIONS.map((agent, i) => {
+                {agentLocations.map((agent, i) => {
                   const positions = [
                     { top: '35%', left: '55%' },
                     { top: '60%', left: '35%' },
@@ -353,13 +522,17 @@ export default function LiveOrdersDashboard() {
                         <div className="absolute inset-0 rounded-full bg-green-400 animate-ping opacity-40 scale-150" />
                       )}
                       {/* Pin */}
-                      <div className={`relative w-8 h-8 rounded-full border-2 flex items-center justify-center shadow-md cursor-pointer transition-transform hover:scale-110 ${agent.status === 'active' ? 'bg-green-500 border-green-600' : 'bg-gray-400 border-gray-500'}`}>
+                      <div
+                        className={`relative w-8 h-8 rounded-full border-2 flex items-center justify-center shadow-md cursor-pointer transition-transform hover:scale-110 ${agent.status === 'active' ? 'bg-green-500 border-green-600' : 'bg-gray-400 border-gray-500'}`}
+                      >
                         <Truck size={14} className="text-white" />
                       </div>
                       {/* Tooltip */}
                       <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 bg-white border border-[hsl(var(--border))] rounded-lg px-2 py-1.5 shadow-lg text-[10px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-10 pointer-events-none">
                         <p className="font-bold text-[hsl(var(--foreground))]">{agent.name}</p>
-                        <p className="text-[hsl(var(--muted-foreground))]">{agent.activeOrders} أوردر نشط</p>
+                        <p className="text-[hsl(var(--muted-foreground))]">
+                          {agent.activeOrders} أوردر نشط
+                        </p>
                         <p className="text-[hsl(var(--muted-foreground))]">{agent.lastUpdate}</p>
                       </div>
                     </div>
@@ -369,15 +542,24 @@ export default function LiveOrdersDashboard() {
 
               {/* Agent list below map */}
               <div className="mt-2 space-y-1.5">
-                {AGENT_LOCATIONS.map(agent => (
-                  <div key={agent.name} className="flex items-center justify-between bg-[hsl(var(--muted))]/30 rounded-lg px-3 py-2">
+                {agentLocations.map((agent) => (
+                  <div
+                    key={agent.name}
+                    className="flex items-center justify-between bg-[hsl(var(--muted))]/30 rounded-lg px-3 py-2"
+                  >
                     <div className="flex items-center gap-2">
-                      <div className={`w-2 h-2 rounded-full ${agent.status === 'active' ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`} />
+                      <div
+                        className={`w-2 h-2 rounded-full ${agent.status === 'active' ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`}
+                      />
                       <span className="text-xs font-semibold">{agent.name}</span>
                     </div>
                     <div className="flex items-center gap-3">
-                      <span className="text-[10px] text-[hsl(var(--muted-foreground))]">{agent.lastUpdate}</span>
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${agent.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>
+                      <span className="text-[10px] text-[hsl(var(--muted-foreground))]">
+                        {agent.lastUpdate}
+                      </span>
+                      <span
+                        className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${agent.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}
+                      >
                         {agent.activeOrders} أوردر
                       </span>
                     </div>
@@ -392,21 +574,30 @@ export default function LiveOrdersDashboard() {
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
                 <TrendingUp size={14} className="text-[hsl(var(--primary))]" />
-                <span className="text-xs font-bold text-[hsl(var(--foreground))]">تقدم التحصيل اليومي</span>
+                <span className="text-xs font-bold text-[hsl(var(--foreground))]">
+                  تقدم التحصيل اليومي
+                </span>
               </div>
               <span className="text-xs font-mono font-bold text-[hsl(var(--primary))]">
-                {collectionTotal.toLocaleString('en-US')} / {(collectionTotal + pendingCollection).toLocaleString('en-US')} ج.م
+                {collectionTotal.toLocaleString('en-US')} /{' '}
+                {(collectionTotal + pendingCollection).toLocaleString('en-US')} ج.م
               </span>
             </div>
             <div className="w-full bg-[hsl(var(--muted))] rounded-full h-2.5 overflow-hidden">
               <div
                 className="h-full bg-gradient-to-r from-[hsl(var(--primary))] to-green-500 rounded-full transition-all duration-1000"
-                style={{ width: `${collectionTotal + pendingCollection > 0 ? Math.round((collectionTotal / (collectionTotal + pendingCollection)) * 100) : 0}%` }}
+                style={{
+                  width: `${collectionTotal + pendingCollection > 0 ? Math.round((collectionTotal / (collectionTotal + pendingCollection)) * 100) : 0}%`,
+                }}
               />
             </div>
             <div className="flex justify-between mt-1.5">
-              <span className="text-[10px] text-green-600 font-semibold">✓ محصّل: {collectionTotal.toLocaleString('en-US')} ج.م</span>
-              <span className="text-[10px] text-amber-600 font-semibold">⏳ متوقع: {pendingCollection.toLocaleString('en-US')} ج.م</span>
+              <span className="text-[10px] text-green-600 font-semibold">
+                ✓ محصّل: {collectionTotal.toLocaleString('en-US')} ج.م
+              </span>
+              <span className="text-[10px] text-amber-600 font-semibold">
+                ⏳ متوقع: {pendingCollection.toLocaleString('en-US')} ج.م
+              </span>
             </div>
           </div>
         </div>

@@ -54,9 +54,10 @@ const ROLE_LABEL: Record<string, string> = {
 interface Props {
   order: Order;
   onClose: () => void;
+  onUpdate?: () => void;
 }
 
-export default function StatusUpdateModal({ order, onClose }: Props) {
+export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { currentRole } = useAuth();
 
@@ -75,7 +76,12 @@ export default function StatusUpdateModal({ order, onClose }: Props) {
     return { name: ROLE_LABEL[currentRole] || 'مستخدم', role: currentRole };
   };
 
-  const { register, handleSubmit, watch, formState: { errors } } = useForm<StatusFormData>({
+  const {
+    register,
+    handleSubmit,
+    watch,
+    formState: { errors },
+  } = useForm<StatusFormData>({
     defaultValues: { newStatus: order.status, note: '', reason: '' },
   });
 
@@ -84,7 +90,7 @@ export default function StatusUpdateModal({ order, onClose }: Props) {
 
   // Load real audit logs for this order
   const auditLogs = getAuditLogs(order.id);
-  const statusHistory = auditLogs.filter(l => l.action === 'status_change');
+  const statusHistory = auditLogs.filter((l) => l.action === 'status_change');
 
   const onSubmit = async (data: StatusFormData) => {
     if (!canUpdate) {
@@ -94,7 +100,8 @@ export default function StatusUpdateModal({ order, onClose }: Props) {
     setIsSubmitting(true);
 
     const user = getCurrentUser();
-    const statusLabel = STATUS_OPTIONS.find((s) => s.value === data.newStatus)?.label || data.newStatus;
+    const statusLabel =
+      STATUS_OPTIONS.find((s) => s.value === data.newStatus)?.label || data.newStatus;
     const note = data.reason || data.note || '';
 
     // Log the status change
@@ -120,7 +127,17 @@ export default function StatusUpdateModal({ order, onClose }: Props) {
       if (error) {
         throw error;
       }
-      
+
+      // Create a system notification
+      await supabase.from('zahranship_notifications').insert({
+        type: 'status_change',
+        title: 'تحديث حالة الأوردر 🔄',
+        message: `تم تغيير حالة الأوردر ${order.orderNum} إلى ${statusLabel}`,
+        order_id: order.id,
+        order_num: order.orderNum,
+        created_by: user.name,
+      });
+
       window.dispatchEvent(new CustomEvent('zahranship_orders_updated'));
     } catch (err) {
       console.error('Supabase update error:', err);
@@ -132,6 +149,7 @@ export default function StatusUpdateModal({ order, onClose }: Props) {
     await new Promise((r) => setTimeout(r, 600));
     toast.success(`تم تحديث حالة الأوردر ${order.orderNum} إلى: ${statusLabel}`);
     setIsSubmitting(false);
+    if (onUpdate) onUpdate();
     onClose();
   };
 
@@ -143,13 +161,22 @@ export default function StatusUpdateModal({ order, onClose }: Props) {
         {/* Header */}
         <div className="flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
           <div>
-            <h3 className="text-base font-bold text-[hsl(var(--foreground))]">تحديث حالة الأوردر</h3>
+            <h3 className="text-base font-bold text-[hsl(var(--foreground))]">
+              تحديث حالة الأوردر
+            </h3>
             <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
-              <span className="font-mono font-semibold text-[hsl(var(--primary))]">{order.orderNum}</span>
-              {' — '}{order.customer}
+              <span className="font-mono font-semibold text-[hsl(var(--primary))]">
+                {order.orderNum}
+              </span>
+              {' — '}
+              {order.customer}
             </p>
           </div>
-          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))] transition-colors" aria-label="إغلاق">
+          <button
+            onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))] transition-colors"
+            aria-label="إغلاق"
+          >
             <X size={16} />
           </button>
         </div>
@@ -166,10 +193,15 @@ export default function StatusUpdateModal({ order, onClose }: Props) {
                 تحديث حالة الأوردر متاح فقط للمندوب ومشرف الشحن والمدير
               </p>
               <p className="text-xs text-[hsl(var(--muted-foreground))] mt-2">
-                دورك الحالي: <span className="font-semibold text-[hsl(var(--foreground))]">{ROLE_LABEL[currentRole] || currentRole}</span>
+                دورك الحالي:{' '}
+                <span className="font-semibold text-[hsl(var(--foreground))]">
+                  {ROLE_LABEL[currentRole] || currentRole}
+                </span>
               </p>
             </div>
-            <button onClick={onClose} className="btn-secondary w-full justify-center">إغلاق</button>
+            <button onClick={onClose} className="btn-secondary w-full justify-center">
+              إغلاق
+            </button>
           </div>
         ) : (
           <form onSubmit={handleSubmit(onSubmit)} className="p-5 space-y-4">
@@ -196,7 +228,9 @@ export default function StatusUpdateModal({ order, onClose }: Props) {
                       className="w-3.5 h-3.5 text-[hsl(var(--primary))]"
                       {...register('newStatus', { required: true })}
                     />
-                    <span className={`badge ${STATUS_BADGE_MAP[s.value]} text-[11px]`}>{s.label}</span>
+                    <span className={`badge ${STATUS_BADGE_MAP[s.value]} text-[11px]`}>
+                      {s.label}
+                    </span>
                   </label>
                 ))}
               </div>
@@ -215,20 +249,30 @@ export default function StatusUpdateModal({ order, onClose }: Props) {
                   id="reason"
                   rows={3}
                   className={`input-field resize-none border-red-300 focus:ring-red-400 ${errors.reason ? 'border-red-500' : ''}`}
-                  placeholder={watchStatus === 'cancelled' ? 'اذكر سبب إلغاء الأوردر...' : 'اذكر سبب إرجاع الأوردر...'}
+                  placeholder={
+                    watchStatus === 'cancelled'
+                      ? 'اذكر سبب إلغاء الأوردر...'
+                      : 'اذكر سبب إرجاع الأوردر...'
+                  }
                   {...register('reason', {
                     required: isDestructive ? 'يجب ذكر السبب عند الإلغاء أو الإرجاع' : false,
                     minLength: { value: 10, message: 'السبب قصير جداً' },
                   })}
                 />
-                {errors.reason && <p className="text-red-600 text-xs mt-1">{errors.reason.message}</p>}
+                {errors.reason && (
+                  <p className="text-red-600 text-xs mt-1">{errors.reason.message}</p>
+                )}
               </div>
             )}
 
             {/* Note */}
             <div>
-              <label className="label-text" htmlFor="statusNote">ملاحظة على هذا التحديث</label>
-              <p className="text-xs text-[hsl(var(--muted-foreground))] mb-1.5">ستظهر في سجل التعديلات</p>
+              <label className="label-text" htmlFor="statusNote">
+                ملاحظة على هذا التحديث
+              </label>
+              <p className="text-xs text-[hsl(var(--muted-foreground))] mb-1.5">
+                ستظهر في سجل التعديلات
+              </p>
               <textarea
                 id="statusNote"
                 rows={2}
@@ -245,7 +289,9 @@ export default function StatusUpdateModal({ order, onClose }: Props) {
                   <MapPin size={14} />
                   <span className="font-semibold">سيتم تسجيل موقع التسليم تلقائياً</span>
                 </div>
-                <p className="text-xs text-green-600 mt-1">يجب التأكد من توقيع العميل أو OTP أو صورة البطاقة</p>
+                <p className="text-xs text-green-600 mt-1">
+                  يجب التأكد من توقيع العميل أو OTP أو صورة البطاقة
+                </p>
               </div>
             )}
 
@@ -259,18 +305,58 @@ export default function StatusUpdateModal({ order, onClose }: Props) {
                 <div className="space-y-2 max-h-36 overflow-y-auto scrollbar-thin">
                   {statusHistory.map((h) => {
                     const d = new Date(h.createdAt);
-                    const dateStr = d.toLocaleDateString('ar-EG', { day: '2-digit', month: '2-digit', year: 'numeric' });
-                    const timeStr = d.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+                    const dateStr = d.toLocaleDateString('en-US', {
+                      day: '2-digit',
+                      month: '2-digit',
+                      year: 'numeric',
+                    });
+                    const timeStr = d.toLocaleTimeString('en-US', {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    });
                     return (
-                      <div key={h.id} className="flex items-start gap-3 text-xs bg-[hsl(var(--muted))]/40 rounded-xl p-2.5">
+                      <div
+                        key={h.id}
+                        className="flex items-start gap-3 text-xs bg-[hsl(var(--muted))]/40 rounded-xl p-2.5"
+                      >
                         <CheckCircle size={13} className="text-green-500 mt-0.5 flex-shrink-0" />
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
-                            {h.newValue && <span className={`badge ${STATUS_BADGE_MAP[h.newValue] || 'status-new'} text-[10px]`}>{h.newValue === 'new' ? 'جديد' : h.newValue === 'preparing' ? 'جاري التجهيز' : h.newValue === 'warehouse' ? 'في المستودع' : h.newValue === 'shipping' ? 'جاري الشحن' : h.newValue === 'delivered' ? 'تم التسليم' : h.newValue === 'cancelled' ? 'ملغي' : 'مرتجع'}</span>}
-                            <span className="text-[hsl(var(--muted-foreground))]">{dateStr} — {timeStr}</span>
+                            {h.newValue && (
+                              <span
+                                className={`badge ${STATUS_BADGE_MAP[h.newValue] || 'status-new'} text-[10px]`}
+                              >
+                                {h.newValue === 'new'
+                                  ? 'جديد'
+                                  : h.newValue === 'preparing'
+                                    ? 'جاري التجهيز'
+                                    : h.newValue === 'warehouse'
+                                      ? 'في المستودع'
+                                      : h.newValue === 'shipping'
+                                        ? 'جاري الشحن'
+                                        : h.newValue === 'delivered'
+                                          ? 'تم التسليم'
+                                          : h.newValue === 'cancelled'
+                                            ? 'ملغي'
+                                            : 'مرتجع'}
+                              </span>
+                            )}
+                            <span className="text-[hsl(var(--muted-foreground))]">
+                              {dateStr} — {timeStr}
+                            </span>
                           </div>
-                          <p className="text-[hsl(var(--muted-foreground))] mt-0.5">بواسطة: <span className="font-semibold text-[hsl(var(--foreground))]">{h.changedBy}</span> ({ROLE_LABEL[h.changedByRole] || h.changedByRole})</p>
-                          {h.note && <p className="text-[hsl(var(--foreground))] mt-0.5 italic">"{h.note}"</p>}
+                          <p className="text-[hsl(var(--muted-foreground))] mt-0.5">
+                            بواسطة:{' '}
+                            <span className="font-semibold text-[hsl(var(--foreground))]">
+                              {h.changedBy}
+                            </span>{' '}
+                            ({ROLE_LABEL[h.changedByRole] || h.changedByRole})
+                          </p>
+                          {h.note && (
+                            <p className="text-[hsl(var(--foreground))] mt-0.5 italic">
+                              "{h.note}"
+                            </p>
+                          )}
                         </div>
                       </div>
                     );
@@ -281,7 +367,11 @@ export default function StatusUpdateModal({ order, onClose }: Props) {
 
             {/* Actions */}
             <div className="flex gap-3 pt-2">
-              <button type="button" className="btn-secondary flex-1 justify-center" onClick={onClose}>
+              <button
+                type="button"
+                className="btn-secondary flex-1 justify-center"
+                onClick={onClose}
+              >
                 إلغاء
               </button>
               <button
@@ -292,8 +382,19 @@ export default function StatusUpdateModal({ order, onClose }: Props) {
                 {isSubmitting ? (
                   <>
                     <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      />
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                      />
                     </svg>
                     <span>جاري التحديث...</span>
                   </>
