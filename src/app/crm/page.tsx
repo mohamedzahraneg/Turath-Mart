@@ -642,13 +642,15 @@ export default function CRMPage() {
 
         const custArray = Array.from(map.values());
         custArray.forEach((c) => {
-          // Calc Tier
-          if (c.totalOrders >= 10 || c.totalSpent >= 5000) c.tier = 'vip';
-          else if (c.totalOrders >= 5 || c.totalSpent >= 2000) c.tier = 'gold';
-          else if (c.totalOrders >= 2 || c.totalSpent >= 500) c.tier = 'silver';
+          // If no manual tier in metadata, auto-calculate
+          const hasMeta = metaData?.find(m => m.phone === c.phone);
+          if (!hasMeta) {
+            if (c.totalOrders >= 10 || c.totalSpent >= 5000) c.tier = 'vip';
+            else if (c.totalOrders >= 5 || c.totalSpent >= 2000) c.tier = 'gold';
+            else if (c.totalOrders >= 2 || c.totalSpent >= 500) c.tier = 'silver';
+          }
 
-          // Link Complaints
-          if (cData) c.complaints = cData.filter((comp) => comp.customer_phone === c.phone);
+          if (cData) c.complaints = cData.filter((comp) => comp.customer_phone === c.phone) as Complaint[];
         });
 
         setCustomers(custArray.sort((a, b) => b.totalSpent - a.totalSpent));
@@ -816,26 +818,24 @@ export default function CRMPage() {
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between mt-auto pt-4 border-t border-gray-50">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`text-[9px] px-3 py-1 rounded-full font-black border ${tier.cls} uppercase`}
+                <div className="mt-auto relative">
+                  {openComps.length > 0 ? (
+                    <div 
+                      onClick={() => setSelectedComplaint({ complaint: latestComplaint, customer: c })}
+                      className="bg-red-50 border border-red-100 rounded-2xl px-4 py-3 flex items-center justify-between mb-4 animate-pulse cursor-pointer hover:bg-red-100 transition-colors shadow-sm"
                     >
-                      {tier.label}
-                    </span>
-                    {openComps.length > 0 && (
-                      <div className="w-5 h-5 rounded-full bg-red-100 text-red-600 flex items-center justify-center text-[10px] font-bold border border-red-200 animate-bounce">
-                        {openComps.length}
+                      <div className="flex items-center gap-2 text-red-600">
+                        <AlertCircle size={14} />
+                        <span className="text-[10px] font-black uppercase tracking-widest">{openComps.length} شكاوى مفتوحة</span>
                       </div>
-                    )}
-                  </div>
-                  <p className="text-[9px] text-gray-400 font-bold">
-                    {new Date(c.lastOrderDate).toLocaleDateString('en-GB', {
-                      day: 'numeric',
-                      month: 'short',
-                    })}
-                  </p>
-                </div>
+                      <div className="bg-red-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-full">رد الآن</div>
+                    </div>
+                  ) : (
+                    <div className="bg-emerald-50 border border-emerald-100 rounded-2xl px-4 py-3 flex items-center gap-2 text-emerald-600 mb-4 h-12">
+                      <CheckCircle2 size={14} />
+                      <span className="text-[10px] font-black uppercase tracking-widest">سجل العميل سليم</span>
+                    </div>
+                  )}
 
                   <div className="flex items-center gap-2 opacity-0 translate-y-4 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-500">
                     <button 
