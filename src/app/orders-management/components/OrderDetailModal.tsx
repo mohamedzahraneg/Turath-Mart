@@ -107,7 +107,7 @@ function DeviceIcon({ device }: { device?: string }) {
 
 // Generate a unique tracking link per order
 function getTrackingLink(orderNum: string): string {
-  const base = typeof window !== 'undefined' ? window.location.origin : 'https://zahranship.com';
+  const base = typeof window !== 'undefined' ? window.location.origin : 'https://turath_masr.com';
   return `${base}/track/${orderNum}`;
 }
 
@@ -126,7 +126,7 @@ const DEFAULT_WA_TEMPLATE = `مرحبا {customerName}،
 تم استلام طلبك رقم {orderNum} بإجمالي {total} ج.م.
 يمكنك تتبع شحنتك عبر الرابط: {trackingLink}
 سيتواصل معك المندوب قريباً.
-شكراً لثقتك في Turath Mart 🚚`;
+شكراً لثقتك في Turath Masr 🚚`;
 
 interface Props {
   order: Order;
@@ -140,18 +140,36 @@ export default function OrderDetailModal({ order, onClose }: Props) {
   const [systemNotifications, setSystemNotifications] = useState<any[]>([]);
   const [liveOrder, setLiveOrder] = useState(order);
   const [loadingNotifs, setLoadingNotifs] = useState(true);
+  const [waTemplate, setWaTemplate] = useState(DEFAULT_WA_TEMPLATE);
 
   // Load audit logs and listen for real-time updates
   useEffect(() => {
     const loadAudit = () => setAuditLogs(getAuditLogs(order.id));
     loadAudit();
 
+    const fetchSettings = async () => {
+      try {
+        const supabase = createClient();
+        const { data: waData } = await supabase
+          .from('turath_masr_settings')
+          .select('value')
+          .eq('key', 'settings_whatsapp_template')
+          .single();
+        if (waData?.value) {
+          setWaTemplate(waData.value as string);
+        }
+      } catch (err) {
+        console.error('Failed to fetch WA template:', err);
+      }
+    };
+    fetchSettings();
+
     const handleAudit = () => loadAudit();
     const handleOrders = async () => {
       try {
         const supabase = createClient();
         const { data, error } = await supabase
-          .from('zahranship_orders')
+          .from('turath_masr_orders')
           .select('*')
           .eq('id', order.id)
           .single();
@@ -199,7 +217,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
       try {
         const supabase = createClient();
         const { data, error } = await supabase
-          .from('zahranship_notifications')
+          .from('turath_masr_notifications')
           .select('*')
           .eq('order_id', order.id)
           .order('created_at', { ascending: false });
@@ -218,8 +236,8 @@ export default function OrderDetailModal({ order, onClose }: Props) {
 
     const handleNotifs = () => fetchOrderNotifications();
 
-    window.addEventListener('zahranship_audit_updated', handleAudit);
-    window.addEventListener('zahranship_orders_updated', handleOrders);
+    window.addEventListener('turath_masr_audit_updated', handleAudit);
+    window.addEventListener('turath_masr_orders_updated', handleOrders);
 
     // Subscribe to notification changes for this order
     const supabase = createClient();
@@ -230,7 +248,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
         {
           event: '*',
           schema: 'public',
-          table: 'zahranship_notifications',
+          table: 'turath_masr_notifications',
           filter: `order_id=eq.${order.id}`,
         },
         handleNotifs
@@ -238,8 +256,8 @@ export default function OrderDetailModal({ order, onClose }: Props) {
       .subscribe();
 
     return () => {
-      window.removeEventListener('zahranship_audit_updated', handleAudit);
-      window.removeEventListener('zahranship_orders_updated', handleOrders);
+      window.removeEventListener('turath_masr_audit_updated', handleAudit);
+      window.removeEventListener('turath_masr_orders_updated', handleOrders);
       supabase.removeChannel(notifSub);
     };
   }, [order.id]);
@@ -250,8 +268,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
   const trackingLink = getTrackingLink(liveOrder.orderNum);
 
   const buildWAMessage = () => {
-    const template = getWATemplate() || DEFAULT_WA_TEMPLATE;
-    return template
+    return waTemplate
       .replace('{customerName}', liveOrder.customer)
       .replace('{orderNum}', liveOrder.orderNum)
       .replace('{total}', liveOrder.total.toLocaleString('en-US'))
@@ -357,7 +374,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
       <body>
         <div class="invoice-wrap">
           <div class="inv-header">
-            <h1>Turath Mart</h1>
+            <h1>Turath Masr</h1>
             <p>فاتورة ضريبية مبسطة</p>
           </div>
           <div class="inv-body">
@@ -388,7 +405,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
               </tbody>
             </table>
             ${liveOrder.notes ? `<p style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px;font-size:13px;"><strong>ملاحظات:</strong> ${liveOrder.notes}</p>` : ''}
-            <div class="footer">شكرا لثقتك في Zahranship — للاستفسار: info@zahranship.com</div>
+            <div class="footer">شكرا لثقتك في Turath Masr — للاستفسار: info@turath_masr.com</div>
           </div>
         </div>
         <script>window.onload = function(){ window.print(); }<\/script>
@@ -921,7 +938,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 className="border-2 border-[hsl(var(--border))] rounded-2xl overflow-hidden"
               >
                 <div className="bg-[hsl(var(--primary))] text-white p-6 text-center">
-                  <h2 className="text-2xl font-bold">Turath Mart</h2>
+                  <h2 className="text-2xl font-bold">Turath Masr</h2>
                   <p className="text-blue-200 text-sm mt-1">فاتورة ضريبية مبسطة</p>
                 </div>
 
@@ -1086,7 +1103,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                   </div>
 
                   <p className="text-center text-xs text-[hsl(var(--muted-foreground))] pt-2">
-                    شكرا لثقتك في Zahranship — للاستفسار: info@zahranship.com
+                    شكرا لثقتك في Turath Masr — للاستفسار: info@turath_masr.com
                   </p>
                 </div>
               </div>

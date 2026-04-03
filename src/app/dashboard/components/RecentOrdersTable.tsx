@@ -37,7 +37,7 @@ export default function RecentOrdersTable() {
       try {
         const supabase = createClient();
         const { data, error } = await supabase
-          .from('zahranship_orders')
+          .from('turath_masr_orders')
           .select('*')
           .order('created_at', { ascending: false })
           .limit(10);

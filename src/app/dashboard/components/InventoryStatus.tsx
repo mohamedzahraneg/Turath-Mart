@@ -24,7 +24,7 @@ export default function InventoryStatus() {
     try {
       const supabase = createClient();
       const { data, error } = await supabase
-        .from('zahranship_inventory')
+        .from('turath_masr_inventory')
         .select('*')
         .order('available', { ascending: true });
 

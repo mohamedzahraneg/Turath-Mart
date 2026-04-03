@@ -1,61 +1,72 @@
 #!/bin/bash
 
-# --- VPS Deployment Script ---
+# --- VPS Deployment Script (Turath Masr - Standalone Mode) ---
 # IP: 72.60.184.79
 # User: root
 
 # [1] Configuration
 VPS_IP="72.60.184.79"
-VPS_PORT="874"
+VPS_PORT="22"
 VPS_USER="root"
-VPS_PASS='ooVamjz6RFzP46CHv(7I)'
-REMOTE_DIR="/root/turath-mart" # Adjust if your path is different (e.g., /var/www/...)
+REMOTE_DIR="/www/wwwroot/schools"
 
-echo "🚀 Starting Deployment to $VPS_IP:$VPS_PORT..."
+echo "🚀 Starting STANDALONE Deployment of Turath Masr to $VPS_IP..."
 
-# [2] Synchronize Files (Excluding Cache and Node Modules)
-echo "📦 Uploading local changes to VPS..."
-sshpass -p "$VPS_PASS" rsync -avz --progress \
+# [2] Synchronize Files (Source & Config only)
+echo "📦 Uploading source changes to VPS..."
+rsync -avz --checksum --delete --progress \
   -e "ssh -p $VPS_PORT -o StrictHostKeyChecking=no" \
   --exclude '.next' \
   --exclude 'node_modules' \
   --exclude '.git' \
-  --exclude '.env.local' \
   --exclude 'deploy_vps.sh' \
   ./ "$VPS_USER@$VPS_IP:$REMOTE_DIR"
 
 if [ $? -ne 0 ]; then
-    echo "❌ Error: Sync failed. Please check your connection or sshpass installation."
+    echo "❌ Error: Sync failed."
     exit 1
 fi
 
-echo "✅ Files uploaded successfully."
-
-# [3] Remote Execution (Install, Build, Restart)
-echo "⚙️ Preparing remote server..."
-sshpass -p "$VPS_PASS" ssh -p "$VPS_PORT" -o StrictHostKeyChecking=no "$VPS_USER@$VPS_IP" << EOF
+# [3] Remote Execution (Standalone Build & Run)
+echo "⚙️ Preparing STANDALONE build on remote server..."
+ssh -p "$VPS_PORT" -o StrictHostKeyChecking=no "$VPS_USER@$VPS_IP" << EOF
   cd $REMOTE_DIR
   
-  # Install dependencies if needed
-  echo "📥 Installing dependencies..."
-  npm install --quiet
+  NODE_BIN="/www/server/nodejs/v22.20.0/bin/node"
+  NPM_BIN="/www/server/nodejs/v22.20.0/bin/npm"
+  PM2_BIN="/www/server/nodejs/v22.20.0/bin/pm2"
   
-  # Build the project
-  echo "🏗️ Building the project (Next.js 15)..."
-  npm run build
+  export PATH=\$(dirname "\$NODE_BIN"):\$PATH
   
-  # Restart the application
-  # We check if PM2 is available, otherwise we use standard npm start in background
-  if command -v pm2 > /dev/null; then
-    echo "🔄 Restarting with PM2..."
-    pm2 restart turath-mart || pm2 start npm --name "turath-mart" -- start
-  else
-    echo "⚠️ PM2 not found. Starting in background on port 4028..."
-    pkill -f "next-server"
-    nohup npm start -- -p 4028 > server.log 2>&1 &
+  echo "🛑 NUCLEAR CLEAN: Removing old process and builds..."
+  \$PM2_BIN delete "turath-masr" || true
+  rm -rf .next node_modules package-lock.json
+  
+  echo "📥 Fresh Installing dependencies..."
+  \$NPM_BIN install --quiet --no-audit
+  
+  echo "🏗️ Building STANDALONE production version..."
+  \$NPM_BIN run build
+  
+  if [ ! -d ".next/standalone" ]; then
+    echo "❌ Error: Standalone build failed. .next/standalone not found."
+    exit 1
   fi
   
-  echo "✨ Deployment complete on the VPS!"
+  echo "📂 Preparing standalone folder (copying public and static)..."
+  cp -r public .next/standalone/
+  cp -r .next/static .next/standalone/.next/
+  
+  echo "🔄 Clearing ports..."
+  fuser -k 874/tcp || true
+  
+  echo "🚀 Starting the STANDALONE server with PM2..."
+  # Standalone mode uses PORT environment variable
+  PORT=874 \$PM2_BIN start .next/standalone/server.js --name "turath-masr" --cwd .next/standalone
+  
+  echo "✅ Standalone service started."
+  sleep 5
+  \$PM2_BIN status
 EOF
 
-echo "🏁 All tasks finished. Visit http://$VPS_IP:4028 to check your site."
+echo "🏁 All tasks finished. Visit https://turathmasr.com to check Turath Masr."

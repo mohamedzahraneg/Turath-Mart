@@ -47,7 +47,7 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
   const fetchNewOrdersCount = useCallback(async () => {
     try {
       const { count, error } = await supabase
-        .from('zahranship_orders')
+        .from('turath_masr_orders')
         .select('*', { count: 'exact', head: true })
         .eq('status', 'new');
 
@@ -62,7 +62,7 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
   const fetchNotifications = useCallback(async () => {
     try {
       const { data, error } = await supabase
-        .from('zahranship_notifications')
+        .from('turath_masr_notifications')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(50);
@@ -87,10 +87,10 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
 
     // 1. Listen for new notifications
     const notifSubscription = supabase
-      .channel('public:zahranship_notifications')
+      .channel('public:turath_masr_notifications')
       .on(
         'postgres_changes',
-        { event: '*', table: 'zahranship_notifications', schema: 'public' },
+        { event: '*', table: 'turath_masr_notifications', schema: 'public' },
         () => {
           fetchNotifications();
         }
@@ -99,8 +99,8 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
 
     // 2. Listen for order changes (to update "new" orders count)
     const orderSubscription = supabase
-      .channel('public:zahranship_orders_badges')
-      .on('postgres_changes', { event: '*', table: 'zahranship_orders', schema: 'public' }, () => {
+      .channel('public:turath_masr_orders_badges')
+      .on('postgres_changes', { event: '*', table: 'turath_masr_orders', schema: 'public' }, () => {
         fetchNewOrdersCount();
       })
       .subscribe();
@@ -114,7 +114,7 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
   const markAsRead = async (id: string) => {
     try {
       const { error } = await supabase
-        .from('zahranship_notifications')
+        .from('turath_masr_notifications')
         .update({ is_read: true })
         .eq('id', id);
 
@@ -130,7 +130,7 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
   const markAllAsRead = async () => {
     try {
       const { error } = await supabase
-        .from('zahranship_notifications')
+        .from('turath_masr_notifications')
         .update({ is_read: true })
         .eq('is_read', false);
 
@@ -146,7 +146,7 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
   const clearAll = async () => {
     try {
       const { error } = await supabase
-        .from('zahranship_notifications')
+        .from('turath_masr_notifications')
         .delete()
         .neq('id', '00000000-0000-0000-0000-000000000000'); // Delete all
 

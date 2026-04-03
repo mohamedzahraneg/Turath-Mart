@@ -657,7 +657,7 @@ function ComplaintModal({ order, onClose }: ComplaintModalProps) {
   const submitComplaint = () => {
     if (!reason) return;
     try {
-      const complaints = JSON.parse(localStorage.getItem('zahranship_crm_complaints') || '{}');
+      const complaints = JSON.parse(localStorage.getItem('turath_masr_crm_complaints') || '{}');
       const phone = order.phone;
       const existing = complaints[phone] || [];
       const newComplaint = {
@@ -668,7 +668,7 @@ function ComplaintModal({ order, onClose }: ComplaintModalProps) {
         notes: details,
       };
       complaints[phone] = [newComplaint, ...existing];
-      localStorage.setItem('zahranship_crm_complaints', JSON.stringify(complaints));
+      localStorage.setItem('turath_masr_crm_complaints', JSON.stringify(complaints));
     } catch {}
 
     const initMsg: ChatMessage = {
@@ -1086,7 +1086,7 @@ function StarRating({ rating }: { rating: number }) {
 
 // ─── Invoice PDF Generator ────────────────────────────────────────────────────
 function generateInvoiceHTML(order: TrackingOrder): string {
-  const trackingLink = `${typeof window !== 'undefined' ? window.location.origin : 'https://zahranship.com'}/track/${order.orderNum}`;
+  const trackingLink = `${typeof window !== 'undefined' ? window.location.origin : 'https://turath_masr.com'}/track/${order.orderNum}`;
   const subtotal = order.subtotal ?? order.total;
   const shippingFee = order.shippingFee ?? 0;
 
@@ -1162,7 +1162,7 @@ function generateInvoiceHTML(order: TrackingOrder): string {
 <body>
   <div class="invoice-wrap">
     <div class="inv-header">
-      <h1>Turath Mart</h1>
+      <h1>Turath Masr</h1>
       <p>فاتورة ضريبية مبسطة</p>
     </div>
     <div class="inv-body">
@@ -1192,7 +1192,7 @@ function generateInvoiceHTML(order: TrackingOrder): string {
         </tbody>
       </table>
       ${order.notes ? `<p style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px;font-size:13px;"><strong>ملاحظات:</strong> ${order.notes}</p>` : ''}
-      <div class="footer">شكرا لثقتك في Zahranship — للاستفسار: info@zahranship.com</div>
+      <div class="footer">شكرا لثقتك في Turath Masr — للاستفسار: info@turath_masr.com</div>
     </div>
   </div>
   <script>window.onload = function(){ window.print(); }<\/script>
@@ -1251,7 +1251,7 @@ function generateWarrantyCertHTML(order: TrackingOrder): string {
   <div class="cert-wrap">
     <div class="cert-header">
       <div class="cert-badge">🛡️</div>
-      <h1>Turath Mart</h1>
+      <h1>Turath Masr</h1>
       <p>شركة زهران للشحن والتوصيل</p>
     </div>
     <div class="cert-body">
@@ -1288,7 +1288,7 @@ function generateWarrantyCertHTML(order: TrackingOrder): string {
     </div>
     <div class="cert-footer">
       <p>يشمل الضمان عيوب الصناعة والمواد فقط. لا يشمل الكسر أو سوء الاستخدام.</p>
-      <p>للتواصل بخصوص الضمان: <strong>info@zahranship.com</strong></p>
+      <p>للتواصل بخصوص الضمان: <strong>info@turath_masr.com</strong></p>
       <div class="seal">✅ شهادة ضمان رسمية معتمدة</div>
     </div>
   </div>
@@ -1325,7 +1325,7 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
             note: string;
           }[] = [];
           try {
-            const stored = JSON.parse(localStorage.getItem('zahranship_orders') || '[]');
+            const stored = JSON.parse(localStorage.getItem('turath_masr_orders') || '[]');
             const match = stored.find(
               (o: TrackingOrder & { orderNum: string }) => o.orderNum === orderId
             );
@@ -1333,7 +1333,7 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
               found = match as TrackingOrder;
               // Build history from audit logs if available
               try {
-                const allAudit = JSON.parse(localStorage.getItem('zahranship_audit_logs') || '{}');
+                const allAudit = JSON.parse(localStorage.getItem('turath_masr_audit_logs') || '{}');
                 const orderAudit = allAudit[match.id] || [];
                 if (orderAudit.length > 0) {
                   const statusChanges = orderAudit
@@ -1397,7 +1397,7 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
             try {
               const supabase = createClient();
               const { data } = await supabase
-                .from('zahranship_orders')
+                .from('turath_masr_orders')
                 .select('*')
                 .eq('order_num', orderId)
                 .single();
@@ -1461,13 +1461,13 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
     // Listen for instant updates from orders management
     const handleOrdersUpdate = () => loadOrder(true);
     const handleAuditUpdate = () => loadOrder(true);
-    window.addEventListener('zahranship_orders_updated', handleOrdersUpdate);
-    window.addEventListener('zahranship_audit_updated', handleAuditUpdate);
+    window.addEventListener('turath_masr_orders_updated', handleOrdersUpdate);
+    window.addEventListener('turath_masr_audit_updated', handleAuditUpdate);
 
     return () => {
       clearInterval(interval);
-      window.removeEventListener('zahranship_orders_updated', handleOrdersUpdate);
-      window.removeEventListener('zahranship_audit_updated', handleAuditUpdate);
+      window.removeEventListener('turath_masr_orders_updated', handleOrdersUpdate);
+      window.removeEventListener('turath_masr_audit_updated', handleAuditUpdate);
     };
   }, [loadOrder]);
 
@@ -1679,8 +1679,8 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
                 <Truck size={20} className="text-amber-300" />
               </div>
               <div>
-                <h1 className="font-bold text-lg leading-tight text-white">تراث مارت</h1>
-                <p className="text-amber-300 text-xs">Turath Mart — تتبع شحنتك</p>
+                <h1 className="font-bold text-lg leading-tight text-white">تراث مصر</h1>
+                <p className="text-amber-300 text-xs">Turath Masr — تتبع شحنتك</p>
               </div>
             </div>
             <button

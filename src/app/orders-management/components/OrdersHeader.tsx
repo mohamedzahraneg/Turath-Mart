@@ -25,9 +25,9 @@ export default function OrdersHeader() {
       const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
       const [totalRes, todayRes] = await Promise.all([
-        supabase.from('zahranship_orders').select('*', { count: 'exact', head: true }),
+        supabase.from('turath_masr_orders').select('*', { count: 'exact', head: true }),
         supabase
-          .from('zahranship_orders')
+          .from('turath_masr_orders')
           .select('*', { count: 'exact', head: true })
           .gte('created_at', todayStr),
       ]);
@@ -46,8 +46,8 @@ export default function OrdersHeader() {
   React.useEffect(() => {
     fetchCounts();
     // Refresh counts when orders are updated
-    window.addEventListener('zahranship_orders_updated', fetchCounts);
-    return () => window.removeEventListener('zahranship_orders_updated', fetchCounts);
+    window.addEventListener('turath_masr_orders_updated', fetchCounts);
+    return () => window.removeEventListener('turath_masr_orders_updated', fetchCounts);
   }, []);
 
   const handleExportCSV = () => {

@@ -138,7 +138,7 @@ export default function LiveOrdersDashboard() {
       const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
       const { data, error } = await supabase
-        .from('zahranship_orders')
+        .from('turath_masr_orders')
         .select('*')
         .gte('created_at', todayStr) // only today's orders or active orders
         .order('updated_at', { ascending: false });

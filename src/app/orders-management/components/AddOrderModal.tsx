@@ -46,8 +46,13 @@ interface OrderFormData {
   warranty: string;
 }
 
-// Removed hardcoded PRODUCT_TYPES. Products are الآن fetched directly from the Inventory table.
-
+export const PRODUCT_TYPES = [
+  { value: 'holder', label: 'حامل مصحف', basePrice: 300, emoji: '📿', hasColor: true },
+  { value: 'flashlight', label: 'كشاف', basePrice: 150, emoji: '🔦', hasColor: false },
+  { value: 'chair', label: 'كرسي', basePrice: 600, emoji: '🪑', hasColor: false },
+  { value: 'quran', label: 'مصحف', basePrice: 140, emoji: '📖', hasColor: false },
+  { value: 'kaaba', label: 'كعبة', basePrice: 450, emoji: '🕋', hasColor: false },
+];
 
 export const HOLDER_COLORS = [
   { value: 'brown', label: 'بني', hex: '#8B4513' },
@@ -188,7 +193,7 @@ async function generateOrderNumber(): Promise<string> {
   try {
     const supabase = createClient();
     const { count } = await supabase
-      .from('zahranship_orders')
+      .from('turath_masr_orders')
       .select('*', { count: 'exact', head: true })
       .like('order_num', `${prefix}%`);
     const seq = (count || 0) + 1;
@@ -196,7 +201,7 @@ async function generateOrderNumber(): Promise<string> {
   } catch {
     // Fallback: use localStorage count + random
     try {
-      const existing = JSON.parse(localStorage.getItem('zahranship_orders') || '[]');
+      const existing = JSON.parse(localStorage.getItem('turath_masr_orders') || '[]');
       const todayOrders = existing.filter((o: { order_num?: string; orderNum?: string }) => {
         const num = o.order_num || o.orderNum || '';
         return num.startsWith(prefix);
@@ -325,9 +330,10 @@ export default function AddOrderModal({ onClose }: Props) {
       const { data: sData } = await supabase.from('zahranship_settings').select('*');
       const settingsMap = new Map((sData || []).map((s) => [s.key, s.value]));
 
-      // 2. Extract Products (optional, if there are non-inventory services)
+      // 2. Extract Products
       const dbProducts =
-        (settingsMap.get('settings_products') as any[]) || [];
+        (settingsMap.get('settings_products') as any[]) ||
+        PRODUCT_TYPES.map((p) => ({ ...p, enabled: true }));
 
       // 3. Extract Shipping
       const dbShipping = (settingsMap.get('settings_shipping') as any) || {};
@@ -335,49 +341,49 @@ export default function AddOrderModal({ onClose }: Props) {
       // 4. Extract Disabled Districts
       const dbDistricts = (settingsMap.get('settings_disabled_districts') as string[]) || [];
 
-      // 5. Fetch Inventory from Supabase (Source of Truth)
-      const { data: invData, error: invError } = await supabase
-        .from('zahranship_inventory')
-        .select('*')
-        .gt('available', 0);
-
-      if (invError) {
-        console.error('Inventory Fetch Error:', invError);
-      }
-
-      const inventoryCards: ProductCard[] = (invData || []).map((item) => ({
-        value: item.id || '',
-        label: item.name || 'منتج غير معروف',
-        basePrice: item.price || 0,
-        emoji: '📦',
-        hasColor: (item.colors?.length || 0) > 0,
-        image: item.images?.[0] || '',
-        isInventory: true,
-        colors: item.colors || [],
-      }));
-
-      const serviceCards: ProductCard[] = (Array.isArray(dbProducts) ? dbProducts : [])
-        .filter((p) => p && p.enabled !== false)
+      // 5. Update Product Cards
+      const defaultCards: ProductCard[] = dbProducts
+        .filter((p) => p.enabled !== false)
         .map((p) => ({
-          value: p.value || '',
-          label: p.label || 'خدمة غير معروفة',
-          basePrice: p.basePrice || 0,
-          emoji: p.emoji || '🛠️',
-          hasColor: p.hasColor || false,
-          image: p.image || '',
+          value: p.value,
+          label: p.label,
+          basePrice: p.basePrice,
+          emoji: p.emoji,
+          hasColor: p.hasColor,
+          image: p.image,
         }));
 
-      setProductCards([...inventoryCards, ...serviceCards]);
+      // NOTE: Inventory is still legacy here, but let's keep it for compatibility
+      // or fetch from DB if needed later. For now, focus on the settings migration.
+      const inventoryItems = loadLS<InventoryItem[]>('zahranship_inventory', []);
+      const defaultValues = new Set(defaultCards.map((c) => c.value));
+      const inventoryCards: ProductCard[] = inventoryItems
+        .filter((item) => item.available > 0 && !defaultValues.has(item.id))
+        .map((item) => ({
+          value: item.id,
+          label: item.name,
+          basePrice: item.price,
+          emoji: '📦',
+          hasColor: (item.colors?.length || 0) > 0,
+          image: item.images?.[0],
+          isInventory: true,
+          colors: item.colors,
+        }));
 
-      // 6. Apply Global Admin Settings
-      ADMIN_SETTINGS.DISABLED_DISTRICTS.length = 0;
-      dbDistricts.forEach((d) => ADMIN_SETTINGS.DISABLED_DISTRICTS.push(d));
+      setProductCards([...defaultCards, ...inventoryCards]);
 
-      if (dbShipping.defaultShippingCost) {
-        ADMIN_SETTINGS.SHIPPING_FEE = Number(dbShipping.defaultShippingCost);
-      }
-      if (dbShipping.expressShippingCost) {
-        ADMIN_SETTINGS.EXPRESS_FEE = Number(dbShipping.expressShippingCost);
+      // 3. Fetch Global Shipping Settings (for Express)
+      const { data: shipData } = await supabase
+        .from('turath_masr_settings')
+        .select('value')
+        .eq('key', 'settings_shipping')
+        .single();
+      
+      if (shipData?.value) {
+        const dbShipping = shipData.value as any;
+        if (dbShipping.expressShippingCost) {
+          ADMIN_SETTINGS.EXPRESS_FEE = Number(dbShipping.expressShippingCost);
+        }
       }
     };
 
@@ -455,7 +461,9 @@ export default function AddOrderModal({ onClose }: Props) {
     (d) => !ADMIN_SETTINGS.DISABLED_DISTRICTS.includes(d)
   );
 
-  const shippingCost = expressShipping ? ADMIN_SETTINGS.EXPRESS_FEE : ADMIN_SETTINGS.SHIPPING_FEE;
+  const shippingCost = expressShipping 
+    ? ADMIN_SETTINGS.EXPRESS_FEE 
+    : (REGIONAL_FEES[governorate] || ADMIN_SETTINGS.SHIPPING_FEE);
   const extraFeeAmount = IS_ADMIN ? extraShippingFee : 0;
   const subtotal = lines.reduce((s, l) => s + lineTotal(l), 0);
   const grandTotal = subtotal + shippingCost + extraFeeAmount;
@@ -568,7 +576,7 @@ export default function AddOrderModal({ onClose }: Props) {
     // Save to Supabase
     try {
       const supabase = createClient();
-      const { error } = await supabase.from('zahranship_orders').upsert(
+      const { error } = await supabase.from('turath_masr_orders').upsert(
         {
           id: newOrder.id,
           order_num: newOrder.orderNum,
@@ -603,7 +611,7 @@ export default function AddOrderModal({ onClose }: Props) {
       }
 
       // Create a system notification
-      await supabase.from('zahranship_notifications').insert({
+      await supabase.from('turath_masr_notifications').insert({
         type: 'new_order',
         title: 'أوردر جديد 📦',
         message: `تم تسجيل أوردر جديد برقم ${newOrder.orderNum} للعميل ${newOrder.customer}`,
@@ -613,7 +621,7 @@ export default function AddOrderModal({ onClose }: Props) {
       });
 
       // Notify other components that orders have been updated
-      window.dispatchEvent(new CustomEvent('zahranship_orders_updated'));
+      window.dispatchEvent(new CustomEvent('turath_masr_orders_updated'));
 
       await new Promise((r) => setTimeout(r, 800));
       setIsSubmitting(false);
@@ -1014,10 +1022,18 @@ export default function AddOrderModal({ onClose }: Props) {
                           productCard.image.startsWith('/'));
                       const isHolder = line.productType === 'holder';
                       const isFlashlight = line.productType === 'flashlight';
+const HOLDER_COLORS = [
+  { value: 'brown', label: 'بني', hex: '#8B4513' },
+  { value: 'black', label: 'أسود', hex: '#1a1a1a' },
+  { value: 'white', label: 'أبيض', hex: '#f5f5f5' },
+  { value: 'gold', label: 'ذهبي', hex: '#FFD700' },
+  { value: 'pearl', label: 'صدف', hex: '#EAE0C8' },
+];
+
                       // Colors: use inventory colors if available, else use HOLDER_COLORS for holder
                       const availableColors =
                         productCard?.colors && productCard.colors.length > 0
-                          ? productCard.colors.map((c) => ({ value: c, label: c, hex: '#888' }))
+                          ? productCard.colors.map((c: string) => ({ value: c, label: c, hex: '#888' }))
                           : isHolder
                             ? HOLDER_COLORS
                             : [];
@@ -1068,7 +1084,7 @@ export default function AddOrderModal({ onClose }: Props) {
                               <div className="sm:col-span-2">
                                 <label className="label-text">اللون *</label>
                                 <div className="flex gap-2 flex-wrap">
-                                  {availableColors.map((color) => (
+                                  {availableColors.map((color: any) => (
                                     <button
                                       key={`color-${line.id}-${color.value}`}
                                       type="button"
