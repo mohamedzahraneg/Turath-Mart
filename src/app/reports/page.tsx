@@ -111,33 +111,39 @@ export default function ReportsPage() {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [dbOrders, setDbOrders] = useState<Order[]>([]);
+  const [dbInventory, setDbInventory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const fetchOrders = async () => {
+    const fetchData = async () => {
       setLoading(true);
       try {
         const supabase = createClient();
-        const { data, error } = await supabase
-          .from('turath_masr_orders')
-          .select('id, created_at, status, total, shipping_fee, products, region')
-          .order('created_at', { ascending: true });
+        const [oRes, iRes] = await Promise.all([
+          supabase.from('turath_masr_orders').select('id, created_at, status, total, shipping_fee, products, region').order('created_at', { ascending: true }),
+          supabase.from('turath_masr_inventory').select('*')
+        ]);
 
-        if (error) throw error;
-        if (data) setDbOrders(data);
+        if (oRes.data) setDbOrders(oRes.data);
+        if (iRes.data) setDbInventory(iRes.data);
       } catch (err) {
-        console.error('Error fetching orders for reports:', err);
+        console.error('Error fetching data for reports:', err);
       } finally {
         setLoading(false);
       }
     };
-    fetchOrders();
+    fetchData();
   }, []);
 
   const aggregatedData = useMemo(() => {
     const now = new Date();
     const currentYear = now.getFullYear();
     const currentMonth = now.getMonth();
+
+    // Date range objects for filtering
+    const fromDate = dateFrom ? new Date(dateFrom) : null;
+    const toDate = dateTo ? new Date(dateTo) : null;
+    if (toDate) toDate.setHours(23, 59, 59, 999);
 
     const monthsData: MonthlyStat[] = [];
     for (let i = 11; i >= 0; i--) {
@@ -160,13 +166,22 @@ export default function ReportsPage() {
       returned: 0,
       cancelled: 0,
       shippingFees: 0,
+      deliveredRevenue: 0,
     };
     const prodMap: Record<string, { orders: number; revenue: number }> = {};
 
     dbOrders.forEach((o) => {
+      const orderCreatedAt = new Date(o.created_at);
+      
+      // 1. Filter by Region
       if (regionFilter !== 'الكل' && o.region !== regionFilter) return;
 
-      const date = new Date(o.created_at);
+      // 2. Filter by Date Range (for the KPI cards)
+      let isInRange = true;
+      if (fromDate && orderCreatedAt < fromDate) isInRange = false;
+      if (toDate && orderCreatedAt > toDate) isInRange = false;
+
+      const date = orderCreatedAt;
       const m = date.getMonth() + 1;
       const y = date.getFullYear();
 
@@ -181,34 +196,80 @@ export default function ReportsPage() {
         }
       }
 
-      if (o.status === 'delivered') stats.delivered++;
-      else if (o.status === 'shipping') stats.shipping++;
-      else if (o.status === 'returned') stats.returned++;
-      else if (o.status === 'cancelled') stats.cancelled++;
-      else stats.pending++;
+      // --- Update KPI Stats (Only if in selected range) ---
+      const s = (o.status || '').toLowerCase();
+      const isDelivered = s === 'delivered' || s === 'تم التسليم';
+      const isShipping = s === 'shipping' || s === 'جاري الشحن';
+      const isReturned = s === 'returned' || s === 'مرتجع';
+      const isCancelled = s === 'cancelled' || s === 'ملغي';
+      const isPreparing = s === 'preparing' || s === 'جاري التجهيز';
+      const isWarehouse = s === 'warehouse' || s === 'في المستودع';
 
-      stats.shippingFees += o.shipping_fee || 0;
+      if (isInRange) {
+        if (isDelivered) stats.delivered++;
+        else if (isShipping) stats.shipping++;
+        else if (isReturned) stats.returned++;
+        else if (isCancelled) stats.cancelled++;
+        else if (isPreparing || isWarehouse || s === 'new') stats.pending++;
+        else stats.pending++;
 
-      if (o.products) {
-        const pNames = o.products.split('+').map((s) => s.trim());
-        pNames.forEach((p) => {
-          const match = p.match(/(.*?)\s*[x×]\s*(\d+)/i);
-          const name = match ? match[1].trim() : p.trim();
-          const count = match ? parseInt(match[2], 10) : 1;
+        const sFee = Number(o.shipping_fee) || 0;
+        stats.shippingFees += sFee;
 
-          if (!prodMap[name]) prodMap[name] = { orders: 0, revenue: 0 };
-          prodMap[name].orders += count;
-          if (o.status === 'delivered') {
-            prodMap[name].revenue += Math.floor(o.total / pNames.length);
-          }
-        });
+        if (isDelivered) {
+          stats.deliveredRevenue += Number(o.total) || 0;
+        }
+
+        if (o.products && !isCancelled && !isReturned) {
+          // Split by comma or plus (matching inventory parser)
+          const parts = o.products.split(/[,+]/).map((s) => s.trim());
+          parts.forEach((p) => {
+            let name = p;
+            let count = 1;
+            
+            // 1. Try parenthesis format: Product Name (2)
+            const parenMatch = p.match(/(.*?)\s*\(\s*(\d+)\s*\)/);
+            // 2. Try x format: Product Name x 2
+            const xMatch = p.match(/(.*?)\s*([x×\*]\s*(\d+)|(\d+)\s*[x×\*])$/i);
+            
+            if (parenMatch) {
+              name = parenMatch[1].trim();
+              count = parseInt(parenMatch[2], 10) || 1;
+            } else if (xMatch) {
+              name = xMatch[1].trim();
+              count = parseInt(xMatch[3] || xMatch[4], 10) || 1;
+            } else {
+              // Try simpler fallback if no known symbol found: maybe just a number at the end?
+              const simpleMatch = p.match(/(.*?)\s*(\d+)$/);
+              if (simpleMatch) {
+                name = simpleMatch[1].trim();
+                count = parseInt(simpleMatch[2], 10) || 1;
+              }
+            }
+
+            const normalizedName = name.trim();
+            if (normalizedName) {
+              if (!prodMap[normalizedName]) prodMap[normalizedName] = { orders: 0, revenue: 0 };
+              prodMap[normalizedName].orders += count;
+              if (o.status === 'delivered') {
+                prodMap[normalizedName].revenue += Math.floor(Number(o.total) / parts.length);
+              }
+            }
+          });
+        }
       }
     });
 
-    const topP = Object.entries(prodMap)
-      .map(([name, data]) => ({ name, ...data }))
-      .sort((a, b) => b.orders - a.orders)
-      .slice(0, 5);
+    const allPData = dbInventory.map(item => {
+      const stats = prodMap[item.name] || { orders: 0, revenue: 0 };
+      return {
+        ...item,
+        withdrawn: stats.orders,
+        revenue: stats.revenue
+      };
+    }).sort((a, b) => b.withdrawn - a.withdrawn);
+
+    const topP = allPData.slice(0, 5);
 
     const totalStats =
       stats.delivered + stats.shipping + stats.returned + stats.cancelled + stats.pending;
@@ -255,14 +316,11 @@ export default function ReportsPage() {
       products: topP,
       financials: {
         totalShipping: stats.shippingFees,
-        remaining: Math.max(
-          0,
-          dbOrders.filter((o) => o.status === 'delivered').reduce((s, o) => s + (o.total || 0), 0) -
-            stats.shippingFees
-        ),
+        remaining: Math.max(0, stats.deliveredRevenue - stats.shippingFees),
       },
+      allProducts: allPData,
     };
-  }, [dbOrders, regionFilter]);
+  }, [dbOrders, regionFilter, dateFrom, dateTo]);
 
   const filteredMonthly = useMemo(() => {
     if (dateFrom || dateTo) {
@@ -733,6 +791,51 @@ export default function ReportsPage() {
                 </ResponsiveContainer>
               </div>
             </div>
+          </div>
+        </div>
+
+        {/* Product Performance Table */}
+        <div className="bg-white border-2 border-gray-50 rounded-[2.5rem] p-10 shadow-sm overflow-hidden">
+          <div className="flex items-center justify-between mb-8">
+            <div>
+              <h3 className="text-lg font-black text-gray-900 tracking-tight">تحليل أداء المنتجات (المسحوب)</h3>
+              <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mt-1">كشف كامل بالكميات المسحوبة والإيرادات لكل صنف</p>
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-right text-xs">
+              <thead>
+                <tr className="border-b border-gray-50">
+                  <th className="px-4 py-4 text-gray-400 font-black uppercase tracking-widest">المنتج</th>
+                  <th className="px-4 py-4 text-gray-400 font-black uppercase tracking-widest">الكود (SKU)</th>
+                  <th className="px-4 py-4 text-gray-400 font-black uppercase tracking-widest">المسحوب (مباع)</th>
+                  <th className="px-4 py-4 text-gray-400 font-black uppercase tracking-widest">المتاح حالياً</th>
+                  <th className="px-4 py-4 text-gray-400 font-black uppercase tracking-widest text-emerald-600">الإيرادات (ج.م)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {aggregatedData.allProducts.map((p, i) => (
+                  <tr key={i} className="hover:bg-gray-50/50 transition-colors">
+                    <td className="px-4 py-4">
+                      <div className="flex items-center gap-3">
+                        {p.images?.[0] && <img src={p.images[0]} className="w-8 h-8 rounded-lg object-cover" />}
+                        <span className="font-bold text-gray-800">{p.name}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-4 font-mono text-gray-400">{p.sku}</td>
+                    <td className="px-4 py-4">
+                       <span className={`px-3 py-1 rounded-full font-black ${p.withdrawn > 0 ? 'bg-orange-50 text-orange-600' : 'bg-gray-50 text-gray-400'}`}>
+                         {p.withdrawn} وحدة
+                       </span>
+                    </td>
+                    <td className="px-4 py-4 font-bold text-gray-600">{p.available}</td>
+                    <td className="px-4 py-4 font-black text-emerald-600 tracking-tighter text-sm">
+                      {p.revenue.toLocaleString('en-US')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       </div>

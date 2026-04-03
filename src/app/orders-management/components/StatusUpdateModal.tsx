@@ -12,6 +12,7 @@ interface Order {
   id: string;
   orderNum: string;
   customer: string;
+  phone: string;
   status: string;
 }
 
@@ -128,7 +129,7 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
         throw error;
       }
 
-      // Create a system notification
+      // Create a system notification (for dashboard)
       await supabase.from('turath_masr_notifications').insert({
         type: 'status_change',
         title: 'تحديث حالة الأوردر 🔄',
@@ -136,6 +137,17 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
         order_id: order.id,
         order_num: order.orderNum,
         created_by: user.name,
+        is_read: false
+      });
+
+      // Notify Customer (targeting their phone)
+      await supabase.from('turath_masr_notifications').insert({
+        type: 'customer_order_update',
+        title: 'تحديث بخصوص طلبك',
+        message: `مرحباً ${order.customer}، نود إخطارك بأن حالة طلبك رقم (${order.orderNum}) هي الآن: ${statusLabel}. شكراً لثقتك بنا.`,
+        phone: order.phone,
+        order_num: order.orderNum,
+        is_read: false
       });
 
       window.dispatchEvent(new CustomEvent('turath_masr_orders_updated'));

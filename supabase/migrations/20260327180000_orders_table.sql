@@ -1,7 +1,7 @@
 -- Orders table for Zahranship
 -- This enables cross-origin order tracking (orders saved here are accessible from any domain)
 
-CREATE TABLE IF NOT EXISTS public.zahranship_orders (
+CREATE TABLE IF NOT EXISTS public.turath_masr_orders (
   id TEXT PRIMARY KEY,
   order_num TEXT NOT NULL UNIQUE,
   created_by TEXT NOT NULL DEFAULT '',
@@ -33,39 +33,39 @@ CREATE TABLE IF NOT EXISTS public.zahranship_orders (
   updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_zahranship_orders_order_num ON public.zahranship_orders(order_num);
-CREATE INDEX IF NOT EXISTS idx_zahranship_orders_status ON public.zahranship_orders(status);
-CREATE INDEX IF NOT EXISTS idx_zahranship_orders_phone ON public.zahranship_orders(phone);
+CREATE INDEX IF NOT EXISTS idx_turath_masr_orders_order_num ON public.turath_masr_orders(order_num);
+CREATE INDEX IF NOT EXISTS idx_turath_masr_orders_status ON public.turath_masr_orders(status);
+CREATE INDEX IF NOT EXISTS idx_turath_masr_orders_phone ON public.turath_masr_orders(phone);
 
-ALTER TABLE public.zahranship_orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.turath_masr_orders ENABLE ROW LEVEL SECURITY;
 
 -- Allow public read access for tracking (customers need to track without login)
-DROP POLICY IF EXISTS "public_read_orders" ON public.zahranship_orders;
+DROP POLICY IF EXISTS "public_read_orders" ON public.turath_masr_orders;
 CREATE POLICY "public_read_orders"
-ON public.zahranship_orders
+ON public.turath_masr_orders
 FOR SELECT
 TO public
 USING (true);
 
 -- Allow authenticated users to insert/update orders
-DROP POLICY IF EXISTS "authenticated_manage_orders" ON public.zahranship_orders;
+DROP POLICY IF EXISTS "authenticated_manage_orders" ON public.turath_masr_orders;
 CREATE POLICY "authenticated_manage_orders"
-ON public.zahranship_orders
+ON public.turath_masr_orders
 FOR ALL
 TO authenticated
 USING (true)
 WITH CHECK (true);
 
 -- Allow anon to insert (for order creation without login)
-DROP POLICY IF EXISTS "anon_insert_orders" ON public.zahranship_orders;
+DROP POLICY IF EXISTS "anon_insert_orders" ON public.turath_masr_orders;
 CREATE POLICY "anon_insert_orders"
-ON public.zahranship_orders
+ON public.turath_masr_orders
 FOR INSERT
 TO anon
 WITH CHECK (true);
 
 -- Function to update updated_at timestamp
-CREATE OR REPLACE FUNCTION public.update_zahranship_orders_updated_at()
+CREATE OR REPLACE FUNCTION public.update_turath_masr_orders_updated_at()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
@@ -75,8 +75,8 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS update_zahranship_orders_updated_at ON public.zahranship_orders;
-CREATE TRIGGER update_zahranship_orders_updated_at
-  BEFORE UPDATE ON public.zahranship_orders
+DROP TRIGGER IF EXISTS update_turath_masr_orders_updated_at ON public.turath_masr_orders;
+CREATE TRIGGER update_turath_masr_orders_updated_at
+  BEFORE UPDATE ON public.turath_masr_orders
   FOR EACH ROW
-  EXECUTE FUNCTION public.update_zahranship_orders_updated_at();
+  EXECUTE FUNCTION public.update_turath_masr_orders_updated_at();

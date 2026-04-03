@@ -461,23 +461,42 @@ export default function InventoryPage() {
       if (!ordRes.error && ordRes.data) {
         const withdrawnMap: Record<string, number> = {};
         ordRes.data.forEach((o: any) => {
-          if (o.status === 'cancelled' || o.status === 'returned') return;
+          // Robust status filtering: ignore cancelled/returned (even if stored as Arabic or English)
+          const s = (o.status || '').toLowerCase();
+          if (s === 'cancelled' || s === 'returned' || s === 'ملغي' || s === 'مرتجع') return;
           if (!o.products) return;
-          const pNames = o.products.split('+').map((s: string) => s.trim());
-          pNames.forEach((p: string) => {
-            // Check for format: name x 2
-            const match = p.match(/(.*?)\s*[x×]\s*(\d+)$/i);
+          
+          // Split by either comma or plus
+          const parts = o.products.split(/[,+]/).map((s: string) => s.trim());
+          parts.forEach((p: string) => {
             let name = p;
             let qty = 1;
-            if (match) {
-              name = match[1].trim();
-              qty = parseInt(match[2], 10) || 1;
+            
+            // 1. Try parenthesis format: Product Name (2)
+            const parenMatch = p.match(/(.*?)\s*\(\s*(\d+)\s*\)/);
+            // 2. Try x format: Product Name x 2
+            const xMatch = p.match(/(.*?)\s*([x×\*]\s*(\d+)|(\d+)\s*[x×\*])$/i);
+            
+            if (parenMatch) {
+              name = parenMatch[1].trim();
+              qty = parseInt(parenMatch[2], 10) || 1;
+            } else if (xMatch) {
+              name = xMatch[1].trim();
+              qty = parseInt(xMatch[3] || xMatch[4], 10) || 1;
             } else {
-              name = p.trim();
-              qty = 1;
+              // Try simpler fallback if no known symbol found: maybe just a number at the end?
+              const simpleMatch = p.match(/(.*?)\s*(\d+)$/);
+              if (simpleMatch) {
+                name = simpleMatch[1].trim();
+                qty = parseInt(simpleMatch[2], 10) || 1;
+              }
             }
-            if (!withdrawnMap[name]) withdrawnMap[name] = 0;
-            withdrawnMap[name] += qty;
+            
+            const normalizedName = name.trim();
+            if (normalizedName) {
+              if (!withdrawnMap[normalizedName]) withdrawnMap[normalizedName] = 0;
+              withdrawnMap[normalizedName] += qty;
+            }
           });
         });
         setRealWithdrawnAmounts(withdrawnMap);
@@ -580,7 +599,7 @@ export default function InventoryPage() {
             },
             {
               label: 'إجمالي المسحوب',
-              value: inventory.reduce((s, i) => s + (realWithdrawnAmounts[i.name] || 0), 0),
+              value: inventory.reduce((s, i) => s + (realWithdrawnAmounts[i.name.trim()] || 0), 0),
               icon: <TrendingDown size={20} />,
               color: 'orange',
             },
@@ -683,7 +702,7 @@ export default function InventoryPage() {
               </thead>
               <tbody className="divide-y divide-[hsl(var(--border))]">
                 {filtered.map((item) => {
-                  const realWithdrawn = realWithdrawnAmounts[item.name] || 0;
+                  const realWithdrawn = realWithdrawnAmounts[item.name.trim()] || 0;
                   const isLow = item.available <= item.minStock;
                   const pct =
                     item.available + realWithdrawn > 0

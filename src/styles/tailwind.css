@@ -165,14 +165,42 @@
     border-radius: 3px;
   }
 
-  .fade-in {
-    animation: fadeIn 0.2s ease-in-out;
+  @keyframes float {
+    0%,
+    100% {
+      transform: translateY(0) scale(1);
+    }
+    50% {
+      transform: translateY(-20px) scale(1.05);
+    }
   }
 
-  @keyframes fadeIn {
+  @keyframes pulse-slow {
+    0%,
+    100% {
+      opacity: 0.3;
+    }
+    50% {
+      opacity: 0.6;
+    }
+  }
+
+  @keyframes gradient-shift {
+    0% {
+      background-position: 0% 50%;
+    }
+    50% {
+      background-position: 100% 50%;
+    }
+    100% {
+      background-position: 0% 50%;
+    }
+  }
+
+  @keyframes reveal-staggered {
     from {
       opacity: 0;
-      transform: translateY(4px);
+      transform: translateY(15px);
     }
     to {
       opacity: 1;
@@ -180,18 +208,44 @@
     }
   }
 
-  .slide-up {
-    animation: slideUp 0.3s ease-out;
+  .animate-float {
+    animation: float 6s ease-in-out infinite;
   }
 
-  @keyframes slideUp {
-    from {
-      opacity: 0;
-      transform: translateY(20px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
+  .animate-pulse-slow {
+    animation: pulse-slow 4s ease-in-out infinite;
+  }
+
+  .animate-gradient-shift {
+    background-size: 200% 200%;
+    animation: gradient-shift 15s ease infinite;
+  }
+
+  .reveal-0 {
+    animation: reveal-staggered 0.6s ease-out forwards;
+  }
+  .reveal-1 {
+    animation: reveal-staggered 0.6s ease-out 0.1s forwards;
+    opacity: 0;
+  }
+  .reveal-2 {
+    animation: reveal-staggered 0.6s ease-out 0.2s forwards;
+    opacity: 0;
+  }
+  .reveal-3 {
+    animation: reveal-staggered 0.6s ease-out 0.3s forwards;
+    opacity: 0;
+  }
+  .reveal-4 {
+    animation: reveal-staggered 0.6s ease-out 0.4s forwards;
+    opacity: 0;
+  }
+
+  .glass-card {
+    @apply bg-white/70 backdrop-blur-xl border border-white/30 shadow-[0_8px_32px_0_rgba(31,38,135,0.07)];
+  }
+
+  .glass-input {
+    @apply bg-white/50 backdrop-blur-md border border-white/40 focus:bg-white/80 transition-all duration-300;
   }
 }

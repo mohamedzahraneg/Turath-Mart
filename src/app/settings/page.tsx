@@ -287,7 +287,12 @@ interface Region {
   districts: string[];
 }
 
+import { useAuth } from '@/contexts/AuthContext';
+
 function DistrictsTab() {
+  const { currentRoleId } = useAuth();
+  const isAdmin = currentRoleId === 'r1';
+
   const {
     data: regions,
     setData: setRegions,
@@ -310,6 +315,7 @@ function DistrictsTab() {
     );
 
   const addRegion = () => {
+    if (!isAdmin) return;
     const newRegion: Region = {
       id: Date.now().toString(),
       name: 'محافظة جديدة',
@@ -321,6 +327,7 @@ function DistrictsTab() {
   };
 
   const removeRegion = (id: string) => {
+    if (!isAdmin) return;
     setRegions(regions.filter((r) => r.id !== id));
   };
 
@@ -337,20 +344,22 @@ function DistrictsTab() {
             تخصيص أسعار شحن مختلفة لكل محافظة ومنطقة
           </p>
         </div>
-        <button
-          onClick={addRegion}
-          className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-xl text-xs font-black hover:bg-gray-800 transition-all active:scale-95"
-        >
-          <Plus size={14} />
-          إضافة محافظة
-        </button>
+        {isAdmin && (
+          <button
+            onClick={addRegion}
+            className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-xl text-xs font-black hover:bg-gray-800 transition-all active:scale-95"
+          >
+            <Plus size={14} />
+            إضافة محافظة
+          </button>
+        )}
       </div>
 
       <div className="space-y-4">
         {regions.map((region) => (
           <div
             key={region.id}
-            className={`border-2 rounded-[2rem] transition-all overflow-hidden ${expanded === region.id ? 'border-blue-500 bg-white shadow-xl' : 'border-gray-50 bg-gray-50/30 hover:border-gray-100 hover:bg-gray-50/50'}`}
+            className={`border-2 rounded-[2rem] transition-all overflow-hidden ${expanded === region.id ? 'border-primary bg-white shadow-xl' : 'border-gray-50 bg-gray-50/30 hover:border-gray-100 hover:bg-gray-50/50'}`}
           >
             <div
               onClick={() => setExpanded(expanded === region.id ? null : region.id)}
@@ -358,7 +367,7 @@ function DistrictsTab() {
             >
               <div className="flex items-center gap-6">
                 <div
-                  className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black ${expanded === region.id ? 'bg-blue-600 text-white' : 'bg-white text-gray-400 border border-gray-100'}`}
+                  className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black ${expanded === region.id ? 'bg-primary text-white' : 'bg-white text-gray-400 border border-gray-100'}`}
                 >
                   <MapPin size={20} />
                 </div>
@@ -370,15 +379,21 @@ function DistrictsTab() {
                 </div>
               </div>
               <div className="flex items-center gap-4">
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    removeRegion(region.id);
-                  }}
-                  className="p-2 text-gray-400 hover:text-red-500 transition-colors"
-                >
-                  <Trash2 size={18} />
-                </button>
+                {isAdmin ? (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeRegion(region.id);
+                    }}
+                    className="p-2 text-gray-400 hover:text-red-500 transition-colors"
+                  >
+                    <Trash2 size={18} />
+                  </button>
+                ) : (
+                  <div className="p-2 text-gray-200" title="مدير النظام فقط يملك صلاحية الحذف">
+                    <Lock size={16} />
+                  </div>
+                )}
                 {expanded === region.id ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
               </div>
             </div>
@@ -392,9 +407,10 @@ function DistrictsTab() {
                     </label>
                     <input
                       type="text"
+                      disabled={!isAdmin}
                       value={region.name}
                       onChange={(e) => updateRegion(region.id, { name: e.target.value })}
-                      className="w-full px-4 py-3 bg-gray-50 border-2 border-gray-50 rounded-2xl text-sm font-bold focus:outline-none focus:border-blue-500/50 transition-all"
+                      className="w-full px-4 py-3 bg-gray-50 border-2 border-gray-50 rounded-2xl text-sm font-bold focus:outline-none focus:border-primary/50 transition-all disabled:opacity-50"
                     />
                   </div>
                   <div className="space-y-2">
@@ -403,9 +419,10 @@ function DistrictsTab() {
                     </label>
                     <input
                       type="number"
+                      disabled={!isAdmin}
                       value={region.fee}
                       onChange={(e) => updateRegion(region.id, { fee: Number(e.target.value) })}
-                      className="w-full px-4 py-3 bg-gray-50 border-2 border-gray-50 rounded-2xl text-sm font-bold focus:outline-none focus:border-blue-500/50 transition-all font-mono"
+                      className="w-full px-4 py-3 bg-gray-50 border-2 border-gray-50 rounded-2xl text-sm font-bold focus:outline-none focus:border-primary/50 transition-all font-mono disabled:opacity-50"
                     />
                   </div>
                 </div>
@@ -415,38 +432,43 @@ function DistrictsTab() {
                     <label className="text-[10px] font-black text-gray-400 uppercase px-1">
                       المناطق والأحياء
                     </label>
-                    <button
-                      onClick={() =>
-                        updateRegion(region.id, { districts: [...region.districts, ''] })
-                      }
-                      className="text-[10px] font-black text-blue-600 hover:text-blue-700 transition-colors"
-                    >
-                      + إضافة منطقة
-                    </button>
+                    {isAdmin && (
+                      <button
+                        onClick={() =>
+                          updateRegion(region.id, { districts: [...region.districts, ''] })
+                        }
+                        className="text-[10px] font-black text-primary hover:text-primary-dark transition-colors"
+                      >
+                        + إضافة منطقة
+                      </button>
+                    )}
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                     {region.districts.map((district, idx) => (
                       <div key={idx} className="relative group">
                         <input
                           type="text"
+                          disabled={!isAdmin}
                           value={district}
                           onChange={(e) => {
                             const newDistricts = [...region.districts];
                             newDistricts[idx] = e.target.value;
                             updateRegion(region.id, { districts: newDistricts });
                           }}
-                          className="w-full pl-4 pr-10 py-3 bg-white border-2 border-gray-100 rounded-xl text-xs font-medium focus:outline-none focus:border-blue-500/30 transition-all"
+                          className="w-full pl-4 pr-10 py-3 bg-white border-2 border-gray-100 rounded-xl text-xs font-medium focus:outline-none focus:border-primary/30 transition-all disabled:opacity-50"
                           placeholder="اسم المنطقة..."
                         />
-                        <button
-                          onClick={() => {
-                            const newDistricts = region.districts.filter((_, i) => i !== idx);
-                            updateRegion(region.id, { districts: newDistricts });
-                          }}
-                          className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 hover:text-red-500 transition-colors"
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                        {isAdmin && (
+                          <button
+                            onClick={() => {
+                              const newDistricts = region.districts.filter((_, i) => i !== idx);
+                              updateRegion(region.id, { districts: newDistricts });
+                            }}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 hover:text-red-500 transition-colors"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -457,20 +479,22 @@ function DistrictsTab() {
         ))}
       </div>
 
-      <button
-        disabled={saving}
-        onClick={() => save()}
-        className={`flex items-center gap-3 px-8 py-4 rounded-2xl text-sm font-black transition-all shadow-lg active:scale-95 ${success ? 'bg-green-500 text-white shadow-green-100' : 'bg-gray-900 text-white shadow-gray-200 hover:bg-gray-800'}`}
-      >
-        {saving ? (
-          <Loader2 className="animate-spin" size={18} />
-        ) : success ? (
-          <Check size={18} />
-        ) : (
-          <Save size={18} />
-        )}
-        {success ? 'تم حفظ المناطق بنجاح' : 'حفظ إعدادات المناطق'}
-      </button>
+      {isAdmin && (
+        <button
+          disabled={saving}
+          onClick={() => save()}
+          className={`flex items-center gap-3 px-8 py-4 rounded-2xl text-sm font-black transition-all shadow-lg active:scale-95 ${success ? 'bg-green-500 text-white shadow-green-100' : 'bg-gray-900 text-white shadow-gray-200 hover:bg-gray-800'}`}
+        >
+          {saving ? (
+            <Loader2 className="animate-spin" size={18} />
+          ) : success ? (
+            <Check size={18} />
+          ) : (
+            <Save size={18} />
+          )}
+          {success ? 'تم حفظ المناطق بنجاح' : 'حفظ إعدادات المناطق'}
+        </button>
+      )}
     </div>
   );
 }

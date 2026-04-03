@@ -1,5 +1,5 @@
--- 1. Create or replace zahranship_orders
-CREATE TABLE IF NOT EXISTS public.zahranship_orders (
+-- 1. Create or replace turath_masr_orders
+CREATE TABLE IF NOT EXISTS public.turath_masr_orders (
   id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
   created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
   order_num text NOT NULL,
@@ -39,13 +39,13 @@ CREATE TABLE IF NOT EXISTS public.profiles (
 );
 
 -- Enable RLS
-ALTER TABLE public.zahranship_orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.turath_masr_orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 
 -- Disable strict policies for now so that anon / authenticated can just read/write for quick start (Since user had issue with data not saving properly)
 -- (WARNING: In extreme production, restrict these to authenticated users, but since the mock data was failing we ensure full privileges first)
 CREATE POLICY "Allow all actions for authenticated users on orders"
-  ON public.zahranship_orders
+  ON public.turath_masr_orders
   FOR ALL
   USING (true)
   WITH CHECK (true);
