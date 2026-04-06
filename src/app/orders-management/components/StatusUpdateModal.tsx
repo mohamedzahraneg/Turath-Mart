@@ -64,56 +64,37 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
   const [delegates, setDelegates] = useState<string[]>([]);
   const [selectedDelegate, setSelectedDelegate] = useState(order.delegateName || '');
 
-  // Load delegates from employees in localStorage and from existing orders
+  // Load delegates from Supabase profiles (role_id r3 or r4)
   React.useEffect(() => {
     const loadDelegates = async () => {
       const delegateSet = new Set<string>();
-      
-      // 1. Load from employees in localStorage (roles r3, r4 = shipping roles)
-      try {
-        const empRaw = localStorage.getItem('turath_employees');
-        if (empRaw) {
-          const employees = JSON.parse(empRaw);
-          if (Array.isArray(employees)) {
-            employees.forEach((emp: any) => {
-              if (emp.status === 'active' && ['r3', 'r4'].includes(emp.roleId)) {
-                delegateSet.add(emp.name);
-              }
-            });
-          }
-        }
-      } catch {}
-
-      // 2. Load from app_users in localStorage
-      try {
-        const usersRaw = localStorage.getItem('turath_app_users');
-        if (usersRaw) {
-          const users = JSON.parse(usersRaw);
-          if (Array.isArray(users)) {
-            users.forEach((u: any) => {
-              if (u.status === 'active' && ['r3', 'r4'].includes(u.roleId)) {
-                delegateSet.add(u.name);
-              }
-            });
-          }
-        }
-      } catch {}
-
-      // 3. Load unique delegate names from existing orders in Supabase
       try {
         const supabase = createClient();
-        const { data } = await supabase
+        // 1. PRIMARY SOURCE: Load delegates from Supabase profiles table
+        const { data: profileDelegates } = await supabase
+          .from('profiles')
+          .select('full_name, email')
+          .in('role_id', ['r3', 'r4']);
+        if (profileDelegates) {
+          profileDelegates.forEach((p: any) => {
+            const name = p.full_name || p.email?.split('@')[0] || '';
+            if (name) delegateSet.add(name);
+          });
+        }
+        // 2. SECONDARY SOURCE: Also include delegate names from existing orders
+        const { data: orderDelegates } = await supabase
           .from('turath_masr_orders')
           .select('delegate_name')
           .not('delegate_name', 'is', null)
           .not('delegate_name', 'eq', '');
-        if (data) {
-          data.forEach((row: any) => {
+        if (orderDelegates) {
+          orderDelegates.forEach((row: any) => {
             if (row.delegate_name) delegateSet.add(row.delegate_name);
           });
         }
-      } catch {}
-
+      } catch (err) {
+        console.error('Error loading delegates:', err);
+      }
       setDelegates(Array.from(delegateSet).sort());
     };
     loadDelegates();
