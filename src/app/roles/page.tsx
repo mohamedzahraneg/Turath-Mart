@@ -209,18 +209,8 @@ const initialRoles: Role[] = [
   },
 ];
 
-const defaultEmployees: Employee[] = [
-  {
-    id: 'e1',
-    name: 'محمد الزهراني',
-    username: 'admin',
-    password: 'Admin@123',
-    roleId: 'r1',
-    status: 'active',
-    createdAt: '01/01/2026',
-    avatar: '',
-  },
-];
+// No default employees - all employees are loaded from Supabase
+const defaultEmployees: Employee[] = [];
 
 const DAYS_AR = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
 
@@ -238,30 +228,8 @@ function formatSession(iso: string) {
   };
 }
 
-const defaultUsers: AppUser[] = [
-  {
-    id: 'u1',
-    name: 'محمد الزهراني',
-    email: 'manager@turath_masr.com',
-    roleId: 'r1',
-    status: 'active',
-    avatar: 'م',
-    loginCount: 47,
-    logoutCount: 46,
-    lastDevice: 'كمبيوتر',
-    lastLogin: '2026-03-27T09:32:14',
-    sessions: [
-      {
-        id: 's1',
-        userId: 'u1',
-        type: 'login',
-        device: 'كمبيوتر',
-        timestamp: '2026-03-27T09:32:14',
-        ...formatSession('2026-03-27T09:32:14'),
-      },
-    ],
-  },
-];
+// No default users - all users are loaded from Supabase
+const defaultUsers: AppUser[] = [];
 
 const colorMap: Record<string, { bg: string; text: string; border: string; avatar: string }> = {
   purple: {
@@ -1001,63 +969,58 @@ export default function RolesPage() {
   const [appUsers, setAppUsers] = useState<AppUser[]>(defaultUsers);
   const [hydrated, setHydrated] = useState(false);
 
-  // Load persisted data from localStorage after hydration
+  // Load data from Supabase (source of truth) - no more localStorage for employees/users
   useEffect(() => {
     if (typeof window === 'undefined') return;
-
-    // Ensure defaults are seeded if nothing stored
-    const storedEmp = localStorage.getItem(LS_EMPLOYEES);
-    if (!storedEmp || storedEmp === '[]') {
-      saveEmployeesToStorage(defaultEmployees);
-    } else {
-      // Merge: ensure any new default employees are added if missing
+    // Clean up stale localStorage data
+    try { localStorage.removeItem(LS_EMPLOYEES); } catch {}
+    try { localStorage.removeItem(LS_USERS); } catch {}
+    try { localStorage.removeItem(LS_ROLES); } catch {}
+    const loadFromSupabase = async () => {
       try {
-        const parsed: Employee[] = JSON.parse(storedEmp);
-        const existingIds = new Set(parsed.map((e: Employee) => e.id));
-        const missing = defaultEmployees.filter((e) => !existingIds.has(e.id));
-        if (missing.length > 0) {
-          saveEmployeesToStorage([...parsed, ...missing]);
+        const supabase = createClient();
+        if (!supabase) { setHydrated(true); return; }
+        // Load all users from Supabase profiles
+        const { data: profiles, error } = await supabase
+          .from('profiles')
+          .select('id, email, full_name, role, role_id, role_name, permissions, created_at')
+          .order('created_at', { ascending: true });
+        if (!error && profiles && profiles.length > 0) {
+          const avatars = loadAvatars();
+          // Map profiles to Employee format for the employees tab
+          const emps: Employee[] = profiles.map((p: any) => ({
+            id: p.id,
+            name: p.full_name || p.email?.split('@')[0] || 'مستخدم',
+            username: p.email?.split('@')[0] || p.id,
+            password: '••••••••',
+            roleId: p.role_id || 'r6',
+            status: 'active' as const,
+            createdAt: p.created_at ? new Date(p.created_at).toLocaleDateString('en-GB') : '',
+            avatar: avatars[p.id] || '',
+          }));
+          setEmployees(emps);
+          // Map profiles to AppUser format for the users tab
+          const users: AppUser[] = profiles.map((p: any) => ({
+            id: p.id,
+            name: p.full_name || p.email?.split('@')[0] || 'مستخدم',
+            email: p.email || '',
+            roleId: p.role_id || 'r6',
+            status: 'active' as const,
+            avatar: (p.full_name || p.email || 'م').charAt(0).toUpperCase(),
+            loginCount: 0,
+            logoutCount: 0,
+            lastDevice: '—',
+            lastLogin: p.created_at || '',
+            sessions: [],
+          }));
+          setAppUsers(users);
         }
-      } catch {
-        saveEmployeesToStorage(defaultEmployees);
+      } catch (err) {
+        console.error('Error loading from Supabase:', err);
       }
-    }
-
-    // Load roles from localStorage (or use defaults)
-    const storedRolesRaw = localStorage.getItem(LS_ROLES);
-    if (storedRolesRaw) {
-      try {
-        const parsed = JSON.parse(storedRolesRaw);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          // Merge: Only add new roles that are not already in stored
-          const storedIds = new Set(parsed.map((r: any) => r.id));
-          const missing = initialRoles.filter((r) => !storedIds.has(r.id));
-          const finalRoles = [...parsed, ...missing];
-
-          setRoles(finalRoles);
-          saveRolesToStorage(finalRoles);
-        } else {
-          saveRolesToStorage(initialRoles);
-        }
-      } catch {
-        saveRolesToStorage(initialRoles);
-      }
-    } else {
-      // First time: seed defaults
-      saveRolesToStorage(initialRoles);
-    }
-
-    // Load employees + avatars
-    const loadedEmps = loadFromStorage<Employee>(LS_EMPLOYEES, defaultEmployees);
-    const avatars = loadAvatars();
-    const empsWithAvatars = loadedEmps.map((e) => ({ ...e, avatar: avatars[e.id] || '' }));
-    setEmployees(empsWithAvatars);
-
-    // Load users
-    const loadedUsers = loadFromStorage<AppUser>(LS_USERS, defaultUsers);
-    setAppUsers(loadedUsers);
-
-    setHydrated(true);
+      setHydrated(true);
+    };
+    loadFromSupabase();
   }, []);
 
   const [editRole, setEditRole] = useState<Role | null | undefined>(undefined);
