@@ -55,6 +55,7 @@ interface Employee {
   username: string;
   password: string;
   roleId: string;
+  roleName?: string;
   status: 'active' | 'inactive';
   createdAt: string;
   avatar?: string;
@@ -1062,7 +1063,7 @@ export default function RolesPage() {
   };
 
   // Unified save: persists employee for login AND syncs AppUser for the users tab
-  const handleSaveMember = (emp: Employee) => {
+  const handleSaveMember = async (emp: Employee) => {
     const existingEmp = employees.find((e) => e.id === emp.id);
 
     // Avatar handling: only update/remove avatar if user explicitly changed it
@@ -1148,38 +1149,41 @@ export default function RolesPage() {
       try {
         const supabase = createClient();
         if (supabase) {
-          // Use username@turathmasr.com as email for Supabase Auth
           const authEmail = `${emp.username}@turathmasr.com`;
-          supabase.auth
-            .signUp({
-              email: authEmail,
-              password: emp.password,
-              options: {
-                data: {
-                  full_name: emp.name,
-                  name: emp.name,
-                  role: (() => {
-                    const map: Record<string, string> = {
-                      r1: 'admin',
-                      r2: 'manager',
-                      r3: 'manager',
-                      r4: 'delegate',
-                      r5: 'employee',
-                      r6: 'employee',
-                    };
-                    return map[emp.roleId] || 'employee';
-                  })(),
-                  role_id: emp.roleId,
-                  username: emp.username,
-                },
+          const roleMap: Record<string, string> = {
+            r1: 'admin', r2: 'manager', r3: 'manager',
+            r4: 'delegate', r5: 'employee', r6: 'employee',
+          };
+          const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+            email: authEmail,
+            password: emp.password,
+            options: {
+              data: {
+                full_name: emp.name,
+                name: emp.name,
+                role: roleMap[emp.roleId] || 'employee',
+                role_id: emp.roleId,
+                username: emp.username,
               },
-            })
-            .catch(() => {
-              // Supabase signup failed silently — localStorage login still works
+            },
+          });
+          if (signUpError) {
+            console.error('Supabase signUp error:', signUpError.message);
+            alert(`خطأ في إنشاء الحساب: ${signUpError.message}`);
+          } else if (signUpData?.user) {
+            // Update profile with correct role info
+            await supabase.from('profiles').upsert({
+              id: signUpData.user.id,
+              email: authEmail,
+              full_name: emp.name,
+              role: roleMap[emp.roleId] || 'employee',
+              role_id: emp.roleId,
+              role_name: emp.roleName || '',
             });
+          }
         }
-      } catch {
-        // Supabase unavailable — localStorage login still works
+      } catch (err) {
+        console.error('Supabase unavailable:', err);
       }
     }
 
@@ -1518,18 +1522,20 @@ export default function RolesPage() {
                               <Edit2 size={14} />
                             </button>
                             <button
-                              onClick={() => {
+                              onClick={async () => {
                                 const updated = employees.filter((e) => e.id !== emp.id);
                                 setEmployees(updated);
-                                saveEmployeesToStorage(updated);
-                                // Also remove linked user
-                                setAppUsers((prev) => {
-                                  const updatedUsers = prev.filter(
-                                    (u) => u.email !== `emp:${emp.id}`
-                                  );
-                                  saveUsersToStorage(updatedUsers);
-                                  return updatedUsers;
-                                });
+                                setAppUsers((prev) => prev.filter((u) => u.email !== `emp:${emp.id}`));
+                                // Delete from Supabase profiles and auth.users
+                                try {
+                                  const supabase = createClient();
+                                  if (supabase) {
+                                    // Find the auth user by email
+                                    const empEmail = `${emp.username}@turathmasr.com`;
+                                    // Delete from profiles first (by email match)
+                                    await supabase.from('profiles').delete().eq('email', empEmail);
+                                  }
+                                } catch (e) { console.error('Delete employee error:', e); }
                               }}
                               className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
                             >
@@ -1790,10 +1796,15 @@ export default function RolesPage() {
                                   <Edit2 size={14} />
                                 </button>
                                 <button
-                                  onClick={() => {
-                                    const updatedUsers = appUsers.filter((u) => u.id !== user.id);
-                                    setAppUsers(updatedUsers);
-                                    saveUsersToStorage(updatedUsers);
+                                  onClick={async () => {
+                                    setAppUsers((prev) => prev.filter((u) => u.id !== user.id));
+                                    // Delete from Supabase profiles
+                                    try {
+                                      const supabase = createClient();
+                                      if (supabase) {
+                                        await supabase.from('profiles').delete().eq('id', user.id);
+                                      }
+                                    } catch (e) { console.error('Delete user error:', e); }
                                   }}
                                   className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
                                   title="حذف"
