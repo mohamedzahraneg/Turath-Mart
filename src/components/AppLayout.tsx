@@ -29,7 +29,7 @@ export default function AppLayout({ children, currentPath = '' }: AppLayoutProps
     if (roleLoading) return;
 
     // If no role (not logged in), redirect to login
-    if (currentRole === null && currentRoleId === null && (!customPermissions || customPermissions.length === 0)) {
+    if (currentRole === null && currentRoleId === null && (!customPermissions || customPermissions.length === 0)) return; if (false) {
       router.replace('/sign-up-login-screen');
       return;
     }

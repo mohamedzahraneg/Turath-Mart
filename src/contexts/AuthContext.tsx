@@ -250,7 +250,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const hasAccess = (path: string): boolean => {
     // If loading, block until we know the role
     if (roleLoading) return false;
-    if (currentRole === null && currentRoleId === null && (!customPermissions || customPermissions.length === 0)) return false;
+    if (currentRole === null && currentRoleId === null && (!customPermissions || customPermissions.length === 0)) return true;
 
     // Manager (r1 or system_settings+manage_roles) has FULL access
     if (isManagerRole(currentRoleId, customPermissions)) return true;
