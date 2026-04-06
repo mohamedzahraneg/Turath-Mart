@@ -129,13 +129,22 @@ export default function LoginPage() {
         const supabase = createClient();
         const { data: profile } = await supabase
           .from('profiles')
-          .select('role')
+          .select('role, role_id, role_name, permissions')
           .eq('id', authData.user.id)
           .single();
 
         const userRole = profile?.role || 'employee';
-        const finalRoleId =
-          authData.user.user_metadata?.role_id || (userRole === 'admin' ? 'r1' : 'r6');
+        let finalRoleId: string = profile?.role_id || authData.user.user_metadata?.role_id || '';
+        if (!finalRoleId) {
+          if (userRole === 'admin') finalRoleId = 'r1';
+          else if (userRole === 'supervisor') finalRoleId = 'r2';
+          else if (userRole === 'delegate') finalRoleId = 'r4';
+          else finalRoleId = 'r6';
+        }
+        const roleName = profile?.role_name || userRole;
+        const rawPerms = profile?.permissions;
+        const dbPerms: string[] = Array.isArray(rawPerms) ? rawPerms : [];
+        const effectivePerms = dbPerms.length > 0 ? dbPerms : getPermissionsForRoleId(finalRoleId);
 
         if (typeof window !== 'undefined') {
           localStorage.setItem(
@@ -143,14 +152,15 @@ export default function LoginPage() {
             JSON.stringify({
               email: authData.user.email,
               name: authData.user.user_metadata?.full_name || 'مستخدم',
-              role: userRole,
+              role: roleName,
               roleId: finalRoleId,
+              customPermissions: effectivePerms.length > 0 ? effectivePerms : null,
             })
           );
         }
 
         toast.success(`مرحباً! تم تسجيل الدخول — ${deviceType}`);
-        const permissions = getPermissionsForRoleId(finalRoleId);
+        const permissions = effectivePerms.length > 0 ? effectivePerms : getPermissionsForRoleId(finalRoleId);
         const landingPage = getInitialRoute(permissions);
 
         setTimeout(() => {

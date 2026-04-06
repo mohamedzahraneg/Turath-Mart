@@ -14,7 +14,7 @@ interface AppLayoutProps {
 }
 
 export default function AppLayout({ children, currentPath = '' }: AppLayoutProps) {
-  const { currentRole, currentRoleId, customPermissions, hasAccess, roleLoading } = useAuth();
+  const { currentRole, currentRoleId, customPermissions, hasAccess, roleLoading, user, loading } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const activePath = currentPath || pathname || '';
@@ -23,34 +23,39 @@ export default function AppLayout({ children, currentPath = '' }: AppLayoutProps
     if (!activePath) return;
 
     // Skip guard for login/public pages
-    if (activePath.startsWith('/sign-up-login-screen') || activePath.startsWith('/track')) return;
+    if (
+      activePath.startsWith('/sign-up-login-screen') ||
+      activePath.startsWith('/track') ||
+      activePath === '/'
+    ) return;
 
-    // Wait until role is loaded from localStorage before enforcing access
-    if (roleLoading) return;
+    // Wait until auth and role are fully loaded
+    if (loading || roleLoading) return;
 
-    // If no role (not logged in), redirect to login
-    if (currentRole === null && currentRoleId === null && (!customPermissions || customPermissions.length === 0)) return; if (false) {
+    // If not logged in, redirect to login
+    if (!user && !currentRoleId) {
       router.replace('/sign-up-login-screen');
       return;
     }
 
-    // Manager/Admin has FULL access — skip all route guards
+    // Manager/Admin has FULL access
     if (currentRoleId === 'r1') return;
 
+    // Check route access
     if (!hasAccess(activePath)) {
-      // Redirect to the default route based on permissions
       let permissions: string[] = [];
-      if (customPermissions && customPermissions.length > 0) {
+      if (customPermissions && Array.isArray(customPermissions) && customPermissions.length > 0) {
         permissions = customPermissions;
       } else if (currentRoleId) {
         permissions = getPermissionsForRoleId(currentRoleId);
       }
-      
-      const defaultRoute =
-        permissions.length > 0 ? getDefaultRouteForPermissions(permissions) : '/shipping';
+
+      const defaultRoute = permissions.length > 0
+        ? getDefaultRouteForPermissions(permissions)
+        : '/shipping';
       router.replace(defaultRoute);
     }
-  }, [activePath, currentRole, currentRoleId, customPermissions, hasAccess, roleLoading, router]);
+  }, [activePath, currentRole, currentRoleId, customPermissions, hasAccess, roleLoading, loading, user, router]);
 
   return (
     <div className="flex min-h-screen bg-[hsl(210,20%,97%)]" dir="rtl">

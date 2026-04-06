@@ -5,7 +5,6 @@ import { createClient } from '../lib/supabase/client';
 
 export type UserRole = 'manager' | 'data_entry' | 'shipping' | 'supervisor' | string;
 
-// Permission → route mapping
 const PERMISSION_ROUTE_MAP: Record<string, string[]> = {
   view_dashboard: ['/dashboard'],
   view_orders: ['/orders-management'],
@@ -13,6 +12,7 @@ const PERMISSION_ROUTE_MAP: Record<string, string[]> = {
   edit_orders: ['/orders-management'],
   delete_orders: ['/orders-management'],
   update_status: ['/orders-management'],
+  orders_manage: ['/orders-management'],
   view_shipping: ['/shipping'],
   manage_shipping: ['/shipping'],
   assign_courier: ['/shipping'],
@@ -28,42 +28,26 @@ const PERMISSION_ROUTE_MAP: Record<string, string[]> = {
   system_settings: ['/settings'],
 };
 
-// All permissions list (full access)
 const ALL_PERMISSIONS = Object.keys(PERMISSION_ROUTE_MAP);
 
-// Default roles — always available as fallback when localStorage is empty
 const DEFAULT_ROLES: Array<{ id: string; name: string; permissions: string[] }> = [
   { id: 'r1', name: 'مدير النظام', permissions: ALL_PERMISSIONS },
   {
     id: 'r2',
     name: 'مشرف النظام',
     permissions: [
-      'view_dashboard',
-      'view_orders',
-      'edit_orders',
-      'update_status',
-      'view_shipping',
-      'manage_shipping',
-      'view_inventory',
-      'view_reports',
-      'export_reports',
-      'manage_users',
+      'view_dashboard', 'view_orders', 'edit_orders', 'update_status',
+      'view_shipping', 'manage_shipping', 'view_inventory', 'view_reports',
+      'export_reports', 'manage_users',
     ],
   },
   {
     id: 'r3',
     name: 'مشرف شحن',
     permissions: [
-      'view_dashboard',
-      'view_orders',
-      'create_orders',
-      'edit_orders',
-      'update_status',
-      'view_shipping',
-      'manage_shipping',
-      'assign_courier',
-      'view_inventory',
-      'view_reports',
+      'view_dashboard', 'view_orders', 'create_orders', 'edit_orders',
+      'update_status', 'view_shipping', 'manage_shipping', 'assign_courier',
+      'view_inventory', 'view_reports',
     ],
   },
   { id: 'r4', name: 'مندوب شحن', permissions: ['view_orders', 'update_status', 'view_shipping'] },
@@ -71,14 +55,8 @@ const DEFAULT_ROLES: Array<{ id: string; name: string; permissions: string[] }> 
     id: 'r5',
     name: 'مدير خدمة عملاء',
     permissions: [
-      'view_dashboard',
-      'view_orders',
-      'view_shipping',
-      'view_reports',
-      'export_reports',
-      'view_customers',
-      'manage_customers',
-      'customer_support',
+      'view_dashboard', 'view_orders', 'view_shipping', 'view_reports',
+      'export_reports', 'view_customers', 'manage_customers', 'customer_support',
     ],
   },
   {
@@ -88,16 +66,9 @@ const DEFAULT_ROLES: Array<{ id: string; name: string; permissions: string[] }> 
   },
 ];
 
-// Default redirect per first available permission
 const PERMISSION_DEFAULT_ROUTE_PRIORITY = [
-  'view_dashboard',
-  'view_orders',
-  'view_shipping',
-  'view_reports',
-  'view_inventory',
-  'view_customers',
-  'manage_users',
-  'system_settings',
+  'view_dashboard', 'view_orders', 'view_shipping', 'view_reports',
+  'view_inventory', 'view_customers', 'manage_users', 'system_settings',
 ];
 
 export function getDefaultRouteForPermissions(permissions: string[]): string {
@@ -110,7 +81,6 @@ export function getDefaultRouteForPermissions(permissions: string[]): string {
   return '/shipping';
 }
 
-// Load roles from localStorage, merge with defaults
 function loadRoles(): Array<{ id: string; name: string; permissions: string[] }> {
   if (typeof window === 'undefined') return DEFAULT_ROLES;
   try {
@@ -118,32 +88,28 @@ function loadRoles(): Array<{ id: string; name: string; permissions: string[] }>
     if (!raw) return DEFAULT_ROLES;
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed) || parsed.length === 0) return DEFAULT_ROLES;
-    // Merge: stored roles take priority, add defaults not in stored
     const storedIds = new Set(parsed.map((r: any) => r.id));
-    const merged = [...parsed, ...DEFAULT_ROLES.filter((r) => !storedIds.has(r.id))];
-    return merged;
+    return [...parsed, ...DEFAULT_ROLES.filter((r) => !storedIds.has(r.id))];
   } catch {
     return DEFAULT_ROLES;
   }
 }
 
-// Get permissions for a roleId
 export function getPermissionsForRoleId(roleId: string): string[] {
+  if (!roleId) return [];
   const roles = loadRoles();
   const role = roles.find((r) => r.id === roleId);
   return role?.permissions ?? [];
 }
 
-// Get allowed routes for a roleId or custom permissions
 function getAllowedRoutes(roleId: string | null, customPermissions: string[] | null): string[] {
   let permissions: string[] = [];
-  
-  if (customPermissions && customPermissions.length > 0) {
+  if (customPermissions && Array.isArray(customPermissions) && customPermissions.length > 0) {
     permissions = customPermissions;
   } else if (roleId) {
     permissions = getPermissionsForRoleId(roleId);
   }
-  const routes = new Set<string>(['/track']); // track always allowed
+  const routes = new Set<string>(['/track']);
   for (const perm of permissions) {
     const permRoutes = PERMISSION_ROUTE_MAP[perm] ?? [];
     permRoutes.forEach((r) => routes.add(r));
@@ -152,16 +118,13 @@ function getAllowedRoutes(roleId: string | null, customPermissions: string[] | n
 }
 
 function isManagerRole(roleId: string | null, customPermissions: string[] | null): boolean {
-  // Only true Admins (r1) should bypass all security
   if (roleId === 'r1') return true;
-  
   let permissions: string[] = [];
-  if (customPermissions && customPermissions.length > 0) {
+  if (customPermissions && Array.isArray(customPermissions) && customPermissions.length > 0) {
     permissions = customPermissions;
   } else if (roleId) {
     permissions = getPermissionsForRoleId(roleId);
   }
-  
   return permissions.includes('manage_roles') || permissions.includes('system_settings');
 }
 
@@ -204,26 +167,31 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [customPermissions, setCustomPermissions] = useState<string[] | null>(null);
   const [roleLoading, setRoleLoading] = useState(true);
 
-  // 1. Initial load from localStorage (for fast UI)
+  // 1. Load from localStorage for fast initial render
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem('current_user');
-      if (stored) {
-        try {
+      try {
+        const stored = localStorage.getItem('current_user');
+        if (stored) {
           const parsed = JSON.parse(stored);
           setCurrentRole(parsed.role || null);
           setCurrentRoleId(parsed.roleId || null);
-          setCustomPermissions(parsed.customPermissions || null);
-        } catch {}
+          // SAFE: always ensure permissions is array or null
+          const perms = parsed.customPermissions;
+          setCustomPermissions(Array.isArray(perms) ? perms : null);
+        }
+      } catch {
+        // ignore parse errors
       }
     }
   }, []);
 
-  // 2. Sync with Supabase Session
+  // 2. Sync Supabase session
   useEffect(() => {
     const supabase = createClient();
     if (!supabase) {
       setLoading(false);
+      setRoleLoading(false);
       return;
     }
 
@@ -242,7 +210,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     return () => subscription.unsubscribe();
   }, []);
 
-  // 3. Sync Profile & Permissions from Supabase (Source of Truth)
+  // 3. Sync profile from Supabase (source of truth)
   useEffect(() => {
     const syncProfile = async () => {
       if (!user) {
@@ -252,7 +220,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
       try {
         const supabase = createClient();
-        if (!supabase) return;
+        if (!supabase) {
+          setRoleLoading(false);
+          return;
+        }
 
         const { data: profile, error } = await supabase
           .from('profiles')
@@ -261,24 +232,39 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           .single();
 
         if (!error && profile) {
-          const perms = profile.permissions || [];
-          const roleId = profile.role_id || 'r4'; // Default to shipping if none
-          const roleName = profile.role_name || 'موظف';
+          // SAFE: always ensure permissions is array
+          const rawPerms = profile.permissions;
+          const perms: string[] = Array.isArray(rawPerms) ? rawPerms : [];
+
+          // Determine role_id: use profile.role_id if exists, else map from role field
+          let roleId = profile.role_id || null;
+          if (!roleId) {
+            if (profile.role === 'admin') roleId = 'r1';
+            else if (profile.role === 'supervisor') roleId = 'r2';
+            else if (profile.role === 'delegate') roleId = 'r4';
+            else roleId = 'r6';
+          }
+
+          const roleName = profile.role_name || profile.role || 'موظف';
 
           setCurrentRole(roleName);
           setCurrentRoleId(roleId);
-          setCustomPermissions(perms);
+          // If no custom permissions in DB, use role-based permissions
+          const effectivePerms = perms.length > 0 ? perms : getPermissionsForRoleId(roleId);
+          setCustomPermissions(effectivePerms.length > 0 ? effectivePerms : null);
 
-          // Update localStorage to keep it in sync
-          const stored = localStorage.getItem('current_user');
-          if (stored) {
-            const parsed = JSON.parse(stored);
+          // Update localStorage
+          try {
+            const stored = localStorage.getItem('current_user');
+            const parsed = stored ? JSON.parse(stored) : {};
             localStorage.setItem('current_user', JSON.stringify({
               ...parsed,
               role: roleName,
               roleId: roleId,
-              customPermissions: perms
+              customPermissions: effectivePerms.length > 0 ? effectivePerms : null,
             }));
+          } catch {
+            // ignore storage errors
           }
         }
       } catch (err) {
@@ -292,16 +278,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   }, [user]);
 
   const hasAccess = (path: string): boolean => {
-    // If loading, block until we know the role
     if (roleLoading) return false;
-    
-    // If not logged in, no access
     if (!user && !currentRoleId) return false;
-
-    // Manager (r1 or system_settings+manage_roles) has FULL access
     if (isManagerRole(currentRoleId, customPermissions)) return true;
-
-    // Permission-based access
     const allowedRoutes = getAllowedRoutes(currentRoleId, customPermissions);
     return allowedRoutes.some(
       (route) => path === route || path.startsWith(route + '/') || path.startsWith(route + '?')
@@ -353,7 +332,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           });
         }
       }
-    } catch (e) { console.error('Logout session log error:', e); }
+    } catch (e) {
+      console.error('Logout session log error:', e);
+    }
 
     if (typeof window !== 'undefined') {
       localStorage.removeItem('current_user');
@@ -361,7 +342,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     setCurrentRole(null);
     setCurrentRoleId(null);
     setCustomPermissions(null);
-    
+
     const supabase = createClient();
     if (supabase) {
       await supabase.auth.signOut();
