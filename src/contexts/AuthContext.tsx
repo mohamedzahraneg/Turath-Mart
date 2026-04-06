@@ -158,6 +158,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   // 1. Load from localStorage for fast initial render
   useEffect(() => {
     if (typeof window !== 'undefined') {
+      // Clean up stale role data from localStorage (roles are now stored in Supabase)
+      try { localStorage.removeItem('turath_roles'); } catch {}
       try {
         const stored = localStorage.getItem('current_user');
         if (stored) {
@@ -347,12 +349,16 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     setCustomPermissions(null);
     // 3. Clear ALL session-related localStorage keys
     if (typeof window !== 'undefined') {
+      // Clear ALL localStorage keys to prevent stale data from leaking to next session
       const SESSION_KEYS = [
         'current_user',
         'turath_employees',
         'turath_app_users',
         'turath_masr_orders',
         'turath_masr_audit_logs',
+        'turath_roles',
+        'turath_users',
+        'turath_avatars',
       ];
       SESSION_KEYS.forEach((key) => {
         try { localStorage.removeItem(key); } catch {}

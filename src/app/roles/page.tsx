@@ -1071,13 +1071,35 @@ export default function RolesPage() {
   const [expandedUser, setExpandedUser] = useState<string | null>(null);
   const [expandedUserPerms, setExpandedUserPerms] = useState<string | null>(null);
 
-  const handleSaveRole = (role: Role) => {
+  const handleSaveRole = async (role: Role) => {
+    // 1. Update local state and localStorage
     setRoles((prev) => {
       const exists = prev.find((r) => r.id === role.id);
       const updated = exists ? prev.map((r) => (r.id === role.id ? role : r)) : [...prev, role];
       saveRolesToStorage(updated);
       return updated;
     });
+    // 2. CRITICAL: Save permissions to Supabase for ALL users with this role_id
+    // This ensures permissions persist across sessions and browser cache clears
+    try {
+      const supabase = createClient();
+      if (supabase) {
+        const { error } = await supabase
+          .from('profiles')
+          .update({
+            permissions: role.permissions,
+            role_name: role.name,
+          })
+          .eq('role_id', role.id);
+        if (error) {
+          console.error('Failed to save role permissions to Supabase:', error);
+        } else {
+          console.log(`Role ${role.id} permissions saved to Supabase for all users with this role`);
+        }
+      }
+    } catch (err) {
+      console.error('Error saving role to Supabase:', err);
+    }
     setEditRole(undefined);
   };
 
