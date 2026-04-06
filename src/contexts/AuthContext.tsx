@@ -235,18 +235,21 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
           const roleName = profile.role_name || profile.role || 'موظف';
 
+          // CRITICAL: Reset state first to clear any stale data from previous session
+          setCurrentRole(null);
+          setCurrentRoleId(null);
+          setCustomPermissions(null);
+
+          // Now set the correct values for THIS user
           setCurrentRole(roleName);
           setCurrentRoleId(roleId);
           // If no custom permissions in DB, use role-based permissions
           const effectivePerms = perms.length > 0 ? perms : getPermissionsForRoleId(roleId);
           setCustomPermissions(effectivePerms.length > 0 ? effectivePerms : null);
 
-          // Update localStorage
+          // Overwrite localStorage with FRESH data (never merge with stale data)
           try {
-            const stored = localStorage.getItem('current_user');
-            const parsed = stored ? JSON.parse(stored) : {};
             localStorage.setItem('current_user', JSON.stringify({
-              ...parsed,
               role: roleName,
               roleId: roleId,
               customPermissions: effectivePerms.length > 0 ? effectivePerms : null,
@@ -306,6 +309,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   };
 
   const signOut = async () => {
+    // 1. Log the session end
     try {
       const stored = typeof window !== 'undefined' ? localStorage.getItem('current_user') : null;
       if (stored) {
@@ -327,17 +331,33 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     } catch (e) {
       console.error('Logout session log error:', e);
     }
-
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem('current_user');
-    }
+    // 2. IMMEDIATELY reset ALL React state to prevent stale data leaking to next login
+    setUser(null);
+    setSession(null);
     setCurrentRole(null);
     setCurrentRoleId(null);
     setCustomPermissions(null);
-
-    const supabase = createClient();
-    if (supabase) {
-      await supabase.auth.signOut();
+    // 3. Clear ALL session-related localStorage keys
+    if (typeof window !== 'undefined') {
+      const SESSION_KEYS = [
+        'current_user',
+        'turath_employees',
+        'turath_app_users',
+        'turath_masr_orders',
+        'turath_masr_audit_logs',
+      ];
+      SESSION_KEYS.forEach((key) => {
+        try { localStorage.removeItem(key); } catch {}
+      });
+    }
+    // 4. Sign out from Supabase
+    try {
+      const supabase = createClient();
+      if (supabase) {
+        await supabase.auth.signOut();
+      }
+    } catch (e) {
+      console.error('Supabase signOut error:', e);
     }
   };
 

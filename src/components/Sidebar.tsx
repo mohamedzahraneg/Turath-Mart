@@ -113,7 +113,7 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
   const [userName, setUserName] = useState('المستخدم');
   const [userRoleLabel, setUserRoleLabel] = useState('موظف');
   const [showNotifications, setShowNotifications] = useState(false);
-  const { currentRole, currentRoleId, hasAccess } = useAuth();
+  const { currentRole, currentRoleId, hasAccess, signOut } = useAuth();
   const { newOrdersCount, unreadCount } = useNotifications();
 
   // Only True Admin (r1) sees EVERYTHING without filtering
@@ -145,9 +145,17 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
     } catch {}
   }, [currentRole, currentRoleId]);
 
-  const handleLogout = () => {
-    localStorage.removeItem('current_user');
-    window.location.href = '/sign-up-login-screen';
+  const handleLogout = async () => {
+    try {
+      // Use AuthContext signOut which clears ALL session data properly
+      await signOut();
+    } catch (e) {
+      // Fallback: clear manually if signOut fails
+      try { localStorage.removeItem('current_user'); } catch {}
+    } finally {
+      // Always redirect to login
+      window.location.href = '/sign-up-login-screen';
+    }
   };
 
   return (
