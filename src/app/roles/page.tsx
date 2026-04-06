@@ -1148,8 +1148,8 @@ export default function RolesPage() {
       try {
         const supabase = createClient();
         if (supabase) {
-          // Use username@turathmasr.internal as email for Supabase Auth
-          const authEmail = `${emp.username}@turathmasr.internal`;
+          // Use username@turathmasr.com as email for Supabase Auth
+          const authEmail = `${emp.username}@turathmasr.com`;
           supabase.auth
             .signUp({
               email: authEmail,

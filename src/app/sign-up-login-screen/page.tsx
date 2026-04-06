@@ -122,7 +122,7 @@ export default function LoginPage() {
           if (identifier.toLowerCase() === 'admin') {
             identifier = 'zahran@turathmasr.com';
           } else {
-            identifier = `${identifier}@turathmasr.internal`;
+            identifier = `${identifier}@turathmasr.com`;
           }
         }
         const authData = await signIn(identifier, data.password);
