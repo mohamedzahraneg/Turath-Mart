@@ -1,4 +1,5 @@
 'use client';
+import { useAuth } from "@/contexts/AuthContext";
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   Search,
@@ -192,6 +193,7 @@ export default function OrdersTableSection() {
   const [productFilter, setProductFilter] = useState('الكل');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+  const { user } = useAuth();
   const [sortField, setSortField] = useState<SortField>('orderNum');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
@@ -708,7 +710,7 @@ export default function OrdersTableSection() {
         </div>
 
         {/* Bulk action bar */}
-        {selectedRows.size > 0 && (
+        {selectedRows.size > 0 && user?.permissions.includes("orders_manage") && (
           <div className="bg-[hsl(var(--primary))] text-white px-4 py-3 flex items-center justify-between slide-up">
             <span className="text-sm font-semibold">تم تحديد {selectedRows.size} أوردر</span>
             <div className="flex gap-2">
