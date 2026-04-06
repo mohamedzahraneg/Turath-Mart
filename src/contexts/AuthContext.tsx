@@ -82,17 +82,10 @@ export function getDefaultRouteForPermissions(permissions: string[]): string {
 }
 
 function loadRoles(): Array<{ id: string; name: string; permissions: string[] }> {
-  if (typeof window === 'undefined') return DEFAULT_ROLES;
-  try {
-    const raw = localStorage.getItem('turath_roles');
-    if (!raw) return DEFAULT_ROLES;
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed) || parsed.length === 0) return DEFAULT_ROLES;
-    const storedIds = new Set(parsed.map((r: any) => r.id));
-    return [...parsed, ...DEFAULT_ROLES.filter((r) => !storedIds.has(r.id))];
-  } catch {
-    return DEFAULT_ROLES;
-  }
+  // SECURITY FIX: Always use DEFAULT_ROLES from code.
+  // Do NOT load from localStorage - roles can be tampered with client-side.
+  // Role permissions are defined server-side in DEFAULT_ROLES only.
+  return DEFAULT_ROLES;
 }
 
 export function getPermissionsForRoleId(roleId: string): string[] {
@@ -118,14 +111,9 @@ function getAllowedRoutes(roleId: string | null, customPermissions: string[] | n
 }
 
 function isManagerRole(roleId: string | null, customPermissions: string[] | null): boolean {
-  if (roleId === 'r1') return true;
-  let permissions: string[] = [];
-  if (customPermissions && Array.isArray(customPermissions) && customPermissions.length > 0) {
-    permissions = customPermissions;
-  } else if (roleId) {
-    permissions = getPermissionsForRoleId(roleId);
-  }
-  return permissions.includes('manage_roles') || permissions.includes('system_settings');
+  // ONLY r1 (مدير النظام) has full unrestricted access
+  // All other roles - even if they have manage_roles or system_settings - are restricted to their allowed routes
+  return roleId === 'r1';
 }
 
 interface AuthContextType {
@@ -278,9 +266,13 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   }, [user]);
 
   const hasAccess = (path: string): boolean => {
-    if (roleLoading) return false;
+    // While loading, don't block - return true to avoid redirect loops
+    if (loading || roleLoading) return true;
+    // Not logged in at all
     if (!user && !currentRoleId) return false;
-    if (isManagerRole(currentRoleId, customPermissions)) return true;
+    // r1 = full admin, unrestricted access
+    if (currentRoleId === 'r1') return true;
+    // All other roles: check allowed routes based on their permissions
     const allowedRoutes = getAllowedRoutes(currentRoleId, customPermissions);
     return allowedRoutes.some(
       (route) => path === route || path.startsWith(route + '/') || path.startsWith(route + '?')

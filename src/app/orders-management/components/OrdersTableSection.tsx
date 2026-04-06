@@ -22,6 +22,7 @@ import StatusUpdateModal from './StatusUpdateModal';
 import OrderDetailModal from './OrderDetailModal';
 import AuditLogModal from './AuditLogModal';
 import { createClient } from '@/lib/supabase/client';
+import { useAuth, getPermissionsForRoleId } from '@/contexts/AuthContext';
 
 interface Order {
   id: string;
@@ -179,27 +180,18 @@ export default function OrdersTableSection() {
   const [liveUpdateCount, setLiveUpdateCount] = useState(0);
   const [lastUpdateTime, setLastUpdateTime] = useState<string | null>(null);
 
-  // --- صلاحيات المستخدم (آمن تماماً - لا يسبب أي خطأ) ---
-  const [canManageOrders, setCanManageOrders] = useState(false);
-  const [canViewDelegates, setCanViewDelegates] = useState(false);
-
-  useEffect(() => {
-    try {
-      const userData = localStorage.getItem('current_user');
-      if (userData) {
-        const user = JSON.parse(userData);
-        const role = (user.role || '').toLowerCase();
-        const permissions: string[] = Array.isArray(user.customPermissions) ? user.customPermissions : (Array.isArray(user.permissions) ? user.permissions : []);
-        const roleId = user.roleId || '';
-        const isAdminOrManager = role === 'admin' || role === 'manager' || role === 'supervisor' || roleId === 'r1' || roleId === 'r2' || roleId === 'r3';
-        setCanManageOrders(isAdminOrManager || permissions.includes('orders_manage'));
-        setCanViewDelegates(isAdminOrManager || permissions.includes('view_delegates'));
-      }
-    } catch {
-      setCanManageOrders(false);
-      setCanViewDelegates(false);
-    }
-  }, []);
+  // --- صلاحيات المستخدم (من AuthContext - المصدر الموثوق) ---
+  const { currentRoleId, customPermissions: authPermissions } = useAuth();
+  const canManageOrders = (() => {
+    if (currentRoleId === 'r1' || currentRoleId === 'r2' || currentRoleId === 'r3') return true;
+    const perms = Array.isArray(authPermissions) ? authPermissions : getPermissionsForRoleId(currentRoleId || '');
+    return perms.includes('orders_manage') || perms.includes('edit_orders') || perms.includes('delete_orders');
+  })();
+  const canViewDelegates = (() => {
+    if (currentRoleId === 'r1' || currentRoleId === 'r2' || currentRoleId === 'r3') return true;
+    const perms = Array.isArray(authPermissions) ? authPermissions : getPermissionsForRoleId(currentRoleId || '');
+    return perms.includes('view_delegates') || perms.includes('manage_shipping') || perms.includes('assign_courier');
+  })();
 
   const loadOrders = useCallback(async () => {
     try {
