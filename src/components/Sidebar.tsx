@@ -122,49 +122,57 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
 
   const isActive = (href: string) => currentPath === href || currentPath.startsWith(href);
 
+  // Get user name and role from Supabase profile (no localStorage)
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem('current_user');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        // Try multiple sources for name
-        const name = parsed?.name || parsed?.email?.split('@')[0] || 
-                     user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'المستخدم';
-        setUserName(name);
-        
-        // Determine role label
-        const roleId = parsed?.roleId || currentRoleId;
-        const roleName = parsed?.role || currentRole;
-        
-        if (roleId && ROLE_LABELS[roleId]) {
-          setUserRoleLabel(ROLE_LABELS[roleId]);
-        } else if (roleName && ROLE_LABELS[roleName]) {
-          setUserRoleLabel(ROLE_LABELS[roleName]);
+    if (!user) {
+      setUserName('المستخدم');
+      setUserRoleLabel('موظف');
+      return;
+    }
+    // Fetch name from Supabase profile
+    const fetchProfile = async () => {
+      try {
+        const supabase = (await import('@/lib/supabase/client')).createClient();
+        if (!supabase) return;
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('full_name, role_name, role_id')
+          .eq('id', user.id)
+          .single();
+        if (profile) {
+          const name = profile.full_name || user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'المستخدم';
+          setUserName(name);
+          const roleId = profile.role_id || currentRoleId;
+          if (roleId && ROLE_LABELS[roleId]) {
+            setUserRoleLabel(ROLE_LABELS[roleId]);
+          } else {
+            setUserRoleLabel(profile.role_name || currentRole || 'موظف');
+          }
         } else {
-          setUserRoleLabel(roleName || 'موظف');
+          // Fallback to user metadata
+          const name = user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'المستخدم';
+          setUserName(name);
+          if (currentRoleId && ROLE_LABELS[currentRoleId]) {
+            setUserRoleLabel(ROLE_LABELS[currentRoleId]);
+          } else {
+            setUserRoleLabel(currentRole || 'موظف');
+          }
         }
-      } else if (user) {
-        // Fallback: use Supabase user data directly if localStorage is empty
+      } catch {
         const name = user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'المستخدم';
         setUserName(name);
-        if (currentRoleId && ROLE_LABELS[currentRoleId]) {
-          setUserRoleLabel(ROLE_LABELS[currentRoleId]);
-        } else {
-          setUserRoleLabel(currentRole || 'موظف');
-        }
+        setUserRoleLabel(currentRole || 'موظف');
       }
-    } catch {}
+    };
+    fetchProfile();
   }, [currentRole, currentRoleId, user]);
 
   const handleLogout = async () => {
     try {
-      // Use AuthContext signOut which clears ALL session data properly
       await signOut();
     } catch (e) {
-      // Fallback: clear manually if signOut fails
-      try { localStorage.removeItem('current_user'); } catch {}
+      console.error('Logout error:', e);
     } finally {
-      // Always redirect to login
       window.location.href = '/sign-up-login-screen';
     }
   };

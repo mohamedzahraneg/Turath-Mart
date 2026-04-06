@@ -146,18 +146,7 @@ export default function LoginPage() {
         const dbPerms: string[] = Array.isArray(rawPerms) ? rawPerms : [];
         const effectivePerms = dbPerms.length > 0 ? dbPerms : getPermissionsForRoleId(finalRoleId);
 
-        if (typeof window !== 'undefined') {
-          localStorage.setItem(
-            'current_user',
-            JSON.stringify({
-              email: authData.user.email,
-              name: profile?.full_name || authData.user.user_metadata?.full_name || authData.user.email?.split('@')[0] || 'مستخدم',
-              role: roleName,
-              roleId: finalRoleId,
-              customPermissions: effectivePerms.length > 0 ? effectivePerms : null,
-            })
-          );
-        }
+        // No localStorage needed - AuthContext reads from Supabase directly
 
         toast.success(`مرحباً! تم تسجيل الدخول — ${deviceType}`);
         const permissions = effectivePerms.length > 0 ? effectivePerms : getPermissionsForRoleId(finalRoleId);

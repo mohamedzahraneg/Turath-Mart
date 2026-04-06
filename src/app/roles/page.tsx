@@ -288,13 +288,9 @@ const LS_USERS = 'turath_users';
 const LS_AVATARS = 'turath_avatars';
 const LS_ROLES = 'turath_roles';
 
-function saveRolesToStorage(roles: Role[]) {
-  if (typeof window === 'undefined') return;
-  try {
-    localStorage.setItem(LS_ROLES, JSON.stringify(roles));
-  } catch {
-    // storage unavailable
-  }
+function saveRolesToStorage(_roles: Role[]) {
+  // No-op: roles are saved to Supabase only via handleSaveRole
+  return;
 }
 
 function loadAvatars(): Record<string, string> {
@@ -327,52 +323,19 @@ function removeAvatar(empId: string) {
   } catch {}
 }
 
-function loadFromStorage<T>(key: string, fallback: T[]): T[] {
-  if (typeof window === 'undefined') return fallback;
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) && parsed.length > 0 ? parsed : fallback;
-  } catch {
-    return fallback;
-  }
+function loadFromStorage<T>(_key: string, fallback: T[]): T[] {
+  // No-op: all data comes from Supabase
+  return fallback;
 }
 
-function saveEmployeesToStorage(employees: Employee[]) {
-  if (typeof window === 'undefined') return;
-  try {
-    // Strip avatar (base64) to avoid quota exceeded — avatars saved separately in LS_AVATARS
-    const lightweight = employees.map(({ avatar, ...rest }) => ({ ...rest, avatar: '' }));
-    localStorage.setItem(LS_EMPLOYEES, JSON.stringify(lightweight));
-  } catch {
-    try {
-      const minimal = employees.map(
-        ({ id, username, password, roleId, status, name, createdAt }) => ({
-          id,
-          username,
-          password,
-          roleId,
-          status,
-          name,
-          createdAt,
-          avatar: '',
-        })
-      );
-      localStorage.setItem(LS_EMPLOYEES, JSON.stringify(minimal));
-    } catch {
-      // storage unavailable
-    }
-  }
+function saveEmployeesToStorage(_employees: Employee[]) {
+  // No-op: employees are loaded from Supabase profiles
+  return;
 }
 
-async function saveUsersToStorage(users: AppUser[]) {
-  if (typeof window === 'undefined') return;
-  try {
-    localStorage.setItem(LS_USERS, JSON.stringify(users));
-  } catch (err) {
-    console.error('Error saving users to storage:', err);
-  }
+async function saveUsersToStorage(_users: AppUser[]) {
+  // No-op: users are loaded from Supabase profiles
+  return;
 }
 // ─── Device Icon ───────────────────────────────────────────────────────────────
 function DeviceIcon({ device, size = 14 }: { device?: string; size?: number }) {

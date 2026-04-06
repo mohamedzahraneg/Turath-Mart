@@ -1,21 +1,20 @@
 'use client';
+import React, { createContext, useContext, useState, useEffect } from 'react';
+import { createClient } from '@/lib/supabase/client';
 
-import { createContext, useContext, useEffect, useState } from 'react';
-import { createClient } from '../lib/supabase/client';
-
-export type UserRole = 'manager' | 'data_entry' | 'shipping' | 'supervisor' | string;
-
+// ─── Permission → Route mapping ────────────────────────────────────────────────
 const PERMISSION_ROUTE_MAP: Record<string, string[]> = {
   view_dashboard: ['/dashboard'],
   view_orders: ['/orders-management'],
   create_orders: ['/orders-management'],
   edit_orders: ['/orders-management'],
   delete_orders: ['/orders-management'],
-  update_status: ['/orders-management'],
   orders_manage: ['/orders-management'],
+  update_status: ['/orders-management'],
   view_shipping: ['/shipping'],
   manage_shipping: ['/shipping'],
   assign_courier: ['/shipping'],
+  view_delegates: ['/shipping'],
   view_inventory: ['/inventory'],
   edit_inventory: ['/inventory'],
   view_reports: ['/reports'],
@@ -27,9 +26,9 @@ const PERMISSION_ROUTE_MAP: Record<string, string[]> = {
   customer_support: ['/crm'],
   system_settings: ['/settings'],
 };
-
 const ALL_PERMISSIONS = Object.keys(PERMISSION_ROUTE_MAP);
 
+// ─── Default role definitions (source of truth for role → permissions mapping) ─
 const DEFAULT_ROLES: Array<{ id: string; name: string; permissions: string[] }> = [
   { id: 'r1', name: 'مدير النظام', permissions: ALL_PERMISSIONS },
   {
@@ -81,17 +80,9 @@ export function getDefaultRouteForPermissions(permissions: string[]): string {
   return '/shipping';
 }
 
-function loadRoles(): Array<{ id: string; name: string; permissions: string[] }> {
-  // SECURITY FIX: Always use DEFAULT_ROLES from code.
-  // Do NOT load from localStorage - roles can be tampered with client-side.
-  // Role permissions are defined server-side in DEFAULT_ROLES only.
-  return DEFAULT_ROLES;
-}
-
 export function getPermissionsForRoleId(roleId: string): string[] {
   if (!roleId) return [];
-  const roles = loadRoles();
-  const role = roles.find((r) => r.id === roleId);
+  const role = DEFAULT_ROLES.find((r) => r.id === roleId);
   return role?.permissions ?? [];
 }
 
@@ -110,12 +101,7 @@ function getAllowedRoutes(roleId: string | null, customPermissions: string[] | n
   return Array.from(routes);
 }
 
-function isManagerRole(roleId: string | null, customPermissions: string[] | null): boolean {
-  // ONLY r1 (مدير النظام) has full unrestricted access
-  // All other roles - even if they have manage_roles or system_settings - are restricted to their allowed routes
-  return roleId === 'r1';
-}
-
+// ─── Auth Context Interface ────────────────────────────────────────────────────
 interface AuthContextType {
   user: any;
   session: any;
@@ -146,6 +132,7 @@ export const useAuth = () => {
   return context;
 };
 
+// ─── Auth Provider ─────────────────────────────────────────────────────────────
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [user, setUser] = useState<any>(null);
   const [session, setSession] = useState<any>(null);
@@ -155,28 +142,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [customPermissions, setCustomPermissions] = useState<string[] | null>(null);
   const [roleLoading, setRoleLoading] = useState(true);
 
-  // 1. Load from localStorage for fast initial render
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      // Clean up stale role data from localStorage (roles are now stored in Supabase)
-      try { localStorage.removeItem('turath_roles'); } catch {}
-      try {
-        const stored = localStorage.getItem('current_user');
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          setCurrentRole(parsed.role || null);
-          setCurrentRoleId(parsed.roleId || null);
-          // SAFE: always ensure permissions is array or null
-          const perms = parsed.customPermissions;
-          setCustomPermissions(Array.isArray(perms) ? perms : null);
-        }
-      } catch {
-        // ignore parse errors
-      }
-    }
-  }, []);
-
-  // 2. Sync Supabase session
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // STEP 1: Listen to Supabase auth state changes (login/logout)
+  // ═══════════════════════════════════════════════════════════════════════════════
   useEffect(() => {
     const supabase = createClient();
     if (!supabase) {
@@ -185,87 +153,75 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       return;
     }
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
+    // Get initial session
+    supabase.auth.getSession().then(({ data: { session: s } }) => {
+      setSession(s);
+      setUser(s?.user ?? null);
       setLoading(false);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      setLoading(false);
+    // Listen for auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => {
+      setSession(s);
+      setUser(s?.user ?? null);
+      if (!s?.user) {
+        // User logged out - reset ALL role state immediately
+        setCurrentRole(null);
+        setCurrentRoleId(null);
+        setCustomPermissions(null);
+        setRoleLoading(false);
+      }
     });
 
     return () => subscription.unsubscribe();
   }, []);
 
-  // 3. Sync profile from Supabase (source of truth)
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // STEP 2: When user changes, fetch their role from Supabase profiles
+  // This is the ONLY place where role/permissions are determined
+  // NO localStorage is used for roles/permissions
+  // ═══════════════════════════════════════════════════════════════════════════════
   useEffect(() => {
-    const syncProfile = async () => {
-      if (!user) {
-        setRoleLoading(false);
-        return;
-      }
+    if (!user) {
+      setRoleLoading(false);
+      return;
+    }
 
+    const syncProfile = async () => {
+      setRoleLoading(true);
       try {
         const supabase = createClient();
-        if (!supabase) {
-          setRoleLoading(false);
-          return;
-        }
+        if (!supabase) { setRoleLoading(false); return; }
 
         const { data: profile, error } = await supabase
           .from('profiles')
-          .select('*')
+          .select('role_id, role_name, permissions, full_name')
           .eq('id', user.id)
           .single();
 
         if (!error && profile) {
-          // SAFE: always ensure permissions is array
-          const rawPerms = profile.permissions;
-          const perms: string[] = Array.isArray(rawPerms) ? rawPerms : [];
+          const roleId = profile.role_id || 'r6';
+          const roleName = profile.role_name || 'خدمة عملاء';
 
-          // Determine role_id: use profile.role_id if exists, else map from role field
-          let roleId = profile.role_id || null;
-          if (!roleId) {
-            if (profile.role === 'admin') roleId = 'r1';
-            else if (profile.role === 'supervisor') roleId = 'r2';
-            else if (profile.role === 'delegate') roleId = 'r4';
-            else roleId = 'r6';
-          }
-
-          const roleName = profile.role_name || profile.role || 'موظف';
-
-          // CRITICAL: Reset state first to clear any stale data from previous session
-          setCurrentRole(null);
-          setCurrentRoleId(null);
-          setCustomPermissions(null);
-
-          // Now set the correct values for THIS user
-          setCurrentRole(roleName);
           setCurrentRoleId(roleId);
-          // If no custom permissions in DB, use role-based permissions
+          setCurrentRole(roleName);
+
+          // Use custom permissions from Supabase if they exist,
+          // otherwise fall back to default role permissions
+          const perms = Array.isArray(profile.permissions) ? profile.permissions : [];
           const effectivePerms = perms.length > 0 ? perms : getPermissionsForRoleId(roleId);
           setCustomPermissions(effectivePerms.length > 0 ? effectivePerms : null);
-
-          // Overwrite localStorage with FRESH data (never merge with stale data)
-          // IMPORTANT: include full_name so Sidebar can display user name
-          const fullName = profile.full_name || user?.user_metadata?.full_name || user?.email?.split('@')[0] || '';
-          try {
-            localStorage.setItem('current_user', JSON.stringify({
-              email: user?.email || '',
-              name: fullName,
-              role: roleName,
-              roleId: roleId,
-              customPermissions: effectivePerms.length > 0 ? effectivePerms : null,
-            }));
-          } catch {
-            // ignore storage errors
-          }
+        } else {
+          // No profile found - use defaults
+          setCurrentRoleId('r6');
+          setCurrentRole('خدمة عملاء');
+          setCustomPermissions(getPermissionsForRoleId('r6'));
         }
       } catch (err) {
         console.error('Error syncing profile:', err);
+        setCurrentRoleId('r6');
+        setCurrentRole('خدمة عملاء');
+        setCustomPermissions(getPermissionsForRoleId('r6'));
       } finally {
         setRoleLoading(false);
       }
@@ -274,24 +230,24 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     syncProfile();
   }, [user]);
 
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // hasAccess - check if user can access a specific route
+  // ═══════════════════════════════════════════════════════════════════════════════
   const hasAccess = (path: string): boolean => {
-    // While loading auth state, allow access to prevent redirect loops
     if (loading) return true;
-    // Not logged in at all
     if (!user) return false;
-    // While loading role (but user exists), allow access temporarily
     if (roleLoading) return true;
-    // r1 = full admin, unrestricted access
     if (currentRoleId === 'r1') return true;
-    // No role assigned yet
     if (!currentRoleId) return false;
-    // All other roles: check allowed routes based on their permissions
     const allowedRoutes = getAllowedRoutes(currentRoleId, customPermissions);
     return allowedRoutes.some(
       (route) => path === route || path.startsWith(route + '/') || path.startsWith(route + '?')
     );
   };
 
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // signUp - create new user
+  // ═══════════════════════════════════════════════════════════════════════════════
   const signUp = async (email: string, password: string, metadata = {}) => {
     const supabase = createClient();
     if (!supabase) throw new Error('Supabase not available');
@@ -310,6 +266,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     return data;
   };
 
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // signIn - login user
+  // ═══════════════════════════════════════════════════════════════════════════════
   const signIn = async (email: string, password: string) => {
     const supabase = createClient();
     if (!supabase) throw new Error('Supabase not available');
@@ -318,19 +277,20 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     return data;
   };
 
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // signOut - COMPLETE cleanup: React state + localStorage + Supabase
+  // ═══════════════════════════════════════════════════════════════════════════════
   const signOut = async () => {
     // 1. Log the session end
     try {
-      const stored = typeof window !== 'undefined' ? localStorage.getItem('current_user') : null;
-      if (stored) {
-        const parsed = JSON.parse(stored);
+      if (user) {
         const supabase = createClient();
         if (supabase) {
           await supabase.from('turath_masr_sessions').insert({
-            user_email: parsed.email || '—',
-            user_name: parsed.name || '—',
-            role_id: parsed.roleId || '—',
-            role_name: parsed.role || '—',
+            user_email: user.email || '—',
+            user_name: user.user_metadata?.full_name || '—',
+            role_id: currentRoleId || '—',
+            role_name: currentRole || '—',
             action: 'logout',
             device: '—',
             ip: '—',
@@ -341,29 +301,21 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     } catch (e) {
       console.error('Logout session log error:', e);
     }
-    // 2. IMMEDIATELY reset ALL React state to prevent stale data leaking to next login
+
+    // 2. IMMEDIATELY reset ALL React state
     setUser(null);
     setSession(null);
     setCurrentRole(null);
     setCurrentRoleId(null);
     setCustomPermissions(null);
-    // 3. Clear ALL session-related localStorage keys
+
+    // 3. Clear ALL localStorage to prevent ANY stale data
     if (typeof window !== 'undefined') {
-      // Clear ALL localStorage keys to prevent stale data from leaking to next session
-      const SESSION_KEYS = [
-        'current_user',
-        'turath_employees',
-        'turath_app_users',
-        'turath_masr_orders',
-        'turath_masr_audit_logs',
-        'turath_roles',
-        'turath_users',
-        'turath_avatars',
-      ];
-      SESSION_KEYS.forEach((key) => {
-        try { localStorage.removeItem(key); } catch {}
-      });
+      try {
+        localStorage.clear();
+      } catch {}
     }
+
     // 4. Sign out from Supabase
     try {
       const supabase = createClient();
