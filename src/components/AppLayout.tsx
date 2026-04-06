@@ -1,5 +1,4 @@
 'use client';
-
 import React, { useEffect } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import Sidebar from './Sidebar';
@@ -15,20 +14,22 @@ interface AppLayoutProps {
 }
 
 export default function AppLayout({ children, currentPath = '' }: AppLayoutProps) {
-  const { currentRole, currentRoleId, hasAccess, roleLoading } = useAuth();
+  const { currentRole, currentRoleId, customPermissions, hasAccess, roleLoading } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
-
   const activePath = currentPath || pathname || '';
 
   useEffect(() => {
     if (!activePath) return;
+
     // Skip guard for login/public pages
     if (activePath.startsWith('/sign-up-login-screen') || activePath.startsWith('/track')) return;
+
     // Wait until role is loaded from localStorage before enforcing access
     if (roleLoading) return;
+
     // If no role (not logged in), redirect to login
-    if (currentRole === null && currentRoleId === null) {
+    if (currentRole === null && currentRoleId === null && (!customPermissions || customPermissions.length === 0)) {
       router.replace('/sign-up-login-screen');
       return;
     }
@@ -38,12 +39,18 @@ export default function AppLayout({ children, currentPath = '' }: AppLayoutProps
 
     if (!hasAccess(activePath)) {
       // Redirect to the default route based on permissions
-      const permissions = currentRoleId ? getPermissionsForRoleId(currentRoleId) : [];
+      let permissions: string[] = [];
+      if (customPermissions && customPermissions.length > 0) {
+        permissions = customPermissions;
+      } else if (currentRoleId) {
+        permissions = getPermissionsForRoleId(currentRoleId);
+      }
+      
       const defaultRoute =
         permissions.length > 0 ? getDefaultRouteForPermissions(permissions) : '/shipping';
       router.replace(defaultRoute);
     }
-  }, [activePath, currentRole, currentRoleId, hasAccess, roleLoading, router]);
+  }, [activePath, currentRole, currentRoleId, customPermissions, hasAccess, roleLoading, router]);
 
   return (
     <div className="flex min-h-screen bg-[hsl(210,20%,97%)]" dir="rtl">

@@ -1,5 +1,4 @@
 'use client';
-
 import { createContext, useContext, useEffect, useState } from 'react';
 import { createClient } from '../lib/supabase/client';
 
@@ -133,9 +132,16 @@ export function getPermissionsForRoleId(roleId: string): string[] {
   return role?.permissions ?? [];
 }
 
-// Get allowed routes for a roleId
-function getAllowedRoutesForRoleId(roleId: string): string[] {
-  const permissions = getPermissionsForRoleId(roleId);
+// Get allowed routes for a roleId or custom permissions
+function getAllowedRoutes(roleId: string | null, customPermissions: string[] | null): string[] {
+  let permissions: string[] = [];
+  
+  if (customPermissions && customPermissions.length > 0) {
+    permissions = customPermissions;
+  } else if (roleId) {
+    permissions = getPermissionsForRoleId(roleId);
+  }
+
   const routes = new Set<string>(['/track']); // track always allowed
   for (const perm of permissions) {
     const permRoutes = PERMISSION_ROUTE_MAP[perm] ?? [];
@@ -144,10 +150,17 @@ function getAllowedRoutesForRoleId(roleId: string): string[] {
   return Array.from(routes);
 }
 
-function isManagerRole(roleId: string): boolean {
+function isManagerRole(roleId: string | null, customPermissions: string[] | null): boolean {
   // Only true Admins (r1) should bypass all security
   if (roleId === 'r1') return true;
-  const permissions = getPermissionsForRoleId(roleId);
+  
+  let permissions: string[] = [];
+  if (customPermissions && customPermissions.length > 0) {
+    permissions = customPermissions;
+  } else if (roleId) {
+    permissions = getPermissionsForRoleId(roleId);
+  }
+  
   // Has BOTH system_settings and manage_roles = admin-level
   return permissions.includes('system_settings') && permissions.includes('manage_roles');
 }
@@ -164,6 +177,7 @@ const AuthContext = createContext<any>({
   hasAccess: () => true,
   currentRole: null,
   currentRoleId: null,
+  customPermissions: null,
   loading: true,
   roleLoading: true,
 });
@@ -182,48 +196,32 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [loading, setLoading] = useState(false);
   const [currentRole, setCurrentRole] = useState<string | null>(null);
   const [currentRoleId, setCurrentRoleId] = useState<string | null>(null);
+  const [customPermissions, setCustomPermissions] = useState<string[] | null>(null);
   const [roleLoading, setRoleLoading] = useState(true);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      try {
-        const stored = localStorage.getItem('current_user');
-        if (stored) {
+      const stored = localStorage.getItem('current_user');
+      if (stored) {
+        try {
           const parsed = JSON.parse(stored);
-          if (parsed?.roleId) {
-            setCurrentRoleId(parsed.roleId);
-            // Determine role type from roleId
-            const roleType = isManagerRole(parsed.roleId)
-              ? 'manager'
-              : parsed.role === 'admin'
-                ? 'manager'
-                : 'employee';
-            setCurrentRole(roleType);
-          } else if (parsed?.role) {
-            setCurrentRole(parsed.role === 'admin' ? 'manager' : 'employee');
-            setCurrentRoleId(null);
-          } else {
-            setCurrentRole(null);
-            setCurrentRoleId(null);
-          }
-        } else {
-          setCurrentRole(null);
-          setCurrentRoleId(null);
-        }
-      } catch {
-        setCurrentRole(null);
-        setCurrentRoleId(null);
+          setCurrentRole(parsed.role || null);
+          setCurrentRoleId(parsed.roleId || null);
+          setCustomPermissions(parsed.customPermissions || null);
+        } catch {}
       }
       setRoleLoading(false);
     }
+  }, []);
 
+  useEffect(() => {
+    setLoading(true);
     try {
       const supabase = createClient();
       if (!supabase) {
         setLoading(false);
         return;
       }
-
       supabase.auth
         .getSession()
         .then(({ data: { session } }) => {
@@ -252,39 +250,14 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const hasAccess = (path: string): boolean => {
     // If loading, block until we know the role
     if (roleLoading) return false;
-    if (currentRole === null && currentRoleId === null) return false;
+    if (currentRole === null && currentRoleId === null && (!customPermissions || customPermissions.length === 0)) return false;
 
-    // Manager (r1 or system_settings+manage_roles defined in isManagerRole) has FULL access
-    if (currentRoleId && isManagerRole(currentRoleId)) return true;
+    // Manager (r1 or system_settings+manage_roles) has FULL access
+    if (isManagerRole(currentRoleId, customPermissions)) return true;
 
-    // Permission-based access using roleId
-    if (currentRoleId) {
-      const allowedRoutes = getAllowedRoutesForRoleId(currentRoleId);
-      return allowedRoutes.some(
-        (route) => path === route || path.startsWith(route + '/') || path.startsWith(route + '?')
-      );
-    }
-
-    // Fallback: if only legacy role string, allow basic access
-    const legacyMap: Record<string, string[]> = {
-      manager: [
-        '/dashboard',
-        '/orders-management',
-        '/shipping',
-        '/inventory',
-        '/reports',
-        '/users',
-        '/roles',
-        '/settings',
-        '/track',
-        '/crm',
-      ],
-      supervisor: ['/dashboard', '/orders-management', '/shipping', '/track', '/reports'],
-      data_entry: ['/orders-management', '/shipping', '/track'],
-      shipping: ['/shipping', '/track'],
-    };
-    const allowed = legacyMap[currentRole ?? ''] ?? [];
-    return allowed.some(
+    // Permission-based access
+    const allowedRoutes = getAllowedRoutes(currentRoleId, customPermissions);
+    return allowedRoutes.some(
       (route) => path === route || path.startsWith(route + '/') || path.startsWith(route + '?')
     );
   };
@@ -342,6 +315,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     }
     setCurrentRole(null);
     setCurrentRoleId(null);
+    setCustomPermissions(null);
     try {
       const supabase = createClient();
       if (supabase) {
@@ -391,8 +365,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     roleLoading,
     currentRole,
     currentRoleId,
+    customPermissions,
     setCurrentRole,
     setCurrentRoleId,
+    setCustomPermissions,
     hasAccess,
     signUp,
     signIn,

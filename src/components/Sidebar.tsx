@@ -91,6 +91,12 @@ const navItems: NavItem[] = [
 const groups = ['رئيسي', 'إدارة', 'النظام'];
 
 const ROLE_LABELS: Record<string, string> = {
+  r1: 'مدير النظام',
+  r2: 'مشرف النظام',
+  r3: 'مشرف شحن',
+  r4: 'مندوب شحن',
+  r5: 'مدير خدمة عملاء',
+  r6: 'خدمة عملاء',
   manager: 'مدير النظام',
   data_entry: 'موظف إدخال بيانات',
   shipping: 'مندوب شحن',
@@ -105,6 +111,7 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [userName, setUserName] = useState('المستخدم');
+  const [userRoleLabel, setUserRoleLabel] = useState('موظف');
   const [showNotifications, setShowNotifications] = useState(false);
   const { currentRole, currentRoleId, hasAccess } = useAuth();
   const { newOrdersCount, unreadCount } = useNotifications();
@@ -115,16 +122,28 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
 
   const isActive = (href: string) => currentPath === href || currentPath.startsWith(href);
 
-  React.useEffect(() => {
+  useEffect(() => {
     try {
       const stored = localStorage.getItem('current_user');
       if (stored) {
         const parsed = JSON.parse(stored);
         const name = parsed?.name || parsed?.email?.split('@')[0] || 'المستخدم';
         setUserName(name);
+        
+        // Determine role label
+        const roleId = parsed?.roleId;
+        const roleName = parsed?.role;
+        
+        if (roleId && ROLE_LABELS[roleId]) {
+          setUserRoleLabel(ROLE_LABELS[roleId]);
+        } else if (roleName && ROLE_LABELS[roleName]) {
+          setUserRoleLabel(ROLE_LABELS[roleName]);
+        } else {
+          setUserRoleLabel(roleName || 'موظف');
+        }
       }
     } catch {}
-  }, []);
+  }, [currentRole, currentRoleId]);
 
   const handleLogout = () => {
     localStorage.removeItem('current_user');
@@ -150,38 +169,29 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
         <ChevronLeft size={20} className="text-[hsl(var(--foreground))]" />
       </button>
 
-      {/* Sidebar */}
       <aside
-        className={`
-          fixed lg:relative top-0 right-0 h-full z-50 lg:z-auto
-          flex flex-col bg-white border-l border-[hsl(var(--border))] shadow-lg lg:shadow-none
-          transition-all duration-300 ease-in-out
-          ${collapsed ? 'w-[72px]' : 'w-[260px]'}
+        className={`fixed inset-y-0 right-0 z-50 lg:static bg-white border-l border-[hsl(var(--border))] flex flex-col transition-all duration-300 ease-in-out shadow-xl lg:shadow-none
+          ${collapsed ? 'w-20' : 'w-72'}
           ${mobileOpen ? 'translate-x-0' : 'translate-x-full lg:translate-x-0'}
         `}
       >
-        {/* Logo */}
-        <div
-          className={`flex items-center border-b border-[hsl(var(--border))] ${collapsed ? 'p-4 justify-center' : 'p-4 gap-3'}`}
-        >
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <AppLogo size={36} />
-            {!collapsed && (
-              <div>
-                <span className="font-display text-lg font-bold text-[hsl(var(--primary))] block leading-tight">
-                  تراث مصر
-                </span>
-                <span className="text-xs text-[hsl(var(--muted-foreground))]">Turath Masr</span>
+        {/* Header */}
+        <div className="p-6 flex items-center justify-between">
+          {!collapsed && <AppLogo />}
+          {collapsed && (
+            <div className="mx-auto">
+              <div className="w-10 h-10 bg-[hsl(var(--primary))] rounded-xl flex items-center justify-center text-white font-bold text-xl">
+                T
               </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
 
-        {/* Collapse toggle — desktop only */}
+        {/* Collapse toggle (desktop) */}
         <button
-          className="hidden lg:flex absolute -left-3 top-16 bg-white border border-[hsl(var(--border))] rounded-full w-6 h-6 items-center justify-center shadow-sm hover:shadow-md transition-shadow z-10"
           onClick={() => setCollapsed(!collapsed)}
-          aria-label={collapsed ? 'توسيع القائمة' : 'طي القائمة'}
+          className="hidden lg:flex absolute -left-3 top-24 w-6 h-6 bg-white border border-[hsl(var(--border))] rounded-full items-center justify-center shadow-sm hover:bg-[hsl(var(--muted))] transition-colors z-10"
+          title={collapsed ? 'توسيع القائمة' : 'طي القائمة'}
         >
           {collapsed ? (
             <ChevronLeft size={12} className="text-[hsl(var(--muted-foreground))]" />
@@ -195,6 +205,7 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
           {groups.map((group) => {
             const items = visibleNavItems.filter((item) => item.group === group);
             if (items.length === 0) return null;
+
             return (
               <div key={`group-${group}`} className="mb-4">
                 {!collapsed && (
@@ -244,7 +255,6 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
           {showNotifications && (
             <NotificationDropdown onClose={() => setShowNotifications(false)} />
           )}
-
           <button
             className={`sidebar-item w-full ${showNotifications ? 'sidebar-item-active' : 'sidebar-item-inactive'} ${collapsed ? 'justify-center' : ''}`}
             onClick={() => setShowNotifications(!showNotifications)}
@@ -268,7 +278,7 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-semibold truncate">{userName}</p>
                 <p className="text-xs text-[hsl(var(--muted-foreground))] truncate">
-                  {ROLE_LABELS[currentRole ?? ''] ?? currentRole}
+                  {userRoleLabel}
                 </p>
               </div>
               <button
