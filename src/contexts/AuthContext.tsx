@@ -1,4 +1,5 @@
 'use client';
+
 import { createContext, useContext, useEffect, useState } from 'react';
 import { createClient } from '../lib/supabase/client';
 
@@ -100,6 +101,7 @@ const PERMISSION_DEFAULT_ROUTE_PRIORITY = [
 ];
 
 export function getDefaultRouteForPermissions(permissions: string[]): string {
+  if (!permissions || permissions.length === 0) return '/shipping';
   for (const perm of PERMISSION_DEFAULT_ROUTE_PRIORITY) {
     if (permissions.includes(perm)) {
       return PERMISSION_ROUTE_MAP[perm]?.[0] ?? '/shipping';
@@ -141,7 +143,6 @@ function getAllowedRoutes(roleId: string | null, customPermissions: string[] | n
   } else if (roleId) {
     permissions = getPermissionsForRoleId(roleId);
   }
-
   const routes = new Set<string>(['/track']); // track always allowed
   for (const perm of permissions) {
     const permRoutes = PERMISSION_ROUTE_MAP[perm] ?? [];
@@ -161,31 +162,35 @@ function isManagerRole(roleId: string | null, customPermissions: string[] | null
     permissions = getPermissionsForRoleId(roleId);
   }
   
-  // Has BOTH system_settings and manage_roles = admin-level
-  return permissions.includes('system_settings') && permissions.includes('manage_roles');
+  return permissions.includes('manage_roles') || permissions.includes('system_settings');
 }
 
-// Legacy export for AppLayout redirect
-export const ROLE_DEFAULT_ROUTE: Record<string, string> = {
-  manager: '/dashboard',
-  data_entry: '/orders-management',
-  shipping: '/shipping',
-  supervisor: '/dashboard',
-};
+interface AuthContextType {
+  user: any;
+  session: any;
+  loading: boolean;
+  roleLoading: boolean;
+  currentRole: string | null;
+  currentRoleId: string | null;
+  customPermissions: string[] | null;
+  setCurrentRole: (role: string | null) => void;
+  setCurrentRoleId: (roleId: string | null) => void;
+  setCustomPermissions: (perms: string[] | null) => void;
+  hasAccess: (path: string) => boolean;
+  signUp: (email: string, password: string, metadata?: any) => Promise<any>;
+  signIn: (email: string, password: string) => Promise<any>;
+  signOut: () => Promise<void>;
+  getCurrentUser: () => Promise<any>;
+  isEmailVerified: () => boolean;
+  getUserProfile: () => Promise<any>;
+}
 
-const AuthContext = createContext<any>({
-  hasAccess: () => true,
-  currentRole: null,
-  currentRoleId: null,
-  customPermissions: null,
-  loading: true,
-  roleLoading: true,
-});
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth must be used within AuthProvider');
+  if (context === undefined) {
+    throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;
 };
@@ -193,12 +198,13 @@ export const useAuth = () => {
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [user, setUser] = useState<any>(null);
   const [session, setSession] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [currentRole, setCurrentRole] = useState<string | null>(null);
   const [currentRoleId, setCurrentRoleId] = useState<string | null>(null);
   const [customPermissions, setCustomPermissions] = useState<string[] | null>(null);
   const [roleLoading, setRoleLoading] = useState(true);
 
+  // 1. Initial load from localStorage (for fast UI)
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem('current_user');
@@ -210,47 +216,87 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           setCustomPermissions(parsed.customPermissions || null);
         } catch {}
       }
-      setRoleLoading(false);
     }
   }, []);
 
+  // 2. Sync with Supabase Session
   useEffect(() => {
-    setLoading(true);
-    try {
-      const supabase = createClient();
-      if (!supabase) {
-        setLoading(false);
+    const supabase = createClient();
+    if (!supabase) {
+      setLoading(false);
+      return;
+    }
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setUser(session?.user ?? null);
+      setLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      setUser(session?.user ?? null);
+      setLoading(false);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // 3. Sync Profile & Permissions from Supabase (Source of Truth)
+  useEffect(() => {
+    const syncProfile = async () => {
+      if (!user) {
+        setRoleLoading(false);
         return;
       }
-      supabase.auth
-        .getSession()
-        .then(({ data: { session } }) => {
-          setSession(session);
-          setUser(session?.user ?? null);
-          setLoading(false);
-        })
-        .catch(() => {
-          setLoading(false);
-        });
 
-      const {
-        data: { subscription },
-      } = supabase.auth.onAuthStateChange((_event, session) => {
-        setSession(session);
-        setUser(session?.user ?? null);
-        setLoading(false);
-      });
+      try {
+        const supabase = createClient();
+        if (!supabase) return;
 
-      return () => subscription.unsubscribe();
-    } catch {
-      setLoading(false);
-    }
-  }, []);
+        const { data: profile, error } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', user.id)
+          .single();
+
+        if (!error && profile) {
+          const perms = profile.permissions || [];
+          const roleId = profile.role_id || 'r4'; // Default to shipping if none
+          const roleName = profile.role_name || 'موظف';
+
+          setCurrentRole(roleName);
+          setCurrentRoleId(roleId);
+          setCustomPermissions(perms);
+
+          // Update localStorage to keep it in sync
+          const stored = localStorage.getItem('current_user');
+          if (stored) {
+            const parsed = JSON.parse(stored);
+            localStorage.setItem('current_user', JSON.stringify({
+              ...parsed,
+              role: roleName,
+              roleId: roleId,
+              customPermissions: perms
+            }));
+          }
+        }
+      } catch (err) {
+        console.error('Error syncing profile:', err);
+      } finally {
+        setRoleLoading(false);
+      }
+    };
+
+    syncProfile();
+  }, [user]);
 
   const hasAccess = (path: string): boolean => {
     // If loading, block until we know the role
     if (roleLoading) return false;
-    if (currentRole === null && currentRoleId === null && (!customPermissions || customPermissions.length === 0)) return true;
+    
+    // If not logged in, no access
+    if (!user && !currentRoleId) return false;
 
     // Manager (r1 or system_settings+manage_roles) has FULL access
     if (isManagerRole(currentRoleId, customPermissions)) return true;
@@ -289,7 +335,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   };
 
   const signOut = async () => {
-    // Log logout session
     try {
       const stored = typeof window !== 'undefined' ? localStorage.getItem('current_user') : null;
       if (stored) {
@@ -316,46 +361,28 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     setCurrentRole(null);
     setCurrentRoleId(null);
     setCustomPermissions(null);
-    try {
-      const supabase = createClient();
-      if (supabase) {
-        await supabase.auth.signOut();
-      }
-    } catch {}
+    
+    const supabase = createClient();
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
   };
 
   const getCurrentUser = async () => {
-    try {
-      const supabase = createClient();
-      if (!supabase) return null;
-      const {
-        data: { user },
-        error,
-      } = await supabase.auth.getUser();
-      if (error) throw error;
-      return user;
-    } catch {
-      return null;
-    }
+    const supabase = createClient();
+    if (!supabase) return null;
+    const { data: { user } } = await supabase.auth.getUser();
+    return user;
   };
 
   const isEmailVerified = () => user?.email_confirmed_at !== null;
 
   const getUserProfile = async () => {
     if (!user) return null;
-    try {
-      const supabase = createClient();
-      if (!supabase) return null;
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', user.id)
-        .single();
-      if (error) throw error;
-      return data;
-    } catch {
-      return null;
-    }
+    const supabase = createClient();
+    if (!supabase) return null;
+    const { data } = await supabase.from('profiles').select('*').eq('id', user.id).single();
+    return data;
   };
 
   const value = {

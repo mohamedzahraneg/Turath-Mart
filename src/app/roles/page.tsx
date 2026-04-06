@@ -398,14 +398,7 @@ function saveEmployeesToStorage(employees: Employee[]) {
   }
 }
 
-function saveUsersToStorage(users: AppUser[]) {
-  if (typeof window === 'undefined') return;
-  try {
-    localStorage.setItem(LS_USERS, JSON.stringify(users));
-  } catch {
-    // storage unavailable
-  }
-}
+async function saveUsersToStorage(users: AppUser[]) {  if (typeof window === "undefined") return;  try {    localStorage.setItem(LS_USERS, JSON.stringify(users));    const supabase = createClient();    for (const user of users) {      if (user.id) {        await supabase.from("profiles").update({          role_id: user.roleId,          role_name: user.role,          permissions: user.customPermissions || []        }).eq("id", user.id);      }    }  } catch (err) {    console.error("Error saving users to Supabase:", err);  }}
 
 // ─── Device Icon ───────────────────────────────────────────────────────────────
 function DeviceIcon({ device, size = 14 }: { device?: string; size?: number }) {
