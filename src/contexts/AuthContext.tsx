@@ -209,7 +209,24 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           // Use custom permissions from Supabase if they exist,
           // otherwise fall back to default role permissions
           const perms = Array.isArray(profile.permissions) ? profile.permissions : [];
-          const effectivePerms = perms.length > 0 ? perms : getPermissionsForRoleId(roleId);
+          let effectivePerms = perms;
+          if (effectivePerms.length === 0) {
+            // Try to get permissions from turath_roles table in Supabase
+            try {
+              const { data: roleData } = await supabase
+                .from('turath_roles')
+                .select('permissions')
+                .eq('id', roleId)
+                .single();
+              if (roleData && Array.isArray(roleData.permissions) && roleData.permissions.length > 0) {
+                effectivePerms = roleData.permissions;
+              }
+            } catch {}
+          }
+          // Final fallback to hardcoded DEFAULT_ROLES
+          if (effectivePerms.length === 0) {
+            effectivePerms = getPermissionsForRoleId(roleId);
+          }
           setCustomPermissions(effectivePerms.length > 0 ? effectivePerms : null);
         } else {
           // No profile found - use defaults

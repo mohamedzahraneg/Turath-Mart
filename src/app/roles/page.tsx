@@ -932,22 +932,42 @@ export default function RolesPage() {
   const [appUsers, setAppUsers] = useState<AppUser[]>(defaultUsers);
   const [hydrated, setHydrated] = useState(false);
 
-  // Load data from Supabase (source of truth) - no more localStorage for employees/users
+  // Load ALL data from Supabase (source of truth) - roles, employees, users
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    // Clean up stale localStorage data
-    try { localStorage.removeItem(LS_EMPLOYEES); } catch {}
-    try { localStorage.removeItem(LS_USERS); } catch {}
-    try { localStorage.removeItem(LS_ROLES); } catch {}
     const loadFromSupabase = async () => {
       try {
         const supabase = createClient();
         if (!supabase) { setHydrated(true); return; }
-        // Load all users from Supabase profiles
+
+        // 1. Load ROLES from turath_roles table
+        const { data: dbRoles, error: rolesError } = await supabase
+          .from('turath_roles')
+          .select('id, name, permissions')
+          .order('id', { ascending: true });
+
+        if (!rolesError && dbRoles && dbRoles.length > 0) {
+          const mappedRoles: Role[] = dbRoles.map((r: any) => {
+            // Find matching initialRole for description and color
+            const initial = initialRoles.find((ir) => ir.id === r.id);
+            return {
+              id: r.id,
+              name: r.name,
+              description: initial?.description || '',
+              color: initial?.color || 'gray',
+              permissions: Array.isArray(r.permissions) ? r.permissions : [],
+              usersCount: initial?.usersCount || 0,
+            };
+          });
+          setRoles(mappedRoles);
+        }
+
+        // 2. Load all users from Supabase profiles
         const { data: profiles, error } = await supabase
           .from('profiles')
           .select('id, email, full_name, role, role_id, role_name, permissions, created_at')
           .order('created_at', { ascending: true });
+
         if (!error && profiles && profiles.length > 0) {
           const avatars = loadAvatars();
           // Map profiles to Employee format for the employees tab
@@ -998,29 +1018,41 @@ export default function RolesPage() {
   const [expandedUserPerms, setExpandedUserPerms] = useState<string | null>(null);
 
   const handleSaveRole = async (role: Role) => {
-    // 1. Update local state and localStorage
+    // 1. Update local state
     setRoles((prev) => {
       const exists = prev.find((r) => r.id === role.id);
-      const updated = exists ? prev.map((r) => (r.id === role.id ? role : r)) : [...prev, role];
-      saveRolesToStorage(updated);
-      return updated;
+      return exists ? prev.map((r) => (r.id === role.id ? role : r)) : [...prev, role];
     });
-    // 2. CRITICAL: Save permissions to Supabase for ALL users with this role_id
-    // This ensures permissions persist across sessions and browser cache clears
+
+    // 2. Save role to turath_roles table in Supabase
     try {
       const supabase = createClient();
       if (supabase) {
-        const { error } = await supabase
+        // Upsert into turath_roles
+        const { error: roleError } = await supabase
+          .from('turath_roles')
+          .upsert({
+            id: role.id,
+            name: role.name,
+            permissions: role.permissions,
+            updated_at: new Date().toISOString(),
+          }, { onConflict: 'id' });
+
+        if (roleError) {
+          console.error('Failed to save role to turath_roles:', roleError);
+        }
+
+        // 3. Also update permissions in profiles for ALL users with this role_id
+        const { error: profileError } = await supabase
           .from('profiles')
           .update({
             permissions: role.permissions,
             role_name: role.name,
           })
           .eq('role_id', role.id);
-        if (error) {
-          console.error('Failed to save role permissions to Supabase:', error);
-        } else {
-          console.log(`Role ${role.id} permissions saved to Supabase for all users with this role`);
+
+        if (profileError) {
+          console.error('Failed to update profiles:', profileError);
         }
       }
     } catch (err) {
@@ -1286,13 +1318,15 @@ export default function RolesPage() {
                         <Edit2 size={14} />
                       </button>
                       <button
-                        onClick={() =>
-                          setRoles((prev) => {
-                            const updated = prev.filter((r) => r.id !== role.id);
-                            saveRolesToStorage(updated);
-                            return updated;
-                          })
-                        }
+                        onClick={async () => {
+                          setRoles((prev) => prev.filter((r) => r.id !== role.id));
+                          try {
+                            const supabase = createClient();
+                            if (supabase) {
+                              await supabase.from('turath_roles').delete().eq('id', role.id);
+                            }
+                          } catch (e) { console.error('Delete role error:', e); }
+                        }}
                         className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
                       >
                         <Trash2 size={14} />
