@@ -129,7 +129,7 @@ export default function LoginPage() {
         const supabase = createClient();
         const { data: profile } = await supabase
           .from('profiles')
-          .select('role, role_id, role_name, permissions')
+          .select('role, role_id, role_name, permissions, full_name')
           .eq('id', authData.user.id)
           .single();
 
@@ -151,7 +151,7 @@ export default function LoginPage() {
             'current_user',
             JSON.stringify({
               email: authData.user.email,
-              name: authData.user.user_metadata?.full_name || 'مستخدم',
+              name: profile?.full_name || authData.user.user_metadata?.full_name || authData.user.email?.split('@')[0] || 'مستخدم',
               role: roleName,
               roleId: finalRoleId,
               customPermissions: effectivePerms.length > 0 ? effectivePerms : null,

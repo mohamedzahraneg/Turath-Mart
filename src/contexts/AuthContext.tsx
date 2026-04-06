@@ -248,8 +248,12 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           setCustomPermissions(effectivePerms.length > 0 ? effectivePerms : null);
 
           // Overwrite localStorage with FRESH data (never merge with stale data)
+          // IMPORTANT: include full_name so Sidebar can display user name
+          const fullName = profile.full_name || user?.user_metadata?.full_name || user?.email?.split('@')[0] || '';
           try {
             localStorage.setItem('current_user', JSON.stringify({
+              email: user?.email || '',
+              name: fullName,
               role: roleName,
               roleId: roleId,
               customPermissions: effectivePerms.length > 0 ? effectivePerms : null,
@@ -269,12 +273,16 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   }, [user]);
 
   const hasAccess = (path: string): boolean => {
-    // While loading, don't block - return true to avoid redirect loops
-    if (loading || roleLoading) return true;
+    // While loading auth state, allow access to prevent redirect loops
+    if (loading) return true;
     // Not logged in at all
-    if (!user && !currentRoleId) return false;
+    if (!user) return false;
+    // While loading role (but user exists), allow access temporarily
+    if (roleLoading) return true;
     // r1 = full admin, unrestricted access
     if (currentRoleId === 'r1') return true;
+    // No role assigned yet
+    if (!currentRoleId) return false;
     // All other roles: check allowed routes based on their permissions
     const allowedRoutes = getAllowedRoutes(currentRoleId, customPermissions);
     return allowedRoutes.some(

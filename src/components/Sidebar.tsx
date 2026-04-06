@@ -113,7 +113,7 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
   const [userName, setUserName] = useState('المستخدم');
   const [userRoleLabel, setUserRoleLabel] = useState('موظف');
   const [showNotifications, setShowNotifications] = useState(false);
-  const { currentRole, currentRoleId, hasAccess, signOut } = useAuth();
+  const { currentRole, currentRoleId, hasAccess, signOut, user } = useAuth();
   const { newOrdersCount, unreadCount } = useNotifications();
 
   // Only True Admin (r1) sees EVERYTHING without filtering
@@ -127,12 +127,14 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
       const stored = localStorage.getItem('current_user');
       if (stored) {
         const parsed = JSON.parse(stored);
-        const name = parsed?.name || parsed?.email?.split('@')[0] || 'المستخدم';
+        // Try multiple sources for name
+        const name = parsed?.name || parsed?.email?.split('@')[0] || 
+                     user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'المستخدم';
         setUserName(name);
         
         // Determine role label
-        const roleId = parsed?.roleId;
-        const roleName = parsed?.role;
+        const roleId = parsed?.roleId || currentRoleId;
+        const roleName = parsed?.role || currentRole;
         
         if (roleId && ROLE_LABELS[roleId]) {
           setUserRoleLabel(ROLE_LABELS[roleId]);
@@ -141,9 +143,18 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
         } else {
           setUserRoleLabel(roleName || 'موظف');
         }
+      } else if (user) {
+        // Fallback: use Supabase user data directly if localStorage is empty
+        const name = user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'المستخدم';
+        setUserName(name);
+        if (currentRoleId && ROLE_LABELS[currentRoleId]) {
+          setUserRoleLabel(ROLE_LABELS[currentRoleId]);
+        } else {
+          setUserRoleLabel(currentRole || 'موظف');
+        }
       }
     } catch {}
-  }, [currentRole, currentRoleId]);
+  }, [currentRole, currentRoleId, user]);
 
   const handleLogout = async () => {
     try {
