@@ -185,12 +185,13 @@ export default function OrdersTableSection() {
 
   useEffect(() => {
     try {
-      const userData = localStorage.getItem('currentUser');
+      const userData = localStorage.getItem('current_user');
       if (userData) {
         const user = JSON.parse(userData);
         const role = (user.role || '').toLowerCase();
-        const permissions: string[] = Array.isArray(user.permissions) ? user.permissions : [];
-        const isAdminOrManager = role === 'admin' || role === 'manager' || role === 'supervisor';
+        const permissions: string[] = Array.isArray(user.customPermissions) ? user.customPermissions : (Array.isArray(user.permissions) ? user.permissions : []);
+        const roleId = user.roleId || '';
+        const isAdminOrManager = role === 'admin' || role === 'manager' || role === 'supervisor' || roleId === 'r1' || roleId === 'r2' || roleId === 'r3';
         setCanManageOrders(isAdminOrManager || permissions.includes('orders_manage'));
         setCanViewDelegates(isAdminOrManager || permissions.includes('view_delegates'));
       }
