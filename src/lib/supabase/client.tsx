@@ -1,7 +1,5 @@
 import { createBrowserClient } from '@supabase/ssr';
-
 const PFX = 'sb_';
-
 const canUseCookies = (() => {
   let cache: boolean | null = null;
   return () => {
@@ -14,7 +12,6 @@ const canUseCookies = (() => {
     return cache;
   };
 })();
-
 const fromCookies = () =>
   typeof document === 'undefined'
     ? []
@@ -26,7 +23,6 @@ const fromCookies = () =>
           return { name: name.trim(), value: decodeURIComponent(rest.join('=')) };
         })
         .filter((c) => c.name);
-
 const fromStorage = () => {
   try {
     return Object.keys(localStorage)
@@ -36,7 +32,6 @@ const fromStorage = () => {
     return [];
   }
 };
-
 const setCookie = (name: string, value: string, options?: any) => {
   let s = `${name}=${encodeURIComponent(value)}; Path=${options?.path || '/'}; SameSite=None; Secure; Partitioned`;
   if (options?.maxAge) s += `; Max-Age=${options.maxAge}`;
@@ -45,8 +40,12 @@ const setCookie = (name: string, value: string, options?: any) => {
   document.cookie = s;
 };
 
+// Singleton client instance - avoids creating new WebSocket connections on every call
+let _clientInstance: ReturnType<typeof createBrowserClient> | null = null;
+
 export function createClient() {
-  return createBrowserClient(
+  if (_clientInstance) return _clientInstance;
+  _clientInstance = createBrowserClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
@@ -78,4 +77,10 @@ export function createClient() {
       },
     }
   );
+  return _clientInstance;
+}
+
+// Reset singleton on sign out (called by AuthContext)
+export function resetSupabaseClient() {
+  _clientInstance = null;
 }

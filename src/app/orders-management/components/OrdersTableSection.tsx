@@ -254,14 +254,26 @@ export default function OrdersTableSection() {
       );
     };
     window.addEventListener('turath_masr_orders_updated', handleUpdate);
-    window.addEventListener('storage', handleUpdate);
+    // Supabase Realtime subscription instead of polling
+    const supabase = createClient();
+    const channel = supabase
+      .channel('orders-realtime')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'turath_masr_orders',
+      }, () => {
+        handleUpdate();
+      })
+      .subscribe();
+    // Fallback polling every 120s (realtime handles live updates)
     const interval = setInterval(() => {
       loadOrders();
-    }, 15000);
+    }, 120000);
     return () => {
       window.removeEventListener('turath_masr_orders_updated', handleUpdate);
-      window.removeEventListener('storage', handleUpdate);
       clearInterval(interval);
+      supabase.removeChannel(channel);
     };
   }, [loadOrders]);
 

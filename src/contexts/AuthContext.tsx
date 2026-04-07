@@ -1,6 +1,15 @@
 'use client';
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { createClient } from '@/lib/supabase/client';
+import { createClient, resetSupabaseClient } from '@/lib/supabase/client';
+
+// Singleton Supabase client - avoids creating new connections on every call
+let _supabaseClient: ReturnType<typeof createClient> | null = null;
+function getSupabaseClient() {
+  if (!_supabaseClient) {
+    _supabaseClient = createClient();
+  }
+  return _supabaseClient;
+}
 
 // ─── Permission → Route mapping ────────────────────────────────────────────────
 const PERMISSION_ROUTE_MAP: Record<string, string[]> = {
@@ -146,7 +155,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   // STEP 1: Listen to Supabase auth state changes (login/logout)
   // ═══════════════════════════════════════════════════════════════════════════════
   useEffect(() => {
-    const supabase = createClient();
+    const supabase = getSupabaseClient();
     if (!supabase) {
       setLoading(false);
       setRoleLoading(false);
@@ -190,7 +199,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     const syncProfile = async () => {
       setRoleLoading(true);
       try {
-        const supabase = createClient();
+        const supabase = getSupabaseClient();
         if (!supabase) { setRoleLoading(false); return; }
 
         const { data: profile, error } = await supabase
@@ -266,7 +275,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   // signUp - create new user
   // ═══════════════════════════════════════════════════════════════════════════════
   const signUp = async (email: string, password: string, metadata = {}) => {
-    const supabase = createClient();
+    const supabase = getSupabaseClient();
     if (!supabase) throw new Error('Supabase not available');
     const { data, error } = await supabase.auth.signUp({
       email,
@@ -287,7 +296,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   // signIn - login user
   // ═══════════════════════════════════════════════════════════════════════════════
   const signIn = async (email: string, password: string) => {
-    const supabase = createClient();
+    const supabase = getSupabaseClient();
     if (!supabase) throw new Error('Supabase not available');
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw error;
@@ -301,7 +310,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     // 1. Log the session end
     try {
       if (user) {
-        const supabase = createClient();
+        const supabase = getSupabaseClient();
         if (supabase) {
           await supabase.from('turath_masr_sessions').insert({
             user_email: user.email || '—',
@@ -335,9 +344,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     // 4. Sign out from Supabase
     try {
-      const supabase = createClient();
+      const supabase = getSupabaseClient();
       if (supabase) {
         await supabase.auth.signOut();
+        resetSupabaseClient(); // Reset singleton after sign out
       }
     } catch (e) {
       console.error('Supabase signOut error:', e);
@@ -345,7 +355,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   };
 
   const getCurrentUser = async () => {
-    const supabase = createClient();
+    const supabase = getSupabaseClient();
     if (!supabase) return null;
     const { data: { user } } = await supabase.auth.getUser();
     return user;
@@ -355,7 +365,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   const getUserProfile = async () => {
     if (!user) return null;
-    const supabase = createClient();
+    const supabase = getSupabaseClient();
     if (!supabase) return null;
     const { data } = await supabase.from('profiles').select('*').eq('id', user.id).single();
     return data;

@@ -52,7 +52,7 @@ export default function InventoryStatus() {
 
   useEffect(() => {
     fetchInventory();
-    const interval = setInterval(fetchInventory, 300000); // refresh every 5 mins
+    const interval = setInterval(fetchInventory, 600000); // refresh every 10 mins
     return () => clearInterval(interval);
   }, []);
 

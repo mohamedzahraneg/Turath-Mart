@@ -673,7 +673,10 @@ export default function CRMPage() {
     const supabase = createClient();
     const statusChannel = supabase
       .channel('complaint-updates')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'turath_masr_crm_complaints' }, () => fetchCRMData())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'turath_masr_crm_complaints' }, (() => {
+        let t: ReturnType<typeof setTimeout>;
+        return () => { clearTimeout(t); t = setTimeout(fetchCRMData, 1000); };
+      })())
       .subscribe();
 
     return () => { supabase.removeChannel(statusChannel); };

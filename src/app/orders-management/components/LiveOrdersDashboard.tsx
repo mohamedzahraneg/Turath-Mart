@@ -213,12 +213,22 @@ export default function LiveOrdersDashboard() {
     return () => clearInterval(interval);
   }, []);
 
-  // Poll live updates
+  // Realtime subscription + fallback polling every 30s (was 10s)
   useEffect(() => {
     fetchLiveOrders();
     if (!isLive) return;
-    const interval = setInterval(fetchLiveOrders, 10000);
-    return () => clearInterval(interval);
+    const supabase = createClient();
+    const channel = supabase
+      .channel('live-orders-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'turath_masr_orders' }, () => {
+        fetchLiveOrders();
+      })
+      .subscribe();
+    const interval = setInterval(fetchLiveOrders, 30000);
+    return () => {
+      clearInterval(interval);
+      supabase.removeChannel(channel);
+    };
   }, [isLive, fetchLiveOrders]);
 
   // Computed live stats

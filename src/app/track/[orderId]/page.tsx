@@ -1563,7 +1563,7 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
   useEffect(() => {
     loadOrder();
     // Auto-refresh every 10 seconds for near real-time tracking
-    const interval = setInterval(() => loadOrder(true), 10000);
+    const interval = setInterval(() => loadOrder(true), 30000); // reduced from 10s
 
     // Listen for instant updates from orders management
     const handleOrdersUpdate = () => loadOrder(true);

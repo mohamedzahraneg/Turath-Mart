@@ -107,7 +107,7 @@ interface SidebarProps {
   currentPath?: string;
 }
 
-export default function Sidebar({ currentPath = '' }: SidebarProps) {
+function Sidebar({ currentPath = '' }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [userName, setUserName] = useState('المستخدم');
@@ -332,3 +332,5 @@ export default function Sidebar({ currentPath = '' }: SidebarProps) {
     </>
   );
 }
+
+export default React.memo(Sidebar);
