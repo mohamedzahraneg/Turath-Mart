@@ -13,12 +13,24 @@ interface AppLogoProps {
 }
 
 const AppLogo = memo(function AppLogo({
-  src = `/assets/images/new_logo.jpg?v=${Date.now()}`,
+  src,
   iconName = 'SparklesIcon',
   size = 64,
   className = '',
   onClick,
 }: AppLogoProps) {
+  const [mounted, setMounted] = React.useState(false);
+
+  React.useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const finalSrc = useMemo(() => {
+    if (src) return src;
+    if (!mounted) return '/assets/images/new_logo.jpg';
+    return `/assets/images/new_logo.jpg?v=${Date.now()}`;
+  }, [src, mounted]);
+
   // Memoize className calculation
   const containerClassName = useMemo(() => {
     const classes = ['flex items-center'];
@@ -30,15 +42,15 @@ const AppLogo = memo(function AppLogo({
   return (
     <div className={containerClassName} onClick={onClick}>
       {/* Show image if src provided, otherwise show icon */}
-      {src ? (
+      {finalSrc ? (
         <AppImage
-          src={src}
+          src={finalSrc}
           alt="Logo"
           width={size}
           height={size}
           className="flex-shrink-0 rounded-full border-2 border-[hsl(var(--primary))] shadow-lg object-cover"
           priority={true}
-          unoptimized={src.endsWith('.svg')}
+          unoptimized={finalSrc.endsWith('.svg')}
         />
       ) : (
         <AppIcon name={iconName} size={size} className="flex-shrink-0" />

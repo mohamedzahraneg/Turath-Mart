@@ -85,22 +85,23 @@ interface EditModalProps {
 
 function EditModal({ item, onClose, onSave, allItems }: EditModalProps) {
   const isNew = !item;
-  const [form, setForm] = useState<InventoryItem>(
-    item
-      ? { ...item, images: item.images || [], colors: item.colors || [] }
-      : {
-          id: `inv-${Date.now()}`,
-          name: '',
-          sku: '',
-          available: 0,
-          withdrawn: 0,
-          minStock: 10,
-          price: 0,
-          category: 'حوامل',
-          images: [],
-          colors: [],
-        }
-  );
+  const [form, setForm] = useState<InventoryItem>(() => {
+    if (item) {
+      return { ...item, images: item.images || [], colors: item.colors || [] };
+    }
+    return {
+      id: `inv-${Date.now()}`,
+      name: '',
+      sku: '',
+      available: 0,
+      withdrawn: 0,
+      minStock: 10,
+      price: 0,
+      category: 'حوامل',
+      images: [],
+      colors: [],
+    };
+  });
   const [skuManuallyEdited, setSkuManuallyEdited] = useState(!isNew);
   const [previewIndex, setPreviewIndex] = useState(0);
   const [newColor, setNewColor] = useState('');
@@ -158,7 +159,7 @@ function EditModal({ item, onClose, onSave, allItems }: EditModalProps) {
     setForm((prev) => ({ ...prev, colors: (prev.colors || []).filter((c) => c !== color) }));
   };
 
-  const images = form.images || [];
+  const images = form?.images || [];
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" dir="rtl">
