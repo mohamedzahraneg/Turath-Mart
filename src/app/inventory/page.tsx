@@ -140,8 +140,11 @@ function EditModal({ item, onClose, onSave, allItems }: EditModalProps) {
 
   const removeImage = (index: number) => {
     setForm((prev) => {
-      const imgs = [...(prev.images || [])];
-      imgs.splice(index, 1);
+      const currentImages = prev?.images || [];
+      const imgs = [...currentImages];
+      if (index >= 0 && index < imgs.length) {
+        imgs.splice(index, 1);
+      }
       if (previewIndex >= imgs.length) setPreviewIndex(Math.max(0, imgs.length - 1));
       return { ...prev, images: imgs };
     });
@@ -462,43 +465,51 @@ export default function InventoryPage() {
       if (!ordRes.error && ordRes.data) {
         const withdrawnMap: Record<string, number> = {};
         ordRes.data.forEach((o: any) => {
-          // Robust status filtering: ignore cancelled/returned (even if stored as Arabic or English)
-          const s = (o.status || '').toLowerCase();
-          if (s === 'cancelled' || s === 'returned' || s === 'ملغي' || s === 'مرتجع') return;
-          if (!o.products) return;
-          
-          // Split by either comma or plus
-          const parts = o.products.split(/[,+]/).map((s: string) => s.trim());
-          parts.forEach((p: string) => {
-            let name = p;
-            let qty = 1;
+          try {
+            // Robust status filtering: ignore cancelled/returned (even if stored as Arabic or English)
+            const s = (o.status || '').toLowerCase();
+            if (s === 'cancelled' || s === 'returned' || s === 'ملغي' || s === 'مرتجع') return;
+            if (!o.products || typeof o.products !== 'string') return;
             
-            // 1. Try parenthesis format: Product Name (2)
-            const parenMatch = p.match(/(.*?)\s*\(\s*(\d+)\s*\)/);
-            // 2. Try x format: Product Name x 2
-            const xMatch = p.match(/(.*?)\s*([x×\*]\s*(\d+)|(\d+)\s*[x×\*])$/i);
-            
-            if (parenMatch) {
-              name = parenMatch[1].trim();
-              qty = parseInt(parenMatch[2], 10) || 1;
-            } else if (xMatch) {
-              name = xMatch[1].trim();
-              qty = parseInt(xMatch[3] || xMatch[4], 10) || 1;
-            } else {
-              // Try simpler fallback if no known symbol found: maybe just a number at the end?
-              const simpleMatch = p.match(/(.*?)\s*(\d+)$/);
-              if (simpleMatch) {
-                name = simpleMatch[1].trim();
-                qty = parseInt(simpleMatch[2], 10) || 1;
+            // Split by either comma or plus
+            const parts = o.products.split(/[,+]/).map((s: string) => s.trim());
+            parts.forEach((p: string) => {
+              try {
+                let name = p;
+                let qty = 1;
+                
+                // 1. Try parenthesis format: Product Name (2)
+                const parenMatch = p.match(/(.*?)\s*\(\s*(\d+)\s*\)/);
+                // 2. Try x format: Product Name x 2
+                const xMatch = p.match(/(.*?)\s*([x×\*]\s*(\d+)|(\d+)\s*[x×\*])$/i);
+                
+                if (parenMatch) {
+                  name = parenMatch[1].trim();
+                  qty = parseInt(parenMatch[2], 10) || 1;
+                } else if (xMatch) {
+                  name = xMatch[1].trim();
+                  qty = parseInt(xMatch[3] || xMatch[4], 10) || 1;
+                } else {
+                  // Try simpler fallback if no known symbol found: maybe just a number at the end?
+                  const simpleMatch = p.match(/(.*?)\s*(\d+)$/);
+                  if (simpleMatch) {
+                    name = simpleMatch[1].trim();
+                    qty = parseInt(simpleMatch[2], 10) || 1;
+                  }
+                }
+                
+                const normalizedName = name.trim();
+                if (normalizedName) {
+                  if (!withdrawnMap[normalizedName]) withdrawnMap[normalizedName] = 0;
+                  withdrawnMap[normalizedName] += qty;
+                }
+              } catch (innerErr) {
+                console.error('Error parsing product part:', p, innerErr);
               }
-            }
-            
-            const normalizedName = name.trim();
-            if (normalizedName) {
-              if (!withdrawnMap[normalizedName]) withdrawnMap[normalizedName] = 0;
-              withdrawnMap[normalizedName] += qty;
-            }
-          });
+            });
+          } catch (outerErr) {
+            console.error('Error processing order for inventory:', o, outerErr);
+          }
         });
         setRealWithdrawnAmounts(withdrawnMap);
       }
