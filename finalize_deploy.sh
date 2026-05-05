@@ -1,6 +1,10 @@
 #!/bin/bash
+
+# ─── Require APP_PATH ─────────────────────────────────────────────────────────
+: "${APP_PATH:?APP_PATH is required — set it before running this script}"
+
 echo "🚀 جاري فك حزمة التحديث وبناء النسخة الجديدة لمشروع تراث مصر..."
-cd /www/wwwroot/schools || exit 1
+cd "$APP_PATH" || exit 1
 
 if [ ! -f turath_masr_update.zip ]; then
     echo "❌ خطأ: لم يتم العثور على ملف turath_masr_update.zip في السيرفر."
