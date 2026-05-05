@@ -8,6 +8,7 @@ import {
   getPermissionsForRoleId,
 } from '@/contexts/AuthContext';
 import { isPublicRoute, isAuthRoute } from '@/lib/auth/routes';
+import { isAdminRole } from '@/lib/constants/roles';
 
 interface AppLayoutProps {
   children: React.ReactNode;
@@ -52,7 +53,7 @@ export default function AppLayout({ children, currentPath = '' }: AppLayoutProps
     }
 
     // Admin (r1) has full access
-    if (currentRoleId === 'r1') return;
+    if (isAdminRole(currentRoleId)) return;
 
     // Check route access — redirect to a route the user actually has access to
     if (!hasAccess(activePath)) {
@@ -85,7 +86,7 @@ export default function AppLayout({ children, currentPath = '' }: AppLayoutProps
   if (!isPublic) {
     if (loading || roleLoading) return <AuthLoadingScreen />;
     if (!user && !currentRoleId) return <AuthLoadingScreen />;
-    if (currentRoleId !== 'r1' && !hasAccess(activePath)) return <AuthLoadingScreen />;
+    if (!isAdminRole(currentRoleId) && !hasAccess(activePath)) return <AuthLoadingScreen />;
   }
 
   return (

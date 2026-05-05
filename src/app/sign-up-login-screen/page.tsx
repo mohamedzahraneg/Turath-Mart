@@ -21,6 +21,7 @@ import {
   getPermissionsForRoleId,
 } from '@/contexts/AuthContext';
 import { createClient } from '@/lib/supabase/client';
+import { getDeviceLabel } from '@/lib/utils/device';
 
 interface LoginForm {
   email: string;
@@ -29,13 +30,8 @@ interface LoginForm {
 }
 
 /* ─── helpers ─── */
-function getDeviceType(): string {
-  if (typeof window === 'undefined') return 'كمبيوتر';
-  const ua = navigator.userAgent;
-  if (/tablet|ipad|playbook|silk/i.test(ua)) return 'تابلت';
-  if (/mobile|iphone|ipod|android|blackberry|opera mini|iemobile/i.test(ua)) return 'موبايل';
-  return 'كمبيوتر';
-}
+// Device-class label is extracted into src/lib/utils/device.ts so all the
+// places that show / log the user's device class share one implementation.
 
 function DeviceIcon({ device }: { device: string }) {
   if (device === 'موبايل') return <Smartphone size={14} className="text-gold-400/60" />;
@@ -102,7 +98,7 @@ function LoginPageInner() {
   const searchParams = useSearchParams();
 
   useEffect(() => {
-    setDeviceType(getDeviceType());
+    setDeviceType(getDeviceLabel());
     setMounted(true);
   }, []);
 

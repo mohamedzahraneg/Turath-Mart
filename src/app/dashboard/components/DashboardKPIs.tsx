@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
+import { isAdminRole } from '@/lib/constants/roles';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -57,7 +58,7 @@ const PERIOD_LABELS: Record<string, string> = {
 export default function DashboardKPIs() {
   const [period, setPeriod] = useState<'today' | 'yesterday' | 'week' | 'month'>('today');
   const { currentRoleId } = useAuth();
-  const isAdmin = currentRoleId === 'r1';
+  const isAdmin = isAdminRole(currentRoleId);
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string>('');

@@ -23,6 +23,7 @@ import {
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { canUseAdminOnlyFinancialFields } from '@/lib/constants/roles';
+import { isValidEgyptianMobile } from '@/lib/validators/phone';
 
 interface ProductItem {
   productType: string;
@@ -499,7 +500,7 @@ export default function AddOrderModal({ onClose }: Props) {
 
   // Search for history when phone changes
   useEffect(() => {
-    if (phone.length === 11 && /^01[0-9]{9}$/.test(phone)) {
+    if (phone.length === 11 && isValidEgyptianMobile(phone)) {
       const searchHistory = async () => {
         const supabase = createClient();
         const { data } = await supabase
@@ -587,8 +588,8 @@ export default function AddOrderModal({ onClose }: Props) {
   const validateStep1 = () => {
     const errs: Record<string, string> = {};
     if (!customerName.trim()) errs.customerName = 'اسم العميل مطلوب';
-    if (!/^01[0-9]{9}$/.test(phone)) errs.phone = 'رقم موبايل مصري غير صحيح';
-    if (phone2 && !/^01[0-9]{9}$/.test(phone2)) errs.phone2 = 'رقم موبايل مصري غير صحيح';
+    if (!isValidEgyptianMobile(phone)) errs.phone = 'رقم موبايل مصري غير صحيح';
+    if (phone2 && !isValidEgyptianMobile(phone2)) errs.phone2 = 'رقم موبايل مصري غير صحيح';
     if (!district) errs.district = 'المنطقة مطلوبة';
     if (!address.trim() || address.trim().length < 10) errs.address = 'العنوان قصير جداً';
     setErrors(errs);

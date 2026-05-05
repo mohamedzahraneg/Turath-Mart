@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { useNotifications } from '@/contexts/NotificationContext';
 import NotificationDropdown from '@/components/NotificationDropdown';
+import { isAdminRole } from '@/lib/constants/roles';
 
 interface NavItem {
   id: string;
@@ -119,7 +120,7 @@ function Sidebar({ currentPath = '' }: SidebarProps) {
   const router = useRouter();
 
   // Only True Admin (r1) sees EVERYTHING without filtering
-  const isSuperAdmin = currentRoleId === 'r1';
+  const isSuperAdmin = isAdminRole(currentRoleId);
   const visibleNavItems = isSuperAdmin ? navItems : navItems.filter((item) => hasAccess(item.href));
 
   const isActive = (href: string) => currentPath === href || currentPath.startsWith(href);

@@ -107,6 +107,7 @@ const STATUS_CONFIG: Record<
 // Actual DB queries will replace mock datasets.
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
+import { isAdminRole } from '@/lib/constants/roles';
 
 function timeAgo(date: Date | null): string {
   if (!date) return '';
@@ -128,7 +129,7 @@ export default function LiveOrdersDashboard() {
 
   // Check if user is admin (r1) to show/hide collections
   const { currentRoleId } = useAuth();
-  const isAdmin = currentRoleId === 'r1';
+  const isAdmin = isAdminRole(currentRoleId);
 
   useEffect(() => {
     setMounted(true);

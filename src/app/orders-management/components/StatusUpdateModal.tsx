@@ -7,6 +7,7 @@ import { X, Clock, AlertTriangle, CheckCircle, MapPin, ShieldOff } from 'lucide-
 import { useAuth, getPermissionsForRoleId } from '@/contexts/AuthContext';
 import { addAuditLog, getAuditLogs } from './AuditLogModal';
 import { createClient } from '@/lib/supabase/client';
+import { isAdminRole } from '@/lib/constants/roles';
 
 interface Order {
   id: string;
@@ -106,7 +107,7 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
 
   // Permission-based check: check if user has 'update_status' permission
   const userPermissions = currentRoleId ? getPermissionsForRoleId(currentRoleId) : [];
-  const canUpdate = currentRoleId === 'r1' || userPermissions.includes('update_status');
+  const canUpdate = isAdminRole(currentRoleId) || userPermissions.includes('update_status');
 
   // Get current user info from localStorage
   const getCurrentUser = () => {

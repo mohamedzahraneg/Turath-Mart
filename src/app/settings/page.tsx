@@ -302,10 +302,11 @@ interface Region {
 }
 
 import { useAuth } from '@/contexts/AuthContext';
+import { isAdminRole } from '@/lib/constants/roles';
 
 function DistrictsTab() {
   const { currentRoleId } = useAuth();
-  const isAdmin = currentRoleId === 'r1';
+  const isAdmin = isAdminRole(currentRoleId);
 
   const {
     data: regions,
@@ -687,7 +688,7 @@ function DistrictsTab() {
 // ─── Warranty Tab ────────────────────────────────────────────────────────────
 function WarrantyTab() {
   const { currentRoleId } = useAuth();
-  const isAdmin = currentRoleId === 'r1';
+  const isAdmin = isAdminRole(currentRoleId);
 
   const {
     data: options,

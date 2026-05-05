@@ -68,3 +68,21 @@ export function canDeleteOrders(roleId: string | null | undefined): boolean {
 export function canUseAdminOnlyFinancialFields(roleId: string | null | undefined): boolean {
   return isAdminRole(roleId);
 }
+
+/**
+ * Roles allowed to do bulk-manage operations on the orders table
+ * (bulk delete, bulk status update, etc).
+ *
+ * NOTE: this is intentionally narrower than canEditOrders() — delegates
+ * (r4) can update individual orders' status but should NOT have bulk
+ * admin tools. Mirrors the legacy hand-written check
+ * `currentRoleId === 'r1' || 'r2' || 'r3'` used across the orders UI.
+ */
+export function canBulkManageOrders(roleId: string | null | undefined): boolean {
+  if (!isKnownRole(roleId)) return false;
+  return (
+    roleId === ROLE_IDS.ADMIN ||
+    roleId === ROLE_IDS.SYSTEM_SUPERVISOR ||
+    roleId === ROLE_IDS.SHIPPING_SUPERVISOR
+  );
+}

@@ -23,6 +23,7 @@ import OrderDetailModal from './OrderDetailModal';
 import AuditLogModal from './AuditLogModal';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth, getPermissionsForRoleId } from '@/contexts/AuthContext';
+import { canBulkManageOrders } from '@/lib/constants/roles';
 
 interface Order {
   id: string;
@@ -207,7 +208,7 @@ export default function OrdersTableSection() {
   // --- صلاحيات المستخدم (من AuthContext - المصدر الموثوق) ---
   const { user, currentRoleId, customPermissions: authPermissions } = useAuth();
   const canManageOrders = (() => {
-    if (currentRoleId === 'r1' || currentRoleId === 'r2' || currentRoleId === 'r3') return true;
+    if (canBulkManageOrders(currentRoleId)) return true;
     const perms = Array.isArray(authPermissions)
       ? authPermissions
       : getPermissionsForRoleId(currentRoleId || '');
@@ -218,7 +219,7 @@ export default function OrdersTableSection() {
     );
   })();
   const canViewDelegates = (() => {
-    if (currentRoleId === 'r1' || currentRoleId === 'r2' || currentRoleId === 'r3') return true;
+    if (canBulkManageOrders(currentRoleId)) return true;
     const perms = Array.isArray(authPermissions)
       ? authPermissions
       : getPermissionsForRoleId(currentRoleId || '');
