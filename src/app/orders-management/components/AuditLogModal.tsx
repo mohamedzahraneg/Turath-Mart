@@ -91,7 +91,9 @@ export async function getAuditLogs(orderId: string): Promise<AuditEntry[]> {
     // Fallback to localStorage
     if (typeof window === 'undefined') return [];
     try {
-      const all = JSON.parse(localStorage.getItem('turath_masr_audit_logs') || '[]') as AuditEntry[];
+      const all = JSON.parse(
+        localStorage.getItem('turath_masr_audit_logs') || '[]'
+      ) as AuditEntry[];
       return all
         .filter((e) => e.orderId === orderId)
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -124,7 +126,9 @@ export async function addAuditLog(entry: Omit<AuditEntry, 'id' | 'createdAt'>) {
   // Also save to localStorage as backup
   if (typeof window !== 'undefined') {
     try {
-      const all = JSON.parse(localStorage.getItem('turath_masr_audit_logs') || '[]') as AuditEntry[];
+      const all = JSON.parse(
+        localStorage.getItem('turath_masr_audit_logs') || '[]'
+      ) as AuditEntry[];
       const newEntry: AuditEntry = {
         ...entry,
         id: `audit-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -166,7 +170,12 @@ export default function AuditLogModal({ orderId, orderNum, onClose }: Props) {
       const days = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
       const dayName = days[d.getDay()];
       const date = d.toLocaleDateString('en-GB');
-      const time = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+      const time = d.toLocaleTimeString('en-US', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      });
       return `${dayName} ${date} — ${time}`;
     } catch {
       return iso;

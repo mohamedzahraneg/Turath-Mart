@@ -142,7 +142,11 @@ function Sidebar({ currentPath = '' }: SidebarProps) {
           .eq('id', user.id)
           .single();
         if (profile) {
-          const name = profile.full_name || user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'المستخدم';
+          const name =
+            profile.full_name ||
+            user?.user_metadata?.full_name ||
+            user?.email?.split('@')[0] ||
+            'المستخدم';
           setUserName(name);
           const roleId = profile.role_id || currentRoleId;
           if (roleId && ROLE_LABELS[roleId]) {

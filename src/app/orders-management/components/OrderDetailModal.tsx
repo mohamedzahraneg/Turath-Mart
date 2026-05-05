@@ -26,10 +26,7 @@ import AuditLogModal, { getAuditLogs, AuditEntry } from './AuditLogModal';
 import { createClient } from '@/lib/supabase/client';
 import { STATUS_LABELS } from './AuditLogModal';
 import { useAuth } from '@/contexts/AuthContext';
-import {
-  canUseAdminOnlyFinancialFields,
-  canEditOrders,
-} from '@/lib/constants/roles';
+import { canUseAdminOnlyFinancialFields, canEditOrders } from '@/lib/constants/roles';
 
 interface OrderLine {
   productType: string;
@@ -151,7 +148,10 @@ export default function OrderDetailModal({ order, onClose }: Props) {
 
   // Load audit logs and listen for real-time updates
   useEffect(() => {
-    const loadAudit = () => setAuditLogs(getAuditLogs(order.id));
+    const loadAudit = async () => {
+      const logs = await getAuditLogs(order.id);
+      setAuditLogs(logs);
+    };
     loadAudit();
 
     const fetchSettings = async () => {

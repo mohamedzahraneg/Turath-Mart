@@ -4,12 +4,11 @@ const nextConfig = {
   productionBrowserSourceMaps: false, // disabled for faster builds & smaller bundles
   output: 'standalone',
   distDir: process.env.DIST_DIR || '.next',
-  typescript: {
-    ignoreBuildErrors: true,
-  },
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
+  // TypeScript and ESLint now run during build.
+  // Re-enabled in Phase 6 after typecheck reached 0 errors and lint reached
+  // 0 errors (warnings remain visible but do not block the build).
+  // If a future change re-introduces type errors or eslint errors, the build
+  // will fail on purpose — DO NOT silence them by re-enabling these flags.
   // Compress responses
   compress: true,
   // Optimize images

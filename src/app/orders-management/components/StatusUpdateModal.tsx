@@ -99,10 +99,10 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
     };
     loadDelegates();
   }, []);
-    // `authUser` is the Supabase auth.users object (has `id` UUID for RLS).
-    // The local `getCurrentUser()` below is a display-name helper that
-    // shadows nothing since we renamed the destructured user here.
-    const { user: authUser, currentRole, currentRoleId } = useAuth();
+  // `authUser` is the Supabase auth.users object (has `id` UUID for RLS).
+  // The local `getCurrentUser()` below is a display-name helper that
+  // shadows nothing since we renamed the destructured user here.
+  const { user: authUser, currentRole, currentRoleId } = useAuth();
 
   // Permission-based check: check if user has 'update_status' permission
   const userPermissions = currentRoleId ? getPermissionsForRoleId(currentRoleId) : [];
@@ -118,7 +118,8 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
         return { name: parsed?.name || parsed?.email || 'مستخدم', role: currentRole };
       }
     } catch {}
-    return { name: ROLE_LABEL[currentRole] || 'مستخدم', role: currentRole };
+    const roleKey = currentRole ?? '';
+    return { name: ROLE_LABEL[roleKey] || 'مستخدم', role: currentRole };
   };
 
   const {
@@ -145,7 +146,9 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
         }
       } catch {}
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [order.id]);
 
   const onSubmit = async (data: StatusFormData) => {
@@ -168,7 +171,7 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
       oldValue: order.status,
       newValue: data.newStatus,
       changedBy: user.name,
-      changedByRole: user.role,
+      changedByRole: user.role ?? '',
       note,
     });
 
@@ -212,7 +215,7 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
         order_id: order.id,
         order_num: order.orderNum,
         created_by: user.name,
-        is_read: false
+        is_read: false,
       });
 
       // Notify Customer (targeting their phone)
@@ -222,7 +225,7 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
         message: `مرحباً ${order.customer}، نود إخطارك بأن حالة طلبك رقم (${order.orderNum}) هي الآن: ${statusLabel}. شكراً لثقتك بنا.`,
         phone: order.phone,
         order_num: order.orderNum,
-        is_read: false
+        is_read: false,
       });
 
       window.dispatchEvent(new CustomEvent('turath_masr_orders_updated'));
@@ -282,7 +285,8 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
               <p className="text-xs text-[hsl(var(--muted-foreground))] mt-2">
                 دورك الحالي:{' '}
                 <span className="font-semibold text-[hsl(var(--foreground))]">
-                  {ROLE_LABEL[currentRole] || (currentRoleId ? `دور #${currentRoleId}` : currentRole)}
+                  {ROLE_LABEL[currentRole ?? ''] ||
+                    (currentRoleId ? `دور #${currentRoleId}` : currentRole)}
                 </span>
               </p>
             </div>
@@ -296,7 +300,9 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
             <div className="flex items-center gap-2 bg-green-50 border border-green-200 rounded-xl px-3 py-2">
               <CheckCircle size={14} className="text-green-600" />
               <span className="text-xs text-green-700 font-semibold">
-                لديك صلاحية تحديث الحالة — {ROLE_LABEL[currentRole] || (currentRoleId ? `دور #${currentRoleId}` : currentRole)}
+                لديك صلاحية تحديث الحالة —{' '}
+                {ROLE_LABEL[currentRole ?? ''] ||
+                  (currentRoleId ? `دور #${currentRoleId}` : currentRole)}
               </span>
             </div>
 
@@ -365,7 +371,9 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
               >
                 <option value="">— بدون مندوب —</option>
                 {delegates.map((d) => (
-                  <option key={d} value={d}>{d}</option>
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
                 ))}
               </select>
             </div>

@@ -449,7 +449,10 @@ export default function InventoryPage() {
       const supabase = createClient();
 
       const [invRes, ordRes] = await Promise.all([
-        supabase.from('turath_masr_inventory').select('*').order('created_at', { ascending: false }),
+        supabase
+          .from('turath_masr_inventory')
+          .select('*')
+          .order('created_at', { ascending: false }),
         supabase.from('turath_masr_orders').select('products, status'),
       ]);
 
@@ -470,19 +473,19 @@ export default function InventoryPage() {
             const s = (o.status || '').toLowerCase();
             if (s === 'cancelled' || s === 'returned' || s === 'ملغي' || s === 'مرتجع') return;
             if (!o.products || typeof o.products !== 'string') return;
-            
+
             // Split by either comma or plus
             const parts = o.products.split(/[,+]/).map((s: string) => s.trim());
             parts.forEach((p: string) => {
               try {
                 let name = p;
                 let qty = 1;
-                
+
                 // 1. Try parenthesis format: Product Name (2)
                 const parenMatch = p.match(/(.*?)\s*\(\s*(\d+)\s*\)/);
                 // 2. Try x format: Product Name x 2
                 const xMatch = p.match(/(.*?)\s*([x×\*]\s*(\d+)|(\d+)\s*[x×\*])$/i);
-                
+
                 if (parenMatch) {
                   name = parenMatch[1].trim();
                   qty = parseInt(parenMatch[2], 10) || 1;
@@ -497,7 +500,7 @@ export default function InventoryPage() {
                     qty = parseInt(simpleMatch[2], 10) || 1;
                   }
                 }
-                
+
                 const normalizedName = name.trim();
                 if (normalizedName) {
                   if (!withdrawnMap[normalizedName]) withdrawnMap[normalizedName] = 0;

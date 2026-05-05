@@ -16,10 +16,7 @@ interface AppLayoutProps {
 
 function AuthLoadingScreen() {
   return (
-    <div
-      className="flex min-h-screen items-center justify-center bg-[hsl(210,20%,97%)]"
-      dir="rtl"
-    >
+    <div className="flex min-h-screen items-center justify-center bg-[hsl(210,20%,97%)]" dir="rtl">
       <div className="flex flex-col items-center gap-3 text-[hsl(var(--foreground))]">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#c6a052] border-t-transparent" />
         <p className="text-sm text-[hsl(var(--muted-foreground))]">جارٍ التحقق من الجلسة…</p>
@@ -29,7 +26,8 @@ function AuthLoadingScreen() {
 }
 
 export default function AppLayout({ children, currentPath = '' }: AppLayoutProps) {
-  const { currentRole, currentRoleId, customPermissions, hasAccess, roleLoading, user, loading } = useAuth();
+  const { currentRole, currentRoleId, customPermissions, hasAccess, roleLoading, user, loading } =
+    useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const activePath = currentPath || pathname || '';
@@ -65,12 +63,22 @@ export default function AppLayout({ children, currentPath = '' }: AppLayoutProps
         permissions = getPermissionsForRoleId(currentRoleId);
       }
 
-      const defaultRoute = permissions.length > 0
-        ? getDefaultRouteForPermissions(permissions)
-        : '/shipping';
+      const defaultRoute =
+        permissions.length > 0 ? getDefaultRouteForPermissions(permissions) : '/shipping';
       router.replace(defaultRoute);
     }
-  }, [activePath, isPublic, currentRole, currentRoleId, customPermissions, hasAccess, roleLoading, loading, user, router]);
+  }, [
+    activePath,
+    isPublic,
+    currentRole,
+    currentRoleId,
+    customPermissions,
+    hasAccess,
+    roleLoading,
+    loading,
+    user,
+    router,
+  ]);
 
   // Block protected content from flashing while auth is resolving or while
   // a redirect is pending.

@@ -43,7 +43,17 @@ function DeviceIcon({ device }: { device: string }) {
 }
 
 /* ─── Particle component ─── */
-function Particle({ delay, size, left, duration }: { delay: number; size: number; left: number; duration: number }) {
+function Particle({
+  delay,
+  size,
+  left,
+  duration,
+}: {
+  delay: number;
+  size: number;
+  left: number;
+  duration: number;
+}) {
   return (
     <div
       className="islamic-particle"
@@ -156,7 +166,8 @@ function LoginPageInner() {
         // No localStorage needed - AuthContext reads from Supabase directly
 
         toast.success(`مرحباً! تم تسجيل الدخول — ${deviceType}`);
-        const permissions = effectivePerms.length > 0 ? effectivePerms : getPermissionsForRoleId(finalRoleId);
+        const permissions =
+          effectivePerms.length > 0 ? effectivePerms : getPermissionsForRoleId(finalRoleId);
         const computedLanding = getInitialRoute(permissions);
         const nextParam = searchParams?.get('next');
         const landingPage = nextParam && nextParam.startsWith('/') ? nextParam : computedLanding;
@@ -184,7 +195,9 @@ function LoginPageInner() {
 
       {/* ─── Floating golden particles ─── */}
       {mounted &&
-        particles.map((p) => <Particle key={p.id} delay={p.delay} size={p.size} left={p.left} duration={p.duration} />)}
+        particles.map((p) => (
+          <Particle key={p.id} delay={p.delay} size={p.size} left={p.left} duration={p.duration} />
+        ))}
 
       {/* ─── Decorative blurred orbs ─── */}
       <div className="absolute top-[-15%] right-[-8%] w-[500px] h-[500px] bg-[#c6a052]/8 rounded-full blur-[120px] animate-pulse-slow pointer-events-none" />
@@ -195,8 +208,20 @@ function LoginPageInner() {
       <div className="absolute inset-0 opacity-[0.04] pointer-events-none">
         <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
           <defs>
-            <pattern id="islamic-geo" x="0" y="0" width="80" height="80" patternUnits="userSpaceOnUse">
-              <path d="M40 0 L80 40 L40 80 L0 40 Z" fill="none" stroke="#c6a052" strokeWidth="0.5" />
+            <pattern
+              id="islamic-geo"
+              x="0"
+              y="0"
+              width="80"
+              height="80"
+              patternUnits="userSpaceOnUse"
+            >
+              <path
+                d="M40 0 L80 40 L40 80 L0 40 Z"
+                fill="none"
+                stroke="#c6a052"
+                strokeWidth="0.5"
+              />
               <circle cx="40" cy="40" r="15" fill="none" stroke="#c6a052" strokeWidth="0.3" />
               <path d="M20 0 L40 20 L60 0" fill="none" stroke="#c6a052" strokeWidth="0.3" />
               <path d="M0 20 L20 40 L0 60" fill="none" stroke="#c6a052" strokeWidth="0.3" />
@@ -220,9 +245,7 @@ function LoginPageInner() {
           <p className="text-[#c6a052] text-lg mb-3 font-semibold tracking-wide islamic-shimmer">
             السلام عليكم ورحمة الله وبركاته
           </p>
-          <h1 className="text-4xl font-extrabold text-white mb-2 drop-shadow-lg">
-            تراث مصر
-          </h1>
+          <h1 className="text-4xl font-extrabold text-white mb-2 drop-shadow-lg">تراث مصر</h1>
           <p className="text-white/50 text-sm">مرحبًا بك في نظام الإدارة المتكامل</p>
         </div>
 
@@ -231,7 +254,11 @@ function LoginPageInner() {
           {/* ─── Logo icon ─── */}
           <div className="flex flex-col items-center mb-8">
             <div className="w-24 h-24 mb-4 hover:scale-105 transition-transform duration-500">
-              <img src="/assets/images/new_logo.jpg" alt="تراث مصر" className="w-full h-full rounded-full object-cover shadow-[0_8px_30px_rgba(198,160,82,0.4)] border-2 border-[#c6a052]/30" />
+              <img
+                src="/assets/images/new_logo.jpg"
+                alt="تراث مصر"
+                className="w-full h-full rounded-full object-cover shadow-[0_8px_30px_rgba(198,160,82,0.4)] border-2 border-[#c6a052]/30"
+              />
             </div>
             <h2 className="text-xl font-bold text-white">تسجيل الدخول</h2>
             <p className="text-white/40 text-sm mt-1">أدخل بياناتك للمتابعة</p>
@@ -370,10 +397,7 @@ export default function LoginPage() {
   return (
     <Suspense
       fallback={
-        <div
-          className="min-h-screen flex items-center justify-center islamic-login-bg"
-          dir="rtl"
-        >
+        <div className="min-h-screen flex items-center justify-center islamic-login-bg" dir="rtl">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#c6a052] border-t-transparent" />
         </div>
       }

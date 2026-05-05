@@ -1,5 +1,6 @@
 'use client';
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import type { Session, User, AuthChangeEvent } from '@supabase/supabase-js';
 import { createClient, resetSupabaseClient } from '@/lib/supabase/client';
 import { clearAppStorage } from '@/lib/auth/storage';
 
@@ -45,18 +46,32 @@ const DEFAULT_ROLES: Array<{ id: string; name: string; permissions: string[] }> 
     id: 'r2',
     name: 'مشرف النظام',
     permissions: [
-      'view_dashboard', 'view_orders', 'edit_orders', 'update_status',
-      'view_shipping', 'manage_shipping', 'view_inventory', 'view_reports',
-      'export_reports', 'manage_users',
+      'view_dashboard',
+      'view_orders',
+      'edit_orders',
+      'update_status',
+      'view_shipping',
+      'manage_shipping',
+      'view_inventory',
+      'view_reports',
+      'export_reports',
+      'manage_users',
     ],
   },
   {
     id: 'r3',
     name: 'مشرف شحن',
     permissions: [
-      'view_dashboard', 'view_orders', 'create_orders', 'edit_orders',
-      'update_status', 'view_shipping', 'manage_shipping', 'assign_courier',
-      'view_inventory', 'view_reports',
+      'view_dashboard',
+      'view_orders',
+      'create_orders',
+      'edit_orders',
+      'update_status',
+      'view_shipping',
+      'manage_shipping',
+      'assign_courier',
+      'view_inventory',
+      'view_reports',
     ],
   },
   { id: 'r4', name: 'مندوب شحن', permissions: ['view_orders', 'update_status', 'view_shipping'] },
@@ -64,8 +79,14 @@ const DEFAULT_ROLES: Array<{ id: string; name: string; permissions: string[] }> 
     id: 'r5',
     name: 'مدير خدمة عملاء',
     permissions: [
-      'view_dashboard', 'view_orders', 'view_shipping', 'view_reports',
-      'export_reports', 'view_customers', 'manage_customers', 'customer_support',
+      'view_dashboard',
+      'view_orders',
+      'view_shipping',
+      'view_reports',
+      'export_reports',
+      'view_customers',
+      'manage_customers',
+      'customer_support',
     ],
   },
   {
@@ -76,8 +97,14 @@ const DEFAULT_ROLES: Array<{ id: string; name: string; permissions: string[] }> 
 ];
 
 const PERMISSION_DEFAULT_ROUTE_PRIORITY = [
-  'view_dashboard', 'view_orders', 'view_shipping', 'view_reports',
-  'view_inventory', 'view_customers', 'manage_users', 'system_settings',
+  'view_dashboard',
+  'view_orders',
+  'view_shipping',
+  'view_reports',
+  'view_inventory',
+  'view_customers',
+  'manage_users',
+  'system_settings',
 ];
 
 export function getDefaultRouteForPermissions(permissions: string[]): string {
@@ -164,14 +191,18 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     }
 
     // Get initial session
-    supabase.auth.getSession().then(({ data: { session: s } }) => {
-      setSession(s);
-      setUser(s?.user ?? null);
-      setLoading(false);
-    });
+    supabase.auth
+      .getSession()
+      .then(({ data: { session: s } }: { data: { session: Session | null } }) => {
+        setSession(s);
+        setUser(s?.user ?? null);
+        setLoading(false);
+      });
 
     // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event: AuthChangeEvent, s: Session | null) => {
       setSession(s);
       setUser(s?.user ?? null);
       if (!s?.user) {
@@ -201,7 +232,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       setRoleLoading(true);
       try {
         const supabase = getSupabaseClient();
-        if (!supabase) { setRoleLoading(false); return; }
+        if (!supabase) {
+          setRoleLoading(false);
+          return;
+        }
 
         const { data: profile, error } = await supabase
           .from('profiles')
@@ -228,7 +262,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
                 .select('permissions')
                 .eq('id', roleId)
                 .single();
-              if (roleData && Array.isArray(roleData.permissions) && roleData.permissions.length > 0) {
+              if (
+                roleData &&
+                Array.isArray(roleData.permissions) &&
+                roleData.permissions.length > 0
+              ) {
                 effectivePerms = roleData.permissions;
               }
             } catch {}
@@ -355,7 +393,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const getCurrentUser = async () => {
     const supabase = getSupabaseClient();
     if (!supabase) return null;
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
     return user;
   };
 

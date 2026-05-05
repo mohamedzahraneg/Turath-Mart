@@ -105,29 +105,33 @@ export default function DashboardCharts() {
 
         const regionMap = new Map();
 
-        rawOrders?.forEach((o) => {
-          const d = new Date(o.created_at);
-          const dateStr = d.toLocaleDateString('en-US', { day: 'numeric', month: 'short' });
+        // TODO: replace inline `: any` with proper Supabase generated row type
+        // (see src/types/database.ts).
+        rawOrders?.forEach(
+          (o: { created_at: string; status: string; total: number; region?: string }) => {
+            const d = new Date(o.created_at);
+            const dateStr = d.toLocaleDateString('en-US', { day: 'numeric', month: 'short' });
 
-          if (dayMap.has(dateStr)) {
-            const entry = dayMap.get(dateStr);
-            entry.orders += 1;
-            if (o.status === 'delivered') {
-              entry.delivered += 1;
-              entry.revenue += o.total || 0;
+            if (dayMap.has(dateStr)) {
+              const entry = dayMap.get(dateStr);
+              entry.orders += 1;
+              if (o.status === 'delivered') {
+                entry.delivered += 1;
+                entry.revenue += o.total || 0;
+              }
+              if (o.status === 'returned') entry.returned += 1;
             }
-            if (o.status === 'returned') entry.returned += 1;
-          }
 
-          const reg = o.region || 'غير محدد';
-          if (!regionMap.has(reg))
-            regionMap.set(reg, { region: reg, orders: 0, delivered: 0, pending: 0 });
-          const rEntry = regionMap.get(reg);
-          rEntry.orders += 1;
-          if (o.status === 'delivered') rEntry.delivered += 1;
-          else if (['new', 'preparing', 'warehouse', 'shipping'].includes(o.status))
-            rEntry.pending += 1;
-        });
+            const reg = o.region || 'غير محدد';
+            if (!regionMap.has(reg))
+              regionMap.set(reg, { region: reg, orders: 0, delivered: 0, pending: 0 });
+            const rEntry = regionMap.get(reg);
+            rEntry.orders += 1;
+            if (o.status === 'delivered') rEntry.delivered += 1;
+            else if (['new', 'preparing', 'warehouse', 'shipping'].includes(o.status))
+              rEntry.pending += 1;
+          }
+        );
 
         setData({
           daily: Array.from(dayMap.values()),

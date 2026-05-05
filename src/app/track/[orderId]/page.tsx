@@ -474,16 +474,27 @@ function ChatPanel({ type, order, onClose }: ChatPanelProps) {
           .eq('chat_type', type)
           .order('created_at', { ascending: true });
         if (data && data.length > 0) {
-          setMessages(data.map((m: any) => ({
-            id: m.id || `msg-${m.created_at}`,
-            sender: m.sender === 'customer' ? 'customer' : type === 'delegate' ? 'delegate' : 'support',
-            text: m.message,
-            time: (() => {
-              const d = new Date(m.created_at);
-              const days = ['\u0627\u0644\u0623\u062d\u062f','\u0627\u0644\u0627\u062b\u0646\u064a\u0646','\u0627\u0644\u062b\u0644\u0627\u062b\u0627\u0621','\u0627\u0644\u0623\u0631\u0628\u0639\u0627\u0621','\u0627\u0644\u062e\u0645\u064a\u0633','\u0627\u0644\u062c\u0645\u0639\u0629','\u0627\u0644\u0633\u0628\u062a'];
-              return `${d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
-            })(),
-          })));
+          setMessages(
+            data.map((m: any) => ({
+              id: m.id || `msg-${m.created_at}`,
+              sender:
+                m.sender === 'customer' ? 'customer' : type === 'delegate' ? 'delegate' : 'support',
+              text: m.message,
+              time: (() => {
+                const d = new Date(m.created_at);
+                const days = [
+                  '\u0627\u0644\u0623\u062d\u062f',
+                  '\u0627\u0644\u0627\u062b\u0646\u064a\u0646',
+                  '\u0627\u0644\u062b\u0644\u0627\u062b\u0627\u0621',
+                  '\u0627\u0644\u0623\u0631\u0628\u0639\u0627\u0621',
+                  '\u0627\u0644\u062e\u0645\u064a\u0633',
+                  '\u0627\u0644\u062c\u0645\u0639\u0629',
+                  '\u0627\u0644\u0633\u0628\u062a',
+                ];
+                return `${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
+              })(),
+            }))
+          );
         }
       } catch (err) {
         console.error('Error loading chat:', err);
@@ -496,32 +507,54 @@ function ChatPanel({ type, order, onClose }: ChatPanelProps) {
     const supabase = createClient();
     const channel = supabase
       .channel(`chat-track-${type}-${order.phone}`)
-      .on('postgres_changes', {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'turath_masr_crm_chat',
-        filter: `customer_phone=eq.${order.phone}`,
-      }, (payload: any) => {
-        const m = payload.new;
-        // Only show messages for this chat type
-        if (m.chat_type && m.chat_type !== type) return;
-        setMessages((prev) => {
-          if (prev.some(p => p.id === m.id)) return prev;
-          return [...prev, {
-            id: m.id || `msg-${m.created_at}`,
-            sender: m.sender === 'customer' ? 'customer' : type === 'delegate' ? 'delegate' : 'support',
-            text: m.message,
-            time: (() => {
-              const d = new Date(m.created_at);
-              const days = ['\u0627\u0644\u0623\u062d\u062f','\u0627\u0644\u0627\u062b\u0646\u064a\u0646','\u0627\u0644\u062b\u0644\u0627\u062b\u0627\u0621','\u0627\u0644\u0623\u0631\u0628\u0639\u0627\u0621','\u0627\u0644\u062e\u0645\u064a\u0633','\u0627\u0644\u062c\u0645\u0639\u0629','\u0627\u0644\u0633\u0628\u062a'];
-              return `${d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
-            })(),
-          }];
-        });
-      })
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'turath_masr_crm_chat',
+          filter: `customer_phone=eq.${order.phone}`,
+        },
+        (payload: any) => {
+          const m = payload.new;
+          // Only show messages for this chat type
+          if (m.chat_type && m.chat_type !== type) return;
+          setMessages((prev) => {
+            if (prev.some((p) => p.id === m.id)) return prev;
+            return [
+              ...prev,
+              {
+                id: m.id || `msg-${m.created_at}`,
+                sender:
+                  m.sender === 'customer'
+                    ? 'customer'
+                    : type === 'delegate'
+                      ? 'delegate'
+                      : 'support',
+                text: m.message,
+                time: (() => {
+                  const d = new Date(m.created_at);
+                  const days = [
+                    '\u0627\u0644\u0623\u062d\u062f',
+                    '\u0627\u0644\u0627\u062b\u0646\u064a\u0646',
+                    '\u0627\u0644\u062b\u0644\u0627\u062b\u0627\u0621',
+                    '\u0627\u0644\u0623\u0631\u0628\u0639\u0627\u0621',
+                    '\u0627\u0644\u062e\u0645\u064a\u0633',
+                    '\u0627\u0644\u062c\u0645\u0639\u0629',
+                    '\u0627\u0644\u0633\u0628\u062a',
+                  ];
+                  return `${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
+                })(),
+              },
+            ];
+          });
+        }
+      )
       .subscribe();
 
-    return () => { supabase.removeChannel(channel); };
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [order.phone, type]);
   const [input, setInput] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -659,7 +692,6 @@ function ChatPanel({ type, order, onClose }: ChatPanelProps) {
   );
 }
 
-
 // ─── Complaint Modal ──────────────────────────────────────────────────────────
 
 interface ComplaintModalProps {
@@ -688,16 +720,26 @@ function ComplaintModal({ order, onClose }: ComplaintModalProps) {
           .eq('customer_phone', order.phone)
           .order('created_at', { ascending: true });
         if (data && data.length > 0) {
-          setChatMessages(data.map((m: any) => ({
-            id: m.id || `msg-${m.created_at}`,
-            sender: m.sender as 'customer' | 'support',
-            text: m.message,
-            time: (() => {
-              const d = new Date(m.created_at);
-              const days = ['\u0627\u0644\u0623\u062d\u062f','\u0627\u0644\u0627\u062b\u0646\u064a\u0646','\u0627\u0644\u062b\u0644\u0627\u062b\u0627\u0621','\u0627\u0644\u0623\u0631\u0628\u0639\u0627\u0621','\u0627\u0644\u062e\u0645\u064a\u0633','\u0627\u0644\u062c\u0645\u0639\u0629','\u0627\u0644\u0633\u0628\u062a'];
-              return `${d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
-            })(),
-          })));
+          setChatMessages(
+            data.map((m: any) => ({
+              id: m.id || `msg-${m.created_at}`,
+              sender: m.sender as 'customer' | 'support',
+              text: m.message,
+              time: (() => {
+                const d = new Date(m.created_at);
+                const days = [
+                  '\u0627\u0644\u0623\u062d\u062f',
+                  '\u0627\u0644\u0627\u062b\u0646\u064a\u0646',
+                  '\u0627\u0644\u062b\u0644\u0627\u062b\u0627\u0621',
+                  '\u0627\u0644\u0623\u0631\u0628\u0639\u0627\u0621',
+                  '\u0627\u0644\u062e\u0645\u064a\u0633',
+                  '\u0627\u0644\u062c\u0645\u0639\u0629',
+                  '\u0627\u0644\u0633\u0628\u062a',
+                ];
+                return `${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
+              })(),
+            }))
+          );
         }
       } catch {}
     };
@@ -707,30 +749,47 @@ function ComplaintModal({ order, onClose }: ComplaintModalProps) {
     const supabase = createClient();
     const channel = supabase
       .channel(`complaint-chat-${order.phone}`)
-      .on('postgres_changes', {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'turath_masr_crm_chat',
-        filter: `customer_phone=eq.${order.phone}`,
-      }, (payload: any) => {
-        const m = payload.new;
-        setChatMessages((prev) => {
-          if (prev.some(p => p.id === m.id)) return prev;
-          return [...prev, {
-            id: m.id || `msg-${m.created_at}`,
-            sender: m.sender as 'customer' | 'support',
-            text: m.message,
-            time: (() => {
-              const d = new Date(m.created_at);
-              const days = ['\u0627\u0644\u0623\u062d\u062f','\u0627\u0644\u0627\u062b\u0646\u064a\u0646','\u0627\u0644\u062b\u0644\u0627\u062b\u0627\u0621','\u0627\u0644\u0623\u0631\u0628\u0639\u0627\u0621','\u0627\u0644\u062e\u0645\u064a\u0633','\u0627\u0644\u062c\u0645\u0639\u0629','\u0627\u0644\u0633\u0628\u062a'];
-              return `${d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
-            })(),
-          }];
-        });
-      })
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'turath_masr_crm_chat',
+          filter: `customer_phone=eq.${order.phone}`,
+        },
+        (payload: any) => {
+          const m = payload.new;
+          setChatMessages((prev) => {
+            if (prev.some((p) => p.id === m.id)) return prev;
+            return [
+              ...prev,
+              {
+                id: m.id || `msg-${m.created_at}`,
+                sender: m.sender as 'customer' | 'support',
+                text: m.message,
+                time: (() => {
+                  const d = new Date(m.created_at);
+                  const days = [
+                    '\u0627\u0644\u0623\u062d\u062f',
+                    '\u0627\u0644\u0627\u062b\u0646\u064a\u0646',
+                    '\u0627\u0644\u062b\u0644\u0627\u062b\u0627\u0621',
+                    '\u0627\u0644\u0623\u0631\u0628\u0639\u0627\u0621',
+                    '\u0627\u0644\u062e\u0645\u064a\u0633',
+                    '\u0627\u0644\u062c\u0645\u0639\u0629',
+                    '\u0627\u0644\u0633\u0628\u062a',
+                  ];
+                  return `${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
+                })(),
+              },
+            ];
+          });
+        }
+      )
       .subscribe();
 
-    return () => { supabase.removeChannel(channel); };
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [order.phone]);
 
   useEffect(() => {
@@ -742,13 +801,17 @@ function ComplaintModal({ order, onClose }: ComplaintModalProps) {
     try {
       const supabase = createClient();
       // Save complaint to Supabase
-      const { data: complaintData } = await supabase.from('turath_masr_crm_complaints').insert({
-        customer_phone: order.phone,
-        subject: reason,
-        status: 'open',
-        notes: details || null,
-        created_by: order.customer || 'عميل',
-      }).select().single();
+      const { data: complaintData } = await supabase
+        .from('turath_masr_crm_complaints')
+        .insert({
+          customer_phone: order.phone,
+          subject: reason,
+          status: 'open',
+          notes: details || null,
+          created_by: order.customer || 'عميل',
+        })
+        .select()
+        .single();
 
       // Create notification for the team
       await supabase.from('turath_masr_notifications').insert({
@@ -1449,7 +1512,15 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
                         note?: string;
                       }) => {
                         const ts = new Date(e.timestamp);
-                        const days = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+                        const days = [
+                          'الأحد',
+                          'الاثنين',
+                          'الثلاثاء',
+                          'الأربعاء',
+                          'الخميس',
+                          'الجمعة',
+                          'السبت',
+                        ];
                         const time = ts.toLocaleTimeString('en-US', {
                           hour: '2-digit',
                           minute: '2-digit',
@@ -1473,8 +1544,10 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
             }
           } catch {}
 
-          // Always try Supabase for the most up-to-date data
-          if (true) {
+          // Always try Supabase for the most up-to-date data.
+          // The legacy `if (true)` wrapper was a leftover from earlier conditional
+          // logic; it's been simplified to an unconditional try/catch block.
+          {
             try {
               const supabase = createClient();
               const { data } = await supabase
@@ -1512,12 +1585,30 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
                     .eq('order_num', orderId)
                     .order('created_at', { ascending: true });
                   if (auditData && auditData.length > 0) {
-                    const days = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+                    const days = [
+                      'الأحد',
+                      'الاثنين',
+                      'الثلاثاء',
+                      'الأربعاء',
+                      'الخميس',
+                      'الجمعة',
+                      'السبت',
+                    ];
                     foundHistory = auditData
-                      .filter((e: any) => e.action === 'status_change' || e.new_value || e.action === 'order_created')
+                      .filter(
+                        (e: any) =>
+                          e.action === 'status_change' ||
+                          e.new_value ||
+                          e.action === 'order_created'
+                      )
                       .map((e: any) => {
                         const ts = new Date(e.created_at);
-                        const time = ts.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+                        const time = ts.toLocaleTimeString('en-US', {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                          second: '2-digit',
+                          hour12: false,
+                        });
                         const date = ts.toLocaleDateString('en-GB');
                         const dayName = days[ts.getDay()];
                         const statusKey = e.new_value || e.action || 'new';

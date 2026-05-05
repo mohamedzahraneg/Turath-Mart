@@ -17,6 +17,16 @@ import { useAuth } from '@/contexts/AuthContext';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+// Minimal shape of a turath_masr_orders row, for the columns this file selects.
+// TODO: replace with Supabase-generated types from @supabase/cli once typings
+// are wired up in src/types/database.ts.
+interface OrderRow {
+  status: string | null;
+  total: number | null;
+  region?: string | null;
+  created_at?: string | null;
+}
+
 interface KPIData {
   totalOrders: number;
   deliveredOrders: number;
@@ -106,27 +116,30 @@ export default function DashboardKPIs() {
       if (error) throw error;
 
       if (orders) {
+        const typedOrders = orders as OrderRow[];
+        const typedPrev = (prevOrders ?? []) as OrderRow[];
+
         const stats = {
-          total: orders.length,
-          delivered: orders.filter((o) => o.status === 'delivered').length,
-          shipping: orders.filter((o) => o.status === 'shipping').length,
-          returned: orders.filter((o) => ['returned', 'cancelled'].includes(o.status)).length,
-          revenue: orders
+          total: typedOrders.length,
+          delivered: typedOrders.filter((o) => o.status === 'delivered').length,
+          shipping: typedOrders.filter((o) => o.status === 'shipping').length,
+          returned: typedOrders.filter((o) => ['returned', 'cancelled'].includes(o.status ?? ''))
+            .length,
+          revenue: typedOrders
             .filter((o) => o.status === 'delivered')
-            .reduce((s, o) => s + (o.total || 0), 0),
+            .reduce((s: number, o) => s + (o.total ?? 0), 0),
         };
 
         const prevStats = {
-          totalOrders: prevOrders?.length || 0,
-          deliveredOrders: prevOrders?.filter((o) => o.status === 'delivered').length || 0,
-          totalRevenue:
-            prevOrders
-              ?.filter((o) => o.status === 'delivered')
-              .reduce((s, o) => s + (o.total || 0), 0) || 0,
+          totalOrders: typedPrev.length,
+          deliveredOrders: typedPrev.filter((o) => o.status === 'delivered').length,
+          totalRevenue: typedPrev
+            .filter((o) => o.status === 'delivered')
+            .reduce((s: number, o) => s + (o.total ?? 0), 0),
         };
 
         const regions: Record<string, number> = {};
-        orders.forEach((o) => {
+        typedOrders.forEach((o) => {
           if (o.region) regions[o.region] = (regions[o.region] || 0) + 1;
         });
         const topR = Object.entries(regions).sort((a, b) => b[1] - a[1])[0] || ['—', 0];
@@ -251,69 +264,71 @@ export default function DashboardKPIs() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-        {cards.filter(card => isAdmin || card.label !== 'إجمالي التحصيل').map((card, i) => (
-          <div
-            key={i}
-            className="bg-white border border-gray-100 rounded-3xl p-6 hover:shadow-xl hover:-translate-y-1 transition-all group overflow-hidden relative"
-          >
+        {cards
+          .filter((card) => isAdmin || card.label !== 'إجمالي التحصيل')
+          .map((card, i) => (
             <div
-              className={`absolute top-0 right-0 w-1.5 h-full ${
-                card.color === 'blue'
-                  ? 'bg-blue-500'
-                  : card.color === 'green'
-                    ? 'bg-green-500'
-                    : card.color === 'orange'
-                      ? 'bg-orange-500'
-                      : 'bg-emerald-500'
-              }`}
-            />
-            <div className="flex items-start justify-between mb-4">
+              key={i}
+              className="bg-white border border-gray-100 rounded-3xl p-6 hover:shadow-xl hover:-translate-y-1 transition-all group overflow-hidden relative"
+            >
               <div
-                className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-transform group-hover:scale-110 ${
+                className={`absolute top-0 right-0 w-1.5 h-full ${
                   card.color === 'blue'
-                    ? 'bg-blue-50 text-blue-600'
+                    ? 'bg-blue-500'
                     : card.color === 'green'
-                      ? 'bg-green-50 text-green-600'
+                      ? 'bg-green-500'
                       : card.color === 'orange'
-                        ? 'bg-orange-50 text-orange-600'
-                        : 'bg-emerald-50 text-emerald-600'
-                } shadow-lg shadow-current/5`}
-              >
-                {card.icon}
-              </div>
-              <div className="text-right">
-                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">
-                  {card.label}
-                </p>
-                <div className="flex items-baseline gap-1 justify-end">
-                  <span className="text-2xl font-bold text-gray-900 font-mono tracking-tighter">
-                    {loading ? (
-                      <Loader2 className="animate-spin text-gray-300" size={16} />
-                    ) : (
-                      card.value
-                    )}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex items-end justify-between mt-2">
-              <span className="text-[10px] font-bold text-gray-400">{card.sub}</span>
-              {card.growth !== undefined && !loading && (
+                        ? 'bg-orange-500'
+                        : 'bg-emerald-500'
+                }`}
+              />
+              <div className="flex items-start justify-between mb-4">
                 <div
-                  className={`flex items-center gap-0.5 px-2 py-0.5 rounded-lg text-[10px] font-bold ${
-                    card.growth >= 0
-                      ? 'bg-green-50 text-green-600 border border-green-100'
-                      : 'bg-red-50 text-red-600 border border-red-100'
-                  }`}
+                  className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-transform group-hover:scale-110 ${
+                    card.color === 'blue'
+                      ? 'bg-blue-50 text-blue-600'
+                      : card.color === 'green'
+                        ? 'bg-green-50 text-green-600'
+                        : card.color === 'orange'
+                          ? 'bg-orange-50 text-orange-600'
+                          : 'bg-emerald-50 text-emerald-600'
+                  } shadow-lg shadow-current/5`}
                 >
-                  {card.growth >= 0 ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
-                  {Math.abs(card.growth)}٪
+                  {card.icon}
                 </div>
-              )}
+                <div className="text-right">
+                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">
+                    {card.label}
+                  </p>
+                  <div className="flex items-baseline gap-1 justify-end">
+                    <span className="text-2xl font-bold text-gray-900 font-mono tracking-tighter">
+                      {loading ? (
+                        <Loader2 className="animate-spin text-gray-300" size={16} />
+                      ) : (
+                        card.value
+                      )}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-end justify-between mt-2">
+                <span className="text-[10px] font-bold text-gray-400">{card.sub}</span>
+                {card.growth !== undefined && !loading && (
+                  <div
+                    className={`flex items-center gap-0.5 px-2 py-0.5 rounded-lg text-[10px] font-bold ${
+                      card.growth >= 0
+                        ? 'bg-green-50 text-green-600 border border-green-100'
+                        : 'bg-red-50 text-red-600 border border-red-100'
+                    }`}
+                  >
+                    {card.growth >= 0 ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
+                    {Math.abs(card.growth)}٪
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">

@@ -89,14 +89,38 @@ function parseDateStr(dateStr: string): Date {
 
 function exportToCSV(orders: Order[]) {
   const headers = [
-    'رقم الأوردر', 'العميل', 'الموبايل', 'المنطقة', 'المنطقة الفرعية',
-    'المنتجات', 'الكمية', 'المنتجات (ج.م)', 'الشحن (ج.م)', 'الإجمالي (ج.م)',
-    'الحالة', 'التاريخ', 'الوقت', 'المسجل', 'المندوب',
+    'رقم الأوردر',
+    'العميل',
+    'الموبايل',
+    'المنطقة',
+    'المنطقة الفرعية',
+    'المنتجات',
+    'الكمية',
+    'المنتجات (ج.م)',
+    'الشحن (ج.م)',
+    'الإجمالي (ج.م)',
+    'الحالة',
+    'التاريخ',
+    'الوقت',
+    'المسجل',
+    'المندوب',
   ];
   const rows = orders.map((o) => [
-    o.orderNum, o.customer, o.phone, o.region, o.district || '',
-    o.products, o.quantity, o.subtotal, o.shippingFee, o.total,
-    STATUS_MAP[o.status]?.label || o.status, o.date, o.time, o.createdBy, o.delegateName || '',
+    o.orderNum,
+    o.customer,
+    o.phone,
+    o.region,
+    o.district || '',
+    o.products,
+    o.quantity,
+    o.subtotal,
+    o.shippingFee,
+    o.total,
+    STATUS_MAP[o.status]?.label || o.status,
+    o.date,
+    o.time,
+    o.createdBy,
+    o.delegateName || '',
   ]);
   const csvContent =
     '\uFEFF' + [headers, ...rows].map((r) => r.map((c) => `"${c}"`).join(',')).join('\n');
@@ -184,13 +208,25 @@ export default function OrdersTableSection() {
   const { user, currentRoleId, customPermissions: authPermissions } = useAuth();
   const canManageOrders = (() => {
     if (currentRoleId === 'r1' || currentRoleId === 'r2' || currentRoleId === 'r3') return true;
-    const perms = Array.isArray(authPermissions) ? authPermissions : getPermissionsForRoleId(currentRoleId || '');
-    return perms.includes('orders_manage') || perms.includes('edit_orders') || perms.includes('delete_orders');
+    const perms = Array.isArray(authPermissions)
+      ? authPermissions
+      : getPermissionsForRoleId(currentRoleId || '');
+    return (
+      perms.includes('orders_manage') ||
+      perms.includes('edit_orders') ||
+      perms.includes('delete_orders')
+    );
   })();
   const canViewDelegates = (() => {
     if (currentRoleId === 'r1' || currentRoleId === 'r2' || currentRoleId === 'r3') return true;
-    const perms = Array.isArray(authPermissions) ? authPermissions : getPermissionsForRoleId(currentRoleId || '');
-    return perms.includes('view_delegates') || perms.includes('manage_shipping') || perms.includes('assign_courier');
+    const perms = Array.isArray(authPermissions)
+      ? authPermissions
+      : getPermissionsForRoleId(currentRoleId || '');
+    return (
+      perms.includes('view_delegates') ||
+      perms.includes('manage_shipping') ||
+      perms.includes('assign_courier')
+    );
   })();
 
   const loadOrders = useCallback(async () => {
@@ -207,7 +243,7 @@ export default function OrdersTableSection() {
       }
 
       if (data) {
-        const supabaseOrders = data.map((row) => ({
+        const supabaseOrders = (data as Record<string, any>[]).map((row) => ({
           id: row.id,
           orderNum: row.order_num,
           createdBy: row.created_by || '',
@@ -258,13 +294,17 @@ export default function OrdersTableSection() {
     const supabase = createClient();
     const channel = supabase
       .channel('orders-realtime')
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'turath_masr_orders',
-      }, () => {
-        handleUpdate();
-      })
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'turath_masr_orders',
+        },
+        () => {
+          handleUpdate();
+        }
+      )
       .subscribe();
     // Fallback polling every 120s (realtime handles live updates)
     const interval = setInterval(() => {
@@ -368,7 +408,17 @@ export default function OrdersTableSection() {
           cmp = parseDateStr(a.date).getTime() - parseDateStr(b.date).getTime();
         return sortDir === 'asc' ? cmp : -cmp;
       });
-  }, [allOrders, search, regionFilter, statusFilter, dateFrom, dateTo, sortField, sortDir, productFilter]);
+  }, [
+    allOrders,
+    search,
+    regionFilter,
+    statusFilter,
+    dateFrom,
+    dateTo,
+    sortField,
+    sortDir,
+    productFilter,
+  ]);
 
   const totalPages = Math.ceil(filtered.length / perPage);
   const paginated = filtered.slice((page - 1) * perPage, page * perPage);
@@ -413,7 +463,6 @@ export default function OrdersTableSection() {
     <>
       <Toaster position="top-center" richColors />
       <div className="card-section overflow-hidden">
-
         {/* Live updates indicator - للمخولين فقط */}
         {canManageOrders && liveUpdateCount > 0 && (
           <div className="flex items-center gap-2 px-4 py-2 bg-green-50 border-b border-green-200 fade-in">
@@ -469,7 +518,9 @@ export default function OrdersTableSection() {
                       <Truck size={13} className="text-blue-600" />
                       <p className="text-[11px] font-semibold text-blue-700">اوردرات مشحونة</p>
                     </div>
-                    <p className="text-xl font-bold font-mono text-blue-800">{delegateTotalOrders}</p>
+                    <p className="text-xl font-bold font-mono text-blue-800">
+                      {delegateTotalOrders}
+                    </p>
                   </div>
                   <div className="bg-green-50 border border-green-100 rounded-xl p-3">
                     <div className="flex items-center gap-1.5 mb-1">
@@ -477,7 +528,8 @@ export default function OrdersTableSection() {
                       <p className="text-[11px] font-semibold text-green-700">إجمالي القيمة</p>
                     </div>
                     <p className="text-xl font-bold font-mono text-green-800">
-                      {delegateTotalValue.toLocaleString('en-US')} <span className="text-xs">ج.م</span>
+                      {delegateTotalValue.toLocaleString('en-US')}{' '}
+                      <span className="text-xs">ج.م</span>
                     </p>
                   </div>
                   <div className="bg-purple-50 border border-purple-100 rounded-xl p-3">
@@ -486,7 +538,8 @@ export default function OrdersTableSection() {
                       <p className="text-[11px] font-semibold text-purple-700">صافي دخل الشحن</p>
                     </div>
                     <p className="text-xl font-bold font-mono text-purple-800">
-                      {delegateNetIncome.toLocaleString('en-US')} <span className="text-xs">ج.م</span>
+                      {delegateNetIncome.toLocaleString('en-US')}{' '}
+                      <span className="text-xs">ج.م</span>
                     </p>
                     {delegateExtraFees > 0 && (
                       <p className="text-[10px] text-orange-600 mt-0.5">
@@ -500,7 +553,8 @@ export default function OrdersTableSection() {
                       <p className="text-[11px] font-semibold text-red-700">المطلوب توريده</p>
                     </div>
                     <p className="text-xl font-bold font-mono text-red-800">
-                      {delegateAmountDue.toLocaleString('en-US')} <span className="text-xs">ج.م</span>
+                      {delegateAmountDue.toLocaleString('en-US')}{' '}
+                      <span className="text-xs">ج.م</span>
                     </p>
                   </div>
                 </div>
@@ -508,7 +562,9 @@ export default function OrdersTableSection() {
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
                       <ArrowDownCircle size={14} className="text-[hsl(var(--primary))]" />
-                      <span className="text-sm font-bold">التوريدات النقدية - {currentDelegate}</span>
+                      <span className="text-sm font-bold">
+                        التوريدات النقدية - {currentDelegate}
+                      </span>
                     </div>
                     <div className="flex gap-3 text-xs">
                       <span className="bg-green-50 text-green-700 px-2 py-1 rounded-lg font-semibold">
@@ -558,23 +614,34 @@ export default function OrdersTableSection() {
                 className="input-field pr-9"
                 placeholder="بحث بالاسم، رقم الأوردر، أو الموبايل..."
                 value={search}
-                onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setPage(1);
+                }}
               />
             </div>
             <div className="flex gap-2 flex-wrap">
               <select
                 className="input-field w-auto text-sm"
                 value={regionFilter}
-                onChange={(e) => { setRegionFilter(e.target.value); setPage(1); }}
+                onChange={(e) => {
+                  setRegionFilter(e.target.value);
+                  setPage(1);
+                }}
               >
                 {REGIONS.map((r) => (
-                  <option key={`region-filter-${r}`} value={r}>{r}</option>
+                  <option key={`region-filter-${r}`} value={r}>
+                    {r}
+                  </option>
                 ))}
               </select>
               <select
                 className="input-field w-auto text-sm"
                 value={statusFilter}
-                onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
+                onChange={(e) => {
+                  setStatusFilter(e.target.value);
+                  setPage(1);
+                }}
               >
                 {statusOptions.map((s) => (
                   <option key={`status-filter-${s}`} value={s}>
@@ -585,10 +652,15 @@ export default function OrdersTableSection() {
               <select
                 className="input-field w-auto text-sm"
                 value={productFilter}
-                onChange={(e) => { setProductFilter(e.target.value); setPage(1); }}
+                onChange={(e) => {
+                  setProductFilter(e.target.value);
+                  setPage(1);
+                }}
               >
                 {PRODUCT_FILTER_OPTIONS.map((p) => (
-                  <option key={`product-filter-${p.value}`} value={p.value}>{p.label}</option>
+                  <option key={`product-filter-${p.value}`} value={p.value}>
+                    {p.label}
+                  </option>
                 ))}
               </select>
               <div className="relative">
@@ -603,13 +675,19 @@ export default function OrdersTableSection() {
                   <div className="absolute left-0 top-full mt-1 bg-white border border-[hsl(var(--border))] rounded-xl shadow-lg z-20 min-w-[160px] overflow-hidden">
                     <button
                       className="w-full flex items-center gap-2 px-4 py-2.5 text-sm hover:bg-[hsl(var(--muted))] transition-colors text-right"
-                      onClick={() => { exportToCSV(filtered); setShowExportMenu(false); }}
+                      onClick={() => {
+                        exportToCSV(filtered);
+                        setShowExportMenu(false);
+                      }}
                     >
                       تصدير Excel (CSV)
                     </button>
                     <button
                       className="w-full flex items-center gap-2 px-4 py-2.5 text-sm hover:bg-[hsl(var(--muted))] transition-colors text-right border-t border-[hsl(var(--border))]"
-                      onClick={() => { exportToPDF(filtered); setShowExportMenu(false); }}
+                      onClick={() => {
+                        exportToPDF(filtered);
+                        setShowExportMenu(false);
+                      }}
                     >
                       تصدير PDF
                     </button>
@@ -619,14 +697,19 @@ export default function OrdersTableSection() {
             </div>
           </div>
           <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-xs text-[hsl(var(--muted-foreground))] font-semibold">فلتر التاريخ:</span>
+            <span className="text-xs text-[hsl(var(--muted-foreground))] font-semibold">
+              فلتر التاريخ:
+            </span>
             <div className="flex items-center gap-2">
               <label className="text-xs text-[hsl(var(--muted-foreground))]">من</label>
               <input
                 type="date"
                 className="input-field w-auto text-sm py-1.5"
                 value={dateFrom}
-                onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
+                onChange={(e) => {
+                  setDateFrom(e.target.value);
+                  setPage(1);
+                }}
                 dir="ltr"
               />
             </div>
@@ -636,14 +719,21 @@ export default function OrdersTableSection() {
                 type="date"
                 className="input-field w-auto text-sm py-1.5"
                 value={dateTo}
-                onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
+                onChange={(e) => {
+                  setDateTo(e.target.value);
+                  setPage(1);
+                }}
                 dir="ltr"
               />
             </div>
             {(dateFrom || dateTo) && (
               <button
                 className="text-xs text-red-500 hover:underline"
-                onClick={() => { setDateFrom(''); setDateTo(''); setPage(1); }}
+                onClick={() => {
+                  setDateFrom('');
+                  setDateTo('');
+                  setPage(1);
+                }}
               >
                 مسح
               </button>
@@ -701,26 +791,56 @@ export default function OrdersTableSection() {
                     aria-label="تحديد الكل"
                   />
                 </th>
-                <th className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors" onClick={() => handleSort('orderNum')}>
-                  <div className="flex items-center gap-1">رقم الأوردر <SortIcon field="orderNum" /></div>
+                <th
+                  className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors"
+                  onClick={() => handleSort('orderNum')}
+                >
+                  <div className="flex items-center gap-1">
+                    رقم الأوردر <SortIcon field="orderNum" />
+                  </div>
                 </th>
                 <th className="table-header">المسجل</th>
-                <th className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors" onClick={() => handleSort('customer')}>
-                  <div className="flex items-center gap-1">العميل <SortIcon field="customer" /></div>
+                <th
+                  className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors"
+                  onClick={() => handleSort('customer')}
+                >
+                  <div className="flex items-center gap-1">
+                    العميل <SortIcon field="customer" />
+                  </div>
                 </th>
                 <th className="table-header">الموبايل</th>
-                <th className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors" onClick={() => handleSort('region')}>
-                  <div className="flex items-center gap-1">المنطقة <SortIcon field="region" /></div>
+                <th
+                  className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors"
+                  onClick={() => handleSort('region')}
+                >
+                  <div className="flex items-center gap-1">
+                    المنطقة <SortIcon field="region" />
+                  </div>
                 </th>
                 <th className="table-header">المنتجات</th>
-                <th className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors" onClick={() => handleSort('total')}>
-                  <div className="flex items-center gap-1">الإجمالي <SortIcon field="total" /></div>
+                <th
+                  className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors"
+                  onClick={() => handleSort('total')}
+                >
+                  <div className="flex items-center gap-1">
+                    الإجمالي <SortIcon field="total" />
+                  </div>
                 </th>
-                <th className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors" onClick={() => handleSort('status')}>
-                  <div className="flex items-center gap-1">الحالة <SortIcon field="status" /></div>
+                <th
+                  className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors"
+                  onClick={() => handleSort('status')}
+                >
+                  <div className="flex items-center gap-1">
+                    الحالة <SortIcon field="status" />
+                  </div>
                 </th>
-                <th className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors" onClick={() => handleSort('date')}>
-                  <div className="flex items-center gap-1">التاريخ <SortIcon field="date" /></div>
+                <th
+                  className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors"
+                  onClick={() => handleSort('date')}
+                >
+                  <div className="flex items-center gap-1">
+                    التاريخ <SortIcon field="date" />
+                  </div>
                 </th>
                 <th className="table-header">إجراءات</th>
               </tr>
@@ -733,8 +853,12 @@ export default function OrdersTableSection() {
                       <div className="w-14 h-14 bg-[hsl(var(--muted))] rounded-2xl flex items-center justify-center">
                         <CheckSquare size={28} className="text-[hsl(var(--muted-foreground))]" />
                       </div>
-                      <p className="text-base font-semibold text-[hsl(var(--foreground))]">لا توجد أوردرات</p>
-                      <p className="text-sm text-[hsl(var(--muted-foreground))]">لم يتم العثور على أوردرات بهذه المعايير.</p>
+                      <p className="text-base font-semibold text-[hsl(var(--foreground))]">
+                        لا توجد أوردرات
+                      </p>
+                      <p className="text-sm text-[hsl(var(--muted-foreground))]">
+                        لم يتم العثور على أوردرات بهذه المعايير.
+                      </p>
                     </div>
                   </td>
                 </tr>
@@ -757,7 +881,9 @@ export default function OrdersTableSection() {
                         />
                       </td>
                       <td className="table-cell">
-                        <span className="font-mono text-xs font-bold text-[hsl(var(--primary))]">{order.orderNum}</span>
+                        <span className="font-mono text-xs font-bold text-[hsl(var(--primary))]">
+                          {order.orderNum}
+                        </span>
                       </td>
                       <td className="table-cell">
                         <p className="text-xs font-medium">{order.createdBy}</p>
@@ -766,7 +892,10 @@ export default function OrdersTableSection() {
                         <div>
                           <p className="font-semibold text-sm">{order.customer}</p>
                           {order.notes && (
-                            <p className="text-[10px] text-amber-600 truncate max-w-[140px]" title={order.notes}>
+                            <p
+                              className="text-[10px] text-amber-600 truncate max-w-[140px]"
+                              title={order.notes}
+                            >
                               ملاحظة: {order.notes}
                             </p>
                           )}
@@ -776,7 +905,9 @@ export default function OrdersTableSection() {
                         <div>
                           <p className="text-sm font-mono">{order.phone}</p>
                           {order.phone2 && (
-                            <p className="text-xs text-[hsl(var(--muted-foreground))] font-mono">{order.phone2}</p>
+                            <p className="text-xs text-[hsl(var(--muted-foreground))] font-mono">
+                              {order.phone2}
+                            </p>
                           )}
                         </div>
                       </td>
@@ -786,17 +917,25 @@ export default function OrdersTableSection() {
                             {order.region}
                           </span>
                           {order.district && (
-                            <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">{order.district}</p>
+                            <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
+                              {order.district}
+                            </p>
                           )}
                         </div>
                       </td>
                       <td className="table-cell max-w-[160px]">
-                        <p className="text-sm truncate" title={order.products}>{order.products}</p>
-                        <p className="text-xs text-[hsl(var(--muted-foreground))]">{order.quantity} قطعة</p>
+                        <p className="text-sm truncate" title={order.products}>
+                          {order.products}
+                        </p>
+                        <p className="text-xs text-[hsl(var(--muted-foreground))]">
+                          {order.quantity} قطعة
+                        </p>
                       </td>
                       <td className="table-cell">
                         <div>
-                          <p className="font-bold font-mono text-sm">{order.total.toLocaleString('en-US')} ج.م</p>
+                          <p className="font-bold font-mono text-sm">
+                            {order.total.toLocaleString('en-US')} ج.م
+                          </p>
                           <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
                             {order.expressShipping ? 'شحن سريع' : 'شحن'}: {order.shippingFee} ج.م
                           </p>
@@ -805,8 +944,10 @@ export default function OrdersTableSection() {
                       <td className="table-cell">
                         <button
                           className={`badge ${st.cls} cursor-pointer hover:opacity-80 transition-opacity`}
-                          onClick={() => canManageOrders ? setStatusModal({ order }) : undefined}
-                          title={canManageOrders ? 'انقر لتغيير الحالة' : 'ليس لديك صلاحية تغيير الحالة'}
+                          onClick={() => (canManageOrders ? setStatusModal({ order }) : undefined)}
+                          title={
+                            canManageOrders ? 'انقر لتغيير الحالة' : 'ليس لديك صلاحية تغيير الحالة'
+                          }
                         >
                           {st.label}
                         </button>
@@ -814,7 +955,9 @@ export default function OrdersTableSection() {
                       <td className="table-cell">
                         <div>
                           <p className="text-xs font-medium">{order.date}</p>
-                          <p className="text-[10px] text-[hsl(var(--muted-foreground))] font-mono">{order.time}</p>
+                          <p className="text-[10px] text-[hsl(var(--muted-foreground))] font-mono">
+                            {order.time}
+                          </p>
                         </div>
                       </td>
                       <td className="table-cell">
@@ -865,10 +1008,15 @@ export default function OrdersTableSection() {
             <select
               className="input-field w-auto text-sm py-1"
               value={perPage}
-              onChange={(e) => { setPerPage(Number(e.target.value)); setPage(1); }}
+              onChange={(e) => {
+                setPerPage(Number(e.target.value));
+                setPage(1);
+              }}
             >
               {[5, 8, 10, 20, 50].map((n) => (
-                <option key={`perpage-${n}`} value={n}>{n}</option>
+                <option key={`perpage-${n}`} value={n}>
+                  {n}
+                </option>
               ))}
             </select>
             <span>من {filtered.length} أوردر</span>
@@ -923,14 +1071,21 @@ export default function OrdersTableSection() {
       </div>
 
       {statusModal && (
-        <StatusUpdateModal order={statusModal.order} onClose={() => setStatusModal(null)} onUpdate={() => loadOrders()} />
+        <StatusUpdateModal
+          order={statusModal.order}
+          onClose={() => setStatusModal(null)}
+          onUpdate={() => loadOrders()}
+        />
       )}
       {detailModal && (
         <OrderDetailModal order={detailModal.order} onClose={() => setDetailModal(null)} />
       )}
       {bulkStatusModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4" dir="rtl">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setBulkStatusModal(false)} />
+          <div
+            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            onClick={() => setBulkStatusModal(false)}
+          />
           <div className="relative bg-white rounded-3xl shadow-modal w-full max-w-md p-6 fade-in">
             <h3 className="text-base font-bold text-[hsl(var(--foreground))] mb-4">
               تحديث حالة {selectedRows.size} أوردر

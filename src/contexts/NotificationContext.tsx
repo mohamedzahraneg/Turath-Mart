@@ -69,7 +69,7 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
 
       if (!error && data) {
         setNotifications(data as Notification[]);
-        setUnreadCount(data.filter((n) => !n.is_read).length);
+        setUnreadCount((data as Notification[]).filter((n) => !n.is_read).length);
       }
     } catch (err) {
       console.error('Error fetching notifications:', err);

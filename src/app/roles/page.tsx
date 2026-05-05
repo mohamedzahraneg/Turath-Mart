@@ -939,7 +939,10 @@ export default function RolesPage() {
     const loadFromSupabase = async () => {
       try {
         const supabase = createClient();
-        if (!supabase) { setHydrated(true); return; }
+        if (!supabase) {
+          setHydrated(true);
+          return;
+        }
 
         // 1. Load ROLES from turath_roles table
         const { data: dbRoles, error: rolesError } = await supabase
@@ -1030,14 +1033,15 @@ export default function RolesPage() {
       const supabase = createClient();
       if (supabase) {
         // Upsert into turath_roles
-        const { error: roleError } = await supabase
-          .from('turath_roles')
-          .upsert({
+        const { error: roleError } = await supabase.from('turath_roles').upsert(
+          {
             id: role.id,
             name: role.name,
             permissions: role.permissions,
             updated_at: new Date().toISOString(),
-          }, { onConflict: 'id' });
+          },
+          { onConflict: 'id' }
+        );
 
         if (roleError) {
           console.error('Failed to save role to turath_roles:', roleError);
@@ -1151,8 +1155,12 @@ export default function RolesPage() {
         if (supabase) {
           const authEmail = `${emp.username}@turathmasr.com`;
           const roleMap: Record<string, string> = {
-            r1: 'admin', r2: 'manager', r3: 'manager',
-            r4: 'delegate', r5: 'employee', r6: 'employee',
+            r1: 'admin',
+            r2: 'manager',
+            r3: 'manager',
+            r4: 'delegate',
+            r5: 'employee',
+            r6: 'employee',
           };
           const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
             email: authEmail,
@@ -1329,7 +1337,9 @@ export default function RolesPage() {
                             if (supabase) {
                               await supabase.from('turath_roles').delete().eq('id', role.id);
                             }
-                          } catch (e) { console.error('Delete role error:', e); }
+                          } catch (e) {
+                            console.error('Delete role error:', e);
+                          }
                         }}
                         className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
                       >
@@ -1525,7 +1535,9 @@ export default function RolesPage() {
                               onClick={async () => {
                                 const updated = employees.filter((e) => e.id !== emp.id);
                                 setEmployees(updated);
-                                setAppUsers((prev) => prev.filter((u) => u.email !== `emp:${emp.id}`));
+                                setAppUsers((prev) =>
+                                  prev.filter((u) => u.email !== `emp:${emp.id}`)
+                                );
                                 // Delete from Supabase profiles and auth.users
                                 try {
                                   const supabase = createClient();
@@ -1535,7 +1547,9 @@ export default function RolesPage() {
                                     // Delete from profiles first (by email match)
                                     await supabase.from('profiles').delete().eq('email', empEmail);
                                   }
-                                } catch (e) { console.error('Delete employee error:', e); }
+                                } catch (e) {
+                                  console.error('Delete employee error:', e);
+                                }
                               }}
                               className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
                             >
@@ -1804,7 +1818,9 @@ export default function RolesPage() {
                                       if (supabase) {
                                         await supabase.from('profiles').delete().eq('id', user.id);
                                       }
-                                    } catch (e) { console.error('Delete user error:', e); }
+                                    } catch (e) {
+                                      console.error('Delete user error:', e);
+                                    }
                                   }}
                                   className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
                                   title="حذف"

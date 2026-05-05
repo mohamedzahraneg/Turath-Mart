@@ -6,18 +6,16 @@
 /** Routes accessible without authentication. */
 export const PUBLIC_ROUTES: readonly string[] = [
   '/',
-  '/track',                // /track and /track/[orderId] (customer tracking)
+  '/track', // /track and /track/[orderId] (customer tracking)
 ] as const;
 
 /** The authentication entry-point page. */
-export const AUTH_ROUTES: readonly string[] = [
-  '/sign-up-login-screen',
-] as const;
+export const AUTH_ROUTES: readonly string[] = ['/sign-up-login-screen'] as const;
 
 /** Path prefixes the middleware should never inspect. */
 export const SKIP_MIDDLEWARE_PREFIXES: readonly string[] = [
   '/_next',
-  '/api',                  // API routes manage their own auth
+  '/api', // API routes manage their own auth
   '/favicon.ico',
   '/assets',
   '/images',
