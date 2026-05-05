@@ -12,6 +12,12 @@
 
 VPS_PORT="${VPS_PORT:-22}"
 
+# Optional override so a staging deployment can run alongside production with
+# a separate PM2 process (e.g. PM2_APP_NAME=turath-staging APP_PORT=875
+# VPS_PATH=/www/wwwroot/turath-staging ./deploy_vps.sh).
+# Defaults to the production process name to keep current behaviour identical.
+PM2_APP_NAME="${PM2_APP_NAME:-turath-masr}"
+
 echo "🚀 Starting STANDALONE Deployment of Turath Masr..."
 
 # ─── [2] Synchronize Files (source & config only, exclude secrets) ────────────
@@ -42,7 +48,7 @@ ssh -p "$VPS_PORT" -o StrictHostKeyChecking=no "$VPS_USER@$VPS_IP" << EOF
   export PATH=\$(dirname "\$NODE_BIN"):\$PATH
 
   echo "🛑 Removing old process and builds..."
-  \$PM2_BIN delete "turath-masr" || true
+  \$PM2_BIN delete "${PM2_APP_NAME}" || true
   rm -rf .next node_modules package-lock.json
 
   echo "📥 Installing dependencies with pnpm (via corepack, version pinned in package.json)..."
@@ -65,7 +71,7 @@ ssh -p "$VPS_PORT" -o StrictHostKeyChecking=no "$VPS_USER@$VPS_IP" << EOF
   fuser -k $APP_PORT/tcp || true
 
   echo "🚀 Starting server with PM2..."
-  PORT=$APP_PORT \$PM2_BIN start .next/standalone/server.js --name "turath-masr" --cwd .next/standalone
+  PORT=$APP_PORT \$PM2_BIN start .next/standalone/server.js --name "${PM2_APP_NAME}" --cwd .next/standalone
 
   echo "✅ Service started."
   sleep 5
