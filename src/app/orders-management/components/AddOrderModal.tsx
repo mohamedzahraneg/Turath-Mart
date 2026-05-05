@@ -723,15 +723,11 @@ export default function AddOrderModal({ onClose }: Props) {
         throw error;
       }
 
-      // Create a system notification
-      await supabase.from('turath_masr_notifications').insert({
-        type: 'new_order',
-        title: 'أوردر جديد 📦',
-        message: `تم تسجيل أوردر جديد برقم ${newOrder.orderNum} للعميل ${newOrder.customer}`,
-        order_id: newOrder.id,
-        order_num: newOrder.orderNum,
-        created_by: newOrder.createdBy,
-      });
+      // The "new_order" system notification is now produced by the
+      // AFTER INSERT trigger trg_notify_on_new_order on turath_masr_orders
+      // (see migration 20260506_secure_tracking_rpc.sql). The trigger runs
+      // as SECURITY DEFINER so r6 (customer service) does not need write
+      // access to turath_masr_notifications under the new RLS.
 
       // Notify other components that orders have been updated
       window.dispatchEvent(new CustomEvent('turath_masr_orders_updated'));

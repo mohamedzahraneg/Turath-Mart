@@ -197,37 +197,24 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
         throw error;
       }
 
-      // TODO (post-RLS rollout): the new notifications_managers_insert policy
-      // only permits roles r1/r2/r3/r5 (or self-targeted) to insert. When a
-      // delegate (r4) updates status, this insert will silently fail under RLS.
-      // Migrate this side-effect to either:
-      //   (a) a DB trigger AFTER UPDATE on turath_masr_orders, or
-      //   (b) a SECURITY DEFINER RPC the delegate calls instead of a direct insert.
-      // Until then, notifications from r4 status changes will be lost (logged
-      // by Supabase, no UX change for the delegate).
-      // TODO: move delegate_name (TEXT) to assigned_to (uuid REFERENCES auth.users)
-      // once user→delegate identity mapping is built.
-
-      // Create a system notification (for dashboard)
-      await supabase.from('turath_masr_notifications').insert({
-        type: 'status_change',
-        title: 'تحديث حالة الأوردر 🔄',
-        message: `تم تغيير حالة الأوردر ${order.orderNum} إلى ${statusLabel}`,
-        order_id: order.id,
-        order_num: order.orderNum,
-        created_by: user.name,
-        is_read: false,
-      });
-
-      // Notify Customer (targeting their phone)
-      await supabase.from('turath_masr_notifications').insert({
-        type: 'customer_order_update',
-        title: 'تحديث بخصوص طلبك',
-        message: `مرحباً ${order.customer}، نود إخطارك بأن حالة طلبك رقم (${order.orderNum}) هي الآن: ${statusLabel}. شكراً لثقتك بنا.`,
-        phone: order.phone,
-        order_num: order.orderNum,
-        is_read: false,
-      });
+      // The "status_change" system notification is now produced by the
+      // AFTER UPDATE OF status trigger trg_notify_on_order_status_change
+      // on turath_masr_orders (see migration 20260506_secure_tracking_rpc.sql).
+      // The trigger runs as SECURITY DEFINER so r4 / r6 / anon callers all
+      // get the notification recorded — without needing a relaxed insert
+      // policy on turath_masr_notifications.
+      //
+      // The previous client-side insert was duplicated by every status
+      // update and would silently fail under the new RLS for r4/r6.
+      //
+      // The customer-targeted notification (type='customer_order_update')
+      // is intentionally dropped here — there is no customer-facing
+      // notification surface yet (no SMS / push), so writing it to the
+      // staff-only notifications table just produced noise. TODO: when a
+      // customer notification channel is built, add it via a separate
+      // SECURITY DEFINER RPC that knows how to deliver it.
+      // TODO: move delegate_name (TEXT) to assigned_to (uuid REFERENCES
+      // auth.users) once user→delegate identity mapping is built.
 
       window.dispatchEvent(new CustomEvent('turath_masr_orders_updated'));
     } catch (err) {
