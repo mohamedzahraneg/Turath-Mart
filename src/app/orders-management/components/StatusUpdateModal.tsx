@@ -99,7 +99,7 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
     };
     loadDelegates();
   }, []);
-    const { currentRole, currentRoleId } = useAuth();
+    const { user, currentRole, currentRoleId } = useAuth();
 
   // Permission-based check: check if user has 'update_status' permission
   const userPermissions = currentRoleId ? getPermissionsForRoleId(currentRoleId) : [];
@@ -172,14 +172,34 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
     // Sync status update to Supabase
     try {
       const supabase = createClient();
+      // Add updated_by traceability for the orders_editor_update RLS policy
+      // and for the post-migration audit trail. user.id is the auth.users UUID.
+      const updatePayload: Record<string, unknown> = {
+        status: data.newStatus,
+        delegate_name: selectedDelegate || null,
+      };
+      if (user?.id) {
+        updatePayload.updated_by = user.id;
+      }
       const { error } = await supabase
         .from('turath_masr_orders')
-        .update({ status: data.newStatus, delegate_name: selectedDelegate || null })
+        .update(updatePayload)
         .eq('order_num', order.orderNum);
 
       if (error) {
         throw error;
       }
+
+      // TODO (post-RLS rollout): the new notifications_managers_insert policy
+      // only permits roles r1/r2/r3/r5 (or self-targeted) to insert. When a
+      // delegate (r4) updates status, this insert will silently fail under RLS.
+      // Migrate this side-effect to either:
+      //   (a) a DB trigger AFTER UPDATE on turath_masr_orders, or
+      //   (b) a SECURITY DEFINER RPC the delegate calls instead of a direct insert.
+      // Until then, notifications from r4 status changes will be lost (logged
+      // by Supabase, no UX change for the delegate).
+      // TODO: move delegate_name (TEXT) to assigned_to (uuid REFERENCES auth.users)
+      // once user→delegate identity mapping is built.
 
       // Create a system notification (for dashboard)
       await supabase.from('turath_masr_notifications').insert({

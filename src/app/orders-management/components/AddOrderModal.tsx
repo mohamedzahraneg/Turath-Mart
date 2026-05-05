@@ -20,6 +20,8 @@ import {
   Eye,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
+import { useAuth } from '@/contexts/AuthContext';
+import { canUseAdminOnlyFinancialFields } from '@/lib/constants/roles';
 
 interface ProductItem {
   productType: string;
@@ -173,8 +175,10 @@ export const REGIONAL_FEES: Record<string, number> = {
   'القليوبية': 60,
 };
 
-const CURRENT_USER_ROLE: string = 'customer_service';
-const IS_ADMIN = CURRENT_USER_ROLE === 'admin';
+// NOTE: admin-only feature gating now derives from the authenticated user's
+// role_id (via useAuth() inside the component), not a hardcoded constant.
+// The previous `CURRENT_USER_ROLE = 'customer_service'` made IS_ADMIN
+// permanently false, which silently disabled the extraShippingFee feature.
 
 function getDeviceType(): string {
   const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
@@ -290,6 +294,9 @@ function lineTotal(line: OrderLine): number {
 }
 
 export default function AddOrderModal({ onClose }: Props) {
+  const { user, currentRoleId } = useAuth();
+  const IS_ADMIN = canUseAdminOnlyFinancialFields(currentRoleId);
+
   const [orderNum, setOrderNum] = useState('جاري التحميل...');
   const [currentDateTime, setCurrentDateTime] = useState({ date: '', time: '', day: '' });
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -590,6 +597,13 @@ export default function AddOrderModal({ onClose }: Props) {
   };
 
   const handleSubmit = async () => {
+    // Block submission when there is no authenticated user — RLS would
+    // reject the insert anyway and the order would not be traceable.
+    if (!user?.id) {
+      toast.error('يجب تسجيل الدخول قبل إنشاء طلب جديد');
+      return;
+    }
+
     setIsSubmitting(true);
     const deviceType = getDeviceType();
 
@@ -666,6 +680,10 @@ export default function AddOrderModal({ onClose }: Props) {
           order_num: newOrder.orderNum,
           created_by: newOrder.createdBy,
           created_by_device: newOrder.createdByDevice,
+          // Authenticated user UUID — required by the orders_authenticated_insert
+          // RLS policy: WITH CHECK (created_by_user_id IS NULL OR
+          //                         created_by_user_id = auth.uid())
+          created_by_user_id: user.id,
           customer: newOrder.customer,
           phone: newOrder.phone,
           phone2: newOrder.phone2 || null,
@@ -676,6 +694,8 @@ export default function AddOrderModal({ onClose }: Props) {
           quantity: newOrder.quantity,
           subtotal: newOrder.subtotal,
           shipping_fee: newOrder.shippingFee,
+          // extra_shipping_fee already coerced to 0 at line where newOrder is built
+          // when IS_ADMIN is false; client-side guard. RLS provides defence-in-depth.
           extra_shipping_fee: newOrder.extraShippingFee || 0,
           express_shipping: newOrder.expressShipping || false,
           free_shipping: newOrder.freeShipping || false,

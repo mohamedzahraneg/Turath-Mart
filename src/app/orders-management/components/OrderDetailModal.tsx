@@ -25,6 +25,11 @@ import {
 import AuditLogModal, { getAuditLogs, AuditEntry } from './AuditLogModal';
 import { createClient } from '@/lib/supabase/client';
 import { STATUS_LABELS } from './AuditLogModal';
+import { useAuth } from '@/contexts/AuthContext';
+import {
+  canUseAdminOnlyFinancialFields,
+  canEditOrders,
+} from '@/lib/constants/roles';
 
 interface OrderLine {
   productType: string;
@@ -71,12 +76,10 @@ interface Order {
   lines?: OrderLine[];
 }
 
-// Simulated current user role — in real app comes from auth context
-const CURRENT_USER_ROLE: string = 'admin';
-const CAN_SEE_SENSITIVE = ['admin', 'supervisor', 'delegate', 'manager'].includes(
-  CURRENT_USER_ROLE
-);
-const IS_ADMIN = CURRENT_USER_ROLE === 'admin';
+// NOTE: role-based gating now derives from useAuth() inside the component.
+// The previous hardcoded `CURRENT_USER_ROLE = 'admin'` made every viewer see
+// admin-only content (extra fee badge, sensitive sections), regardless of
+// their actual permissions.
 
 const STATUS_BADGE_MAP: Record<string, { label: string; cls: string }> = {
   new: { label: 'جديد', cls: 'status-new' },
@@ -134,6 +137,10 @@ interface Props {
 }
 
 export default function OrderDetailModal({ order, onClose }: Props) {
+  const { currentRoleId } = useAuth();
+  const IS_ADMIN = canUseAdminOnlyFinancialFields(currentRoleId);
+  const CAN_SEE_SENSITIVE = canEditOrders(currentRoleId);
+
   const [activeTab, setActiveTab] = useState('tab-details');
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [auditLogs, setAuditLogs] = useState<AuditEntry[]>([]);

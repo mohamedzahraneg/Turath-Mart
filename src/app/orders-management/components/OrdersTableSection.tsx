@@ -181,7 +181,7 @@ export default function OrdersTableSection() {
   const [lastUpdateTime, setLastUpdateTime] = useState<string | null>(null);
 
   // --- صلاحيات المستخدم (من AuthContext - المصدر الموثوق) ---
-  const { currentRoleId, customPermissions: authPermissions } = useAuth();
+  const { user, currentRoleId, customPermissions: authPermissions } = useAuth();
   const canManageOrders = (() => {
     if (currentRoleId === 'r1' || currentRoleId === 'r2' || currentRoleId === 'r3') return true;
     const perms = Array.isArray(authPermissions) ? authPermissions : getPermissionsForRoleId(currentRoleId || '');
@@ -301,9 +301,14 @@ export default function OrdersTableSection() {
     try {
       const supabase = createClient();
       const idsToUpdate = Array.from(selectedRows);
+      // Add updated_by traceability for the orders_editor_update RLS policy.
+      const updatePayload: Record<string, unknown> = { status: newStatus };
+      if (user?.id) {
+        updatePayload.updated_by = user.id;
+      }
       const { error } = await supabase
         .from('turath_masr_orders')
-        .update({ status: newStatus })
+        .update(updatePayload)
         .in('id', idsToUpdate);
       if (error) throw error;
       const statusLabel = STATUS_MAP[newStatus]?.label || newStatus;
