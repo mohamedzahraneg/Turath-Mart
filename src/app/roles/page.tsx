@@ -1,5 +1,6 @@
 'use client';
 import React, { useState, useRef, useEffect } from 'react';
+import Image from 'next/image';
 import AppLayout from '@/components/AppLayout';
 import {
   ShieldCheck,
@@ -586,10 +587,13 @@ function UnifiedMemberModal({ employee, roles, onClose, onSave }: UnifiedMemberM
                 className={`w-20 h-20 rounded-full overflow-hidden flex items-center justify-center text-white text-2xl font-bold ${form.avatar ? '' : roleColor.avatar}`}
               >
                 {form.avatar ? (
-                  <img
+                  <Image
                     src={form.avatar}
                     alt="صورة المستخدم"
+                    width={80}
+                    height={80}
                     className="w-full h-full object-cover"
+                    unoptimized={form.avatar.startsWith('data:')}
                   />
                 ) : (
                   <span>{form.name ? form.name.charAt(0) : <Camera size={28} />}</span>
@@ -939,7 +943,10 @@ export default function RolesPage() {
     const loadFromSupabase = async () => {
       try {
         const supabase = createClient();
-        if (!supabase) { setHydrated(true); return; }
+        if (!supabase) {
+          setHydrated(true);
+          return;
+        }
 
         // 1. Load ROLES from turath_roles table
         const { data: dbRoles, error: rolesError } = await supabase
@@ -1030,14 +1037,15 @@ export default function RolesPage() {
       const supabase = createClient();
       if (supabase) {
         // Upsert into turath_roles
-        const { error: roleError } = await supabase
-          .from('turath_roles')
-          .upsert({
+        const { error: roleError } = await supabase.from('turath_roles').upsert(
+          {
             id: role.id,
             name: role.name,
             permissions: role.permissions,
             updated_at: new Date().toISOString(),
-          }, { onConflict: 'id' });
+          },
+          { onConflict: 'id' }
+        );
 
         if (roleError) {
           console.error('Failed to save role to turath_roles:', roleError);
@@ -1151,8 +1159,12 @@ export default function RolesPage() {
         if (supabase) {
           const authEmail = `${emp.username}@turathmasr.com`;
           const roleMap: Record<string, string> = {
-            r1: 'admin', r2: 'manager', r3: 'manager',
-            r4: 'delegate', r5: 'employee', r6: 'employee',
+            r1: 'admin',
+            r2: 'manager',
+            r3: 'manager',
+            r4: 'delegate',
+            r5: 'employee',
+            r6: 'employee',
           };
           const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
             email: authEmail,
@@ -1329,7 +1341,9 @@ export default function RolesPage() {
                             if (supabase) {
                               await supabase.from('turath_roles').delete().eq('id', role.id);
                             }
-                          } catch (e) { console.error('Delete role error:', e); }
+                          } catch (e) {
+                            console.error('Delete role error:', e);
+                          }
                         }}
                         className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
                       >
@@ -1373,10 +1387,13 @@ export default function RolesPage() {
                           className={`w-7 h-7 rounded-full border-2 border-white overflow-hidden flex items-center justify-center text-white text-xs font-bold ${colors.avatar}`}
                         >
                           {emp.avatar ? (
-                            <img
+                            <Image
                               src={emp.avatar}
                               alt={emp.name}
+                              width={28}
+                              height={28}
                               className="w-full h-full object-cover"
+                              unoptimized={emp.avatar.startsWith('data:')}
                             />
                           ) : (
                             <span>{emp.name.charAt(0)}</span>
@@ -1456,10 +1473,13 @@ export default function RolesPage() {
                               className={`w-9 h-9 rounded-full overflow-hidden flex items-center justify-center text-white text-sm font-bold flex-shrink-0 ${emp.avatar ? '' : rc.avatar}`}
                             >
                               {emp.avatar ? (
-                                <img
+                                <Image
                                   src={emp.avatar}
                                   alt={emp.name}
+                                  width={36}
+                                  height={36}
                                   className="w-full h-full object-cover"
+                                  unoptimized={emp.avatar.startsWith('data:')}
                                 />
                               ) : (
                                 <span>{emp.name.charAt(0)}</span>
@@ -1525,7 +1545,9 @@ export default function RolesPage() {
                               onClick={async () => {
                                 const updated = employees.filter((e) => e.id !== emp.id);
                                 setEmployees(updated);
-                                setAppUsers((prev) => prev.filter((u) => u.email !== `emp:${emp.id}`));
+                                setAppUsers((prev) =>
+                                  prev.filter((u) => u.email !== `emp:${emp.id}`)
+                                );
                                 // Delete from Supabase profiles and auth.users
                                 try {
                                   const supabase = createClient();
@@ -1535,7 +1557,9 @@ export default function RolesPage() {
                                     // Delete from profiles first (by email match)
                                     await supabase.from('profiles').delete().eq('email', empEmail);
                                   }
-                                } catch (e) { console.error('Delete employee error:', e); }
+                                } catch (e) {
+                                  console.error('Delete employee error:', e);
+                                }
                               }}
                               className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
                             >
@@ -1804,7 +1828,9 @@ export default function RolesPage() {
                                       if (supabase) {
                                         await supabase.from('profiles').delete().eq('id', user.id);
                                       }
-                                    } catch (e) { console.error('Delete user error:', e); }
+                                    } catch (e) {
+                                      console.error('Delete user error:', e);
+                                    }
                                   }}
                                   className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
                                   title="حذف"

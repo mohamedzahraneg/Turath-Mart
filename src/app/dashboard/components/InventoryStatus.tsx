@@ -31,12 +31,13 @@ export default function InventoryStatus() {
       if (error) throw error;
 
       if (data) {
-        setInventory(
-          data.map((item) => ({
-            ...item,
-            total: (item.available || 0) + (item.withdrawn || 0),
-          }))
-        );
+        const mapped = (
+          data as Array<Record<string, unknown> & { available?: number; withdrawn?: number }>
+        ).map((item) => ({
+          ...item,
+          total: (item.available || 0) + (item.withdrawn || 0),
+        }));
+        setInventory(mapped as unknown as InventoryItem[]);
         setDbError(false);
       }
     } catch (err: any) {

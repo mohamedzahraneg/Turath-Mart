@@ -1,5 +1,6 @@
 'use client';
 import React, { useState, useEffect } from 'react';
+import Image from 'next/image';
 import { toast } from 'sonner';
 import { Toaster } from 'sonner';
 import {
@@ -25,6 +26,8 @@ import {
 import AuditLogModal, { getAuditLogs, AuditEntry } from './AuditLogModal';
 import { createClient } from '@/lib/supabase/client';
 import { STATUS_LABELS } from './AuditLogModal';
+import { useAuth } from '@/contexts/AuthContext';
+import { canUseAdminOnlyFinancialFields, canEditOrders } from '@/lib/constants/roles';
 
 interface OrderLine {
   productType: string;
@@ -71,12 +74,10 @@ interface Order {
   lines?: OrderLine[];
 }
 
-// Simulated current user role — in real app comes from auth context
-const CURRENT_USER_ROLE: string = 'admin';
-const CAN_SEE_SENSITIVE = ['admin', 'supervisor', 'delegate', 'manager'].includes(
-  CURRENT_USER_ROLE
-);
-const IS_ADMIN = CURRENT_USER_ROLE === 'admin';
+// NOTE: role-based gating now derives from useAuth() inside the component.
+// The previous hardcoded `CURRENT_USER_ROLE = 'admin'` made every viewer see
+// admin-only content (extra fee badge, sensitive sections), regardless of
+// their actual permissions.
 
 const STATUS_BADGE_MAP: Record<string, { label: string; cls: string }> = {
   new: { label: 'جديد', cls: 'status-new' },
@@ -134,6 +135,10 @@ interface Props {
 }
 
 export default function OrderDetailModal({ order, onClose }: Props) {
+  const { currentRoleId } = useAuth();
+  const IS_ADMIN = canUseAdminOnlyFinancialFields(currentRoleId);
+  const CAN_SEE_SENSITIVE = canEditOrders(currentRoleId);
+
   const [activeTab, setActiveTab] = useState('tab-details');
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [auditLogs, setAuditLogs] = useState<AuditEntry[]>([]);
@@ -144,7 +149,10 @@ export default function OrderDetailModal({ order, onClose }: Props) {
 
   // Load audit logs and listen for real-time updates
   useEffect(() => {
-    const loadAudit = () => setAuditLogs(getAuditLogs(order.id));
+    const loadAudit = async () => {
+      const logs = await getAuditLogs(order.id);
+      setAuditLogs(logs);
+    };
     loadAudit();
 
     const fetchSettings = async () => {
@@ -565,9 +573,11 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                         >
                           <div className="w-12 h-12 rounded-xl overflow-hidden flex-shrink-0 bg-white border border-[hsl(var(--border))] flex items-center justify-center">
                             {hasImg ? (
-                              <img
+                              <Image
                                 src={line.image!}
                                 alt={line.label}
+                                width={48}
+                                height={48}
                                 className="w-full h-full object-cover"
                               />
                             ) : (
@@ -1014,9 +1024,11 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                                 <div className="col-span-5 flex items-center gap-2">
                                   <div className="w-9 h-9 rounded-lg overflow-hidden flex-shrink-0 bg-white border border-[hsl(var(--border))] flex items-center justify-center">
                                     {hasImg ? (
-                                      <img
+                                      <Image
                                         src={line.image!}
                                         alt={line.label}
+                                        width={36}
+                                        height={36}
                                         className="w-full h-full object-cover"
                                       />
                                     ) : (

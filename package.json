@@ -2,42 +2,7 @@
   "name": "turath-masr",
   "version": "0.1.0",
   "private": true,
-  "rocketCritical": {
-    "dependencies": [
-      "next",
-      "react",
-      "react-dom",
-      "@dhiwise/component-tagger",
-      "@tailwindcss/typography",
-      "recharts"
-    ],
-    "devDependencies": [
-      "typescript",
-      "@types/node",
-      "@types/react",
-      "@types/react-dom",
-      "@typescript-eslint/eslint-plugin",
-      "@typescript-eslint/parser",
-      "eslint-config-next",
-      "tailwindcss",
-      "autoprefixer",
-      "postcss",
-      "eslint",
-      "prettier",
-      "@netlify/plugin-nextjs"
-    ],
-    "scripts": [
-      "dev",
-      "build",
-      "start",
-      "lint",
-      "lint:fix",
-      "format",
-      "serve",
-      "type-check"
-    ],
-    "warning": "🚨 CRITICAL: DO NOT REMOVE OR MODIFY ABOVE DEPENDENCIES - Required for Next.js 15 TypeScript app functionality"
-  },
+  "packageManager": "pnpm@10.33.3",
   "scripts": {
     "dev": "next dev -p 4028",
     "build": "next build",
@@ -46,14 +11,14 @@
     "lint:fix": "next lint --fix",
     "format": "prettier --write \"src/**/*.{ts,tsx,css,md,json}\"",
     "serve": "next start",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@dhiwise/component-tagger": "^1.0.14",
     "@heroicons/react": "^2.2.0",
     "@react-pdf/renderer": "^4.1.4",
-    "@supabase/supabase-js": "^2.100.1",
     "@supabase/ssr": "^0.9.0",
+    "@supabase/supabase-js": "^2.100.1",
     "@tailwindcss/forms": "^0.5.10",
     "@tailwindcss/typography": "^0.5.16",
     "lucide-react": "^1.7.0",
@@ -66,7 +31,6 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
-    "@netlify/plugin-nextjs": "^5.11.1",
     "@types/node": "^20",
     "@types/react": "19.0.3",
     "@types/react-dom": "19.0.3",

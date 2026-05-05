@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import Sidebar from './Sidebar';
 import {
@@ -7,41 +7,55 @@ import {
   getDefaultRouteForPermissions,
   getPermissionsForRoleId,
 } from '@/contexts/AuthContext';
+import { isPublicRoute, isAuthRoute } from '@/lib/auth/routes';
+import { isAdminRole } from '@/lib/constants/roles';
 
 interface AppLayoutProps {
   children: React.ReactNode;
   currentPath?: string;
 }
 
+function AuthLoadingScreen() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-[hsl(210,20%,97%)]" dir="rtl">
+      <div className="flex flex-col items-center gap-3 text-[hsl(var(--foreground))]">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#c6a052] border-t-transparent" />
+        <p className="text-sm text-[hsl(var(--muted-foreground))]">جارٍ التحقق من الجلسة…</p>
+      </div>
+    </div>
+  );
+}
+
 export default function AppLayout({ children, currentPath = '' }: AppLayoutProps) {
-  const { currentRole, currentRoleId, customPermissions, hasAccess, roleLoading, user, loading } = useAuth();
+  const { currentRole, currentRoleId, customPermissions, hasAccess, roleLoading, user, loading } =
+    useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const activePath = currentPath || pathname || '';
 
+  const isPublic = useMemo(
+    () => isPublicRoute(activePath) || isAuthRoute(activePath),
+    [activePath]
+  );
+
   useEffect(() => {
     if (!activePath) return;
-
-    // Skip guard for login/public pages
-    if (
-      activePath.startsWith('/sign-up-login-screen') ||
-      activePath.startsWith('/track') ||
-      activePath === '/'
-    ) return;
+    if (isPublic) return;
 
     // Wait until auth and role are fully loaded
     if (loading || roleLoading) return;
 
-    // If not logged in, redirect to login
+    // Not logged in → middleware should already have caught this, but keep
+    // a client-side fallback for edge cases (e.g. session expiry mid-session).
     if (!user && !currentRoleId) {
-      router.replace('/sign-up-login-screen');
+      router.replace(`/sign-up-login-screen?next=${encodeURIComponent(activePath)}`);
       return;
     }
 
-    // Manager/Admin has FULL access
-    if (currentRoleId === 'r1') return;
+    // Admin (r1) has full access
+    if (isAdminRole(currentRoleId)) return;
 
-    // Check route access
+    // Check route access — redirect to a route the user actually has access to
     if (!hasAccess(activePath)) {
       let permissions: string[] = [];
       if (customPermissions && Array.isArray(customPermissions) && customPermissions.length > 0) {
@@ -50,12 +64,30 @@ export default function AppLayout({ children, currentPath = '' }: AppLayoutProps
         permissions = getPermissionsForRoleId(currentRoleId);
       }
 
-      const defaultRoute = permissions.length > 0
-        ? getDefaultRouteForPermissions(permissions)
-        : '/shipping';
+      const defaultRoute =
+        permissions.length > 0 ? getDefaultRouteForPermissions(permissions) : '/shipping';
       router.replace(defaultRoute);
     }
-  }, [activePath, currentRole, currentRoleId, customPermissions, hasAccess, roleLoading, loading, user, router]);
+  }, [
+    activePath,
+    isPublic,
+    currentRole,
+    currentRoleId,
+    customPermissions,
+    hasAccess,
+    roleLoading,
+    loading,
+    user,
+    router,
+  ]);
+
+  // Block protected content from flashing while auth is resolving or while
+  // a redirect is pending.
+  if (!isPublic) {
+    if (loading || roleLoading) return <AuthLoadingScreen />;
+    if (!user && !currentRoleId) return <AuthLoadingScreen />;
+    if (!isAdminRole(currentRoleId) && !hasAccess(activePath)) return <AuthLoadingScreen />;
+  }
 
   return (
     <div className="flex min-h-screen bg-[hsl(210,20%,97%)]" dir="rtl">

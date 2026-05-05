@@ -41,7 +41,14 @@
           "info"
         ]
       }
-    ]
+    ],
+    "react/no-unescaped-entities": "warn",
+    "no-empty": [
+      "warn",
+      { "allowEmptyCatch": true }
+    ],
+    "no-useless-escape": "warn",
+    "no-misleading-character-class": "warn"
   },
   "ignorePatterns": [
     "node_modules/",

@@ -29,7 +29,7 @@ import {
   Bell,
   Sparkles,
   Clock,
-  ArrowRight
+  ArrowRight,
 } from 'lucide-react';
 import { toast, Toaster } from 'sonner';
 import { createClient } from '@/lib/supabase/client';
@@ -158,8 +158,8 @@ function SupportChatPanel({ customer, onClose }: { customer: Customer; onClose: 
           table: 'turath_masr_crm_chat',
           filter: `customer_phone=eq.${customer.phone}`,
         },
-        (payload) => {
-          const m = payload.new as any;
+        (payload: { new: ChatMessage & { chat_type?: string } }) => {
+          const m = payload.new;
           // Only show support messages in CRM
           if (m.chat_type && m.chat_type !== 'support') return;
           setMessages((prev) => [...prev, payload.new as ChatMessage]);
@@ -179,9 +179,12 @@ function SupportChatPanel({ customer, onClose }: { customer: Customer; onClose: 
     if (!input.trim()) return;
     const msg = input.trim();
     setInput('');
-    const { error } = await supabase
-      .from('turath_masr_crm_chat')
-      .insert({ customer_phone: customer.phone, sender: 'support', message: msg, chat_type: 'support' });
+    const { error } = await supabase.from('turath_masr_crm_chat').insert({
+      customer_phone: customer.phone,
+      sender: 'support',
+      message: msg,
+      chat_type: 'support',
+    });
 
     if (error) console.error(error);
   };
@@ -264,7 +267,6 @@ function SupportChatPanel({ customer, onClose }: { customer: Customer; onClose: 
   );
 }
 
-
 // ─── Complaint Details & Logs Modal ──────────────────────────────────────────
 
 function ComplaintDetailsModal({
@@ -304,20 +306,18 @@ function ComplaintDetailsModal({
   const handleAddNote = async () => {
     if (!newNote.trim()) return;
     setSubmitting(true);
-    
+
     // Attempt to get user name from metadata or email
     const notedByName = user?.user_metadata?.full_name || user?.email || 'موظف خدمة العملاء';
 
     // 1. Insert Log
-    const { error: logErr } = await supabase
-      .from('turath_masr_crm_complaint_logs')
-      .insert({
-        complaint_id: complaint.id,
-        noted_by_name: notedByName,
-        note: newNote,
-        old_status: complaint.status,
-        new_status: newStatus,
-      });
+    const { error: logErr } = await supabase.from('turath_masr_crm_complaint_logs').insert({
+      complaint_id: complaint.id,
+      noted_by_name: notedByName,
+      note: newNote,
+      old_status: complaint.status,
+      new_status: newStatus,
+    });
 
     if (logErr) {
       toast.error('فشل في حفظ الملاحظة');
@@ -339,7 +339,7 @@ function ComplaintDetailsModal({
       title: 'تحديث بخصوص شكواك',
       message: `تم الرد على شكواك: "${newNote.substring(0, 40)}..." - الحالة الآن: ${COMPLAINT_STATUS_MAP[newStatus]?.label}`,
       phone: customer.phone,
-      is_read: false
+      is_read: false,
     });
 
     toast.success('تم تسجيل الرد وإخطار العميل بنجاح');
@@ -350,13 +350,17 @@ function ComplaintDetailsModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-[75] flex items-center justify-center p-4 backdrop-blur-sm" dir="rtl">
+    <div
+      className="fixed inset-0 bg-black/60 z-[75] flex items-center justify-center p-4 backdrop-blur-sm"
+      dir="rtl"
+    >
       <div className="bg-white rounded-[2.5rem] w-full max-w-2xl overflow-hidden shadow-2xl border border-white/20 flex flex-col max-h-[90vh]">
         <div className="px-8 py-6 bg-gray-900 text-white flex justify-between items-center">
           <div>
             <h2 className="text-xl font-black">تفاصيل الشكوى والردود</h2>
             <p className="text-[11px] opacity-60 font-bold uppercase tracking-widest mt-1">
-              العميل: {customer.name} | الحالة الحالية: {COMPLAINT_STATUS_MAP[complaint.status]?.label}
+              العميل: {customer.name} | الحالة الحالية:{' '}
+              {COMPLAINT_STATUS_MAP[complaint.status]?.label}
             </p>
           </div>
           <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-xl transition-colors">
@@ -367,105 +371,132 @@ function ComplaintDetailsModal({
         <div className="flex-1 overflow-y-auto p-8 space-y-8 bg-gray-50/30">
           {/* Main Complaint Info */}
           <div className="bg-white border rounded-3xl p-6 shadow-sm ring-1 ring-black/5">
-             <div className="flex items-center gap-3 mb-3">
-                <div className="w-10 h-10 rounded-xl bg-orange-50 text-orange-600 flex items-center justify-center">
-                   <AlertCircle size={20} />
-                </div>
-                <h3 className="font-black text-gray-900">{complaint.subject}</h3>
-             </div>
-             <p className="text-sm text-gray-600 leading-relaxed font-medium bg-gray-50/50 p-4 rounded-2xl border-2 border-dashed border-gray-100">{complaint.notes}</p>
-             <p className="text-[10px] text-gray-400 mt-4 font-bold flex items-center gap-1 uppercase tracking-widest">
-               <Clock size={12} /> تاريخ الفتح: {new Date(complaint.created_at).toLocaleString('ar-EG')}
-             </p>
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-xl bg-orange-50 text-orange-600 flex items-center justify-center">
+                <AlertCircle size={20} />
+              </div>
+              <h3 className="font-black text-gray-900">{complaint.subject}</h3>
+            </div>
+            <p className="text-sm text-gray-600 leading-relaxed font-medium bg-gray-50/50 p-4 rounded-2xl border-2 border-dashed border-gray-100">
+              {complaint.notes}
+            </p>
+            <p className="text-[10px] text-gray-400 mt-4 font-bold flex items-center gap-1 uppercase tracking-widest">
+              <Clock size={12} /> تاريخ الفتح:{' '}
+              {new Date(complaint.created_at).toLocaleString('ar-EG')}
+            </p>
           </div>
 
           {/* Timeline of Logs */}
           <div className="space-y-6">
-             <div className="flex items-center justify-between px-2">
-                <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em] flex items-center gap-2">
-                  <MessageSquare size={14} /> سجل المتابعة والملاحظات
-                </h4>
-                <div className="h-px flex-1 bg-gray-100 mx-4" />
-             </div>
-             
-             <div className="space-y-4">
-                {loading ? (
-                  <div className="py-10 flex justify-center"><Loader2 className="animate-spin text-emerald-500" /></div>
-                ) : logs.length === 0 ? (
-                  <div className="text-center py-12 bg-white rounded-3xl border-2 border-dashed border-gray-100">
-                    <p className="text-gray-400 text-xs italic font-bold">لا يوجد ردود سابقة على هذه الشكوى حتى الآن.</p>
-                  </div>
-                ) : (
-                  logs.map((log) => (
-                    <div key={log.id} className="relative pr-8 border-r-2 border-emerald-100 pb-6 last:pb-0">
-                       <div className="absolute top-1 -right-1.5 w-3 h-3 rounded-full bg-emerald-500 border-2 border-white shadow-sm" />
-                       <div className="bg-white border rounded-2xl p-5 shadow-sm hover:shadow-md transition-shadow">
-                          <div className="flex items-center justify-between mb-3">
-                             <div className="flex items-center gap-2">
-                                <div className="w-6 h-6 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center">
-                                   <User size={12} />
-                                </div>
-                                <p className="text-xs font-black text-gray-900">{log.noted_by_name}</p>
-                             </div>
-                             <span className="text-[10px] text-gray-400 font-bold bg-gray-50 px-2 py-0.5 rounded-lg">
-                               {new Date(log.created_at).toLocaleString('ar-EG', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' })}
-                             </span>
+            <div className="flex items-center justify-between px-2">
+              <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em] flex items-center gap-2">
+                <MessageSquare size={14} /> سجل المتابعة والملاحظات
+              </h4>
+              <div className="h-px flex-1 bg-gray-100 mx-4" />
+            </div>
+
+            <div className="space-y-4">
+              {loading ? (
+                <div className="py-10 flex justify-center">
+                  <Loader2 className="animate-spin text-emerald-500" />
+                </div>
+              ) : logs.length === 0 ? (
+                <div className="text-center py-12 bg-white rounded-3xl border-2 border-dashed border-gray-100">
+                  <p className="text-gray-400 text-xs italic font-bold">
+                    لا يوجد ردود سابقة على هذه الشكوى حتى الآن.
+                  </p>
+                </div>
+              ) : (
+                logs.map((log) => (
+                  <div
+                    key={log.id}
+                    className="relative pr-8 border-r-2 border-emerald-100 pb-6 last:pb-0"
+                  >
+                    <div className="absolute top-1 -right-1.5 w-3 h-3 rounded-full bg-emerald-500 border-2 border-white shadow-sm" />
+                    <div className="bg-white border rounded-2xl p-5 shadow-sm hover:shadow-md transition-shadow">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-6 h-6 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                            <User size={12} />
                           </div>
-                          <p className="text-sm text-gray-600 leading-relaxed font-bold">{log.note}</p>
-                          {log.old_status !== log.new_status && (
-                             <div className="mt-4 pt-4 border-t border-gray-50 flex items-center gap-3">
-                                <span className="text-[9px] font-black text-gray-400 uppercase tracking-widest">تحديث الحالة:</span>
-                                <div className="flex items-center gap-2">
-                                  <span className="text-[10px] line-through text-gray-300 font-bold">{COMPLAINT_STATUS_MAP[log.old_status]?.label}</span>
-                                  <ArrowRight size={10} className="text-gray-300" />
-                                  <span className={`text-[10px] font-black px-3 py-1 rounded-xl border-2 ${COMPLAINT_STATUS_MAP[log.new_status]?.cls}`}>
-                                    {COMPLAINT_STATUS_MAP[log.new_status]?.label}
-                                  </span>
-                                </div>
-                             </div>
-                          )}
-                       </div>
+                          <p className="text-xs font-black text-gray-900">{log.noted_by_name}</p>
+                        </div>
+                        <span className="text-[10px] text-gray-400 font-bold bg-gray-50 px-2 py-0.5 rounded-lg">
+                          {new Date(log.created_at).toLocaleString('ar-EG', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            day: '2-digit',
+                            month: '2-digit',
+                          })}
+                        </span>
+                      </div>
+                      <p className="text-sm text-gray-600 leading-relaxed font-bold">{log.note}</p>
+                      {log.old_status !== log.new_status && (
+                        <div className="mt-4 pt-4 border-t border-gray-50 flex items-center gap-3">
+                          <span className="text-[9px] font-black text-gray-400 uppercase tracking-widest">
+                            تحديث الحالة:
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] line-through text-gray-300 font-bold">
+                              {COMPLAINT_STATUS_MAP[log.old_status]?.label}
+                            </span>
+                            <ArrowRight size={10} className="text-gray-300" />
+                            <span
+                              className={`text-[10px] font-black px-3 py-1 rounded-xl border-2 ${COMPLAINT_STATUS_MAP[log.new_status]?.cls}`}
+                            >
+                              {COMPLAINT_STATUS_MAP[log.new_status]?.label}
+                            </span>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  ))
-                )}
-             </div>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </div>
 
         {/* Reply Section */}
         <div className="p-8 border-t bg-white space-y-6">
-           <div className="flex flex-col sm:flex-row gap-6">
-              <div className="flex-1 space-y-2">
-                 <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest px-1">إضافة رد رسمي / ملاحظة داخلية</label>
-                 <textarea 
-                   className="w-full h-24 bg-gray-50 border-2 border-gray-50 rounded-2xl px-5 py-4 text-sm font-bold focus:border-emerald-500/30 focus:bg-white outline-none transition-all resize-none"
-                   placeholder="اكتب ماذا حدث في المتابعة..."
-                   value={newNote}
-                   onChange={(e) => setNewNote(e.target.value)}
-                 />
-              </div>
-              <div className="sm:w-56 space-y-2">
-                 <label className="text-[10px] font-black text-emerald-600 uppercase tracking-widest px-1">الحالة الجديدة</label>
-                 <select 
-                   className="w-full h-14 bg-emerald-50 border-2 border-emerald-100 rounded-2xl px-5 py-2 text-sm font-black text-emerald-900 outline-none cursor-pointer hover:bg-emerald-100 transition-colors"
-                   value={newStatus}
-                   onChange={(e) => setNewStatus(e.target.value)}
-                 >
-                   <option value="open">مواصلة الفتح (Open)</option>
-                   <option value="pending">قيد المعالجة (Pending)</option>
-                   <option value="resolved">تم الحل نهائياً (Resolved)</option>
-                 </select>
-                 <p className="text-[9px] text-gray-400 font-bold px-1">سيصل إشعار فوري للعميل بالتحديث.</p>
-              </div>
-           </div>
-           <button 
-             disabled={submitting || !newNote.trim()}
-             onClick={handleAddNote}
-             className="w-full h-16 bg-emerald-600 text-white rounded-[1.5rem] font-black text-sm flex items-center justify-center gap-3 hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-100 active:scale-95 disabled:opacity-50"
-           >
-             {submitting ? <Loader2 className="animate-spin" size={20} /> : <Send size={20} />}
-             حفظ الرد وتحديث سجل العميل
-           </button>
+          <div className="flex flex-col sm:flex-row gap-6">
+            <div className="flex-1 space-y-2">
+              <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest px-1">
+                إضافة رد رسمي / ملاحظة داخلية
+              </label>
+              <textarea
+                className="w-full h-24 bg-gray-50 border-2 border-gray-50 rounded-2xl px-5 py-4 text-sm font-bold focus:border-emerald-500/30 focus:bg-white outline-none transition-all resize-none"
+                placeholder="اكتب ماذا حدث في المتابعة..."
+                value={newNote}
+                onChange={(e) => setNewNote(e.target.value)}
+              />
+            </div>
+            <div className="sm:w-56 space-y-2">
+              <label className="text-[10px] font-black text-emerald-600 uppercase tracking-widest px-1">
+                الحالة الجديدة
+              </label>
+              <select
+                className="w-full h-14 bg-emerald-50 border-2 border-emerald-100 rounded-2xl px-5 py-2 text-sm font-black text-emerald-900 outline-none cursor-pointer hover:bg-emerald-100 transition-colors"
+                value={newStatus}
+                onChange={(e) => setNewStatus(e.target.value)}
+              >
+                <option value="open">مواصلة الفتح (Open)</option>
+                <option value="pending">قيد المعالجة (Pending)</option>
+                <option value="resolved">تم الحل نهائياً (Resolved)</option>
+              </select>
+              <p className="text-[9px] text-gray-400 font-bold px-1">
+                سيصل إشعار فوري للعميل بالتحديث.
+              </p>
+            </div>
+          </div>
+          <button
+            disabled={submitting || !newNote.trim()}
+            onClick={handleAddNote}
+            className="w-full h-16 bg-emerald-600 text-white rounded-[1.5rem] font-black text-sm flex items-center justify-center gap-3 hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-100 active:scale-95 disabled:opacity-50"
+          >
+            {submitting ? <Loader2 className="animate-spin" size={20} /> : <Send size={20} />}
+            حفظ الرد وتحديث سجل العميل
+          </button>
         </div>
       </div>
     </div>
@@ -514,9 +545,14 @@ function ComplaintModal({
           <div className="absolute top-0 right-0 w-32 h-full bg-white/10 -skew-x-[45deg] translate-x-12" />
           <div className="relative z-10">
             <h2 className="text-xl font-black">فتح تذكرة دعم للعميل</h2>
-            <p className="text-[11px] opacity-80 font-bold uppercase tracking-widest mt-1">{customer.name} | {customer.phone}</p>
+            <p className="text-[11px] opacity-80 font-bold uppercase tracking-widest mt-1">
+              {customer.name} | {customer.phone}
+            </p>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-white/20 rounded-xl transition-colors relative z-10">
+          <button
+            onClick={onClose}
+            className="p-2 hover:bg-white/20 rounded-xl transition-colors relative z-10"
+          >
             <X size={24} />
           </button>
         </div>
@@ -587,22 +623,49 @@ export default function CRMPage() {
 
   const [complaintCustomer, setComplaintCustomer] = useState<Customer | null>(null);
   const [chatCustomer, setChatCustomer] = useState<Customer | null>(null);
-  const [selectedComplaint, setSelectedComplaint] = useState<{ complaint: Complaint; customer: Customer } | null>(null);
+  const [selectedComplaint, setSelectedComplaint] = useState<{
+    complaint: Complaint;
+    customer: Customer;
+  } | null>(null);
 
   const fetchCRMData = useCallback(async () => {
     setLoading(true);
     try {
       const supabase = createClient();
-      const { data: oData } = await supabase.from('turath_masr_orders').select('*').order('created_at', { ascending: false });
-      const { data: cData } = await supabase.from('turath_masr_crm_complaints').select('*').order('created_at', { ascending: false });
+      const { data: oData } = await supabase
+        .from('turath_masr_orders')
+        .select('*')
+        .order('created_at', { ascending: false });
+      const { data: cData } = await supabase
+        .from('turath_masr_crm_complaints')
+        .select('*')
+        .order('created_at', { ascending: false });
       const { data: metaData } = await supabase.from('turath_masr_customers').select('*');
 
       if (oData) {
         const map = new Map<string, Customer>();
-        
+
         // Initial map from metadata (if table exists)
-        if (metaData) {
-          metaData.forEach(m => {
+        // Inline row types — TODO: replace with generated Supabase types.
+        type CustomerMetaRow = {
+          phone: string;
+          full_name?: string | null;
+          total_orders?: number | null;
+          total_spent?: number | null;
+          updated_at?: string | null;
+          segment?: string | null;
+        };
+        type OrderRowMin = {
+          phone: string;
+          customer: string;
+          total?: number | null;
+          created_at: string;
+        };
+        type ComplaintRowMin = { customer_phone: string };
+        const metaTyped = (metaData ?? []) as CustomerMetaRow[];
+
+        if (metaTyped.length > 0) {
+          metaTyped.forEach((m) => {
             map.set(m.phone, {
               id: m.phone,
               name: m.full_name || '',
@@ -617,7 +680,7 @@ export default function CRMPage() {
           });
         }
 
-        oData.forEach((order) => {
+        (oData as OrderRowMin[]).forEach((order) => {
           const key = order.phone;
           if (!map.has(key)) {
             map.set(key, {
@@ -633,29 +696,34 @@ export default function CRMPage() {
             });
           }
           const c = map.get(key)!;
-          
+
           // Only increment if not already using metadata totals (or just recalculate for fresh data)
-          // For now, let's recalculate from orders to ensure real-time accuracy, 
+          // For now, let's recalculate from orders to ensure real-time accuracy,
           // while keeping the 'tier' and 'name' from metadata.
-          if (!metaData?.find(m => m.phone === key)) {
+          if (!metaTyped.find((m) => m.phone === key)) {
             c.totalOrders += 1;
             c.totalSpent += Number(order.total || 0);
           }
-          
-          if (new Date(order.created_at) > new Date(c.lastOrderDate)) c.lastOrderDate = order.created_at;
+
+          if (new Date(order.created_at) > new Date(c.lastOrderDate))
+            c.lastOrderDate = order.created_at;
         });
 
         const custArray = Array.from(map.values());
         custArray.forEach((c) => {
           // If no manual tier in metadata, auto-calculate
-          const hasMeta = metaData?.find(m => m.phone === c.phone);
+          const hasMeta = metaTyped.find((m) => m.phone === c.phone);
           if (!hasMeta) {
             if (c.totalOrders >= 10 || c.totalSpent >= 5000) c.tier = 'vip';
             else if (c.totalOrders >= 5 || c.totalSpent >= 2000) c.tier = 'gold';
             else if (c.totalOrders >= 2 || c.totalSpent >= 500) c.tier = 'silver';
           }
 
-          if (cData) c.complaints = cData.filter((comp) => comp.customer_phone === c.phone) as Complaint[];
+          if (cData) {
+            c.complaints = (cData as ComplaintRowMin[]).filter(
+              (comp) => comp.customer_phone === c.phone
+            ) as Complaint[];
+          }
         });
 
         setCustomers(custArray.sort((a, b) => b.totalSpent - a.totalSpent));
@@ -673,13 +741,22 @@ export default function CRMPage() {
     const supabase = createClient();
     const statusChannel = supabase
       .channel('complaint-updates')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'turath_masr_crm_complaints' }, (() => {
-        let t: ReturnType<typeof setTimeout>;
-        return () => { clearTimeout(t); t = setTimeout(fetchCRMData, 1000); };
-      })())
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'turath_masr_crm_complaints' },
+        (() => {
+          let t: ReturnType<typeof setTimeout>;
+          return () => {
+            clearTimeout(t);
+            t = setTimeout(fetchCRMData, 1000);
+          };
+        })()
+      )
       .subscribe();
 
-    return () => { supabase.removeChannel(statusChannel); };
+    return () => {
+      supabase.removeChannel(statusChannel);
+    };
   }, [fetchCRMData]);
 
   const filtered = useMemo(() => {
@@ -693,10 +770,10 @@ export default function CRMPage() {
 
   const statsByTier = useMemo(() => {
     return {
-      vip: customers.filter(c => c.tier === 'vip').length,
-      gold: customers.filter(c => c.tier === 'gold').length,
-      silver: customers.filter(c => c.tier === 'silver').length,
-      regular: customers.filter(c => c.tier === 'regular').length,
+      vip: customers.filter((c) => c.tier === 'vip').length,
+      gold: customers.filter((c) => c.tier === 'gold').length,
+      silver: customers.filter((c) => c.tier === 'silver').length,
+      regular: customers.filter((c) => c.tier === 'regular').length,
     };
   }, [customers]);
 
@@ -705,7 +782,9 @@ export default function CRMPage() {
       <AppLayout currentPath="/crm">
         <div className="flex flex-col items-center justify-center py-40 gap-4">
           <div className="w-16 h-16 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin" />
-          <p className="text-sm font-bold text-gray-400 uppercase tracking-[0.2em] animate-pulse">جاري سحب بيانات العملاء والشكاوى</p>
+          <p className="text-sm font-bold text-gray-400 uppercase tracking-[0.2em] animate-pulse">
+            جاري سحب بيانات العملاء والشكاوى
+          </p>
         </div>
       </AppLayout>
     );
@@ -718,7 +797,10 @@ export default function CRMPage() {
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-8">
           <div className="relative">
             <h1 className="text-4xl font-black text-gray-900 tracking-tight flex items-center gap-3">
-              إدارة علاقات <span className="bg-gradient-to-r from-emerald-600 to-emerald-400 bg-clip-text text-transparent">العملاء</span>
+              إدارة علاقات{' '}
+              <span className="bg-gradient-to-r from-emerald-600 to-emerald-400 bg-clip-text text-transparent">
+                العملاء
+              </span>
               <div className="bg-emerald-50 text-emerald-600 p-1.5 rounded-xl border border-emerald-100 flex items-center gap-1 text-[10px] uppercase font-black">
                 <Sparkles size={12} className="animate-pulse" /> Live
               </div>
@@ -727,21 +809,27 @@ export default function CRMPage() {
               تحليل شامل للسلوك الشرائي، حل الشكاوى، وواجهة ذكية لخدمة كبار العملاء.
             </p>
           </div>
-          
+
           <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-2 lg:pb-0">
             {Object.entries(statsByTier).map(([t, count]) => {
               const cfg = TIER_CONFIG[t];
               return (
-                <div 
+                <div
                   key={t}
                   className={`flex flex-col items-start px-6 py-4 rounded-[1.5rem] border bg-white shadow-sm transition-all hover:-translate-y-1 hover:shadow-lg cursor-pointer ${tierFilter === t ? 'ring-2 ring-emerald-500/30 border-emerald-500/50' : 'border-gray-50'}`}
                   onClick={() => setTierFilter(tierFilter === t ? 'الكل' : t)}
                 >
-                  <div className={`w-8 h-8 rounded-xl flex items-center justify-center mb-2 ${cfg.cls} border-0`}>
+                  <div
+                    className={`w-8 h-8 rounded-xl flex items-center justify-center mb-2 ${cfg.cls} border-0`}
+                  >
                     {cfg.icon}
                   </div>
-                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">{cfg.label}</p>
-                  <p className="text-xl font-black text-gray-900 font-mono tracking-tighter">{count}</p>
+                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                    {cfg.label}
+                  </p>
+                  <p className="text-xl font-black text-gray-900 font-mono tracking-tighter">
+                    {count}
+                  </p>
                 </div>
               );
             })}
@@ -753,7 +841,7 @@ export default function CRMPage() {
             <div className="absolute inset-y-0 right-5 flex items-center pointer-events-none group-focus-within:text-emerald-500 transition-colors">
               <Search size={20} className="text-gray-300" />
             </div>
-            <input 
+            <input
               type="text"
               placeholder="ابحث عن العميل بالاسم أو رقم الموبايل..."
               className="w-full h-16 pr-14 pl-6 bg-white border-2 border-gray-50 rounded-[2rem] text-sm font-bold shadow-sm focus:outline-none focus:border-emerald-500/30 transition-all text-right"
@@ -782,15 +870,19 @@ export default function CRMPage() {
                 key={c.phone}
                 className="group relative bg-white border-2 border-gray-50 rounded-[2.5rem] p-7 flex flex-col transition-all duration-500 hover:shadow-2xl hover:border-emerald-500/20 hover:-translate-y-2 overflow-hidden"
               >
-                <div className={`absolute -top-12 -right-12 w-32 h-32 blur-3xl opacity-0 group-hover:opacity-10 transition-opacity duration-1000 ${tier.color === 'purple' ? 'bg-purple-600' : tier.color === 'yellow' ? 'bg-yellow-500' : 'bg-emerald-500'}`} />
-                
+                <div
+                  className={`absolute -top-12 -right-12 w-32 h-32 blur-3xl opacity-0 group-hover:opacity-10 transition-opacity duration-1000 ${tier.color === 'purple' ? 'bg-purple-600' : tier.color === 'yellow' ? 'bg-yellow-500' : 'bg-emerald-500'}`}
+                />
+
                 <div className="flex items-start justify-between mb-8 relative">
                   <div className="flex items-center gap-4">
                     <div className="relative">
                       <div className="w-16 h-16 rounded-[1.75rem] bg-gray-50 border border-gray-100 flex items-center justify-center text-4xl font-black group-hover:scale-110 transition-transform duration-500">
                         {c.name.charAt(0)}
                       </div>
-                      <div className={`absolute -bottom-1 -right-1 w-7 h-7 rounded-full border-2 border-white flex items-center justify-center shadow-lg ${tier.cls}`}>
+                      <div
+                        className={`absolute -bottom-1 -right-1 w-7 h-7 rounded-full border-2 border-white flex items-center justify-center shadow-lg ${tier.cls}`}
+                      >
                         {tier.icon}
                       </div>
                     </div>
@@ -799,8 +891,10 @@ export default function CRMPage() {
                         {c.name}
                       </h3>
                       <div className="flex items-center gap-1.5 mt-1">
-                         <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                         <span className="text-[10px] font-bold text-gray-400 font-mono tracking-widest">{c.phone}</span>
+                        <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        <span className="text-[10px] font-bold text-gray-400 font-mono tracking-widest">
+                          {c.phone}
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -828,43 +922,51 @@ export default function CRMPage() {
 
                 <div className="mt-auto relative">
                   {openComps.length > 0 ? (
-                    <div 
-                      onClick={() => setSelectedComplaint({ complaint: latestComplaint, customer: c })}
+                    <div
+                      onClick={() =>
+                        setSelectedComplaint({ complaint: latestComplaint, customer: c })
+                      }
                       className="bg-red-50 border border-red-100 rounded-2xl px-4 py-3 flex items-center justify-between mb-4 animate-pulse cursor-pointer hover:bg-red-100 transition-colors shadow-sm"
                     >
                       <div className="flex items-center gap-2 text-red-600">
                         <AlertCircle size={14} />
-                        <span className="text-[10px] font-black uppercase tracking-widest">{openComps.length} شكاوى مفتوحة</span>
+                        <span className="text-[10px] font-black uppercase tracking-widest">
+                          {openComps.length} شكاوى مفتوحة
+                        </span>
                       </div>
-                      <div className="bg-red-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-full">رد الآن</div>
+                      <div className="bg-red-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-full">
+                        رد الآن
+                      </div>
                     </div>
                   ) : (
                     <div className="bg-emerald-50 border border-emerald-100 rounded-2xl px-4 py-3 flex items-center gap-2 text-emerald-600 mb-4 h-12">
                       <CheckCircle2 size={14} />
-                      <span className="text-[10px] font-black uppercase tracking-widest">سجل العميل سليم</span>
+                      <span className="text-[10px] font-black uppercase tracking-widest">
+                        سجل العميل سليم
+                      </span>
                     </div>
                   )}
 
                   <div className="flex items-center gap-2 opacity-0 translate-y-4 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-500">
-                    <button 
+                    <button
                       onClick={() => setChatCustomer(c)}
                       className="flex-1 h-12 bg-gray-900 text-white rounded-2xl flex items-center justify-center gap-2 hover:bg-emerald-600 transition-all shadow-xl active:scale-95"
                     >
                       <MessageSquare size={16} />
                       <span className="text-[11px] font-black">شات</span>
                     </button>
-                    <button 
+                    <button
                       onClick={() => setComplaintCustomer(c)}
                       className="flex-1 h-12 bg-white border-2 border-gray-100 text-gray-900 rounded-2xl flex items-center justify-center gap-2 hover:border-gray-900 transition-all shadow-sm active:scale-95"
                     >
                       <Plus size={16} />
                       <span className="text-[11px] font-black">شكوى</span>
                     </button>
-                    <button 
+                    <button
                       className="w-12 h-12 bg-white border-2 border-gray-100 text-gray-400 rounded-2xl flex items-center justify-center hover:border-emerald-500 hover:text-emerald-500 transition-all group/btn"
-                      onClick={() => window.location.href=`/crm/customer/${c.phone}`}
+                      onClick={() => (window.location.href = `/crm/customer/${c.phone}`)}
                     >
-                      <Eye size={20} className="group-hover/btn:scale-110 transition-transform"/>
+                      <Eye size={20} className="group-hover/btn:scale-110 transition-transform" />
                     </button>
                   </div>
                 </div>
@@ -882,7 +984,7 @@ export default function CRMPage() {
         />
       )}
       {selectedComplaint && (
-        <ComplaintDetailsModal 
+        <ComplaintDetailsModal
           customer={selectedComplaint.customer}
           complaint={selectedComplaint.complaint}
           onClose={() => setSelectedComplaint(null)}

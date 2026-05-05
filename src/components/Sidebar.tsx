@@ -1,6 +1,7 @@
 'use client';
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import AppLogo from '@/components/ui/AppLogo';
 import { useAuth } from '@/contexts/AuthContext';
 import {
@@ -19,6 +20,7 @@ import {
 } from 'lucide-react';
 import { useNotifications } from '@/contexts/NotificationContext';
 import NotificationDropdown from '@/components/NotificationDropdown';
+import { isAdminRole } from '@/lib/constants/roles';
 
 interface NavItem {
   id: string;
@@ -115,9 +117,10 @@ function Sidebar({ currentPath = '' }: SidebarProps) {
   const [showNotifications, setShowNotifications] = useState(false);
   const { currentRole, currentRoleId, hasAccess, signOut, user } = useAuth();
   const { newOrdersCount, unreadCount } = useNotifications();
+  const router = useRouter();
 
   // Only True Admin (r1) sees EVERYTHING without filtering
-  const isSuperAdmin = currentRoleId === 'r1';
+  const isSuperAdmin = isAdminRole(currentRoleId);
   const visibleNavItems = isSuperAdmin ? navItems : navItems.filter((item) => hasAccess(item.href));
 
   const isActive = (href: string) => currentPath === href || currentPath.startsWith(href);
@@ -140,7 +143,11 @@ function Sidebar({ currentPath = '' }: SidebarProps) {
           .eq('id', user.id)
           .single();
         if (profile) {
-          const name = profile.full_name || user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'المستخدم';
+          const name =
+            profile.full_name ||
+            user?.user_metadata?.full_name ||
+            user?.email?.split('@')[0] ||
+            'المستخدم';
           setUserName(name);
           const roleId = profile.role_id || currentRoleId;
           if (roleId && ROLE_LABELS[roleId]) {
@@ -173,7 +180,7 @@ function Sidebar({ currentPath = '' }: SidebarProps) {
     } catch (e) {
       console.error('Logout error:', e);
     } finally {
-      window.location.href = '/sign-up-login-screen';
+      router.replace('/sign-up-login-screen');
     }
   };
 

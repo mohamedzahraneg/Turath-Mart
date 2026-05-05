@@ -1,5 +1,7 @@
 'use client';
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { Suspense, useState, useEffect, useMemo, useCallback } from 'react';
+import Image from 'next/image';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { toast, Toaster } from 'sonner';
 import {
@@ -19,6 +21,7 @@ import {
   getPermissionsForRoleId,
 } from '@/contexts/AuthContext';
 import { createClient } from '@/lib/supabase/client';
+import { getDeviceLabel } from '@/lib/utils/device';
 
 interface LoginForm {
   email: string;
@@ -27,13 +30,8 @@ interface LoginForm {
 }
 
 /* ─── helpers ─── */
-function getDeviceType(): string {
-  if (typeof window === 'undefined') return 'كمبيوتر';
-  const ua = navigator.userAgent;
-  if (/tablet|ipad|playbook|silk/i.test(ua)) return 'تابلت';
-  if (/mobile|iphone|ipod|android|blackberry|opera mini|iemobile/i.test(ua)) return 'موبايل';
-  return 'كمبيوتر';
-}
+// Device-class label is extracted into src/lib/utils/device.ts so all the
+// places that show / log the user's device class share one implementation.
 
 function DeviceIcon({ device }: { device: string }) {
   if (device === 'موبايل') return <Smartphone size={14} className="text-gold-400/60" />;
@@ -42,7 +40,17 @@ function DeviceIcon({ device }: { device: string }) {
 }
 
 /* ─── Particle component ─── */
-function Particle({ delay, size, left, duration }: { delay: number; size: number; left: number; duration: number }) {
+function Particle({
+  delay,
+  size,
+  left,
+  duration,
+}: {
+  delay: number;
+  size: number;
+  left: number;
+  duration: number;
+}) {
   return (
     <div
       className="islamic-particle"
@@ -77,16 +85,20 @@ function IslamicStar({ className = '' }: { className?: string }) {
   );
 }
 
-export default function LoginPage() {
+// useSearchParams() forces this page out of static rendering, so the inner
+// component must live inside a <Suspense> boundary (Next.js 15 requirement).
+function LoginPageInner() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [deviceType, setDeviceType] = useState('كمبيوتر');
   const [mounted, setMounted] = useState(false);
   const { signIn } = useAuth();
+  const router = useRouter();
+  const searchParams = useSearchParams();
 
   useEffect(() => {
-    setDeviceType(getDeviceType());
+    setDeviceType(getDeviceLabel());
     setMounted(true);
   }, []);
 
@@ -117,13 +129,15 @@ export default function LoginPage() {
       setLoginError('');
 
       try {
-        let identifier = data.email.trim();
+        const identifier = data.email.trim();
+        // NOTE: login requires a real email address.
+        // The previous "admin" alias and auto-domain-append shortcuts have been
+        // removed for security — they leaked the admin email and made identity
+        // probing trivial.
         if (!identifier.includes('@')) {
-          if (identifier.toLowerCase() === 'admin') {
-            identifier = 'zahran@turathmasr.com';
-          } else {
-            identifier = `${identifier}@turathmasr.com`;
-          }
+          setLoginError('يرجى إدخال البريد الإلكتروني الكامل');
+          setIsLoading(false);
+          return;
         }
         const authData = await signIn(identifier, data.password);
         const supabase = createClient();
@@ -149,11 +163,14 @@ export default function LoginPage() {
         // No localStorage needed - AuthContext reads from Supabase directly
 
         toast.success(`مرحباً! تم تسجيل الدخول — ${deviceType}`);
-        const permissions = effectivePerms.length > 0 ? effectivePerms : getPermissionsForRoleId(finalRoleId);
-        const landingPage = getInitialRoute(permissions);
+        const permissions =
+          effectivePerms.length > 0 ? effectivePerms : getPermissionsForRoleId(finalRoleId);
+        const computedLanding = getInitialRoute(permissions);
+        const nextParam = searchParams?.get('next');
+        const landingPage = nextParam && nextParam.startsWith('/') ? nextParam : computedLanding;
 
         setTimeout(() => {
-          window.location.href = landingPage;
+          router.replace(landingPage);
         }, 800);
       } catch (err: any) {
         console.error('Login exception:', err);
@@ -163,7 +180,7 @@ export default function LoginPage() {
         setIsLoading(false);
       }
     },
-    [signIn, deviceType]
+    [signIn, deviceType, router, searchParams]
   );
 
   return (
@@ -175,7 +192,9 @@ export default function LoginPage() {
 
       {/* ─── Floating golden particles ─── */}
       {mounted &&
-        particles.map((p) => <Particle key={p.id} delay={p.delay} size={p.size} left={p.left} duration={p.duration} />)}
+        particles.map((p) => (
+          <Particle key={p.id} delay={p.delay} size={p.size} left={p.left} duration={p.duration} />
+        ))}
 
       {/* ─── Decorative blurred orbs ─── */}
       <div className="absolute top-[-15%] right-[-8%] w-[500px] h-[500px] bg-[#c6a052]/8 rounded-full blur-[120px] animate-pulse-slow pointer-events-none" />
@@ -186,8 +205,20 @@ export default function LoginPage() {
       <div className="absolute inset-0 opacity-[0.04] pointer-events-none">
         <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
           <defs>
-            <pattern id="islamic-geo" x="0" y="0" width="80" height="80" patternUnits="userSpaceOnUse">
-              <path d="M40 0 L80 40 L40 80 L0 40 Z" fill="none" stroke="#c6a052" strokeWidth="0.5" />
+            <pattern
+              id="islamic-geo"
+              x="0"
+              y="0"
+              width="80"
+              height="80"
+              patternUnits="userSpaceOnUse"
+            >
+              <path
+                d="M40 0 L80 40 L40 80 L0 40 Z"
+                fill="none"
+                stroke="#c6a052"
+                strokeWidth="0.5"
+              />
               <circle cx="40" cy="40" r="15" fill="none" stroke="#c6a052" strokeWidth="0.3" />
               <path d="M20 0 L40 20 L60 0" fill="none" stroke="#c6a052" strokeWidth="0.3" />
               <path d="M0 20 L20 40 L0 60" fill="none" stroke="#c6a052" strokeWidth="0.3" />
@@ -211,9 +242,7 @@ export default function LoginPage() {
           <p className="text-[#c6a052] text-lg mb-3 font-semibold tracking-wide islamic-shimmer">
             السلام عليكم ورحمة الله وبركاته
           </p>
-          <h1 className="text-4xl font-extrabold text-white mb-2 drop-shadow-lg">
-            تراث مصر
-          </h1>
+          <h1 className="text-4xl font-extrabold text-white mb-2 drop-shadow-lg">تراث مصر</h1>
           <p className="text-white/50 text-sm">مرحبًا بك في نظام الإدارة المتكامل</p>
         </div>
 
@@ -222,7 +251,14 @@ export default function LoginPage() {
           {/* ─── Logo icon ─── */}
           <div className="flex flex-col items-center mb-8">
             <div className="w-24 h-24 mb-4 hover:scale-105 transition-transform duration-500">
-              <img src="/assets/images/new_logo.jpg" alt="تراث مصر" className="w-full h-full rounded-full object-cover shadow-[0_8px_30px_rgba(198,160,82,0.4)] border-2 border-[#c6a052]/30" />
+              <Image
+                src="/assets/images/new_logo.jpg"
+                alt="تراث مصر"
+                width={96}
+                height={96}
+                priority
+                className="w-full h-full rounded-full object-cover shadow-[0_8px_30px_rgba(198,160,82,0.4)] border-2 border-[#c6a052]/30"
+              />
             </div>
             <h2 className="text-xl font-bold text-white">تسجيل الدخول</h2>
             <p className="text-white/40 text-sm mt-1">أدخل بياناتك للمتابعة</p>
@@ -258,12 +294,14 @@ export default function LoginPage() {
                 />
                 <input
                   id="email"
-                  type="text"
+                  type="email"
+                  dir="ltr"
                   className={`w-full pr-11 pl-4 py-3.5 bg-white/[0.07] border rounded-xl text-white placeholder-white/25
                     focus:ring-2 focus:ring-[#c6a052]/40 focus:border-[#c6a052]/30 outline-none transition-all duration-300
                     backdrop-blur-sm ${errors.email ? 'border-red-500/50' : 'border-white/10'}`}
-                  placeholder="admin أو البريد الإلكتروني"
-                  {...register('email', { required: 'يرجى إدخال اسم المستخدم' })}
+                  placeholder="name@example.com"
+                  autoComplete="email"
+                  {...register('email', { required: 'يرجى إدخال البريد الإلكتروني' })}
                 />
               </div>
               {errors.email && (
@@ -350,5 +388,21 @@ export default function LoginPage() {
         </p>
       </div>
     </div>
+  );
+}
+
+// Default export — wraps the inner component in <Suspense> as required by
+// Next.js 15 when useSearchParams() is used in a client component.
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center islamic-login-bg" dir="rtl">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#c6a052] border-t-transparent" />
+        </div>
+      }
+    >
+      <LoginPageInner />
+    </Suspense>
   );
 }

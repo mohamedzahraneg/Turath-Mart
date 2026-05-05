@@ -20,7 +20,7 @@ import {
   ChevronDown,
   ChevronUp,
   X,
-  Check,
+  // Check is defined locally below as a custom SVG, not imported from lucide-react.
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 
@@ -86,7 +86,7 @@ function useSettingsSync<T>(key: string, initial: T) {
       setData(row.value as T);
     }
     setLoading(false);
-  }, [key]);
+  }, [key, supabase]);
 
   const save = async (newData?: T) => {
     setSaving(true);
@@ -302,10 +302,11 @@ interface Region {
 }
 
 import { useAuth } from '@/contexts/AuthContext';
+import { isAdminRole } from '@/lib/constants/roles';
 
 function DistrictsTab() {
   const { currentRoleId } = useAuth();
-  const isAdmin = currentRoleId === 'r1';
+  const isAdmin = isAdminRole(currentRoleId);
 
   const {
     data: regions,
@@ -315,108 +316,126 @@ function DistrictsTab() {
     success,
     save,
   } = useSettingsSync<Region[]>('settings_regions', [
-    { id: '1', name: 'القاهرة', fee: 50, enabled: true, districts: [
-      { name: 'مدينة نصر', enabled: true },
-      { name: 'المعادي', enabled: true },
-      { name: 'هليوبوليس (مصر الجديدة)', enabled: true },
-      { name: 'الزيتون', enabled: true },
-      { name: 'شبرا', enabled: true },
-      { name: 'المطرية', enabled: true },
-      { name: 'عين شمس', enabled: true },
-      { name: 'النزهة', enabled: true },
-      { name: 'المرج', enabled: true },
-      { name: 'الأميرية', enabled: true },
-      { name: 'السيدة زينب', enabled: true },
-      { name: 'الخليفة', enabled: true },
-      { name: 'مصر القديمة', enabled: true },
-      { name: 'حلوان', enabled: true },
-      { name: 'المقطم', enabled: true },
-      { name: 'التجمع الأول', enabled: true },
-      { name: 'التجمع الخامس', enabled: true },
-      { name: 'القاهرة الجديدة', enabled: true },
-      { name: 'الرحاب', enabled: true },
-      { name: 'مدينتي', enabled: true },
-      { name: 'بدر', enabled: true },
-      { name: 'العبور', enabled: true },
-      { name: 'الشروق', enabled: true },
-      { name: 'الزمالك', enabled: true },
-      { name: 'جاردن سيتي', enabled: true },
-      { name: 'بولاق', enabled: true },
-      { name: 'الوايلي', enabled: true },
-      { name: 'عابدين', enabled: true },
-      { name: 'الأزبكية', enabled: true },
-      { name: 'الموسكي', enabled: true },
-      { name: 'الجمالية', enabled: true },
-      { name: 'الدرب الأحمر', enabled: true },
-      { name: 'منشأة ناصر', enabled: true },
-      { name: 'دار السلام', enabled: true },
-      { name: 'طره', enabled: true },
-      { name: 'المعصرة', enabled: true },
-      { name: 'التبين', enabled: true },
-      { name: '15 مايو', enabled: true },
-      { name: 'البساتين', enabled: true },
-      { name: 'حدائق القبة', enabled: true },
-      { name: 'الساحل', enabled: true },
-      { name: 'الشرابية', enabled: true },
-      { name: 'روض الفرج', enabled: true },
-      { name: 'الزاوية الحمراء', enabled: true },
-      { name: 'وسط البلد', enabled: true },
-      { name: 'غرب القاهرة', enabled: true },
-      { name: 'باب الشعرية', enabled: true },
-    ] },
-    { id: '2', name: 'الجيزة', fee: 50, enabled: true, districts: [
-      { name: 'الدقي', enabled: true },
-      { name: 'العجوزة', enabled: true },
-      { name: 'المهندسين', enabled: true },
-      { name: 'إمبابة', enabled: true },
-      { name: 'بولاق الدكرور', enabled: true },
-      { name: 'فيصل', enabled: true },
-      { name: 'الهرم', enabled: true },
-      { name: 'العمرانية', enabled: true },
-      { name: 'أوسيم', enabled: true },
-      { name: 'كرداسة', enabled: true },
-      { name: 'أبو النمرس', enabled: true },
-      { name: 'الحوامدية', enabled: true },
-      { name: 'البدرشين', enabled: true },
-      { name: 'الصف', enabled: true },
-      { name: 'أطفيح', enabled: true },
-      { name: 'المنيب', enabled: true },
-      { name: 'الشيخ زايد', enabled: true },
-      { name: '6 أكتوبر', enabled: true },
-      { name: 'الحي الأول', enabled: true },
-      { name: 'الحي الثاني', enabled: true },
-      { name: 'الحي الثالث', enabled: true },
-      { name: 'الحي الرابع', enabled: true },
-      { name: 'الحي الخامس', enabled: true },
-      { name: 'الحي السادس', enabled: true },
-      { name: 'الحي السابع', enabled: true },
-      { name: 'الحي الثامن', enabled: true },
-      { name: 'الحي التاسع', enabled: true },
-      { name: 'الحي العاشر', enabled: true },
-      { name: 'الحي الحادي عشر', enabled: true },
-      { name: 'الحي الثاني عشر', enabled: true },
-      { name: 'الواحات البحرية', enabled: true },
-      { name: 'سقارة', enabled: true },
-      { name: 'أبو رواش', enabled: true },
-      { name: 'الوراق', enabled: true },
-      { name: 'منشأة القناطر', enabled: true },
-    ] },
-    { id: '3', name: 'القليوبية', fee: 60, enabled: true, districts: [
-      { name: 'شبرا الخيمة', enabled: true },
-      { name: 'قليوب', enabled: true },
-      { name: 'بنها', enabled: true },
-      { name: 'طوخ', enabled: true },
-      { name: 'قها', enabled: true },
-      { name: 'الخانكة', enabled: true },
-      { name: 'الخصوص', enabled: true },
-      { name: 'كفر شكر', enabled: true },
-      { name: 'أبو زعبل', enabled: true },
-      { name: 'مسطرد', enabled: true },
-      { name: 'العبور', enabled: true },
-      { name: 'القناطر الخيرية', enabled: true },
-      { name: 'شبين القناطر', enabled: true },
-      { name: 'الإبراهيمية', enabled: true },
-    ] },
+    {
+      id: '1',
+      name: 'القاهرة',
+      fee: 50,
+      enabled: true,
+      districts: [
+        { name: 'مدينة نصر', enabled: true },
+        { name: 'المعادي', enabled: true },
+        { name: 'هليوبوليس (مصر الجديدة)', enabled: true },
+        { name: 'الزيتون', enabled: true },
+        { name: 'شبرا', enabled: true },
+        { name: 'المطرية', enabled: true },
+        { name: 'عين شمس', enabled: true },
+        { name: 'النزهة', enabled: true },
+        { name: 'المرج', enabled: true },
+        { name: 'الأميرية', enabled: true },
+        { name: 'السيدة زينب', enabled: true },
+        { name: 'الخليفة', enabled: true },
+        { name: 'مصر القديمة', enabled: true },
+        { name: 'حلوان', enabled: true },
+        { name: 'المقطم', enabled: true },
+        { name: 'التجمع الأول', enabled: true },
+        { name: 'التجمع الخامس', enabled: true },
+        { name: 'القاهرة الجديدة', enabled: true },
+        { name: 'الرحاب', enabled: true },
+        { name: 'مدينتي', enabled: true },
+        { name: 'بدر', enabled: true },
+        { name: 'العبور', enabled: true },
+        { name: 'الشروق', enabled: true },
+        { name: 'الزمالك', enabled: true },
+        { name: 'جاردن سيتي', enabled: true },
+        { name: 'بولاق', enabled: true },
+        { name: 'الوايلي', enabled: true },
+        { name: 'عابدين', enabled: true },
+        { name: 'الأزبكية', enabled: true },
+        { name: 'الموسكي', enabled: true },
+        { name: 'الجمالية', enabled: true },
+        { name: 'الدرب الأحمر', enabled: true },
+        { name: 'منشأة ناصر', enabled: true },
+        { name: 'دار السلام', enabled: true },
+        { name: 'طره', enabled: true },
+        { name: 'المعصرة', enabled: true },
+        { name: 'التبين', enabled: true },
+        { name: '15 مايو', enabled: true },
+        { name: 'البساتين', enabled: true },
+        { name: 'حدائق القبة', enabled: true },
+        { name: 'الساحل', enabled: true },
+        { name: 'الشرابية', enabled: true },
+        { name: 'روض الفرج', enabled: true },
+        { name: 'الزاوية الحمراء', enabled: true },
+        { name: 'وسط البلد', enabled: true },
+        { name: 'غرب القاهرة', enabled: true },
+        { name: 'باب الشعرية', enabled: true },
+      ],
+    },
+    {
+      id: '2',
+      name: 'الجيزة',
+      fee: 50,
+      enabled: true,
+      districts: [
+        { name: 'الدقي', enabled: true },
+        { name: 'العجوزة', enabled: true },
+        { name: 'المهندسين', enabled: true },
+        { name: 'إمبابة', enabled: true },
+        { name: 'بولاق الدكرور', enabled: true },
+        { name: 'فيصل', enabled: true },
+        { name: 'الهرم', enabled: true },
+        { name: 'العمرانية', enabled: true },
+        { name: 'أوسيم', enabled: true },
+        { name: 'كرداسة', enabled: true },
+        { name: 'أبو النمرس', enabled: true },
+        { name: 'الحوامدية', enabled: true },
+        { name: 'البدرشين', enabled: true },
+        { name: 'الصف', enabled: true },
+        { name: 'أطفيح', enabled: true },
+        { name: 'المنيب', enabled: true },
+        { name: 'الشيخ زايد', enabled: true },
+        { name: '6 أكتوبر', enabled: true },
+        { name: 'الحي الأول', enabled: true },
+        { name: 'الحي الثاني', enabled: true },
+        { name: 'الحي الثالث', enabled: true },
+        { name: 'الحي الرابع', enabled: true },
+        { name: 'الحي الخامس', enabled: true },
+        { name: 'الحي السادس', enabled: true },
+        { name: 'الحي السابع', enabled: true },
+        { name: 'الحي الثامن', enabled: true },
+        { name: 'الحي التاسع', enabled: true },
+        { name: 'الحي العاشر', enabled: true },
+        { name: 'الحي الحادي عشر', enabled: true },
+        { name: 'الحي الثاني عشر', enabled: true },
+        { name: 'الواحات البحرية', enabled: true },
+        { name: 'سقارة', enabled: true },
+        { name: 'أبو رواش', enabled: true },
+        { name: 'الوراق', enabled: true },
+        { name: 'منشأة القناطر', enabled: true },
+      ],
+    },
+    {
+      id: '3',
+      name: 'القليوبية',
+      fee: 60,
+      enabled: true,
+      districts: [
+        { name: 'شبرا الخيمة', enabled: true },
+        { name: 'قليوب', enabled: true },
+        { name: 'بنها', enabled: true },
+        { name: 'طوخ', enabled: true },
+        { name: 'قها', enabled: true },
+        { name: 'الخانكة', enabled: true },
+        { name: 'الخصوص', enabled: true },
+        { name: 'كفر شكر', enabled: true },
+        { name: 'أبو زعبل', enabled: true },
+        { name: 'مسطرد', enabled: true },
+        { name: 'العبور', enabled: true },
+        { name: 'القناطر الخيرية', enabled: true },
+        { name: 'شبين القناطر', enabled: true },
+        { name: 'الإبراهيمية', enabled: true },
+      ],
+    },
   ]);
 
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -488,7 +507,11 @@ function DistrictsTab() {
                       updateRegion(region.id, { enabled: !region.enabled });
                     }}
                     className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black transition-all ${region.enabled !== false ? (expanded === region.id ? 'bg-primary text-white' : 'bg-green-500 text-white') : 'bg-red-100 text-red-400 border border-red-200'}`}
-                    title={region.enabled !== false ? 'محافظة مفعّلة - اضغط للإلغاء' : 'محافظة ملغية - اضغط للتفعيل'}
+                    title={
+                      region.enabled !== false
+                        ? 'محافظة مفعّلة - اضغط للإلغاء'
+                        : 'محافظة ملغية - اضغط للتفعيل'
+                    }
                   >
                     {region.enabled !== false ? <MapPin size={20} /> : <X size={20} />}
                   </button>
@@ -503,7 +526,11 @@ function DistrictsTab() {
                 <div>
                   <h4 className="font-black text-gray-900">{region.name}</h4>
                   <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-0.5">
-                    {region.districts.filter(d => typeof d === 'object' ? d.enabled : true).length}/{region.districts.length} منطقة مفعّلة — {region.fee} ج.م شحن
+                    {
+                      region.districts.filter((d) => (typeof d === 'object' ? d.enabled : true))
+                        .length
+                    }
+                    /{region.districts.length} منطقة مفعّلة — {region.fee} ج.م شحن
                   </p>
                 </div>
               </div>
@@ -564,7 +591,9 @@ function DistrictsTab() {
                     {isAdmin && (
                       <button
                         onClick={() =>
-                          updateRegion(region.id, { districts: [...region.districts, { name: '', enabled: true }] })
+                          updateRegion(region.id, {
+                            districts: [...region.districts, { name: '', enabled: true }],
+                          })
                         }
                         className="text-[10px] font-black text-primary hover:text-primary-dark transition-colors"
                       >
@@ -577,7 +606,10 @@ function DistrictsTab() {
                       const dName = typeof district === 'object' ? district.name : district;
                       const dEnabled = typeof district === 'object' ? district.enabled : true;
                       return (
-                        <div key={idx} className={`relative group flex items-center gap-2 border-2 rounded-xl px-3 py-2 transition-all ${dEnabled ? 'border-gray-100 bg-white' : 'border-red-100 bg-red-50/30 opacity-60'}`}>
+                        <div
+                          key={idx}
+                          className={`relative group flex items-center gap-2 border-2 rounded-xl px-3 py-2 transition-all ${dEnabled ? 'border-gray-100 bg-white' : 'border-red-100 bg-red-50/30 opacity-60'}`}
+                        >
                           {isAdmin && (
                             <button
                               onClick={() => {
@@ -653,11 +685,10 @@ function DistrictsTab() {
   );
 }
 
-
 // ─── Warranty Tab ────────────────────────────────────────────────────────────
 function WarrantyTab() {
   const { currentRoleId } = useAuth();
-  const isAdmin = currentRoleId === 'r1';
+  const isAdmin = isAdminRole(currentRoleId);
 
   const {
     data: options,
@@ -715,7 +746,9 @@ function WarrantyTab() {
           className="w-full px-4 py-3 bg-white border-2 border-amber-200 rounded-xl text-sm font-bold focus:outline-none focus:border-amber-400 transition-all disabled:opacity-50"
         >
           {options.map((opt) => (
-            <option key={opt} value={opt}>{opt}</option>
+            <option key={opt} value={opt}>
+              {opt}
+            </option>
           ))}
         </select>
         {isAdmin && (
@@ -724,7 +757,13 @@ function WarrantyTab() {
             onClick={() => saveDefault()}
             className={`flex items-center gap-2 px-6 py-3 rounded-xl text-xs font-black transition-all active:scale-95 ${successDefault ? 'bg-green-500 text-white' : 'bg-amber-600 text-white hover:bg-amber-700'}`}
           >
-            {savingDefault ? <Loader2 className="animate-spin" size={14} /> : successDefault ? <Check size={14} /> : <Save size={14} />}
+            {savingDefault ? (
+              <Loader2 className="animate-spin" size={14} />
+            ) : successDefault ? (
+              <Check size={14} />
+            ) : (
+              <Save size={14} />
+            )}
             {successDefault ? 'تم الحفظ' : 'حفظ الافتراضي'}
           </button>
         )}
@@ -733,9 +772,16 @@ function WarrantyTab() {
       {/* Warranty options list */}
       <div className="space-y-3">
         {options.map((opt, idx) => (
-          <div key={idx} className={`flex items-center gap-3 border-2 rounded-2xl px-4 py-3 transition-all ${opt === defaultWarranty ? 'bg-amber-50 border-amber-200' : 'bg-gray-50 border-gray-50'}`}>
+          <div
+            key={idx}
+            className={`flex items-center gap-3 border-2 rounded-2xl px-4 py-3 transition-all ${opt === defaultWarranty ? 'bg-amber-50 border-amber-200' : 'bg-gray-50 border-gray-50'}`}
+          >
             <span className="text-sm font-bold text-gray-400 w-6">{idx + 1}.</span>
-            {opt === defaultWarranty && <span className="text-[10px] font-black text-amber-600 bg-amber-100 px-2 py-0.5 rounded-full">افتراضي</span>}
+            {opt === defaultWarranty && (
+              <span className="text-[10px] font-black text-amber-600 bg-amber-100 px-2 py-0.5 rounded-full">
+                افتراضي
+              </span>
+            )}
             <input
               type="text"
               disabled={!isAdmin}
@@ -995,4 +1041,3 @@ const Check = ({ size }: { size: number }) => (
     <polyline points="20 6 9 17 4 12" />
   </svg>
 );
-

@@ -107,6 +107,7 @@ const STATUS_CONFIG: Record<
 // Actual DB queries will replace mock datasets.
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
+import { isAdminRole } from '@/lib/constants/roles';
 
 function timeAgo(date: Date | null): string {
   if (!date) return '';
@@ -128,8 +129,7 @@ export default function LiveOrdersDashboard() {
 
   // Check if user is admin (r1) to show/hide collections
   const { currentRoleId } = useAuth();
-  const isAdmin = currentRoleId === 'r1';
-
+  const isAdmin = isAdminRole(currentRoleId);
 
   useEffect(() => {
     setMounted(true);
@@ -165,8 +165,12 @@ export default function LiveOrdersDashboard() {
           }));
 
           // flash items whose status has changed
-          const newStatusHash = new Map(formatted.map((x) => [x.id, x.status]));
-          const oldStatusHash = new Map(prev.map((x) => [x.id, x.status]));
+          const newStatusHash = new Map<string, string>(
+            formatted.map((x: { id: string; status: string }) => [x.id, x.status])
+          );
+          const oldStatusHash = new Map<string, string>(
+            prev.map((x: { id: string; status: string }) => [x.id, x.status])
+          );
           const changedIds = new Set<string>();
           newStatusHash.forEach((status, id) => {
             if (oldStatusHash.has(id) && oldStatusHash.get(id) !== status) changedIds.add(id);
@@ -338,21 +342,23 @@ export default function LiveOrdersDashboard() {
             </div>
 
             {/* Collection Total - Admin Only */}
-            {isAdmin && <div className="relative bg-gradient-to-br from-amber-50 to-yellow-50 border border-amber-200 rounded-xl p-3 overflow-hidden">
-              <div className="absolute top-2 left-2 opacity-10">
-                <DollarSign size={40} className="text-amber-600" />
+            {isAdmin && (
+              <div className="relative bg-gradient-to-br from-amber-50 to-yellow-50 border border-amber-200 rounded-xl p-3 overflow-hidden">
+                <div className="absolute top-2 left-2 opacity-10">
+                  <DollarSign size={40} className="text-amber-600" />
+                </div>
+                <div className="flex items-center gap-1.5 mb-1">
+                  <DollarSign size={13} className="text-amber-600" />
+                  <p className="text-[11px] font-semibold text-amber-700">إجمالي التحصيل</p>
+                </div>
+                <p className="text-xl font-bold font-mono text-amber-800">
+                  {collectionTotal.toLocaleString('en-US')}
+                </p>
+                <p className="text-[10px] text-amber-600 mt-0.5">
+                  ج.م محصّل • {pendingCollection.toLocaleString('en-US')} ج.م متوقع
+                </p>
               </div>
-              <div className="flex items-center gap-1.5 mb-1">
-                <DollarSign size={13} className="text-amber-600" />
-                <p className="text-[11px] font-semibold text-amber-700">إجمالي التحصيل</p>
-              </div>
-              <p className="text-xl font-bold font-mono text-amber-800">
-                {collectionTotal.toLocaleString('en-US')}
-              </p>
-              <p className="text-[10px] text-amber-600 mt-0.5">
-                ج.م محصّل • {pendingCollection.toLocaleString('en-US')} ج.م متوقع
-              </p>
-            </div>}
+            )}
           </div>
 
           {/* Status Distribution Bar */}
@@ -586,36 +592,38 @@ export default function LiveOrdersDashboard() {
           </div>
 
           {/* Collection Progress - Admin Only */}
-          {isAdmin && <div className="bg-gradient-to-r from-[hsl(var(--primary))]/5 to-[hsl(var(--primary))]/10 border border-[hsl(var(--primary))]/20 rounded-xl p-3">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <TrendingUp size={14} className="text-[hsl(var(--primary))]" />
-                <span className="text-xs font-bold text-[hsl(var(--foreground))]">
-                  تقدم التحصيل اليومي
+          {isAdmin && (
+            <div className="bg-gradient-to-r from-[hsl(var(--primary))]/5 to-[hsl(var(--primary))]/10 border border-[hsl(var(--primary))]/20 rounded-xl p-3">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <TrendingUp size={14} className="text-[hsl(var(--primary))]" />
+                  <span className="text-xs font-bold text-[hsl(var(--foreground))]">
+                    تقدم التحصيل اليومي
+                  </span>
+                </div>
+                <span className="text-xs font-mono font-bold text-[hsl(var(--primary))]">
+                  {collectionTotal.toLocaleString('en-US')} /{' '}
+                  {(collectionTotal + pendingCollection).toLocaleString('en-US')} ج.م
                 </span>
               </div>
-              <span className="text-xs font-mono font-bold text-[hsl(var(--primary))]">
-                {collectionTotal.toLocaleString('en-US')} /{' '}
-                {(collectionTotal + pendingCollection).toLocaleString('en-US')} ج.م
-              </span>
+              <div className="w-full bg-[hsl(var(--muted))] rounded-full h-2.5 overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-[hsl(var(--primary))] to-green-500 rounded-full transition-all duration-1000"
+                  style={{
+                    width: `${collectionTotal + pendingCollection > 0 ? Math.round((collectionTotal / (collectionTotal + pendingCollection)) * 100) : 0}%`,
+                  }}
+                />
+              </div>
+              <div className="flex justify-between mt-1.5">
+                <span className="text-[10px] text-green-600 font-semibold">
+                  ✓ محصّل: {collectionTotal.toLocaleString('en-US')} ج.م
+                </span>
+                <span className="text-[10px] text-amber-600 font-semibold">
+                  ⏳ متوقع: {pendingCollection.toLocaleString('en-US')} ج.م
+                </span>
+              </div>
             </div>
-            <div className="w-full bg-[hsl(var(--muted))] rounded-full h-2.5 overflow-hidden">
-              <div
-                className="h-full bg-gradient-to-r from-[hsl(var(--primary))] to-green-500 rounded-full transition-all duration-1000"
-                style={{
-                  width: `${collectionTotal + pendingCollection > 0 ? Math.round((collectionTotal / (collectionTotal + pendingCollection)) * 100) : 0}%`,
-                }}
-              />
-            </div>
-            <div className="flex justify-between mt-1.5">
-              <span className="text-[10px] text-green-600 font-semibold">
-                ✓ محصّل: {collectionTotal.toLocaleString('en-US')} ج.م
-              </span>
-              <span className="text-[10px] text-amber-600 font-semibold">
-                ⏳ متوقع: {pendingCollection.toLocaleString('en-US')} ج.م
-              </span>
-            </div>
-          </div>}
+          )}
         </div>
       )}
     </div>

@@ -1,6 +1,18 @@
 'use client';
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import type { Session, AuthChangeEvent } from '@supabase/supabase-js';
 import { createClient, resetSupabaseClient } from '@/lib/supabase/client';
+import { clearAppStorage } from '@/lib/auth/storage';
+import {
+  canAccessPath,
+  getDefaultRouteForPermissions,
+  getPermissionsForRoleId,
+} from '@/lib/permissions/permissions';
+
+// Re-export for backward compatibility — many call-sites import these directly
+// from '@/contexts/AuthContext'. The actual implementations live in
+// src/lib/permissions/permissions.ts.
+export { getDefaultRouteForPermissions, getPermissionsForRoleId };
 
 // Singleton Supabase client - avoids creating new connections on every call
 let _supabaseClient: ReturnType<typeof createClient> | null = null;
@@ -9,105 +21,6 @@ function getSupabaseClient() {
     _supabaseClient = createClient();
   }
   return _supabaseClient;
-}
-
-// ─── Permission → Route mapping ────────────────────────────────────────────────
-const PERMISSION_ROUTE_MAP: Record<string, string[]> = {
-  view_dashboard: ['/dashboard'],
-  view_orders: ['/orders-management'],
-  create_orders: ['/orders-management'],
-  edit_orders: ['/orders-management'],
-  delete_orders: ['/orders-management'],
-  orders_manage: ['/orders-management'],
-  update_status: ['/orders-management'],
-  view_shipping: ['/shipping'],
-  manage_shipping: ['/shipping'],
-  assign_courier: ['/shipping'],
-  view_delegates: ['/shipping'],
-  view_inventory: ['/inventory'],
-  edit_inventory: ['/inventory'],
-  view_reports: ['/reports'],
-  export_reports: ['/reports'],
-  manage_users: ['/users', '/roles'],
-  manage_roles: ['/roles'],
-  view_customers: ['/crm'],
-  manage_customers: ['/crm'],
-  customer_support: ['/crm'],
-  system_settings: ['/settings'],
-};
-const ALL_PERMISSIONS = Object.keys(PERMISSION_ROUTE_MAP);
-
-// ─── Default role definitions (source of truth for role → permissions mapping) ─
-const DEFAULT_ROLES: Array<{ id: string; name: string; permissions: string[] }> = [
-  { id: 'r1', name: 'مدير النظام', permissions: ALL_PERMISSIONS },
-  {
-    id: 'r2',
-    name: 'مشرف النظام',
-    permissions: [
-      'view_dashboard', 'view_orders', 'edit_orders', 'update_status',
-      'view_shipping', 'manage_shipping', 'view_inventory', 'view_reports',
-      'export_reports', 'manage_users',
-    ],
-  },
-  {
-    id: 'r3',
-    name: 'مشرف شحن',
-    permissions: [
-      'view_dashboard', 'view_orders', 'create_orders', 'edit_orders',
-      'update_status', 'view_shipping', 'manage_shipping', 'assign_courier',
-      'view_inventory', 'view_reports',
-    ],
-  },
-  { id: 'r4', name: 'مندوب شحن', permissions: ['view_orders', 'update_status', 'view_shipping'] },
-  {
-    id: 'r5',
-    name: 'مدير خدمة عملاء',
-    permissions: [
-      'view_dashboard', 'view_orders', 'view_shipping', 'view_reports',
-      'export_reports', 'view_customers', 'manage_customers', 'customer_support',
-    ],
-  },
-  {
-    id: 'r6',
-    name: 'خدمة عملاء',
-    permissions: ['view_orders', 'view_shipping', 'view_customers', 'customer_support'],
-  },
-];
-
-const PERMISSION_DEFAULT_ROUTE_PRIORITY = [
-  'view_dashboard', 'view_orders', 'view_shipping', 'view_reports',
-  'view_inventory', 'view_customers', 'manage_users', 'system_settings',
-];
-
-export function getDefaultRouteForPermissions(permissions: string[]): string {
-  if (!permissions || permissions.length === 0) return '/shipping';
-  for (const perm of PERMISSION_DEFAULT_ROUTE_PRIORITY) {
-    if (permissions.includes(perm)) {
-      return PERMISSION_ROUTE_MAP[perm]?.[0] ?? '/shipping';
-    }
-  }
-  return '/shipping';
-}
-
-export function getPermissionsForRoleId(roleId: string): string[] {
-  if (!roleId) return [];
-  const role = DEFAULT_ROLES.find((r) => r.id === roleId);
-  return role?.permissions ?? [];
-}
-
-function getAllowedRoutes(roleId: string | null, customPermissions: string[] | null): string[] {
-  let permissions: string[] = [];
-  if (customPermissions && Array.isArray(customPermissions) && customPermissions.length > 0) {
-    permissions = customPermissions;
-  } else if (roleId) {
-    permissions = getPermissionsForRoleId(roleId);
-  }
-  const routes = new Set<string>(['/track']);
-  for (const perm of permissions) {
-    const permRoutes = PERMISSION_ROUTE_MAP[perm] ?? [];
-    permRoutes.forEach((r) => routes.add(r));
-  }
-  return Array.from(routes);
 }
 
 // ─── Auth Context Interface ────────────────────────────────────────────────────
@@ -163,14 +76,18 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     }
 
     // Get initial session
-    supabase.auth.getSession().then(({ data: { session: s } }) => {
-      setSession(s);
-      setUser(s?.user ?? null);
-      setLoading(false);
-    });
+    supabase.auth
+      .getSession()
+      .then(({ data: { session: s } }: { data: { session: Session | null } }) => {
+        setSession(s);
+        setUser(s?.user ?? null);
+        setLoading(false);
+      });
 
     // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event: AuthChangeEvent, s: Session | null) => {
       setSession(s);
       setUser(s?.user ?? null);
       if (!s?.user) {
@@ -200,7 +117,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       setRoleLoading(true);
       try {
         const supabase = getSupabaseClient();
-        if (!supabase) { setRoleLoading(false); return; }
+        if (!supabase) {
+          setRoleLoading(false);
+          return;
+        }
 
         const { data: profile, error } = await supabase
           .from('profiles')
@@ -227,7 +147,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
                 .select('permissions')
                 .eq('id', roleId)
                 .single();
-              if (roleData && Array.isArray(roleData.permissions) && roleData.permissions.length > 0) {
+              if (
+                roleData &&
+                Array.isArray(roleData.permissions) &&
+                roleData.permissions.length > 0
+              ) {
                 effectivePerms = roleData.permissions;
               }
             } catch {}
@@ -257,18 +181,17 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   }, [user]);
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // hasAccess - check if user can access a specific route
+  // hasAccess - check if user can access a specific route.
+  // Delegates to canAccessPath() in src/lib/permissions for the actual matching
+  // logic; this wrapper just adds the loading-state and admin-bypass shortcuts.
   // ═══════════════════════════════════════════════════════════════════════════════
   const hasAccess = (path: string): boolean => {
     if (loading) return true;
     if (!user) return false;
     if (roleLoading) return true;
-    if (currentRoleId === 'r1') return true;
+    if (currentRoleId === 'r1') return true; // admin bypass
     if (!currentRoleId) return false;
-    const allowedRoutes = getAllowedRoutes(currentRoleId, customPermissions);
-    return allowedRoutes.some(
-      (route) => path === route || path.startsWith(route + '/') || path.startsWith(route + '?')
-    );
+    return canAccessPath(path, currentRoleId, customPermissions);
   };
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -335,14 +258,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     setCurrentRoleId(null);
     setCustomPermissions(null);
 
-    // 3. Clear ALL localStorage to prevent ANY stale data
-    if (typeof window !== 'undefined') {
-      try {
-        localStorage.clear();
-      } catch {}
-    }
-
-    // 4. Sign out from Supabase
+    // 3. Sign out from Supabase first (clears its own auth cookies/storage)
     try {
       const supabase = getSupabaseClient();
       if (supabase) {
@@ -352,12 +268,18 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     } catch (e) {
       console.error('Supabase signOut error:', e);
     }
+
+    // 4. Clear ONLY app-owned localStorage keys (not the entire localStorage).
+    // Supabase keys are handled by supabase.auth.signOut() above.
+    clearAppStorage();
   };
 
   const getCurrentUser = async () => {
     const supabase = getSupabaseClient();
     if (!supabase) return null;
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
     return user;
   };
 

@@ -7,6 +7,7 @@ import { X, Clock, AlertTriangle, CheckCircle, MapPin, ShieldOff } from 'lucide-
 import { useAuth, getPermissionsForRoleId } from '@/contexts/AuthContext';
 import { addAuditLog, getAuditLogs } from './AuditLogModal';
 import { createClient } from '@/lib/supabase/client';
+import { isAdminRole } from '@/lib/constants/roles';
 
 interface Order {
   id: string;
@@ -99,11 +100,14 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
     };
     loadDelegates();
   }, []);
-    const { currentRole, currentRoleId } = useAuth();
+  // `authUser` is the Supabase auth.users object (has `id` UUID for RLS).
+  // The local `getCurrentUser()` below is a display-name helper that
+  // shadows nothing since we renamed the destructured user here.
+  const { user: authUser, currentRole, currentRoleId } = useAuth();
 
   // Permission-based check: check if user has 'update_status' permission
   const userPermissions = currentRoleId ? getPermissionsForRoleId(currentRoleId) : [];
-  const canUpdate = currentRoleId === 'r1' || userPermissions.includes('update_status');
+  const canUpdate = isAdminRole(currentRoleId) || userPermissions.includes('update_status');
 
   // Get current user info from localStorage
   const getCurrentUser = () => {
@@ -115,7 +119,8 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
         return { name: parsed?.name || parsed?.email || 'مستخدم', role: currentRole };
       }
     } catch {}
-    return { name: ROLE_LABEL[currentRole] || 'مستخدم', role: currentRole };
+    const roleKey = currentRole ?? '';
+    return { name: ROLE_LABEL[roleKey] || 'مستخدم', role: currentRole };
   };
 
   const {
@@ -142,7 +147,9 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
         }
       } catch {}
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [order.id]);
 
   const onSubmit = async (data: StatusFormData) => {
@@ -165,42 +172,49 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
       oldValue: order.status,
       newValue: data.newStatus,
       changedBy: user.name,
-      changedByRole: user.role,
+      changedByRole: user.role ?? '',
       note,
     });
 
     // Sync status update to Supabase
     try {
       const supabase = createClient();
+      // Add updated_by traceability for the orders_editor_update RLS policy
+      // and for the post-migration audit trail. authUser.id is the auth.users UUID.
+      const updatePayload: Record<string, unknown> = {
+        status: data.newStatus,
+        delegate_name: selectedDelegate || null,
+      };
+      if (authUser?.id) {
+        updatePayload.updated_by = authUser.id;
+      }
       const { error } = await supabase
         .from('turath_masr_orders')
-        .update({ status: data.newStatus, delegate_name: selectedDelegate || null })
+        .update(updatePayload)
         .eq('order_num', order.orderNum);
 
       if (error) {
         throw error;
       }
 
-      // Create a system notification (for dashboard)
-      await supabase.from('turath_masr_notifications').insert({
-        type: 'status_change',
-        title: 'تحديث حالة الأوردر 🔄',
-        message: `تم تغيير حالة الأوردر ${order.orderNum} إلى ${statusLabel}`,
-        order_id: order.id,
-        order_num: order.orderNum,
-        created_by: user.name,
-        is_read: false
-      });
-
-      // Notify Customer (targeting their phone)
-      await supabase.from('turath_masr_notifications').insert({
-        type: 'customer_order_update',
-        title: 'تحديث بخصوص طلبك',
-        message: `مرحباً ${order.customer}، نود إخطارك بأن حالة طلبك رقم (${order.orderNum}) هي الآن: ${statusLabel}. شكراً لثقتك بنا.`,
-        phone: order.phone,
-        order_num: order.orderNum,
-        is_read: false
-      });
+      // The "status_change" system notification is now produced by the
+      // AFTER UPDATE OF status trigger trg_notify_on_order_status_change
+      // on turath_masr_orders (see migration 20260506_secure_tracking_rpc.sql).
+      // The trigger runs as SECURITY DEFINER so r4 / r6 / anon callers all
+      // get the notification recorded — without needing a relaxed insert
+      // policy on turath_masr_notifications.
+      //
+      // The previous client-side insert was duplicated by every status
+      // update and would silently fail under the new RLS for r4/r6.
+      //
+      // The customer-targeted notification (type='customer_order_update')
+      // is intentionally dropped here — there is no customer-facing
+      // notification surface yet (no SMS / push), so writing it to the
+      // staff-only notifications table just produced noise. TODO: when a
+      // customer notification channel is built, add it via a separate
+      // SECURITY DEFINER RPC that knows how to deliver it.
+      // TODO: move delegate_name (TEXT) to assigned_to (uuid REFERENCES
+      // auth.users) once user→delegate identity mapping is built.
 
       window.dispatchEvent(new CustomEvent('turath_masr_orders_updated'));
     } catch (err) {
@@ -259,7 +273,8 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
               <p className="text-xs text-[hsl(var(--muted-foreground))] mt-2">
                 دورك الحالي:{' '}
                 <span className="font-semibold text-[hsl(var(--foreground))]">
-                  {ROLE_LABEL[currentRole] || (currentRoleId ? `دور #${currentRoleId}` : currentRole)}
+                  {ROLE_LABEL[currentRole ?? ''] ||
+                    (currentRoleId ? `دور #${currentRoleId}` : currentRole)}
                 </span>
               </p>
             </div>
@@ -273,7 +288,9 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
             <div className="flex items-center gap-2 bg-green-50 border border-green-200 rounded-xl px-3 py-2">
               <CheckCircle size={14} className="text-green-600" />
               <span className="text-xs text-green-700 font-semibold">
-                لديك صلاحية تحديث الحالة — {ROLE_LABEL[currentRole] || (currentRoleId ? `دور #${currentRoleId}` : currentRole)}
+                لديك صلاحية تحديث الحالة —{' '}
+                {ROLE_LABEL[currentRole ?? ''] ||
+                  (currentRoleId ? `دور #${currentRoleId}` : currentRole)}
               </span>
             </div>
 
@@ -342,7 +359,9 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
               >
                 <option value="">— بدون مندوب —</option>
                 {delegates.map((d) => (
-                  <option key={d} value={d}>{d}</option>
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
                 ))}
               </select>
             </div>

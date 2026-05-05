@@ -1,37 +1,54 @@
-# Node modules
+# ─── Environment files — NEVER commit these ───────────────────────────────────
+.env
+.env.local
+.env.production
+.env.development
+.env.test
+.env.*.local
+
+# ─── Security / certificates ───────────────────────────────────────────────────
+*.pem
+*.key
+*.crt
+
+# ─── Backup files — use git history instead ────────────────────────────────────
+*.bak
+*.backup
+*.old
+
+# ─── Node modules ──────────────────────────────────────────────────────────────
 node_modules/
 package-lock.json
 
-# Next.js build output
+# ─── Next.js build output ──────────────────────────────────────────────────────
 .next/
 out/
+dist/
 
-# Production build
+# ─── Production build ──────────────────────────────────────────────────────────
 build/
 
-# Logs
+# ─── Logs ──────────────────────────────────────────────────────────────────────
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+*.log
 
-# OS-specific files
+# ─── OS-specific files ─────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 
-# Vercel deployment
+# ─── Vercel deployment ─────────────────────────────────────────────────────────
 .vercel/
 
-# Optional: if using TypeScript
+# ─── TypeScript ────────────────────────────────────────────────────────────────
 *.tsbuildinfo
 
-# Optional: if using testing tools
+# ─── Testing ───────────────────────────────────────────────────────────────────
 coverage/
 jest-test-results.json
 
-# Optional: if using IDEs
+# ─── IDEs ──────────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
-
-# Optional: if using TurboRepo or monorepo
-turbo/deploy_vps.sh

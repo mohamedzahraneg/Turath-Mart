@@ -126,8 +126,16 @@ function DelegateChatWithDetails({
               text: m.message,
               time: (() => {
                 const d = new Date(m.created_at);
-                const days = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
-                return `${d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
+                const days = [
+                  'الأحد',
+                  'الاثنين',
+                  'الثلاثاء',
+                  'الأربعاء',
+                  'الخميس',
+                  'الجمعة',
+                  'السبت',
+                ];
+                return `${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
               })(),
             }))
           );
@@ -163,8 +171,16 @@ function DelegateChatWithDetails({
                 text: m.message,
                 time: (() => {
                   const d = new Date(m.created_at);
-                  const days = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
-                  return `${d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
+                  const days = [
+                    'الأحد',
+                    'الاثنين',
+                    'الثلاثاء',
+                    'الأربعاء',
+                    'الخميس',
+                    'الجمعة',
+                    'السبت',
+                  ];
+                  return `${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
                 })(),
               },
             ];
@@ -185,8 +201,8 @@ function DelegateChatWithDetails({
   const sendMessage = async () => {
     if (!input.trim()) return;
     const now = new Date();
-    const days = ['الأحد','الاثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
-    const timeStr = `${now.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})} - ${days[now.getDay()]} ${now.toLocaleDateString('en-GB')}`;
+    const days = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+    const timeStr = `${now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} - ${days[now.getDay()]} ${now.toLocaleDateString('en-GB')}`;
     const newMsg: ChatMessage = {
       id: `msg-${Date.now()}`,
       sender: 'delegate',
@@ -212,7 +228,10 @@ function DelegateChatWithDetails({
   const statusInfo = STATUS_MAP[order.status];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center p-0 sm:p-4" dir="rtl">
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center sm:items-center p-0 sm:p-4"
+      dir="rtl"
+    >
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
       <div
         className="relative bg-white w-full sm:max-w-lg sm:rounded-2xl flex flex-col shadow-2xl"
@@ -238,7 +257,10 @@ function DelegateChatWithDetails({
             <FileText size={14} className="inline ml-1" />
             {showDetails ? 'إخفاء التفاصيل' : 'تفاصيل الطلب'}
           </button>
-          <button onClick={onClose} className="text-white/80 hover:text-white transition-colors mr-1">
+          <button
+            onClick={onClose}
+            className="text-white/80 hover:text-white transition-colors mr-1"
+          >
             <X size={20} />
           </button>
         </div>
@@ -248,11 +270,15 @@ function DelegateChatWithDetails({
           <div className="bg-gradient-to-b from-[hsl(211,67%,95%)] to-white border-b border-[hsl(211,67%,85%)] p-4 space-y-3 max-h-[40vh] overflow-y-auto">
             {/* Status Badge */}
             <div className="flex items-center justify-between">
-              <span className={`badge ${statusInfo?.cls || ''} flex items-center gap-1 text-sm px-3 py-1`}>
+              <span
+                className={`badge ${statusInfo?.cls || ''} flex items-center gap-1 text-sm px-3 py-1`}
+              >
                 {statusInfo?.icon}
                 {statusInfo?.label || order.status}
               </span>
-              <span className="text-xs text-gray-500">{order.date} • {order.time}</span>
+              <span className="text-xs text-gray-500">
+                {order.date} • {order.time}
+              </span>
             </div>
 
             {/* Customer Info */}
@@ -267,12 +293,16 @@ function DelegateChatWithDetails({
                 </div>
                 <div>
                   <span className="text-gray-400 text-xs">الهاتف:</span>
-                  <p className="font-mono font-semibold" dir="ltr">{order.phone}</p>
+                  <p className="font-mono font-semibold" dir="ltr">
+                    {order.phone}
+                  </p>
                 </div>
                 {order.phone2 && (
                   <div>
                     <span className="text-gray-400 text-xs">هاتف 2:</span>
-                    <p className="font-mono font-semibold" dir="ltr">{order.phone2}</p>
+                    <p className="font-mono font-semibold" dir="ltr">
+                      {order.phone2}
+                    </p>
                   </div>
                 )}
               </div>
@@ -283,7 +313,10 @@ function DelegateChatWithDetails({
               <h4 className="text-xs font-bold text-gray-500 mb-2 flex items-center gap-1">
                 <MapPin size={12} /> العنوان
               </h4>
-              <p className="text-sm font-semibold">{order.region}{order.district ? ` — ${order.district}` : ''}</p>
+              <p className="text-sm font-semibold">
+                {order.region}
+                {order.district ? ` — ${order.district}` : ''}
+              </p>
               <p className="text-xs text-gray-600 mt-1">{order.address}</p>
             </div>
 
@@ -304,15 +337,21 @@ function DelegateChatWithDetails({
               <div className="grid grid-cols-3 gap-2 text-center">
                 <div className="bg-gray-50 rounded-lg p-2">
                   <p className="text-xs text-gray-500">المنتجات</p>
-                  <p className="font-bold text-sm font-mono">{order.subtotal.toLocaleString('en-US')} ج.م</p>
+                  <p className="font-bold text-sm font-mono">
+                    {order.subtotal.toLocaleString('en-US')} ج.م
+                  </p>
                 </div>
                 <div className="bg-blue-50 rounded-lg p-2">
                   <p className="text-xs text-blue-600">الشحن</p>
-                  <p className="font-bold text-sm font-mono text-blue-700">{order.shippingFee} ج.م</p>
+                  <p className="font-bold text-sm font-mono text-blue-700">
+                    {order.shippingFee} ج.م
+                  </p>
                 </div>
                 <div className="bg-green-50 rounded-lg p-2">
                   <p className="text-xs text-green-600">الإجمالي</p>
-                  <p className="font-bold text-sm font-mono text-green-700">{order.total.toLocaleString('en-US')} ج.م</p>
+                  <p className="font-bold text-sm font-mono text-green-700">
+                    {order.total.toLocaleString('en-US')} ج.م
+                  </p>
                 </div>
               </div>
             </div>
@@ -546,7 +585,8 @@ export default function ShippingPage() {
           o.orderNum.includes(search) ||
           o.phone.includes(search);
         const matchStatus = statusFilter === 'الكل' || o.status === statusFilter;
-        const matchDelegate = isDelegate || delegateFilter === 'الكل' || o.delegateName === delegateFilter;
+        const matchDelegate =
+          isDelegate || delegateFilter === 'الكل' || o.delegateName === delegateFilter;
         return matchSearch && matchStatus && matchDelegate;
       })
       .sort((a, b) => {
@@ -603,7 +643,9 @@ export default function ShippingPage() {
         </div>
 
         {/* KPIs - Delegate-specific or Admin */}
-        <div className={`grid ${isDelegate ? 'grid-cols-2 xl:grid-cols-5' : 'grid-cols-2 xl:grid-cols-4'} gap-4`}>
+        <div
+          className={`grid ${isDelegate ? 'grid-cols-2 xl:grid-cols-5' : 'grid-cols-2 xl:grid-cols-4'} gap-4`}
+        >
           {isDelegate ? (
             <>
               {[
@@ -724,7 +766,9 @@ export default function ShippingPage() {
               {delegates.map((delegate) => {
                 const delegateOrders = dbOrders.filter((o) => o.delegateName === delegate.name);
                 const activeCount = delegateOrders.filter((o) => o.status === 'shipping').length;
-                const deliveredCount = delegateOrders.filter((o) => o.status === 'delivered').length;
+                const deliveredCount = delegateOrders.filter(
+                  (o) => o.status === 'delivered'
+                ).length;
                 const totalValue = delegateOrders
                   .filter((o) => ['shipping', 'delivered'].includes(o.status))
                   .reduce((s, o) => s + o.total, 0);
@@ -870,9 +914,7 @@ export default function ShippingPage() {
                     </span>
                   </th>
                   <th className="text-right px-4 py-3 font-semibold">رسوم الشحن</th>
-                  {!isDelegate && (
-                    <th className="text-right px-4 py-3 font-semibold">المندوب</th>
-                  )}
+                  {!isDelegate && <th className="text-right px-4 py-3 font-semibold">المندوب</th>}
                   <th
                     className="text-right px-4 py-3 font-semibold cursor-pointer"
                     onClick={() => handleSort('status')}

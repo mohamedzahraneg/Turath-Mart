@@ -1,5 +1,6 @@
 'use client';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import Image from 'next/image';
 import {
   Package,
   MapPin,
@@ -474,16 +475,27 @@ function ChatPanel({ type, order, onClose }: ChatPanelProps) {
           .eq('chat_type', type)
           .order('created_at', { ascending: true });
         if (data && data.length > 0) {
-          setMessages(data.map((m: any) => ({
-            id: m.id || `msg-${m.created_at}`,
-            sender: m.sender === 'customer' ? 'customer' : type === 'delegate' ? 'delegate' : 'support',
-            text: m.message,
-            time: (() => {
-              const d = new Date(m.created_at);
-              const days = ['\u0627\u0644\u0623\u062d\u062f','\u0627\u0644\u0627\u062b\u0646\u064a\u0646','\u0627\u0644\u062b\u0644\u0627\u062b\u0627\u0621','\u0627\u0644\u0623\u0631\u0628\u0639\u0627\u0621','\u0627\u0644\u062e\u0645\u064a\u0633','\u0627\u0644\u062c\u0645\u0639\u0629','\u0627\u0644\u0633\u0628\u062a'];
-              return `${d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
-            })(),
-          })));
+          setMessages(
+            data.map((m: any) => ({
+              id: m.id || `msg-${m.created_at}`,
+              sender:
+                m.sender === 'customer' ? 'customer' : type === 'delegate' ? 'delegate' : 'support',
+              text: m.message,
+              time: (() => {
+                const d = new Date(m.created_at);
+                const days = [
+                  '\u0627\u0644\u0623\u062d\u062f',
+                  '\u0627\u0644\u0627\u062b\u0646\u064a\u0646',
+                  '\u0627\u0644\u062b\u0644\u0627\u062b\u0627\u0621',
+                  '\u0627\u0644\u0623\u0631\u0628\u0639\u0627\u0621',
+                  '\u0627\u0644\u062e\u0645\u064a\u0633',
+                  '\u0627\u0644\u062c\u0645\u0639\u0629',
+                  '\u0627\u0644\u0633\u0628\u062a',
+                ];
+                return `${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
+              })(),
+            }))
+          );
         }
       } catch (err) {
         console.error('Error loading chat:', err);
@@ -496,32 +508,54 @@ function ChatPanel({ type, order, onClose }: ChatPanelProps) {
     const supabase = createClient();
     const channel = supabase
       .channel(`chat-track-${type}-${order.phone}`)
-      .on('postgres_changes', {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'turath_masr_crm_chat',
-        filter: `customer_phone=eq.${order.phone}`,
-      }, (payload: any) => {
-        const m = payload.new;
-        // Only show messages for this chat type
-        if (m.chat_type && m.chat_type !== type) return;
-        setMessages((prev) => {
-          if (prev.some(p => p.id === m.id)) return prev;
-          return [...prev, {
-            id: m.id || `msg-${m.created_at}`,
-            sender: m.sender === 'customer' ? 'customer' : type === 'delegate' ? 'delegate' : 'support',
-            text: m.message,
-            time: (() => {
-              const d = new Date(m.created_at);
-              const days = ['\u0627\u0644\u0623\u062d\u062f','\u0627\u0644\u0627\u062b\u0646\u064a\u0646','\u0627\u0644\u062b\u0644\u0627\u062b\u0627\u0621','\u0627\u0644\u0623\u0631\u0628\u0639\u0627\u0621','\u0627\u0644\u062e\u0645\u064a\u0633','\u0627\u0644\u062c\u0645\u0639\u0629','\u0627\u0644\u0633\u0628\u062a'];
-              return `${d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
-            })(),
-          }];
-        });
-      })
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'turath_masr_crm_chat',
+          filter: `customer_phone=eq.${order.phone}`,
+        },
+        (payload: any) => {
+          const m = payload.new;
+          // Only show messages for this chat type
+          if (m.chat_type && m.chat_type !== type) return;
+          setMessages((prev) => {
+            if (prev.some((p) => p.id === m.id)) return prev;
+            return [
+              ...prev,
+              {
+                id: m.id || `msg-${m.created_at}`,
+                sender:
+                  m.sender === 'customer'
+                    ? 'customer'
+                    : type === 'delegate'
+                      ? 'delegate'
+                      : 'support',
+                text: m.message,
+                time: (() => {
+                  const d = new Date(m.created_at);
+                  const days = [
+                    '\u0627\u0644\u0623\u062d\u062f',
+                    '\u0627\u0644\u0627\u062b\u0646\u064a\u0646',
+                    '\u0627\u0644\u062b\u0644\u0627\u062b\u0627\u0621',
+                    '\u0627\u0644\u0623\u0631\u0628\u0639\u0627\u0621',
+                    '\u0627\u0644\u062e\u0645\u064a\u0633',
+                    '\u0627\u0644\u062c\u0645\u0639\u0629',
+                    '\u0627\u0644\u0633\u0628\u062a',
+                  ];
+                  return `${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
+                })(),
+              },
+            ];
+          });
+        }
+      )
       .subscribe();
 
-    return () => { supabase.removeChannel(channel); };
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [order.phone, type]);
   const [input, setInput] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -659,7 +693,6 @@ function ChatPanel({ type, order, onClose }: ChatPanelProps) {
   );
 }
 
-
 // ─── Complaint Modal ──────────────────────────────────────────────────────────
 
 interface ComplaintModalProps {
@@ -688,16 +721,26 @@ function ComplaintModal({ order, onClose }: ComplaintModalProps) {
           .eq('customer_phone', order.phone)
           .order('created_at', { ascending: true });
         if (data && data.length > 0) {
-          setChatMessages(data.map((m: any) => ({
-            id: m.id || `msg-${m.created_at}`,
-            sender: m.sender as 'customer' | 'support',
-            text: m.message,
-            time: (() => {
-              const d = new Date(m.created_at);
-              const days = ['\u0627\u0644\u0623\u062d\u062f','\u0627\u0644\u0627\u062b\u0646\u064a\u0646','\u0627\u0644\u062b\u0644\u0627\u062b\u0627\u0621','\u0627\u0644\u0623\u0631\u0628\u0639\u0627\u0621','\u0627\u0644\u062e\u0645\u064a\u0633','\u0627\u0644\u062c\u0645\u0639\u0629','\u0627\u0644\u0633\u0628\u062a'];
-              return `${d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
-            })(),
-          })));
+          setChatMessages(
+            data.map((m: any) => ({
+              id: m.id || `msg-${m.created_at}`,
+              sender: m.sender as 'customer' | 'support',
+              text: m.message,
+              time: (() => {
+                const d = new Date(m.created_at);
+                const days = [
+                  '\u0627\u0644\u0623\u062d\u062f',
+                  '\u0627\u0644\u0627\u062b\u0646\u064a\u0646',
+                  '\u0627\u0644\u062b\u0644\u0627\u062b\u0627\u0621',
+                  '\u0627\u0644\u0623\u0631\u0628\u0639\u0627\u0621',
+                  '\u0627\u0644\u062e\u0645\u064a\u0633',
+                  '\u0627\u0644\u062c\u0645\u0639\u0629',
+                  '\u0627\u0644\u0633\u0628\u062a',
+                ];
+                return `${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
+              })(),
+            }))
+          );
         }
       } catch {}
     };
@@ -707,30 +750,47 @@ function ComplaintModal({ order, onClose }: ComplaintModalProps) {
     const supabase = createClient();
     const channel = supabase
       .channel(`complaint-chat-${order.phone}`)
-      .on('postgres_changes', {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'turath_masr_crm_chat',
-        filter: `customer_phone=eq.${order.phone}`,
-      }, (payload: any) => {
-        const m = payload.new;
-        setChatMessages((prev) => {
-          if (prev.some(p => p.id === m.id)) return prev;
-          return [...prev, {
-            id: m.id || `msg-${m.created_at}`,
-            sender: m.sender as 'customer' | 'support',
-            text: m.message,
-            time: (() => {
-              const d = new Date(m.created_at);
-              const days = ['\u0627\u0644\u0623\u062d\u062f','\u0627\u0644\u0627\u062b\u0646\u064a\u0646','\u0627\u0644\u062b\u0644\u0627\u062b\u0627\u0621','\u0627\u0644\u0623\u0631\u0628\u0639\u0627\u0621','\u0627\u0644\u062e\u0645\u064a\u0633','\u0627\u0644\u062c\u0645\u0639\u0629','\u0627\u0644\u0633\u0628\u062a'];
-              return `${d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
-            })(),
-          }];
-        });
-      })
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'turath_masr_crm_chat',
+          filter: `customer_phone=eq.${order.phone}`,
+        },
+        (payload: any) => {
+          const m = payload.new;
+          setChatMessages((prev) => {
+            if (prev.some((p) => p.id === m.id)) return prev;
+            return [
+              ...prev,
+              {
+                id: m.id || `msg-${m.created_at}`,
+                sender: m.sender as 'customer' | 'support',
+                text: m.message,
+                time: (() => {
+                  const d = new Date(m.created_at);
+                  const days = [
+                    '\u0627\u0644\u0623\u062d\u062f',
+                    '\u0627\u0644\u0627\u062b\u0646\u064a\u0646',
+                    '\u0627\u0644\u062b\u0644\u0627\u062b\u0627\u0621',
+                    '\u0627\u0644\u0623\u0631\u0628\u0639\u0627\u0621',
+                    '\u0627\u0644\u062e\u0645\u064a\u0633',
+                    '\u0627\u0644\u062c\u0645\u0639\u0629',
+                    '\u0627\u0644\u0633\u0628\u062a',
+                  ];
+                  return `${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
+                })(),
+              },
+            ];
+          });
+        }
+      )
       .subscribe();
 
-    return () => { supabase.removeChannel(channel); };
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [order.phone]);
 
   useEffect(() => {
@@ -742,13 +802,17 @@ function ComplaintModal({ order, onClose }: ComplaintModalProps) {
     try {
       const supabase = createClient();
       // Save complaint to Supabase
-      const { data: complaintData } = await supabase.from('turath_masr_crm_complaints').insert({
-        customer_phone: order.phone,
-        subject: reason,
-        status: 'open',
-        notes: details || null,
-        created_by: order.customer || 'عميل',
-      }).select().single();
+      const { data: complaintData } = await supabase
+        .from('turath_masr_crm_complaints')
+        .insert({
+          customer_phone: order.phone,
+          subject: reason,
+          status: 'open',
+          notes: details || null,
+          created_by: order.customer || 'عميل',
+        })
+        .select()
+        .single();
 
       // Create notification for the team
       await supabase.from('turath_masr_notifications').insert({
@@ -1418,122 +1482,78 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
             date: string;
             note: string;
           }[] = [];
-          try {
-            const stored = JSON.parse(localStorage.getItem('turath_masr_orders') || '[]');
-            const match = stored.find(
-              (o: TrackingOrder & { orderNum: string }) => o.orderNum === orderId
-            );
-            if (match) {
-              found = match as TrackingOrder;
-              // Build history from audit logs if available
-              try {
-                const allAudit = JSON.parse(localStorage.getItem('turath_masr_audit_logs') || '{}');
-                const orderAudit = allAudit[match.id] || [];
-                if (orderAudit.length > 0) {
-                  const statusChanges = orderAudit
-                    .filter(
-                      (e: {
-                        action: string;
-                        newStatus?: string;
-                        status?: string;
-                        timestamp: string;
-                        note?: string;
-                      }) => e.action === 'status_change' || e.newStatus
-                    )
-                    .map(
-                      (e: {
-                        action: string;
-                        newStatus?: string;
-                        status?: string;
-                        timestamp: string;
-                        note?: string;
-                      }) => {
-                        const ts = new Date(e.timestamp);
-                        const days = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
-                        const time = ts.toLocaleTimeString('en-US', {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                          second: '2-digit',
-                          hour12: false,
-                        });
-                        const date = `${days[ts.getDay()]} ${ts.toLocaleDateString('en-GB')}`;
-                        const statusKey = e.newStatus || e.status || 'new';
-                        return {
-                          status: statusKey,
-                          label: STATUS_CONFIG[statusKey]?.label || statusKey,
-                          time,
-                          date,
-                          note: e.note || STATUS_CONFIG[statusKey]?.description || '',
-                        };
-                      }
-                    );
-                  if (statusChanges.length > 0) foundHistory = statusChanges;
-                }
-              } catch {}
-            }
-          } catch {}
+          // NOTE (Phase 8B): the legacy localStorage read was removed —
+          // it surfaced stale/PII data from the staff app and would mislead
+          // customers after the new RLS makes the public Supabase fetch
+          // return only the redacted columns. The /api/track endpoint
+          // is now the single source of truth.
 
-          // Always try Supabase for the most up-to-date data
-          if (true) {
+          // Fetch the redacted order DTO from the public tracking API.
+          // This calls the SECURITY DEFINER RPC `get_tracking_info` which
+          // returns ONLY non-PII columns (no phone, address, total, notes,
+          // delegate, audit internals).
+          {
             try {
-              const supabase = createClient();
-              const { data } = await supabase
-                .from('turath_masr_orders')
-                .select('*')
-                .eq('order_num', orderId)
-                .single();
-              if (data) {
+              const res = await fetch(`/api/track/${encodeURIComponent(orderId)}`, {
+                cache: 'no-store',
+              });
+              if (res.ok) {
+                const data = await res.json();
                 found = {
-                  orderNum: data.order_num,
-                  customer: data.customer,
-                  phone: data.phone,
-                  phone2: data.phone2 || undefined,
-                  region: data.region,
-                  district: data.district || undefined,
-                  address: data.address,
-                  products: data.products,
-                  quantity: data.quantity,
-                  total: data.total,
-                  subtotal: data.subtotal,
-                  shippingFee: data.shipping_fee,
+                  orderNum: data.orderNum,
+                  // PII fields intentionally left empty — the public DTO
+                  // never contains them. The UI must render gracefully
+                  // when these are missing.
+                  customer: '',
+                  phone: '',
+                  region: data.region ?? '',
+                  address: '',
+                  products: data.products ?? '',
+                  quantity: data.quantity ?? 0,
+                  total: 0,
                   status: data.status,
-                  date: data.date,
-                  time: data.time,
-                  notes: data.notes || undefined,
+                  date: data.date ?? '',
+                  time: '',
                   warranty: data.warranty || undefined,
-                  delegate: data.delegate_name || undefined,
-                  lines: data.lines || undefined,
                 } as TrackingOrder;
-                // Fetch audit logs from Supabase for this order
-                try {
-                  const { data: auditData } = await supabase
-                    .from('turath_masr_audit_logs')
-                    .select('*')
-                    .eq('order_num', orderId)
-                    .order('created_at', { ascending: true });
-                  if (auditData && auditData.length > 0) {
-                    const days = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
-                    foundHistory = auditData
-                      .filter((e: any) => e.action === 'status_change' || e.new_value || e.action === 'order_created')
-                      .map((e: any) => {
-                        const ts = new Date(e.created_at);
-                        const time = ts.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-                        const date = ts.toLocaleDateString('en-GB');
-                        const dayName = days[ts.getDay()];
-                        const statusKey = e.new_value || e.action || 'new';
-                        return {
-                          status: statusKey,
-                          label: STATUS_CONFIG[statusKey]?.label || statusKey,
-                          time,
-                          date: `${dayName} ${date}`,
-                          note: e.note || STATUS_CONFIG[statusKey]?.description || '',
-                        };
+                if (Array.isArray(data.statusTimeline) && data.statusTimeline.length > 0) {
+                  const days = [
+                    'الأحد',
+                    'الاثنين',
+                    'الثلاثاء',
+                    'الأربعاء',
+                    'الخميس',
+                    'الجمعة',
+                    'السبت',
+                  ];
+                  foundHistory = data.statusTimeline.map(
+                    (e: { status: string; changedAt: string }) => {
+                      const ts = new Date(e.changedAt);
+                      const time = ts.toLocaleTimeString('en-US', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit',
+                        hour12: false,
                       });
-                  }
-                } catch {}
+                      const date = `${days[ts.getDay()]} ${ts.toLocaleDateString('en-GB')}`;
+                      return {
+                        status: e.status,
+                        label: STATUS_CONFIG[e.status]?.label || e.status,
+                        time,
+                        date,
+                        note: STATUS_CONFIG[e.status]?.description || '',
+                      };
+                    }
+                  );
+                }
+                // The status timeline is now built from the redacted RPC
+                // response above (data.statusTimeline). The legacy direct
+                // read of turath_masr_audit_logs was removed because the
+                // table is no longer publicly readable under the new RLS,
+                // and it leaked changed_by / note internals anyway.
               }
             } catch {
-              // Supabase query failed, order not found
+              // Network or fetch failure — order is treated as not found.
             }
           }
 
@@ -1950,34 +1970,37 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
             <h2 className="font-bold text-sm text-[hsl(var(--foreground))]">تفاصيل الطلب</h2>
           </div>
           <div className="space-y-2.5">
-            <div className="flex items-start gap-2">
-              <User
-                size={13}
-                className="text-[hsl(var(--muted-foreground))] mt-0.5 flex-shrink-0"
-              />
-              <div>
-                <p className="text-xs text-[hsl(var(--muted-foreground))]">العميل</p>
-                <p className="text-sm font-semibold text-[hsl(var(--foreground))]">
-                  {order.customer}
-                </p>
+            {/* Customer name + full address are PII and intentionally NOT
+                shown on the public tracking page. Only the high-level
+                region (governorate) is exposed via the redacted RPC. */}
+            {order.customer && (
+              <div className="flex items-start gap-2">
+                <User
+                  size={13}
+                  className="text-[hsl(var(--muted-foreground))] mt-0.5 flex-shrink-0"
+                />
+                <div>
+                  <p className="text-xs text-[hsl(var(--muted-foreground))]">العميل</p>
+                  <p className="text-sm font-semibold text-[hsl(var(--foreground))]">
+                    {order.customer}
+                  </p>
+                </div>
               </div>
-            </div>
-            <div className="flex items-start gap-2">
-              <MapPin
-                size={13}
-                className="text-[hsl(var(--muted-foreground))] mt-0.5 flex-shrink-0"
-              />
-              <div>
-                <p className="text-xs text-[hsl(var(--muted-foreground))]">عنوان التسليم</p>
-                <p className="text-sm font-semibold text-[hsl(var(--foreground))]">
-                  {order.address}
-                </p>
-                <p className="text-xs text-[hsl(var(--muted-foreground))]">
-                  {order.district ? `${order.district}، ` : ''}
-                  {order.region}
-                </p>
+            )}
+            {order.region && (
+              <div className="flex items-start gap-2">
+                <MapPin
+                  size={13}
+                  className="text-[hsl(var(--muted-foreground))] mt-0.5 flex-shrink-0"
+                />
+                <div>
+                  <p className="text-xs text-[hsl(var(--muted-foreground))]">منطقة الشحن</p>
+                  <p className="text-sm font-semibold text-[hsl(var(--foreground))]">
+                    {order.region}
+                  </p>
+                </div>
               </div>
-            </div>
+            )}
             <div className="flex items-start gap-2">
               <Package
                 size={13}
@@ -2000,9 +2023,11 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
                         >
                           <div className="w-11 h-11 rounded-xl overflow-hidden flex-shrink-0 bg-white border border-[hsl(var(--border))] flex items-center justify-center">
                             {hasImg ? (
-                              <img
+                              <Image
                                 src={line.image!}
                                 alt={line.label}
+                                width={44}
+                                height={44}
                                 className="w-full h-full object-cover"
                               />
                             ) : (
@@ -2131,34 +2156,54 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
         )}
 
         {/* Support & Complaint Actions */}
+        {/* TODO (post-RLS): re-enable the in-page chat / complaint widgets
+            once a secure API route + token-based authorisation is built.
+            Until then, the buttons are disabled and the customer is asked
+            to contact the company via the channel from their confirmation
+            message. The previous behaviour wrote directly to
+            turath_masr_crm_chat / turath_masr_crm_complaints from the
+            anonymous client, which is now blocked by RLS. */}
         <div className="bg-white rounded-2xl border border-[hsl(var(--border))] shadow-sm p-4 space-y-3">
           <div className="flex items-center gap-2 mb-1">
             <Headphones size={16} className="text-emerald-600" />
             <h2 className="font-bold text-sm text-[hsl(var(--foreground))]">الدعم والمساعدة</h2>
           </div>
+          <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 px-4 py-3 text-sm text-emerald-800">
+            <p className="font-bold mb-1">للتواصل معنا</p>
+            <p className="text-xs leading-relaxed text-emerald-700">
+              يمكنك الرد على رسالة الواتساب التي وصلتك عند تأكيد الطلب للتحدث مع خدمة العملاء أو
+              تسجيل أي ملاحظة. خاصية الدردشة المباشرة من هذه الصفحة قيد التطوير.
+            </p>
+          </div>
           <button
-            onClick={() => setActiveChat('support')}
-            className="w-full flex items-center gap-3 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-xl px-4 py-3 transition-colors"
+            type="button"
+            disabled
+            aria-disabled="true"
+            className="w-full flex items-center gap-3 bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 cursor-not-allowed opacity-60"
+            title="قريباً"
           >
-            <div className="w-9 h-9 bg-emerald-600 rounded-xl flex items-center justify-center flex-shrink-0">
+            <div className="w-9 h-9 bg-gray-300 rounded-xl flex items-center justify-center flex-shrink-0">
               <Headphones size={16} className="text-white" />
             </div>
             <div className="text-right flex-1">
-              <p className="text-sm font-bold text-emerald-800">تحدث مع خدمة العملاء</p>
-              <p className="text-xs text-emerald-600">متاح 24/7 للرد على استفساراتك</p>
+              <p className="text-sm font-bold text-gray-700">تحدث مع خدمة العملاء</p>
+              <p className="text-xs text-gray-500">قريبًا — يرجى استخدام الواتساب مؤقتًا</p>
             </div>
-            <ChevronDown size={16} className="text-emerald-500 -rotate-90" />
+            <ChevronDown size={16} className="text-gray-400 -rotate-90" />
           </button>
           <button
-            onClick={() => setShowComplaint(true)}
-            className="w-full flex items-center gap-3 bg-red-50 hover:bg-red-100 border border-red-200 rounded-xl px-4 py-3 transition-colors"
+            type="button"
+            disabled
+            aria-disabled="true"
+            className="w-full flex items-center gap-3 bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 cursor-not-allowed opacity-60"
+            title="قريباً"
           >
-            <div className="w-9 h-9 bg-red-600 rounded-xl flex items-center justify-center flex-shrink-0">
+            <div className="w-9 h-9 bg-gray-300 rounded-xl flex items-center justify-center flex-shrink-0">
               <AlertCircle size={16} className="text-white" />
             </div>
             <div className="text-right flex-1">
-              <p className="text-sm font-bold text-red-800">تقديم شكوى</p>
-              <p className="text-xs text-red-600">اختر سبب الشكوى وتواصل مع الدعم</p>
+              <p className="text-sm font-bold text-gray-700">تقديم شكوى</p>
+              <p className="text-xs text-gray-500">قريبًا — يرجى استخدام الواتساب مؤقتًا</p>
             </div>
             <ChevronDown size={16} className="text-red-500 -rotate-90" />
           </button>

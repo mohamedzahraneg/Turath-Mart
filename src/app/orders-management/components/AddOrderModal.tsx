@@ -1,5 +1,6 @@
 'use client';
 import React, { useState, useEffect, useRef } from 'react';
+import Image from 'next/image';
 import { toast } from 'sonner';
 import { Toaster } from 'sonner';
 import {
@@ -20,6 +21,9 @@ import {
   Eye,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
+import { useAuth } from '@/contexts/AuthContext';
+import { canUseAdminOnlyFinancialFields } from '@/lib/constants/roles';
+import { isValidEgyptianMobile } from '@/lib/validators/phone';
 
 interface ProductItem {
   productType: string;
@@ -168,13 +172,15 @@ export const ADMIN_SETTINGS = {
 };
 
 export const REGIONAL_FEES: Record<string, number> = {
-  'القاهرة': 50,
-  'الجيزة': 50,
-  'القليوبية': 60,
+  القاهرة: 50,
+  الجيزة: 50,
+  القليوبية: 60,
 };
 
-const CURRENT_USER_ROLE: string = 'customer_service';
-const IS_ADMIN = CURRENT_USER_ROLE === 'admin';
+// NOTE: admin-only feature gating now derives from the authenticated user's
+// role_id (via useAuth() inside the component), not a hardcoded constant.
+// The previous `CURRENT_USER_ROLE = 'customer_service'` made IS_ADMIN
+// permanently false, which silently disabled the extraShippingFee feature.
 
 function getDeviceType(): string {
   const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
@@ -290,6 +296,9 @@ function lineTotal(line: OrderLine): number {
 }
 
 export default function AddOrderModal({ onClose }: Props) {
+  const { user, currentRoleId } = useAuth();
+  const IS_ADMIN = canUseAdminOnlyFinancialFields(currentRoleId);
+
   const [orderNum, setOrderNum] = useState('جاري التحميل...');
   const [currentDateTime, setCurrentDateTime] = useState({ date: '', time: '', day: '' });
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -345,9 +354,16 @@ export default function AddOrderModal({ onClose }: Props) {
   useEffect(() => {
     const loadWA = async () => {
       const supabase = createClient();
-      const { data } = await supabase.from('turath_masr_settings').select('value').eq('key', 'settings_whatsapp_template').single();
+      const { data } = await supabase
+        .from('turath_masr_settings')
+        .select('value')
+        .eq('key', 'settings_whatsapp_template')
+        .single();
       if (data?.value) setWaTemplate(data.value as string);
-      else setWaTemplate('السلام عليكم {customerName} 🌟\n\nتم تأكيد طلبك رقم #{orderNum} وجاري التجهيز\n\n📦 المنتجات:\n{products}\n\n📍 العنوان: {address} - {district} - {governorate}\n🚚 الشحن: {shippingCost} ج.م\n💰 الإجمالي: {total} ج.م\n\n🔗 تتبع طلبك: {trackingLink}\n\nشكراً لتعاملك مع تراث مصر ✨');
+      else
+        setWaTemplate(
+          'السلام عليكم {customerName} 🌟\n\nتم تأكيد طلبك رقم #{orderNum} وجاري التجهيز\n\n📦 المنتجات:\n{products}\n\n📍 العنوان: {address} - {district} - {governorate}\n🚚 الشحن: {shippingCost} ج.م\n💰 الإجمالي: {total} ج.م\n\n🔗 تتبع طلبك: {trackingLink}\n\nشكراً لتعاملك مع تراث مصر ✨'
+        );
     };
     loadWA();
   }, []);
@@ -359,7 +375,9 @@ export default function AddOrderModal({ onClose }: Props) {
 
       // 1. Fetch all settings from DB
       const { data: sData } = await supabase.from('turath_masr_settings').select('*');
-      const settingsMap = new Map((sData || []).map((s) => [s.key, s.value]));
+      const settingsMap = new Map(
+        ((sData || []) as Array<{ key: string; value: unknown }>).map((s) => [s.key, s.value])
+      );
 
       // 2. Extract Products
       const dbProducts =
@@ -384,18 +402,17 @@ export default function AddOrderModal({ onClose }: Props) {
         images: item.images || [],
         colors: item.colors || [],
       }));
-      const inventoryCards: ProductCard[] = inventoryItems
-        .map((item) => ({
-          value: item.id,
-          label: item.name,
-          basePrice: item.price,
-          emoji: '📦',
-          hasColor: (item.colors?.length || 0) > 0,
-          image: item.images?.[0],
-          isInventory: true,
-          colors: item.colors,
-          available: item.available,
-        }));
+      const inventoryCards: ProductCard[] = inventoryItems.map((item) => ({
+        value: item.id,
+        label: item.name,
+        basePrice: item.price,
+        emoji: '📦',
+        hasColor: (item.colors?.length || 0) > 0,
+        image: item.images?.[0],
+        isInventory: true,
+        colors: item.colors,
+        available: item.available,
+      }));
 
       inventoryRef.current = inventoryItems;
       setProductCards(inventoryCards);
@@ -406,7 +423,7 @@ export default function AddOrderModal({ onClose }: Props) {
         .select('value')
         .eq('key', 'settings_shipping')
         .single();
-      
+
       if (shipData?.value) {
         const dbShipping = shipData.value as any;
         if (dbShipping.expressShippingCost) {
@@ -483,7 +500,7 @@ export default function AddOrderModal({ onClose }: Props) {
 
   // Search for history when phone changes
   useEffect(() => {
-    if (phone.length === 11 && /^01[0-9]{9}$/.test(phone)) {
+    if (phone.length === 11 && isValidEgyptianMobile(phone)) {
       const searchHistory = async () => {
         const supabase = createClient();
         const { data } = await supabase
@@ -523,12 +540,12 @@ export default function AddOrderModal({ onClose }: Props) {
   };
 
   // Get available districts from DB regions (with enable/disable support)
-  const availableDistricts = (() => {
+  const availableDistricts: string[] = (() => {
     const region = dbRegions.find((r: any) => r.name === governorate && r.enabled !== false);
     if (region && region.districts) {
       return region.districts
-        .filter((d: any) => typeof d === 'object' ? d.enabled !== false : true)
-        .map((d: any) => typeof d === 'object' ? d.name : d)
+        .filter((d: any) => (typeof d === 'object' ? d.enabled !== false : true))
+        .map((d: any) => (typeof d === 'object' ? d.name : d))
         .filter((name: string) => name && name.trim());
     }
     // Fallback to hardcoded if DB not loaded yet
@@ -544,9 +561,7 @@ export default function AddOrderModal({ onClose }: Props) {
     }
     return 0;
   })();
-  const shippingCost = freeShipping ? 0 : (expressShipping 
-    ? ADMIN_SETTINGS.EXPRESS_FEE 
-    : regionFee);
+  const shippingCost = freeShipping ? 0 : expressShipping ? ADMIN_SETTINGS.EXPRESS_FEE : regionFee;
   const extraFeeAmount = IS_ADMIN ? extraShippingFee : 0;
   const subtotal = lines.reduce((s, l) => s + lineTotal(l), 0);
   const grandTotal = subtotal + shippingCost + extraFeeAmount;
@@ -573,8 +588,8 @@ export default function AddOrderModal({ onClose }: Props) {
   const validateStep1 = () => {
     const errs: Record<string, string> = {};
     if (!customerName.trim()) errs.customerName = 'اسم العميل مطلوب';
-    if (!/^01[0-9]{9}$/.test(phone)) errs.phone = 'رقم موبايل مصري غير صحيح';
-    if (phone2 && !/^01[0-9]{9}$/.test(phone2)) errs.phone2 = 'رقم موبايل مصري غير صحيح';
+    if (!isValidEgyptianMobile(phone)) errs.phone = 'رقم موبايل مصري غير صحيح';
+    if (phone2 && !isValidEgyptianMobile(phone2)) errs.phone2 = 'رقم موبايل مصري غير صحيح';
     if (!district) errs.district = 'المنطقة مطلوبة';
     if (!address.trim() || address.trim().length < 10) errs.address = 'العنوان قصير جداً';
     setErrors(errs);
@@ -590,6 +605,13 @@ export default function AddOrderModal({ onClose }: Props) {
   };
 
   const handleSubmit = async () => {
+    // Block submission when there is no authenticated user — RLS would
+    // reject the insert anyway and the order would not be traceable.
+    if (!user?.id) {
+      toast.error('يجب تسجيل الدخول قبل إنشاء طلب جديد');
+      return;
+    }
+
     setIsSubmitting(true);
     const deviceType = getDeviceType();
 
@@ -666,6 +688,10 @@ export default function AddOrderModal({ onClose }: Props) {
           order_num: newOrder.orderNum,
           created_by: newOrder.createdBy,
           created_by_device: newOrder.createdByDevice,
+          // Authenticated user UUID — required by the orders_authenticated_insert
+          // RLS policy: WITH CHECK (created_by_user_id IS NULL OR
+          //                         created_by_user_id = auth.uid())
+          created_by_user_id: user.id,
           customer: newOrder.customer,
           phone: newOrder.phone,
           phone2: newOrder.phone2 || null,
@@ -676,6 +702,8 @@ export default function AddOrderModal({ onClose }: Props) {
           quantity: newOrder.quantity,
           subtotal: newOrder.subtotal,
           shipping_fee: newOrder.shippingFee,
+          // extra_shipping_fee already coerced to 0 at line where newOrder is built
+          // when IS_ADMIN is false; client-side guard. RLS provides defence-in-depth.
           extra_shipping_fee: newOrder.extraShippingFee || 0,
           express_shipping: newOrder.expressShipping || false,
           free_shipping: newOrder.freeShipping || false,
@@ -695,15 +723,11 @@ export default function AddOrderModal({ onClose }: Props) {
         throw error;
       }
 
-      // Create a system notification
-      await supabase.from('turath_masr_notifications').insert({
-        type: 'new_order',
-        title: 'أوردر جديد 📦',
-        message: `تم تسجيل أوردر جديد برقم ${newOrder.orderNum} للعميل ${newOrder.customer}`,
-        order_id: newOrder.id,
-        order_num: newOrder.orderNum,
-        created_by: newOrder.createdBy,
-      });
+      // The "new_order" system notification is now produced by the
+      // AFTER INSERT trigger trg_notify_on_new_order on turath_masr_orders
+      // (see migration 20260506_secure_tracking_rpc.sql). The trigger runs
+      // as SECURITY DEFINER so r6 (customer service) does not need write
+      // access to turath_masr_notifications under the new RLS.
 
       // Notify other components that orders have been updated
       window.dispatchEvent(new CustomEvent('turath_masr_orders_updated'));
@@ -723,13 +747,10 @@ export default function AddOrderModal({ onClose }: Props) {
     }
   };
 
-  const warrantyOptions = dbWarrantyOptions.length > 0 ? dbWarrantyOptions : [
-    'بدون ضمان',
-    '3 أشهر',
-    '6 أشهر',
-    'سنة',
-    'سنتان',
-  ];
+  const warrantyOptions =
+    dbWarrantyOptions.length > 0
+      ? dbWarrantyOptions
+      : ['بدون ضمان', '3 أشهر', '6 أشهر', 'سنة', 'سنتان'];
 
   const resetForm = () => {
     setCustomerName('');
@@ -786,13 +807,15 @@ export default function AddOrderModal({ onClose }: Props) {
               onClick={() => {
                 const trackingLink = `turathmasr.com/track/${successOrderNum}`;
                 // Build products list with proper names from productCards
-                const productsList = successLines.map(l => {
-                  const card = productCards.find((p) => p.value === l.productType);
-                  const name = card?.label || l.productType;
-                  const colorPart = l.color ? ` (${l.color})` : '';
-                  const flashPart = l.includeFlashlight ? ' + كشاف' : '';
-                  return `- ${name}${colorPart}${flashPart} x ${l.quantity} = ${lineTotal(l)} ج.م`;
-                }).join('\n');
+                const productsList = successLines
+                  .map((l) => {
+                    const card = productCards.find((p) => p.value === l.productType);
+                    const name = card?.label || l.productType;
+                    const colorPart = l.color ? ` (${l.color})` : '';
+                    const flashPart = l.includeFlashlight ? ' + كشاف' : '';
+                    return `- ${name}${colorPart}${flashPart} x ${l.quantity} = ${lineTotal(l)} ج.م`;
+                  })
+                  .join('\n');
                 // Determine shipping type text
                 let shippingText = '';
                 if (freeShipping) {
@@ -802,7 +825,9 @@ export default function AddOrderModal({ onClose }: Props) {
                 } else {
                   shippingText = `الشحن: ${shippingCost} ج.م`;
                 }
-                let msg = waTemplate || `السلام عليكم {customerName}
+                let msg =
+                  waTemplate ||
+                  `السلام عليكم {customerName}
 
 تم تأكيد طلبك رقم #{orderNum} وجاري التجهيز
 
@@ -827,13 +852,18 @@ export default function AddOrderModal({ onClose }: Props) {
                 msg = msg.replace('{shippingCost}', shippingCost.toString());
                 msg = msg.replace('{shippingType}', shippingText);
                 // Remove any emoji that might break in URL encoding
-                msg = msg.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}]/gu, '');
+                msg = msg.replace(
+                  /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}]/gu,
+                  ''
+                );
                 const cleanPhone = successPhone.replace(/[^0-9]/g, '');
                 const intlPhone = cleanPhone.startsWith('0') ? '2' + cleanPhone : cleanPhone;
                 window.open(`https://wa.me/${intlPhone}?text=${encodeURIComponent(msg)}`, '_blank');
               }}
             >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
+              </svg>
               إرسال تأكيد واتساب للعميل
             </button>
             <button type="button" className="btn-primary w-full justify-center" onClick={resetForm}>
@@ -1016,8 +1046,14 @@ export default function AddOrderModal({ onClose }: Props) {
                           onChange={(e) => setGovernorate(e.target.value)}
                         >
                           {(dbRegions.length > 0
-                            ? dbRegions.filter((r: any) => r.enabled !== false).map((r: any) => r.name)
-                            : (dbRegions.length > 0 ? dbRegions.filter((r: any) => r.enabled !== false).map((r: any) => r.name) : Object.keys(GOVERNORATES_DISTRICTS))
+                            ? dbRegions
+                                .filter((r: any) => r.enabled !== false)
+                                .map((r: any) => r.name)
+                            : dbRegions.length > 0
+                              ? dbRegions
+                                  .filter((r: any) => r.enabled !== false)
+                                  .map((r: any) => r.name)
+                              : Object.keys(GOVERNORATES_DISTRICTS)
                           ).map((g: string) => (
                             <option key={`gov-${g}`} value={g}>
                               {g}
@@ -1116,9 +1152,13 @@ export default function AddOrderModal({ onClose }: Props) {
                             type="button"
                             onClick={() => {
                               if (product.isInventory) {
-                                const invItem = inventoryRef.current.find((i) => i.id === product.value);
+                                const invItem = inventoryRef.current.find(
+                                  (i) => i.id === product.value
+                                );
                                 const maxQty = invItem?.available || 0;
-                                const totalUsed = lines.filter(l => l.productType === product.value).reduce((s, l) => s + l.quantity, 0);
+                                const totalUsed = lines
+                                  .filter((l) => l.productType === product.value)
+                                  .reduce((s, l) => s + l.quantity, 0);
                                 if (totalUsed >= maxQty) {
                                   toast.error(`نفذ المخزون من ${product.label}`);
                                   return;
@@ -1129,10 +1169,12 @@ export default function AddOrderModal({ onClose }: Props) {
                             className={`w-full aspect-square rounded-2xl border-2 flex flex-col items-center justify-center gap-1 transition-all relative overflow-hidden ${product.isInventory && (inventoryRef.current.find((i) => i.id === product.value)?.available || 0) <= 0 ? 'border-red-200 bg-red-50 opacity-50 cursor-not-allowed' : count > 0 ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/5 shadow-md' : 'border-[hsl(var(--border))] hover:border-[hsl(var(--primary))]/50 hover:shadow-sm bg-white'}`}
                           >
                             {hasRealImage ? (
-                              <img
-                                src={product.image}
+                              <Image
+                                src={product.image as string}
                                 alt={product.label}
-                                className="w-full h-full object-cover absolute inset-0"
+                                fill
+                                sizes="(max-width: 768px) 33vw, 150px"
+                                className="object-cover"
                               />
                             ) : (
                               <span className="text-3xl">{product.emoji}</span>
@@ -1143,8 +1185,12 @@ export default function AddOrderModal({ onClose }: Props) {
                               </div>
                             )}
                             {product.isInventory && (
-                              <div className={`absolute top-1 right-1 px-1.5 py-0.5 rounded-full text-[8px] font-bold z-10 ${(inventoryRef.current.find((i) => i.id === product.value)?.available || 0) > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>
-                                {inventoryRef.current.find((i) => i.id === product.value)?.available || 0} متاح
+                              <div
+                                className={`absolute top-1 right-1 px-1.5 py-0.5 rounded-full text-[8px] font-bold z-10 ${(inventoryRef.current.find((i) => i.id === product.value)?.available || 0) > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}
+                              >
+                                {inventoryRef.current.find((i) => i.id === product.value)
+                                  ?.available || 0}{' '}
+                                متاح
                               </div>
                             )}
                             <span
@@ -1187,18 +1233,22 @@ export default function AddOrderModal({ onClose }: Props) {
                           productCard.image.startsWith('/'));
                       const isHolder = line.productType === 'holder';
                       const isFlashlight = line.productType === 'flashlight';
-const HOLDER_COLORS = [
-  { value: 'brown', label: 'بني', hex: '#8B4513' },
-  { value: 'black', label: 'أسود', hex: '#1a1a1a' },
-  { value: 'white', label: 'أبيض', hex: '#f5f5f5' },
-  { value: 'gold', label: 'ذهبي', hex: '#FFD700' },
-  { value: 'pearl', label: 'صدف', hex: '#EAE0C8' },
-];
+                      const HOLDER_COLORS = [
+                        { value: 'brown', label: 'بني', hex: '#8B4513' },
+                        { value: 'black', label: 'أسود', hex: '#1a1a1a' },
+                        { value: 'white', label: 'أبيض', hex: '#f5f5f5' },
+                        { value: 'gold', label: 'ذهبي', hex: '#FFD700' },
+                        { value: 'pearl', label: 'صدف', hex: '#EAE0C8' },
+                      ];
 
                       // Colors: use inventory colors if available, else use HOLDER_COLORS for holder
                       const availableColors =
                         productCard?.colors && productCard.colors.length > 0
-                          ? productCard.colors.map((c: string) => ({ value: c, label: c, hex: '#888' }))
+                          ? productCard.colors.map((c: string) => ({
+                              value: c,
+                              label: c,
+                              hex: '#888',
+                            }))
                           : isHolder
                             ? HOLDER_COLORS
                             : [];
@@ -1213,9 +1263,11 @@ const HOLDER_COLORS = [
                           <div className="flex items-center justify-between mb-3">
                             <div className="flex items-center gap-2">
                               {hasRealImage ? (
-                                <img
-                                  src={productCard!.image}
+                                <Image
+                                  src={productCard!.image as string}
                                   alt={productCard?.label || ''}
+                                  width={32}
+                                  height={32}
                                   className="w-8 h-8 rounded-lg object-cover"
                                 />
                               ) : (
@@ -1289,11 +1341,20 @@ const HOLDER_COLORS = [
                                   value={line.quantity}
                                   onChange={(e) => {
                                     let qty = Math.max(1, Number(e.target.value));
-                                    const card = productCards.find((p) => p.value === line.productType);
+                                    const card = productCards.find(
+                                      (p) => p.value === line.productType
+                                    );
                                     if (card?.isInventory) {
-                                      const invItem = inventoryRef.current.find((i: any) => i.id === line.productType);
+                                      const invItem = inventoryRef.current.find(
+                                        (i: any) => i.id === line.productType
+                                      );
                                       const maxQty = invItem?.available || 999;
-                                      const totalUsed = lines.filter(l => l.productType === line.productType && l.id !== line.id).reduce((s, l) => s + l.quantity, 0);
+                                      const totalUsed = lines
+                                        .filter(
+                                          (l) =>
+                                            l.productType === line.productType && l.id !== line.id
+                                        )
+                                        .reduce((s, l) => s + l.quantity, 0);
                                       if (qty + totalUsed > maxQty) {
                                         qty = Math.max(1, maxQty - totalUsed);
                                         toast.error(`الكمية المتاحة في المخزون: ${maxQty} فقط`);
@@ -1305,11 +1366,20 @@ const HOLDER_COLORS = [
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    const card = productCards.find((p) => p.value === line.productType);
+                                    const card = productCards.find(
+                                      (p) => p.value === line.productType
+                                    );
                                     if (card?.isInventory) {
-                                      const invItem = inventoryRef.current.find((i: any) => i.id === line.productType);
+                                      const invItem = inventoryRef.current.find(
+                                        (i: any) => i.id === line.productType
+                                      );
                                       const maxQty = invItem?.available || 999;
-                                      const totalUsed = lines.filter(l => l.productType === line.productType && l.id !== line.id).reduce((s, l) => s + l.quantity, 0);
+                                      const totalUsed = lines
+                                        .filter(
+                                          (l) =>
+                                            l.productType === line.productType && l.id !== line.id
+                                        )
+                                        .reduce((s, l) => s + l.quantity, 0);
                                       if (line.quantity + 1 + totalUsed > maxQty) {
                                         toast.error(`الكمية المتاحة في المخزون: ${maxQty} فقط`);
                                         return;
@@ -1554,9 +1624,15 @@ const HOLDER_COLORS = [
                       </div>
                       <div className="flex justify-between">
                         <span className="text-[hsl(var(--muted-foreground))]">
-                          {freeShipping ? '🎁 شحن مجاني:' : expressShipping ? '⚡ شحن سريع:' : 'الشحن:'}
+                          {freeShipping
+                            ? '🎁 شحن مجاني:'
+                            : expressShipping
+                              ? '⚡ شحن سريع:'
+                              : 'الشحن:'}
                         </span>
-                        <span className={`font-mono ${freeShipping ? 'text-green-600 line-through' : expressShipping ? 'text-amber-700' : ''}`}>
+                        <span
+                          className={`font-mono ${freeShipping ? 'text-green-600 line-through' : expressShipping ? 'text-amber-700' : ''}`}
+                        >
                           {freeShipping ? `${regionFee} ج.م` : `${shippingCost} ج.م`}
                         </span>
                       </div>
@@ -1714,9 +1790,17 @@ const HOLDER_COLORS = [
                           >
                             <div className="flex items-center gap-3">
                               {card?.image ? (
-                                <img src={card.image} alt={card?.label || ''} className="w-12 h-12 rounded-xl object-cover border border-[hsl(var(--border))] shadow-sm" />
+                                <Image
+                                  src={card.image}
+                                  alt={card?.label || ''}
+                                  width={48}
+                                  height={48}
+                                  className="w-12 h-12 rounded-xl object-cover border border-[hsl(var(--border))] shadow-sm"
+                                />
                               ) : (
-                                <span className="text-2xl w-12 h-12 flex items-center justify-center bg-[hsl(var(--muted))]/50 rounded-xl">{card?.emoji || '📦'}</span>
+                                <span className="text-2xl w-12 h-12 flex items-center justify-center bg-[hsl(var(--muted))]/50 rounded-xl">
+                                  {card?.emoji || '📦'}
+                                </span>
                               )}
                               <div>
                                 <p className="font-semibold text-xs">
@@ -1758,9 +1842,15 @@ const HOLDER_COLORS = [
                       </div>
                       <div className="flex justify-between">
                         <span className="text-[hsl(var(--muted-foreground))]">
-                          {freeShipping ? '🎁 شحن مجاني:' : expressShipping ? '⚡ شحن سريع:' : 'الشحن:'}
+                          {freeShipping
+                            ? '🎁 شحن مجاني:'
+                            : expressShipping
+                              ? '⚡ شحن سريع:'
+                              : 'الشحن:'}
                         </span>
-                        <span className={`font-mono ${freeShipping ? 'text-green-600 line-through' : expressShipping ? 'text-amber-700' : ''}`}>
+                        <span
+                          className={`font-mono ${freeShipping ? 'text-green-600 line-through' : expressShipping ? 'text-amber-700' : ''}`}
+                        >
                           {freeShipping ? `${regionFee} ج.م` : `${shippingCost} ج.م`}
                         </span>
                       </div>

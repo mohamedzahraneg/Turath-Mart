@@ -1,5 +1,6 @@
 'use client';
 import React, { useState, useMemo, useEffect } from 'react';
+import Image from 'next/image';
 import AppLayout from '@/components/AppLayout';
 import {
   AreaChart,
@@ -120,8 +121,11 @@ export default function ReportsPage() {
       try {
         const supabase = createClient();
         const [oRes, iRes] = await Promise.all([
-          supabase.from('turath_masr_orders').select('id, created_at, status, total, shipping_fee, products, region').order('created_at', { ascending: true }),
-          supabase.from('turath_masr_inventory').select('*')
+          supabase
+            .from('turath_masr_orders')
+            .select('id, created_at, status, total, shipping_fee, products, region')
+            .order('created_at', { ascending: true }),
+          supabase.from('turath_masr_inventory').select('*'),
         ]);
 
         if (oRes.data) setDbOrders(oRes.data);
@@ -172,7 +176,7 @@ export default function ReportsPage() {
 
     dbOrders.forEach((o) => {
       const orderCreatedAt = new Date(o.created_at);
-      
+
       // 1. Filter by Region
       if (regionFilter !== 'الكل' && o.region !== regionFilter) return;
 
@@ -226,12 +230,12 @@ export default function ReportsPage() {
           parts.forEach((p) => {
             let name = p;
             let count = 1;
-            
+
             // 1. Try parenthesis format: Product Name (2)
             const parenMatch = p.match(/(.*?)\s*\(\s*(\d+)\s*\)/);
             // 2. Try x format: Product Name x 2
             const xMatch = p.match(/(.*?)\s*([x×\*]\s*(\d+)|(\d+)\s*[x×\*])$/i);
-            
+
             if (parenMatch) {
               name = parenMatch[1].trim();
               count = parseInt(parenMatch[2], 10) || 1;
@@ -260,14 +264,16 @@ export default function ReportsPage() {
       }
     });
 
-    const allPData = dbInventory.map(item => {
-      const stats = prodMap[item.name] || { orders: 0, revenue: 0 };
-      return {
-        ...item,
-        withdrawn: stats.orders,
-        revenue: stats.revenue
-      };
-    }).sort((a, b) => b.withdrawn - a.withdrawn);
+    const allPData = dbInventory
+      .map((item) => {
+        const stats = prodMap[item.name] || { orders: 0, revenue: 0 };
+        return {
+          ...item,
+          withdrawn: stats.orders,
+          revenue: stats.revenue,
+        };
+      })
+      .sort((a, b) => b.withdrawn - a.withdrawn);
 
     const topP = allPData.slice(0, 5);
 
@@ -320,7 +326,7 @@ export default function ReportsPage() {
       },
       allProducts: allPData,
     };
-  }, [dbOrders, regionFilter, dateFrom, dateTo]);
+  }, [dbOrders, dbInventory, regionFilter, dateFrom, dateTo]);
 
   const filteredMonthly = useMemo(() => {
     if (dateFrom || dateTo) {
@@ -798,19 +804,33 @@ export default function ReportsPage() {
         <div className="bg-white border-2 border-gray-50 rounded-[2.5rem] p-10 shadow-sm overflow-hidden">
           <div className="flex items-center justify-between mb-8">
             <div>
-              <h3 className="text-lg font-black text-gray-900 tracking-tight">تحليل أداء المنتجات (المسحوب)</h3>
-              <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mt-1">كشف كامل بالكميات المسحوبة والإيرادات لكل صنف</p>
+              <h3 className="text-lg font-black text-gray-900 tracking-tight">
+                تحليل أداء المنتجات (المسحوب)
+              </h3>
+              <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mt-1">
+                كشف كامل بالكميات المسحوبة والإيرادات لكل صنف
+              </p>
             </div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-right text-xs">
               <thead>
                 <tr className="border-b border-gray-50">
-                  <th className="px-4 py-4 text-gray-400 font-black uppercase tracking-widest">المنتج</th>
-                  <th className="px-4 py-4 text-gray-400 font-black uppercase tracking-widest">الكود (SKU)</th>
-                  <th className="px-4 py-4 text-gray-400 font-black uppercase tracking-widest">المسحوب (مباع)</th>
-                  <th className="px-4 py-4 text-gray-400 font-black uppercase tracking-widest">المتاح حالياً</th>
-                  <th className="px-4 py-4 text-gray-400 font-black uppercase tracking-widest text-emerald-600">الإيرادات (ج.م)</th>
+                  <th className="px-4 py-4 text-gray-400 font-black uppercase tracking-widest">
+                    المنتج
+                  </th>
+                  <th className="px-4 py-4 text-gray-400 font-black uppercase tracking-widest">
+                    الكود (SKU)
+                  </th>
+                  <th className="px-4 py-4 text-gray-400 font-black uppercase tracking-widest">
+                    المسحوب (مباع)
+                  </th>
+                  <th className="px-4 py-4 text-gray-400 font-black uppercase tracking-widest">
+                    المتاح حالياً
+                  </th>
+                  <th className="px-4 py-4 text-gray-400 font-black uppercase tracking-widest text-emerald-600">
+                    الإيرادات (ج.م)
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
@@ -818,15 +838,25 @@ export default function ReportsPage() {
                   <tr key={i} className="hover:bg-gray-50/50 transition-colors">
                     <td className="px-4 py-4">
                       <div className="flex items-center gap-3">
-                        {p.images?.[0] && <img src={p.images[0]} className="w-8 h-8 rounded-lg object-cover" />}
+                        {p.images?.[0] && (
+                          <Image
+                            src={p.images[0]}
+                            alt={p.name || 'منتج'}
+                            width={32}
+                            height={32}
+                            className="w-8 h-8 rounded-lg object-cover"
+                          />
+                        )}
                         <span className="font-bold text-gray-800">{p.name}</span>
                       </div>
                     </td>
                     <td className="px-4 py-4 font-mono text-gray-400">{p.sku}</td>
                     <td className="px-4 py-4">
-                       <span className={`px-3 py-1 rounded-full font-black ${p.withdrawn > 0 ? 'bg-orange-50 text-orange-600' : 'bg-gray-50 text-gray-400'}`}>
-                         {p.withdrawn} وحدة
-                       </span>
+                      <span
+                        className={`px-3 py-1 rounded-full font-black ${p.withdrawn > 0 ? 'bg-orange-50 text-orange-600' : 'bg-gray-50 text-gray-400'}`}
+                      >
+                        {p.withdrawn} وحدة
+                      </span>
                     </td>
                     <td className="px-4 py-4 font-bold text-gray-600">{p.available}</td>
                     <td className="px-4 py-4 font-black text-emerald-600 tracking-tighter text-sm">
