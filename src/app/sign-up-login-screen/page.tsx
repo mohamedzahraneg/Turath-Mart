@@ -1,5 +1,6 @@
 'use client';
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { toast, Toaster } from 'sonner';
 import {
@@ -84,6 +85,8 @@ export default function LoginPage() {
   const [deviceType, setDeviceType] = useState('كمبيوتر');
   const [mounted, setMounted] = useState(false);
   const { signIn } = useAuth();
+  const router = useRouter();
+  const searchParams = useSearchParams();
 
   useEffect(() => {
     setDeviceType(getDeviceType());
@@ -117,13 +120,15 @@ export default function LoginPage() {
       setLoginError('');
 
       try {
-        let identifier = data.email.trim();
+        const identifier = data.email.trim();
+        // NOTE: login requires a real email address.
+        // The previous "admin" alias and auto-domain-append shortcuts have been
+        // removed for security — they leaked the admin email and made identity
+        // probing trivial.
         if (!identifier.includes('@')) {
-          if (identifier.toLowerCase() === 'admin') {
-            identifier = 'zahran@turathmasr.com';
-          } else {
-            identifier = `${identifier}@turathmasr.com`;
-          }
+          setLoginError('يرجى إدخال البريد الإلكتروني الكامل');
+          setIsLoading(false);
+          return;
         }
         const authData = await signIn(identifier, data.password);
         const supabase = createClient();
@@ -150,10 +155,12 @@ export default function LoginPage() {
 
         toast.success(`مرحباً! تم تسجيل الدخول — ${deviceType}`);
         const permissions = effectivePerms.length > 0 ? effectivePerms : getPermissionsForRoleId(finalRoleId);
-        const landingPage = getInitialRoute(permissions);
+        const computedLanding = getInitialRoute(permissions);
+        const nextParam = searchParams?.get('next');
+        const landingPage = nextParam && nextParam.startsWith('/') ? nextParam : computedLanding;
 
         setTimeout(() => {
-          window.location.href = landingPage;
+          router.replace(landingPage);
         }, 800);
       } catch (err: any) {
         console.error('Login exception:', err);
@@ -163,7 +170,7 @@ export default function LoginPage() {
         setIsLoading(false);
       }
     },
-    [signIn, deviceType]
+    [signIn, deviceType, router, searchParams]
   );
 
   return (
@@ -258,12 +265,14 @@ export default function LoginPage() {
                 />
                 <input
                   id="email"
-                  type="text"
+                  type="email"
+                  dir="ltr"
                   className={`w-full pr-11 pl-4 py-3.5 bg-white/[0.07] border rounded-xl text-white placeholder-white/25
                     focus:ring-2 focus:ring-[#c6a052]/40 focus:border-[#c6a052]/30 outline-none transition-all duration-300
                     backdrop-blur-sm ${errors.email ? 'border-red-500/50' : 'border-white/10'}`}
-                  placeholder="admin أو البريد الإلكتروني"
-                  {...register('email', { required: 'يرجى إدخال اسم المستخدم' })}
+                  placeholder="name@example.com"
+                  autoComplete="email"
+                  {...register('email', { required: 'يرجى إدخال البريد الإلكتروني' })}
                 />
               </div>
               {errors.email && (

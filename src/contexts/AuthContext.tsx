@@ -1,6 +1,7 @@
 'use client';
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { createClient, resetSupabaseClient } from '@/lib/supabase/client';
+import { clearAppStorage } from '@/lib/auth/storage';
 
 // Singleton Supabase client - avoids creating new connections on every call
 let _supabaseClient: ReturnType<typeof createClient> | null = null;
@@ -335,14 +336,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     setCurrentRoleId(null);
     setCustomPermissions(null);
 
-    // 3. Clear ALL localStorage to prevent ANY stale data
-    if (typeof window !== 'undefined') {
-      try {
-        localStorage.clear();
-      } catch {}
-    }
-
-    // 4. Sign out from Supabase
+    // 3. Sign out from Supabase first (clears its own auth cookies/storage)
     try {
       const supabase = getSupabaseClient();
       if (supabase) {
@@ -352,6 +346,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     } catch (e) {
       console.error('Supabase signOut error:', e);
     }
+
+    // 4. Clear ONLY app-owned localStorage keys (not the entire localStorage).
+    // Supabase keys are handled by supabase.auth.signOut() above.
+    clearAppStorage();
   };
 
   const getCurrentUser = async () => {

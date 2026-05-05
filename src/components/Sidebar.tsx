@@ -1,6 +1,7 @@
 'use client';
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import AppLogo from '@/components/ui/AppLogo';
 import { useAuth } from '@/contexts/AuthContext';
 import {
@@ -115,6 +116,7 @@ function Sidebar({ currentPath = '' }: SidebarProps) {
   const [showNotifications, setShowNotifications] = useState(false);
   const { currentRole, currentRoleId, hasAccess, signOut, user } = useAuth();
   const { newOrdersCount, unreadCount } = useNotifications();
+  const router = useRouter();
 
   // Only True Admin (r1) sees EVERYTHING without filtering
   const isSuperAdmin = currentRoleId === 'r1';
@@ -173,7 +175,7 @@ function Sidebar({ currentPath = '' }: SidebarProps) {
     } catch (e) {
       console.error('Logout error:', e);
     } finally {
-      window.location.href = '/sign-up-login-screen';
+      router.replace('/sign-up-login-screen');
     }
   };
 
