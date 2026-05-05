@@ -99,7 +99,10 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
     };
     loadDelegates();
   }, []);
-    const { user, currentRole, currentRoleId } = useAuth();
+    // `authUser` is the Supabase auth.users object (has `id` UUID for RLS).
+    // The local `getCurrentUser()` below is a display-name helper that
+    // shadows nothing since we renamed the destructured user here.
+    const { user: authUser, currentRole, currentRoleId } = useAuth();
 
   // Permission-based check: check if user has 'update_status' permission
   const userPermissions = currentRoleId ? getPermissionsForRoleId(currentRoleId) : [];
@@ -173,13 +176,13 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
     try {
       const supabase = createClient();
       // Add updated_by traceability for the orders_editor_update RLS policy
-      // and for the post-migration audit trail. user.id is the auth.users UUID.
+      // and for the post-migration audit trail. authUser.id is the auth.users UUID.
       const updatePayload: Record<string, unknown> = {
         status: data.newStatus,
         delegate_name: selectedDelegate || null,
       };
-      if (user?.id) {
-        updatePayload.updated_by = user.id;
+      if (authUser?.id) {
+        updatePayload.updated_by = authUser.id;
       }
       const { error } = await supabase
         .from('turath_masr_orders')

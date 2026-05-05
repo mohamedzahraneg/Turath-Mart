@@ -36,7 +36,7 @@ ssh -p "$VPS_PORT" -o StrictHostKeyChecking=no "$VPS_USER@$VPS_IP" << EOF
   cd $VPS_PATH
 
   NODE_BIN="/www/server/nodejs/v22.20.0/bin/node"
-  NPM_BIN="/www/server/nodejs/v22.20.0/bin/npm"
+  COREPACK_BIN="/www/server/nodejs/v22.20.0/bin/corepack"
   PM2_BIN="/www/server/nodejs/v22.20.0/bin/pm2"
 
   export PATH=\$(dirname "\$NODE_BIN"):\$PATH
@@ -45,11 +45,12 @@ ssh -p "$VPS_PORT" -o StrictHostKeyChecking=no "$VPS_USER@$VPS_IP" << EOF
   \$PM2_BIN delete "turath-masr" || true
   rm -rf .next node_modules package-lock.json
 
-  echo "📥 Installing dependencies..."
-  \$NPM_BIN install --quiet --no-audit
+  echo "📥 Installing dependencies with pnpm (via corepack, version pinned in package.json)..."
+  \$COREPACK_BIN enable
+  \$COREPACK_BIN pnpm install --frozen-lockfile
 
   echo "🏗️ Building STANDALONE production version..."
-  \$NPM_BIN run build
+  \$COREPACK_BIN pnpm build
 
   if [ ! -d ".next/standalone" ]; then
     echo "❌ Error: Standalone build failed. .next/standalone not found."

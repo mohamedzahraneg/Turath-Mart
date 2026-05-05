@@ -1,5 +1,5 @@
 'use client';
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { Suspense, useState, useEffect, useMemo, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { toast, Toaster } from 'sonner';
@@ -78,7 +78,9 @@ function IslamicStar({ className = '' }: { className?: string }) {
   );
 }
 
-export default function LoginPage() {
+// useSearchParams() forces this page out of static rendering, so the inner
+// component must live inside a <Suspense> boundary (Next.js 15 requirement).
+function LoginPageInner() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [loginError, setLoginError] = useState('');
@@ -359,5 +361,24 @@ export default function LoginPage() {
         </p>
       </div>
     </div>
+  );
+}
+
+// Default export — wraps the inner component in <Suspense> as required by
+// Next.js 15 when useSearchParams() is used in a client component.
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <div
+          className="min-h-screen flex items-center justify-center islamic-login-bg"
+          dir="rtl"
+        >
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#c6a052] border-t-transparent" />
+        </div>
+      }
+    >
+      <LoginPageInner />
+    </Suspense>
   );
 }
