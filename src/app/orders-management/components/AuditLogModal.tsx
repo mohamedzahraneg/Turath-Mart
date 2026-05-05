@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { X, Clock, User, Edit2, RefreshCw, AlertCircle } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 
@@ -149,10 +149,11 @@ export async function addAuditLog(entry: Omit<AuditEntry, 'id' | 'createdAt'>) {
 export default function AuditLogModal({ orderId, orderNum, onClose }: Props) {
   const [logs, setLogs] = useState<AuditEntry[]>([]);
 
-  const loadLogs = async () => {
+  // Stable reference so it can sit safely inside the useEffect deps array.
+  const loadLogs = useCallback(async () => {
     const entries = await getAuditLogs(orderId);
     setLogs(entries);
-  };
+  }, [orderId]);
 
   useEffect(() => {
     loadLogs();
@@ -162,7 +163,7 @@ export default function AuditLogModal({ orderId, orderNum, onClose }: Props) {
     };
     window.addEventListener('turath_masr_audit_updated', handler);
     return () => window.removeEventListener('turath_masr_audit_updated', handler);
-  }, [orderId]);
+  }, [orderId, loadLogs]);
 
   const formatDate = (iso: string) => {
     try {

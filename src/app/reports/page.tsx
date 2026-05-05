@@ -1,5 +1,6 @@
 'use client';
 import React, { useState, useMemo, useEffect } from 'react';
+import Image from 'next/image';
 import AppLayout from '@/components/AppLayout';
 import {
   AreaChart,
@@ -325,7 +326,7 @@ export default function ReportsPage() {
       },
       allProducts: allPData,
     };
-  }, [dbOrders, regionFilter, dateFrom, dateTo]);
+  }, [dbOrders, dbInventory, regionFilter, dateFrom, dateTo]);
 
   const filteredMonthly = useMemo(() => {
     if (dateFrom || dateTo) {
@@ -838,7 +839,13 @@ export default function ReportsPage() {
                     <td className="px-4 py-4">
                       <div className="flex items-center gap-3">
                         {p.images?.[0] && (
-                          <img src={p.images[0]} className="w-8 h-8 rounded-lg object-cover" />
+                          <Image
+                            src={p.images[0]}
+                            alt={p.name || 'منتج'}
+                            width={32}
+                            height={32}
+                            className="w-8 h-8 rounded-lg object-cover"
+                          />
                         )}
                         <span className="font-bold text-gray-800">{p.name}</span>
                       </div>

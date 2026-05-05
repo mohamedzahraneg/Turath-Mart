@@ -1,5 +1,6 @@
 'use client';
 import React, { Suspense, useState, useEffect, useMemo, useCallback } from 'react';
+import Image from 'next/image';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { toast, Toaster } from 'sonner';
@@ -254,9 +255,12 @@ function LoginPageInner() {
           {/* ─── Logo icon ─── */}
           <div className="flex flex-col items-center mb-8">
             <div className="w-24 h-24 mb-4 hover:scale-105 transition-transform duration-500">
-              <img
+              <Image
                 src="/assets/images/new_logo.jpg"
                 alt="تراث مصر"
+                width={96}
+                height={96}
+                priority
                 className="w-full h-full rounded-full object-cover shadow-[0_8px_30px_rgba(198,160,82,0.4)] border-2 border-[#c6a052]/30"
               />
             </div>

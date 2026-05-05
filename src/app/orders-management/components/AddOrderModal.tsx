@@ -1,5 +1,6 @@
 'use client';
 import React, { useState, useEffect, useRef } from 'react';
+import Image from 'next/image';
 import { toast } from 'sonner';
 import { Toaster } from 'sonner';
 import {
@@ -1171,10 +1172,12 @@ export default function AddOrderModal({ onClose }: Props) {
                             className={`w-full aspect-square rounded-2xl border-2 flex flex-col items-center justify-center gap-1 transition-all relative overflow-hidden ${product.isInventory && (inventoryRef.current.find((i) => i.id === product.value)?.available || 0) <= 0 ? 'border-red-200 bg-red-50 opacity-50 cursor-not-allowed' : count > 0 ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/5 shadow-md' : 'border-[hsl(var(--border))] hover:border-[hsl(var(--primary))]/50 hover:shadow-sm bg-white'}`}
                           >
                             {hasRealImage ? (
-                              <img
-                                src={product.image}
+                              <Image
+                                src={product.image as string}
                                 alt={product.label}
-                                className="w-full h-full object-cover absolute inset-0"
+                                fill
+                                sizes="(max-width: 768px) 33vw, 150px"
+                                className="object-cover"
                               />
                             ) : (
                               <span className="text-3xl">{product.emoji}</span>
@@ -1263,9 +1266,11 @@ export default function AddOrderModal({ onClose }: Props) {
                           <div className="flex items-center justify-between mb-3">
                             <div className="flex items-center gap-2">
                               {hasRealImage ? (
-                                <img
-                                  src={productCard!.image}
+                                <Image
+                                  src={productCard!.image as string}
                                   alt={productCard?.label || ''}
+                                  width={32}
+                                  height={32}
                                   className="w-8 h-8 rounded-lg object-cover"
                                 />
                               ) : (
@@ -1788,9 +1793,11 @@ export default function AddOrderModal({ onClose }: Props) {
                           >
                             <div className="flex items-center gap-3">
                               {card?.image ? (
-                                <img
+                                <Image
                                   src={card.image}
                                   alt={card?.label || ''}
+                                  width={48}
+                                  height={48}
                                   className="w-12 h-12 rounded-xl object-cover border border-[hsl(var(--border))] shadow-sm"
                                 />
                               ) : (

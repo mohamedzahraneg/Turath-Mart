@@ -1,5 +1,6 @@
 'use client';
 import React, { useState, useRef, useEffect } from 'react';
+import Image from 'next/image';
 import AppLayout from '@/components/AppLayout';
 import {
   Warehouse,
@@ -183,11 +184,13 @@ function EditModal({ item, onClose, onSave, allItems }: EditModalProps) {
             {/* Image preview carousel */}
             {images.length > 0 ? (
               <div className="relative mb-3">
-                <div className="w-full h-44 rounded-xl overflow-hidden bg-gray-100 border border-[hsl(var(--border))]">
-                  <img
+                <div className="relative w-full h-44 rounded-xl overflow-hidden bg-gray-100 border border-[hsl(var(--border))]">
+                  <Image
                     src={images[previewIndex]}
                     alt={`صورة ${previewIndex + 1}`}
-                    className="w-full h-full object-contain"
+                    fill
+                    sizes="(max-width: 768px) 100vw, 400px"
+                    className="object-contain"
                   />
                 </div>
                 {/* Navigation arrows */}
@@ -233,7 +236,13 @@ function EditModal({ item, onClose, onSave, allItems }: EditModalProps) {
                       onClick={() => setPreviewIndex(i)}
                       className={`w-14 h-14 rounded-lg overflow-hidden border-2 transition-all ${previewIndex === i ? 'border-[hsl(var(--primary))]' : 'border-[hsl(var(--border))]'}`}
                     >
-                      <img src={img} alt={`thumb-${i}`} className="w-full h-full object-cover" />
+                      <Image
+                        src={img}
+                        alt={`thumb-${i}`}
+                        width={56}
+                        height={56}
+                        className="w-full h-full object-cover"
+                      />
                     </button>
                     <button
                       type="button"
@@ -732,9 +741,11 @@ export default function InventoryPage() {
                       <td className="px-4 py-3">
                         {firstImage ? (
                           <div className="relative">
-                            <img
+                            <Image
                               src={firstImage}
                               alt={item.name}
+                              width={40}
+                              height={40}
                               className="w-10 h-10 rounded-lg object-cover border border-[hsl(var(--border))]"
                             />
                             {(item.images?.length || 0) > 1 && (

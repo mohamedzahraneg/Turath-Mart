@@ -1,5 +1,6 @@
 'use client';
 import React, { useState, useRef, useEffect } from 'react';
+import Image from 'next/image';
 import AppLayout from '@/components/AppLayout';
 import {
   ShieldCheck,
@@ -586,10 +587,13 @@ function UnifiedMemberModal({ employee, roles, onClose, onSave }: UnifiedMemberM
                 className={`w-20 h-20 rounded-full overflow-hidden flex items-center justify-center text-white text-2xl font-bold ${form.avatar ? '' : roleColor.avatar}`}
               >
                 {form.avatar ? (
-                  <img
+                  <Image
                     src={form.avatar}
                     alt="صورة المستخدم"
+                    width={80}
+                    height={80}
                     className="w-full h-full object-cover"
+                    unoptimized={form.avatar.startsWith('data:')}
                   />
                 ) : (
                   <span>{form.name ? form.name.charAt(0) : <Camera size={28} />}</span>
@@ -1383,10 +1387,13 @@ export default function RolesPage() {
                           className={`w-7 h-7 rounded-full border-2 border-white overflow-hidden flex items-center justify-center text-white text-xs font-bold ${colors.avatar}`}
                         >
                           {emp.avatar ? (
-                            <img
+                            <Image
                               src={emp.avatar}
                               alt={emp.name}
+                              width={28}
+                              height={28}
                               className="w-full h-full object-cover"
+                              unoptimized={emp.avatar.startsWith('data:')}
                             />
                           ) : (
                             <span>{emp.name.charAt(0)}</span>
@@ -1466,10 +1473,13 @@ export default function RolesPage() {
                               className={`w-9 h-9 rounded-full overflow-hidden flex items-center justify-center text-white text-sm font-bold flex-shrink-0 ${emp.avatar ? '' : rc.avatar}`}
                             >
                               {emp.avatar ? (
-                                <img
+                                <Image
                                   src={emp.avatar}
                                   alt={emp.name}
+                                  width={36}
+                                  height={36}
                                   className="w-full h-full object-cover"
+                                  unoptimized={emp.avatar.startsWith('data:')}
                                 />
                               ) : (
                                 <span>{emp.name.charAt(0)}</span>

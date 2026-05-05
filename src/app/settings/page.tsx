@@ -86,7 +86,7 @@ function useSettingsSync<T>(key: string, initial: T) {
       setData(row.value as T);
     }
     setLoading(false);
-  }, [key]);
+  }, [key, supabase]);
 
   const save = async (newData?: T) => {
     setSaving(true);

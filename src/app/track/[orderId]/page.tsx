@@ -1,5 +1,6 @@
 'use client';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import Image from 'next/image';
 import {
   Package,
   MapPin,
@@ -2091,9 +2092,11 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
                         >
                           <div className="w-11 h-11 rounded-xl overflow-hidden flex-shrink-0 bg-white border border-[hsl(var(--border))] flex items-center justify-center">
                             {hasImg ? (
-                              <img
+                              <Image
                                 src={line.image!}
                                 alt={line.label}
+                                width={44}
+                                height={44}
                                 className="w-full h-full object-cover"
                               />
                             ) : (

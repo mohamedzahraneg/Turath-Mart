@@ -1,5 +1,6 @@
 'use client';
 import React, { useState, useEffect } from 'react';
+import Image from 'next/image';
 import { toast } from 'sonner';
 import { Toaster } from 'sonner';
 import {
@@ -572,9 +573,11 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                         >
                           <div className="w-12 h-12 rounded-xl overflow-hidden flex-shrink-0 bg-white border border-[hsl(var(--border))] flex items-center justify-center">
                             {hasImg ? (
-                              <img
+                              <Image
                                 src={line.image!}
                                 alt={line.label}
+                                width={48}
+                                height={48}
                                 className="w-full h-full object-cover"
                               />
                             ) : (
@@ -1021,9 +1024,11 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                                 <div className="col-span-5 flex items-center gap-2">
                                   <div className="w-9 h-9 rounded-lg overflow-hidden flex-shrink-0 bg-white border border-[hsl(var(--border))] flex items-center justify-center">
                                     {hasImg ? (
-                                      <img
+                                      <Image
                                         src={line.image!}
                                         alt={line.label}
+                                        width={36}
+                                        height={36}
                                         className="w-full h-full object-cover"
                                       />
                                     ) : (
