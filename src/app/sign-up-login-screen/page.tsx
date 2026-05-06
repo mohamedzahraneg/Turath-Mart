@@ -9,11 +9,13 @@ import {
   EyeOff,
   Mail,
   Lock,
-  LogIn,
+  ArrowLeft,
   AlertCircle,
   Monitor,
   Smartphone,
   Tablet,
+  ShieldCheck,
+  Sparkles,
 } from 'lucide-react';
 import {
   useAuth,
@@ -30,16 +32,13 @@ interface LoginForm {
 }
 
 /* ─── helpers ─── */
-// Device-class label is extracted into src/lib/utils/device.ts so all the
-// places that show / log the user's device class share one implementation.
-
 function DeviceIcon({ device }: { device: string }) {
-  if (device === 'موبايل') return <Smartphone size={14} className="text-gold-400/60" />;
-  if (device === 'تابلت') return <Tablet size={14} className="text-gold-400/60" />;
-  return <Monitor size={14} className="text-gold-400/60" />;
+  if (device === 'موبايل') return <Smartphone size={13} className="text-[#c6a052]/70" />;
+  if (device === 'تابلت') return <Tablet size={13} className="text-[#c6a052]/70" />;
+  return <Monitor size={13} className="text-[#c6a052]/70" />;
 }
 
-/* ─── Particle component ─── */
+/* ─── Floating particle (memoized, gold dust) ─── */
 function Particle({
   delay,
   size,
@@ -65,21 +64,21 @@ function Particle({
   );
 }
 
-/* ─── Islamic geometric star SVG ─── */
-function IslamicStar({ className = '' }: { className?: string }) {
+/* ─── Heritage geometric ornament — subtle, decorative ─── */
+function HeritageOrnament({ className = '' }: { className?: string }) {
   return (
     <svg viewBox="0 0 100 100" className={className} fill="none" xmlns="http://www.w3.org/2000/svg">
       <polygon
         points="50,5 61,35 95,35 68,57 79,90 50,70 21,90 32,57 5,35 39,35"
         stroke="currentColor"
         strokeWidth="1"
-        opacity="0.15"
+        opacity="0.18"
       />
       <polygon
         points="50,15 58,38 85,38 63,53 72,80 50,65 28,80 37,53 15,38 42,38"
         stroke="currentColor"
         strokeWidth="0.5"
-        opacity="0.1"
+        opacity="0.12"
       />
     </svg>
   );
@@ -113,16 +112,17 @@ function LoginPageInner() {
   /* ─── Generate particles (memoized) ─── */
   const particles = useMemo(
     () =>
-      Array.from({ length: 35 }, (_, i) => ({
+      Array.from({ length: 28 }, (_, i) => ({
         id: i,
-        delay: Math.random() * 12,
-        size: Math.random() * 5 + 2,
+        delay: Math.random() * 14,
+        size: Math.random() * 4 + 2,
         left: Math.random() * 100,
-        duration: Math.random() * 18 + 12,
+        duration: Math.random() * 18 + 14,
       })),
     []
   );
 
+  /* ─── Auth logic — UNCHANGED from previous version ─── */
   const onSubmit = useCallback(
     async (data: LoginForm) => {
       setIsLoading(true);
@@ -185,28 +185,37 @@ function LoginPageInner() {
 
   return (
     <div
-      className="min-h-screen relative flex items-center justify-center overflow-hidden islamic-login-bg"
+      className="min-h-screen relative flex items-center justify-center overflow-hidden islamic-login-bg px-4 py-10"
       dir="rtl"
     >
       <Toaster position="top-center" richColors />
 
-      {/* ─── Floating golden particles ─── */}
+      {/* ─── Floating golden particles (decorative) ─── */}
       {mounted &&
         particles.map((p) => (
           <Particle key={p.id} delay={p.delay} size={p.size} left={p.left} duration={p.duration} />
         ))}
 
-      {/* ─── Decorative blurred orbs ─── */}
-      <div className="absolute top-[-15%] right-[-8%] w-[500px] h-[500px] bg-[#c6a052]/8 rounded-full blur-[120px] animate-pulse-slow pointer-events-none" />
-      <div className="absolute bottom-[-15%] left-[-8%] w-[600px] h-[600px] bg-[#1a3a5c]/20 rounded-full blur-[140px] animate-pulse-slow pointer-events-none" />
-      <div className="absolute top-[40%] left-[50%] w-[300px] h-[300px] bg-[#c6a052]/5 rounded-full blur-[100px] animate-float pointer-events-none" />
+      {/* ─── Aurora-like blurred orbs (depth) ─── */}
+      <div
+        aria-hidden
+        className="absolute top-[-18%] right-[-10%] w-[560px] h-[560px] bg-[#c6a052]/10 rounded-full blur-[130px] animate-pulse-slow pointer-events-none"
+      />
+      <div
+        aria-hidden
+        className="absolute bottom-[-18%] left-[-10%] w-[640px] h-[640px] bg-[#1a3a5c]/25 rounded-full blur-[150px] animate-pulse-slow pointer-events-none"
+      />
+      <div
+        aria-hidden
+        className="absolute top-[35%] left-[48%] w-[340px] h-[340px] bg-[#c6a052]/6 rounded-full blur-[110px] animate-float pointer-events-none"
+      />
 
-      {/* ─── Islamic geometric pattern overlay ─── */}
-      <div className="absolute inset-0 opacity-[0.04] pointer-events-none">
+      {/* ─── Subtle Islamic geometric pattern overlay ─── */}
+      <div aria-hidden className="absolute inset-0 opacity-[0.045] pointer-events-none">
         <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
           <defs>
             <pattern
-              id="islamic-geo"
+              id="heritage-geo"
               x="0"
               y="0"
               width="80"
@@ -226,55 +235,84 @@ function LoginPageInner() {
               <path d="M20 80 L40 60 L60 80" fill="none" stroke="#c6a052" strokeWidth="0.3" />
             </pattern>
           </defs>
-          <rect width="100%" height="100%" fill="url(#islamic-geo)" />
+          <rect width="100%" height="100%" fill="url(#heritage-geo)" />
         </svg>
       </div>
 
-      {/* ─── Floating Islamic stars ─── */}
-      <IslamicStar className="absolute top-[8%] left-[12%] w-20 h-20 text-[#c6a052] animate-float opacity-30" />
-      <IslamicStar className="absolute bottom-[12%] right-[8%] w-16 h-16 text-[#c6a052] animate-float opacity-20" />
-      <IslamicStar className="absolute top-[60%] left-[5%] w-12 h-12 text-[#c6a052] animate-float opacity-15" />
+      {/* ─── Decorative heritage stars (background depth) ─── */}
+      <HeritageOrnament
+        aria-hidden
+        className="absolute top-[8%] left-[12%] w-20 h-20 text-[#c6a052] animate-float opacity-30 hidden md:block"
+      />
+      <HeritageOrnament
+        aria-hidden
+        className="absolute bottom-[10%] right-[8%] w-16 h-16 text-[#c6a052] animate-float opacity-20 hidden md:block"
+      />
+      <HeritageOrnament
+        aria-hidden
+        className="absolute top-[58%] left-[6%] w-12 h-12 text-[#c6a052] animate-float opacity-15 hidden lg:block"
+      />
 
-      {/* ─── Main login card ─── */}
-      <div className="relative z-10 w-full max-w-[460px] px-5">
-        {/* ─── Welcome text ─── */}
-        <div className="text-center mb-8 reveal-0">
-          <p className="text-[#c6a052] text-lg mb-3 font-semibold tracking-wide islamic-shimmer">
-            السلام عليكم ورحمة الله وبركاته
+      {/* ─── Main content ─── */}
+      <div className="relative z-10 w-full max-w-[480px]">
+        {/* ─── Welcome / brand strip ─── */}
+        <header className="text-center mb-7 reveal-0">
+          <span className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.4em] text-[#c6a052]/80 mb-4">
+            <Sparkles size={11} className="opacity-70" />
+            <span>Heritage Management</span>
+            <Sparkles size={11} className="opacity-70" />
+          </span>
+          <h1 className="text-[34px] sm:text-[40px] font-extrabold text-white leading-tight drop-shadow-lg">
+            مرحبًا بك في لوحة تحكم{' '}
+            <span className="islamic-shimmer bg-clip-text text-transparent">تراث مصر</span>
+          </h1>
+          <p className="text-white/55 text-[13px] sm:text-sm mt-3 max-w-[420px] mx-auto leading-relaxed">
+            إدارة الطلبات، الشحن، المخزون وخدمة العملاء من مكان واحد
           </p>
-          <h1 className="text-4xl font-extrabold text-white mb-2 drop-shadow-lg">تراث مصر</h1>
-          <p className="text-white/50 text-sm">مرحبًا بك في نظام الإدارة المتكامل</p>
-        </div>
+        </header>
 
         {/* ─── Glass card ─── */}
-        <div className="islamic-glass-card rounded-[2rem] p-8 lg:p-10 reveal-1">
-          {/* ─── Logo icon ─── */}
-          <div className="flex flex-col items-center mb-8">
-            <div className="w-24 h-24 mb-4 hover:scale-105 transition-transform duration-500">
+        <section
+          className="islamic-glass-card rounded-[28px] p-7 sm:p-9 reveal-1"
+          aria-label="نموذج تسجيل الدخول"
+        >
+          {/* ─── Logo + heading ─── */}
+          <div className="flex flex-col items-center mb-7">
+            <div className="relative mb-4 group">
+              <div
+                aria-hidden
+                className="absolute inset-0 rounded-full bg-[#c6a052]/30 blur-xl opacity-60 group-hover:opacity-90 transition-opacity duration-500"
+              />
               <Image
                 src="/assets/images/new_logo.jpg"
                 alt="تراث مصر"
-                width={96}
-                height={96}
+                width={92}
+                height={92}
                 priority
-                className="w-full h-full rounded-full object-cover shadow-[0_8px_30px_rgba(198,160,82,0.4)] border-2 border-[#c6a052]/30"
+                className="relative w-[92px] h-[92px] rounded-full object-cover shadow-[0_8px_32px_rgba(198,160,82,0.45)] border-2 border-[#c6a052]/30 transition-transform duration-500 group-hover:scale-[1.04]"
               />
             </div>
-            <h2 className="text-xl font-bold text-white">تسجيل الدخول</h2>
-            <p className="text-white/40 text-sm mt-1">أدخل بياناتك للمتابعة</p>
+            <h2 className="text-lg font-bold text-white tracking-wide">تسجيل الدخول</h2>
+            <p className="text-white/45 text-xs mt-1">أدخل بياناتك للمتابعة بأمان</p>
           </div>
 
           {/* ─── Device badge ─── */}
-          <div className="flex items-center justify-center gap-2 bg-white/5 backdrop-blur-sm rounded-full py-2 px-4 mb-6 border border-[#c6a052]/15">
+          <div
+            className="flex items-center justify-center gap-2 bg-white/[0.04] backdrop-blur-sm rounded-full py-1.5 px-4 mb-6 border border-[#c6a052]/15"
+            aria-label="نوع الجهاز"
+          >
             <DeviceIcon device={deviceType} />
-            <span className="text-[10px] uppercase tracking-wider text-white/40">
-              متصل عبر: <span className="text-[#c6a052]/70">{deviceType}</span>
+            <span className="text-[10px] uppercase tracking-[0.18em] text-white/45">
+              متصل عبر: <span className="text-[#c6a052]/80">{deviceType}</span>
             </span>
           </div>
 
           {/* ─── Error message ─── */}
           {loginError && (
-            <div className="flex items-start gap-2 bg-red-500/10 border border-red-500/20 rounded-xl p-4 mb-6 text-red-200 text-xs reveal-1">
+            <div
+              role="alert"
+              className="flex items-start gap-2 bg-red-500/10 border border-red-500/25 rounded-xl p-4 mb-6 text-red-200 text-xs reveal-1"
+            >
               <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />
               <span>{loginError}</span>
             </div>
@@ -284,61 +322,78 @@ function LoginPageInner() {
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-5" noValidate>
             {/* Email */}
             <div className="reveal-1">
-              <label className="block text-sm font-medium text-white/50 mb-2 mr-1">
+              <label
+                htmlFor="email"
+                className="block text-[13px] font-medium text-white/65 mb-2 mr-1"
+              >
                 البريد الإلكتروني
               </label>
-              <div className="relative">
+              <div className="relative group">
                 <Mail
                   size={18}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-[#c6a052]/40"
+                  aria-hidden
+                  className="absolute right-4 top-1/2 -translate-y-1/2 text-[#c6a052]/45 group-focus-within:text-[#c6a052] transition-colors duration-300"
                 />
                 <input
                   id="email"
                   type="email"
                   dir="ltr"
-                  className={`w-full pr-11 pl-4 py-3.5 bg-white/[0.07] border rounded-xl text-white placeholder-white/25
-                    focus:ring-2 focus:ring-[#c6a052]/40 focus:border-[#c6a052]/30 outline-none transition-all duration-300
-                    backdrop-blur-sm ${errors.email ? 'border-red-500/50' : 'border-white/10'}`}
+                  className={`w-full pr-11 pl-4 py-3.5 bg-white/[0.06] border rounded-xl text-white placeholder-white/25
+                    focus:ring-2 focus:ring-[#c6a052]/45 focus:border-[#c6a052]/40 outline-none transition-all duration-300
+                    backdrop-blur-sm shadow-inner shadow-black/10
+                    ${errors.email ? 'border-red-500/55' : 'border-white/[0.09] hover:border-white/15'}`}
                   placeholder="name@example.com"
                   autoComplete="email"
+                  aria-invalid={errors.email ? 'true' : 'false'}
                   {...register('email', { required: 'يرجى إدخال البريد الإلكتروني' })}
                 />
               </div>
               {errors.email && (
-                <p className="text-red-400 text-xs mt-1.5 mr-1">{errors.email.message}</p>
+                <p role="alert" className="text-red-400 text-xs mt-1.5 mr-1">
+                  {errors.email.message}
+                </p>
               )}
             </div>
 
             {/* Password */}
             <div className="reveal-2">
-              <label className="block text-sm font-medium text-white/50 mb-2 mr-1">
+              <label
+                htmlFor="password"
+                className="block text-[13px] font-medium text-white/65 mb-2 mr-1"
+              >
                 كلمة المرور
               </label>
-              <div className="relative">
+              <div className="relative group">
                 <Lock
                   size={18}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-[#c6a052]/40"
+                  aria-hidden
+                  className="absolute right-4 top-1/2 -translate-y-1/2 text-[#c6a052]/45 group-focus-within:text-[#c6a052] transition-colors duration-300"
                 />
                 <input
                   id="password"
                   type={showPassword ? 'text' : 'password'}
-                  className={`w-full pr-11 pl-12 py-3.5 bg-white/[0.07] border rounded-xl text-white placeholder-white/25
-                    focus:ring-2 focus:ring-[#c6a052]/40 focus:border-[#c6a052]/30 outline-none transition-all duration-300
-                    backdrop-blur-sm ${errors.password ? 'border-red-500/50' : 'border-white/10'}`}
+                  className={`w-full pr-11 pl-12 py-3.5 bg-white/[0.06] border rounded-xl text-white placeholder-white/25
+                    focus:ring-2 focus:ring-[#c6a052]/45 focus:border-[#c6a052]/40 outline-none transition-all duration-300
+                    backdrop-blur-sm shadow-inner shadow-black/10
+                    ${errors.password ? 'border-red-500/55' : 'border-white/[0.09] hover:border-white/15'}`}
                   placeholder="••••••••"
                   dir="ltr"
+                  aria-invalid={errors.password ? 'true' : 'false'}
                   {...register('password', { required: 'يرجى إدخال كلمة المرور' })}
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute left-4 top-1/2 -translate-y-1/2 text-white/30 hover:text-[#c6a052] transition-colors"
+                  aria-label={showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
+                  className="absolute left-4 top-1/2 -translate-y-1/2 text-white/35 hover:text-[#c6a052] focus:text-[#c6a052] focus:outline-none transition-colors duration-300"
                 >
                   {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                 </button>
               </div>
               {errors.password && (
-                <p className="text-red-400 text-xs mt-1.5 mr-1">{errors.password.message}</p>
+                <p role="alert" className="text-red-400 text-xs mt-1.5 mr-1">
+                  {errors.password.message}
+                </p>
               )}
             </div>
 
@@ -347,43 +402,67 @@ function LoginPageInner() {
               <button
                 type="submit"
                 disabled={isLoading}
-                className="w-full py-4 bg-gradient-to-l from-[#c6a052] to-[#a07d2e] hover:from-[#d4af61] hover:to-[#b8912e]
-                  text-white font-bold text-lg rounded-xl shadow-[0_10px_30px_-10px_rgba(198,160,82,0.5)]
-                  hover:shadow-[0_15px_40px_-10px_rgba(198,160,82,0.6)] hover:-translate-y-0.5
-                  transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed
-                  flex items-center justify-center gap-3"
+                aria-busy={isLoading}
+                className="relative overflow-hidden w-full py-[15px] bg-gradient-to-l from-[#c6a052] via-[#b9913f] to-[#a07d2e]
+                  hover:from-[#d4af61] hover:via-[#c79c47] hover:to-[#b8912e]
+                  text-white font-bold text-[15px] tracking-wide rounded-xl
+                  shadow-[0_10px_30px_-10px_rgba(198,160,82,0.55)]
+                  hover:shadow-[0_18px_44px_-10px_rgba(198,160,82,0.7)]
+                  hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.99]
+                  focus:outline-none focus-visible:ring-2 focus-visible:ring-[#c6a052]/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0c1929]
+                  transition-all duration-300 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0
+                  flex items-center justify-center gap-3 group"
               >
+                {/* Shimmer sweep on hover */}
+                <span
+                  aria-hidden
+                  className="absolute inset-0 -translate-x-full group-hover:translate-x-full bg-gradient-to-r from-transparent via-white/20 to-transparent transition-transform duration-700"
+                />
                 {isLoading ? (
-                  <div className="w-6 h-6 border-3 border-white/30 border-t-white rounded-full animate-spin" />
+                  <>
+                    <span className="w-5 h-5 border-[3px] border-white/30 border-t-white rounded-full animate-spin" />
+                    <span>جاري التحقق...</span>
+                  </>
                 ) : (
                   <>
-                    <span>دخول</span>
-                    <LogIn size={20} />
+                    <span>دخول آمن</span>
+                    <ArrowLeft
+                      size={18}
+                      className="transition-transform duration-300 group-hover:-translate-x-1"
+                    />
                   </>
                 )}
               </button>
             </div>
           </form>
 
-          {/* ─── Stats ─── */}
-          <div className="reveal-4 mt-10 pt-6 border-t border-white/[0.06] grid grid-cols-3 gap-2 text-center text-white">
+          {/* ─── Trust note ─── */}
+          <div className="reveal-4 mt-7 flex items-center justify-center gap-2 text-[11px] text-white/45">
+            <ShieldCheck size={13} className="text-emerald-400/70" />
+            <span>اتصال آمن مشفّر · بياناتك محمية</span>
+          </div>
+
+          {/* ─── Stats strip ─── */}
+          <div className="reveal-4 mt-6 pt-5 border-t border-white/[0.06] grid grid-cols-3 gap-2 text-center text-white">
             <div>
               <p className="font-bold text-sm text-[#c6a052]">+5k</p>
-              <p className="text-white/30 text-[9px] uppercase tracking-wider">طلب شهري</p>
+              <p className="text-white/35 text-[9px] uppercase tracking-[0.18em] mt-0.5">
+                طلب شهري
+              </p>
             </div>
             <div className="border-x border-white/[0.06]">
               <p className="font-bold text-sm text-[#c6a052]">98%</p>
-              <p className="text-white/30 text-[9px] uppercase tracking-wider">توصيل</p>
+              <p className="text-white/35 text-[9px] uppercase tracking-[0.18em] mt-0.5">توصيل</p>
             </div>
             <div>
               <p className="font-bold text-sm text-[#c6a052]">4.9</p>
-              <p className="text-white/30 text-[9px] uppercase tracking-wider">تقييم</p>
+              <p className="text-white/35 text-[9px] uppercase tracking-[0.18em] mt-0.5">تقييم</p>
             </div>
           </div>
-        </div>
+        </section>
 
         {/* ─── Footer ─── */}
-        <p className="reveal-4 text-center text-[10px] text-white/20 mt-8 tracking-[0.2em] font-light">
+        <p className="reveal-4 text-center text-[10px] text-white/25 mt-7 tracking-[0.22em] font-light">
           تراث مصر — TURATH MASR &copy; {new Date().getFullYear()}
         </p>
       </div>
