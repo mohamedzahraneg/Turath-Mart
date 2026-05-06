@@ -85,11 +85,19 @@ jobs:
 
   # ───────────────────────────────────────────────────────────────────────────
   # 1. Quality gates — fail fast before touching the VPS.
+  #
+  # Bound to the same environment as preflight + deploy so the build step
+  # can read the Supabase env vars from secrets. Without this, the
+  # `/_not-found` prerender step fails with "@supabase/ssr: Your project's
+  # URL and API key are required" because the layout-level AuthProvider
+  # constructs a client at module load.
   # ───────────────────────────────────────────────────────────────────────────
   quality:
     name: Quality gates
     needs: preflight
     runs-on: ubuntu-latest
+    environment:
+      name: Mac
     steps:
       - uses: actions/checkout@v4
 
