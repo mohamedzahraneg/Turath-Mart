@@ -1,0 +1,183 @@
+name: Deploy Production
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Production deployment workflow.
+#
+# Triggers:
+#   - workflow_dispatch ONLY. Never automatic. Requires the operator to
+#     type the confirmation phrase to prevent accidental clicks.
+#
+# Protection layers:
+#   1. workflow_dispatch only — no push trigger, no PR trigger.
+#   2. Confirmation input — must match exact phrase or the run aborts.
+#   3. GitHub Environment "production" — configure required reviewers in
+#      repo Settings → Environments → production. Reviewer approval gates
+#      the deploy job.
+#   4. Quality gates run first — typecheck/lint/build must pass before any
+#      VPS access.
+#
+# Migrations are NEVER applied automatically. They must be applied via the
+# Supabase Dashboard SQL Editor in the order documented in DEPLOYMENT.md.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type DEPLOY-PRODUCTION to confirm.'
+        required: true
+        type: string
+      migrations_applied:
+        description: 'Have all four RLS migrations been applied to production Supabase already? (yes/no)'
+        required: true
+        type: string
+        default: 'no'
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # 1. Confirmation gate — block obvious mistakes before doing anything.
+  # ───────────────────────────────────────────────────────────────────────────
+  guard:
+    name: Confirmation gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check confirmation phrase
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "DEPLOY-PRODUCTION" ]; then
+            echo "::error::Confirmation phrase did not match exactly."
+            echo "Type DEPLOY-PRODUCTION to proceed. Aborting."
+            exit 1
+          fi
+          echo "✅ Confirmation matched"
+
+      - name: Check migrations checklist
+        run: |
+          if [ "${{ github.event.inputs.migrations_applied }}" != "yes" ]; then
+            echo "::error::Production RLS migrations have not been applied."
+            echo "Apply migrations 20260505 → 20260505b → 20260505c → 20260506"
+            echo "via Supabase Dashboard → SQL Editor BEFORE running this workflow."
+            echo "See docs/DEPLOYMENT.md for the exact order and verification queries."
+            exit 1
+          fi
+          echo "✅ Migrations confirmed applied"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 2. Quality gates — same as staging.
+  # ───────────────────────────────────────────────────────────────────────────
+  quality:
+    name: Quality gates
+    needs: guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.3
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript check
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Build (CI smoke test)
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_SITE_URL: ${{ secrets.NEXT_PUBLIC_SITE_URL }}
+        run: pnpm build
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 3. Deploy — gated by GitHub Environment `production`.
+  #    Configure required reviewers in repo Settings → Environments →
+  #    production. The job pauses until a reviewer approves.
+  # ───────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to production VPS
+    needs: quality
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ secrets.NEXT_PUBLIC_SITE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
+
+      - name: Add VPS to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Ensure target directory exists on VPS
+        run: |
+          ssh -o StrictHostKeyChecking=yes \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "mkdir -p '${{ secrets.VPS_PATH }}' && chmod 755 '${{ secrets.VPS_PATH }}'"
+
+      - name: Write .env on VPS
+        env:
+          ENV_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          ENV_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          ENV_SITE: ${{ secrets.NEXT_PUBLIC_SITE_URL }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PATH: ${{ secrets.VPS_PATH }}
+        run: |
+          ssh -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" \
+            "umask 077 && cat > '$VPS_PATH/.env' && chmod 600 '$VPS_PATH/.env'" <<ENV_EOF
+          NEXT_PUBLIC_SUPABASE_URL=$ENV_URL
+          NEXT_PUBLIC_SUPABASE_ANON_KEY=$ENV_KEY
+          NEXT_PUBLIC_SITE_URL=$ENV_SITE
+          ENV_EOF
+
+      - name: Run deploy_vps.sh
+        env:
+          VPS_IP: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PATH: ${{ secrets.VPS_PATH }}
+          APP_PORT: ${{ secrets.APP_PORT }}
+          PM2_APP_NAME: ${{ secrets.PM2_APP_NAME }}
+        run: |
+          chmod +x ./deploy_vps.sh
+          ./deploy_vps.sh
+
+      - name: Verify production responds
+        run: |
+          set -e
+          for i in 1 2 3 4 5 6; do
+            STATUS=$(curl -sk -o /dev/null -w "%{http_code}" \
+              --max-time 10 \
+              "${{ secrets.NEXT_PUBLIC_SITE_URL }}" || echo "000")
+            echo "Attempt $i: HTTP $STATUS"
+            if [[ "$STATUS" =~ ^[23] ]]; then
+              echo "✅ Production is responding"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "❌ Production did not respond with 2xx/3xx within ~60s"
+          exit 1
