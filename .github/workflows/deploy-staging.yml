@@ -49,36 +49,54 @@ jobs:
           V_APP_PORT: ${{ secrets.APP_PORT }}
           V_PM2_APP_NAME: ${{ secrets.PM2_APP_NAME }}
           V_NEXT_PUBLIC_SITE_URL: ${{ secrets.NEXT_PUBLIC_SITE_URL }}
+          V_NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          V_NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
         run: |
           # Each check echoes only a PASS/FAIL label — the secret values
           # themselves are also masked by GitHub even if they did print.
           fail=0
           if [[ "$V_VPS_PATH" == */turath-staging ]]; then
-            echo "VPS_PATH ends with /turath-staging   : PASS"
+            echo "VPS_PATH ends with /turath-staging        : PASS"
           else
-            echo "VPS_PATH ends with /turath-staging   : FAIL"
+            echo "VPS_PATH ends with /turath-staging        : FAIL"
             fail=1
           fi
           if [[ "$V_APP_PORT" == "875" ]]; then
-            echo "APP_PORT == 875                       : PASS"
+            echo "APP_PORT == 875                            : PASS"
           else
-            echo "APP_PORT == 875                       : FAIL"
+            echo "APP_PORT == 875                            : FAIL"
             fail=1
           fi
           if [[ "$V_PM2_APP_NAME" == "turath-staging" ]]; then
-            echo "PM2_APP_NAME == turath-staging        : PASS"
+            echo "PM2_APP_NAME == turath-staging             : PASS"
           else
-            echo "PM2_APP_NAME == turath-staging        : FAIL"
+            echo "PM2_APP_NAME == turath-staging             : FAIL"
             fail=1
           fi
           if [[ "$V_NEXT_PUBLIC_SITE_URL" == *":875"* ]]; then
-            echo "NEXT_PUBLIC_SITE_URL contains :875    : PASS"
+            echo "NEXT_PUBLIC_SITE_URL contains :875         : PASS"
           else
-            echo "NEXT_PUBLIC_SITE_URL contains :875    : FAIL"
+            echo "NEXT_PUBLIC_SITE_URL contains :875         : FAIL"
+            fail=1
+          fi
+          # Format check: Supabase URL must be https://<project>.supabase.co
+          if [[ "$V_NEXT_PUBLIC_SUPABASE_URL" =~ ^https://[A-Za-z0-9-]+\.supabase\.co/?$ ]]; then
+            echo "NEXT_PUBLIC_SUPABASE_URL is well-formed    : PASS"
+          else
+            echo "NEXT_PUBLIC_SUPABASE_URL is well-formed    : FAIL"
+            echo "  Expected pattern: https://<project>.supabase.co"
+            echo "  Hint: the value must start with 'https://' and end with '.supabase.co'"
+            fail=1
+          fi
+          # Anon key looks like a JWT (3 base64 segments separated by dots)
+          if [[ "$V_NEXT_PUBLIC_SUPABASE_ANON_KEY" =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]]; then
+            echo "NEXT_PUBLIC_SUPABASE_ANON_KEY is a JWT     : PASS"
+          else
+            echo "NEXT_PUBLIC_SUPABASE_ANON_KEY is a JWT     : FAIL"
             fail=1
           fi
           if [ "$fail" -eq 1 ]; then
-            echo "::error::One or more secrets are NOT staging-shaped. Refusing to deploy."
+            echo "::error::One or more secrets are misshapen. Refusing to deploy."
             exit 1
           fi
           echo "All preflight checks passed."
