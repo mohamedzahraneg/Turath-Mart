@@ -1,0 +1,150 @@
+name: Deploy Staging
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Staging deployment workflow.
+#
+# Triggers:
+#   - Manual dispatch from the Actions tab.
+#   - Push to the security/hardening-phase-1-2-3 branch (the active PR branch).
+#     Remove this trigger once the PR merges to main; staging should be
+#     re-pointed at a long-lived `staging` branch then.
+#
+# Secrets are read from the GitHub Environment named `staging` so production
+# can keep the same secret names with different values in its own environment.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - security/hardening-phase-1-2-3
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # 1. Quality gates — fail fast before touching the VPS.
+  # ───────────────────────────────────────────────────────────────────────────
+  quality:
+    name: Quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.3
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript check
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      # The build here is a CI smoke test only; the real production-like
+      # build happens on the VPS in the `deploy` job.
+      - name: Build (CI smoke test)
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_SITE_URL: ${{ secrets.NEXT_PUBLIC_SITE_URL }}
+        run: pnpm build
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 2. Deploy — only after quality gates pass.
+  # ───────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to staging VPS
+    needs: quality
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: ${{ secrets.NEXT_PUBLIC_SITE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Loads the private key into ssh-agent for the lifetime of this job.
+      # The key never appears on disk and is wiped when the runner is destroyed.
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.VPS_SSH_KEY }}
+
+      - name: Add VPS to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Ensure target directory exists on VPS
+        run: |
+          ssh -o StrictHostKeyChecking=yes \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "mkdir -p '${{ secrets.VPS_PATH }}' && chmod 755 '${{ secrets.VPS_PATH }}'"
+
+      # Writes /<VPS_PATH>/.env on the server with staging values.
+      # Secrets are masked in workflow logs — they don't appear in stdout.
+      - name: Write .env on VPS
+        env:
+          ENV_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          ENV_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          ENV_SITE: ${{ secrets.NEXT_PUBLIC_SITE_URL }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PATH: ${{ secrets.VPS_PATH }}
+        run: |
+          ssh -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" \
+            "umask 077 && cat > '$VPS_PATH/.env' && chmod 600 '$VPS_PATH/.env'" <<ENV_EOF
+          NEXT_PUBLIC_SUPABASE_URL=$ENV_URL
+          NEXT_PUBLIC_SUPABASE_ANON_KEY=$ENV_KEY
+          NEXT_PUBLIC_SITE_URL=$ENV_SITE
+          ENV_EOF
+
+      # Runs the existing deploy_vps.sh, which handles rsync + remote build
+      # + PM2 restart. PM2_APP_NAME isolates this from production.
+      - name: Run deploy_vps.sh
+        env:
+          VPS_IP: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PATH: ${{ secrets.VPS_PATH }}
+          APP_PORT: ${{ secrets.APP_PORT }}
+          PM2_APP_NAME: ${{ secrets.PM2_APP_NAME }}
+        run: |
+          chmod +x ./deploy_vps.sh
+          ./deploy_vps.sh
+
+      # Best-effort smoke check. Fails the workflow if the staging URL doesn't
+      # respond with 2xx/3xx within 30 seconds. Set to `continue-on-error: true`
+      # if your VPS firewalls GitHub runner IPs.
+      - name: Verify staging responds
+        run: |
+          set -e
+          for i in 1 2 3 4 5 6; do
+            STATUS=$(curl -sk -o /dev/null -w "%{http_code}" \
+              --max-time 10 \
+              "${{ secrets.NEXT_PUBLIC_SITE_URL }}" || echo "000")
+            echo "Attempt $i: HTTP $STATUS"
+            if [[ "$STATUS" =~ ^[23] ]]; then
+              echo "✅ Staging is responding"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "❌ Staging did not respond with 2xx/3xx within ~60s"
+          exit 1
