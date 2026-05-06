@@ -71,11 +71,28 @@ ssh -p "$VPS_PORT" -o StrictHostKeyChecking=no "$VPS_USER@$VPS_IP" << EOF
   fuser -k $APP_PORT/tcp || true
 
   echo "🚀 Starting server with PM2..."
-  PORT=$APP_PORT \$PM2_BIN start .next/standalone/server.js --name "${PM2_APP_NAME}" --cwd .next/standalone
+  # Script path is relative to --cwd, so use bare server.js. The previous
+  # form (.next/standalone/server.js + --cwd .next/standalone) resolved to
+  # the doubled path .next/standalone/.next/standalone/server.js and made
+  # PM2 silently fail to register the process.
+  PORT=$APP_PORT \$PM2_BIN start server.js --name "${PM2_APP_NAME}" --cwd .next/standalone
 
-  echo "✅ Service started."
+  echo "Waiting for PM2 to settle..."
   sleep 5
   \$PM2_BIN status
+
+  # Fail-loud verification — confirm ${PM2_APP_NAME} actually started and
+  # is online. Without this, a failed start (e.g. wrong path) leaves PM2
+  # with no process while the script returns 0 and the workflow shows
+  # "Service started" — the silent failure observed on run 25448962265.
+  ST=\$(\$PM2_BIN jlist 2>/dev/null | \$NODE_BIN -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{const a=JSON.parse(d).filter(x=>x.name==='${PM2_APP_NAME}');if(a.length===0){console.log('NOT_FOUND');return;}console.log((a[0].pm2_env&&a[0].pm2_env.status)||'UNKNOWN');});")
+  if [ "\$ST" != "online" ]; then
+    echo "❌ Error: PM2 process '${PM2_APP_NAME}' is not online (status=\$ST)."
+    echo "--- Last 40 log lines for ${PM2_APP_NAME} (this process only) ---"
+    \$PM2_BIN logs "${PM2_APP_NAME}" --lines 40 --nostream 2>&1 || true
+    exit 1
+  fi
+  echo "✅ Verified: ${PM2_APP_NAME} is online."
 EOF
 
 echo "🏁 Deployment finished."
