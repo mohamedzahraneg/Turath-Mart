@@ -52,3 +52,13 @@ jest-test-results.json
 # ─── IDEs ──────────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
+
+# ─── Local Supabase backups (NEVER commit — contain customer data) ─────────────
+.backups/
+prod_*.sql
+
+# ─── Supabase CLI runtime artifacts ────────────────────────────────────────────
+# (the supabase/ subdir has its own .gitignore for these too;
+#  duplicating here as defense-in-depth)
+supabase/.branches/
+supabase/.temp/
