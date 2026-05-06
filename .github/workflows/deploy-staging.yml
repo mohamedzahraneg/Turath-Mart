@@ -28,10 +28,67 @@ permissions:
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────────
+  # 0. Preflight — assert secrets shape WITHOUT revealing values.
+  #
+  # GitHub Actions automatically masks any secret value that appears in
+  # logs. We use that to compare each staging-critical secret to a known
+  # pattern (e.g. ends with `/turath-staging`, equals `875`) and emit
+  # only `PASS` / `FAIL` markers. The workflow halts before any SSH or
+  # rsync runs if any secret looks like it points at production.
+  # Bound to environment `Mac` so the secrets are visible to the job.
+  # ───────────────────────────────────────────────────────────────────────────
+  preflight:
+    name: Preflight (staging-shape secrets)
+    runs-on: ubuntu-latest
+    environment:
+      name: Mac
+    steps:
+      - name: Verify secrets are staging-shaped
+        env:
+          V_VPS_PATH: ${{ secrets.VPS_PATH }}
+          V_APP_PORT: ${{ secrets.APP_PORT }}
+          V_PM2_APP_NAME: ${{ secrets.PM2_APP_NAME }}
+          V_NEXT_PUBLIC_SITE_URL: ${{ secrets.NEXT_PUBLIC_SITE_URL }}
+        run: |
+          # Each check echoes only a PASS/FAIL label — the secret values
+          # themselves are also masked by GitHub even if they did print.
+          fail=0
+          if [[ "$V_VPS_PATH" == */turath-staging ]]; then
+            echo "VPS_PATH ends with /turath-staging   : PASS"
+          else
+            echo "VPS_PATH ends with /turath-staging   : FAIL"
+            fail=1
+          fi
+          if [[ "$V_APP_PORT" == "875" ]]; then
+            echo "APP_PORT == 875                       : PASS"
+          else
+            echo "APP_PORT == 875                       : FAIL"
+            fail=1
+          fi
+          if [[ "$V_PM2_APP_NAME" == "turath-staging" ]]; then
+            echo "PM2_APP_NAME == turath-staging        : PASS"
+          else
+            echo "PM2_APP_NAME == turath-staging        : FAIL"
+            fail=1
+          fi
+          if [[ "$V_NEXT_PUBLIC_SITE_URL" == *":875"* ]]; then
+            echo "NEXT_PUBLIC_SITE_URL contains :875    : PASS"
+          else
+            echo "NEXT_PUBLIC_SITE_URL contains :875    : FAIL"
+            fail=1
+          fi
+          if [ "$fail" -eq 1 ]; then
+            echo "::error::One or more secrets are NOT staging-shaped. Refusing to deploy."
+            exit 1
+          fi
+          echo "All preflight checks passed."
+
+  # ───────────────────────────────────────────────────────────────────────────
   # 1. Quality gates — fail fast before touching the VPS.
   # ───────────────────────────────────────────────────────────────────────────
   quality:
     name: Quality gates
+    needs: preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -73,13 +130,13 @@ jobs:
     name: Deploy to staging VPS
     needs: quality
     runs-on: ubuntu-latest
-    # Per GitHub docs, `environment.url` cannot use the `secrets` context —
-    # using `${{ secrets.X }}` here causes the workflow to fail validation
-    # before any job runs. Drop the field (it's optional; only adds a
-    # clickable link in the Actions UI) or move the value to a repo
-    # Variable (the `vars` context IS allowed in `environment.url`).
+    # TEMPORARY: pointing at the existing `Mac` environment until a
+    # dedicated `staging` environment is created in repo Settings →
+    # Environments. The 9 deploy secrets are configured under `Mac`.
+    # Per GitHub docs, `environment.url` cannot use the `secrets` context,
+    # so the field is omitted (URL link in the Actions UI is optional).
     environment:
-      name: staging
+      name: Mac
     steps:
       - uses: actions/checkout@v4
 

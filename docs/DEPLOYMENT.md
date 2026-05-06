@@ -120,20 +120,35 @@ All nine secrets must be set **in each environment** (`staging` and `production`
 
 ## Staging deployment
 
+> ⚠️ **TEMPORARY arrangement.** The `staging` GitHub Environment was never
+> created. Instead the staging workflow currently binds to the existing
+> `Mac` environment (it was the only environment configured by the
+> operator and already contained the 9 staging-shaped secrets). When a
+> dedicated `staging` environment is created later, change
+> `environment.name: Mac` back to `staging` in
+> `.github/workflows/deploy-staging.yml` and copy the secrets across.
+>
+> The `production` workflow is **not** affected by this temporary mapping
+> — it still binds to a future `production` environment and is
+> manual-dispatch-only. Do not run the production workflow until that
+> environment exists with production-shaped secrets and Required
+> Reviewers configured.
+
 ### Trigger
 
 - Manual: repo → **Actions → "Deploy Staging" → Run workflow**.
-- Automatic: any push to `security/hardening-phase-1-2-3` triggers it. Once that branch merges, edit `.github/workflows/deploy-staging.yml` to point at a long-lived `staging` branch (or remove the auto trigger).
+- Automatic: any push to `security/hardening-phase-1-2-3` triggers it. Once that branch is fully retired, edit `.github/workflows/deploy-staging.yml` to point at a long-lived `staging` branch (or remove the auto trigger).
 
 ### What it does
 
-1. Quality gates: `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm lint`, `pnpm build`. If any fails, the deploy job is skipped.
-2. Loads the deploy SSH key into `ssh-agent` for the job's lifetime.
-3. Adds the staging VPS to `known_hosts`.
-4. Creates `$VPS_PATH` on the VPS if missing.
-5. Writes `$VPS_PATH/.env` with the staging Supabase URL/key/site URL. Mode `600`.
-6. Runs `./deploy_vps.sh` with the staging env vars (`PM2_APP_NAME=turath-staging`, `APP_PORT=875`, etc).
-7. Curls `NEXT_PUBLIC_SITE_URL` 6 times with 5-second waits, fails the run if no `2xx`/`3xx` within ~60 seconds.
+1. **Preflight** — assert that the secrets bound to the workflow look staging-shaped (VPS_PATH ends in `/turath-staging`, APP_PORT is `875`, PM2_APP_NAME is `turath-staging`, NEXT_PUBLIC_SITE_URL contains `:875`). Emits PASS / FAIL labels only — secret values are never printed and are masked by GitHub regardless. Halts the workflow before any SSH if any check fails.
+2. Quality gates: `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm lint`, `pnpm build`. If any fails, the deploy job is skipped.
+3. Loads the deploy SSH key into `ssh-agent` for the job's lifetime.
+4. Adds the staging VPS to `known_hosts`.
+5. Creates `$VPS_PATH` on the VPS if missing.
+6. Writes `$VPS_PATH/.env` with the staging Supabase URL/key/site URL. Mode `600`.
+7. Runs `./deploy_vps.sh` with the staging env vars (`PM2_APP_NAME=turath-staging`, `APP_PORT=875`, etc).
+8. Curls `NEXT_PUBLIC_SITE_URL` 6 times with 5-second waits, fails the run if no `2xx`/`3xx` within ~60 seconds.
 
 ### Differences from production
 
