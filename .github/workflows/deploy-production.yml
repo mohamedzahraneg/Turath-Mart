@@ -115,9 +115,13 @@ jobs:
     name: Deploy to production VPS
     needs: quality
     runs-on: ubuntu-latest
+    # Per GitHub docs, `environment.url` cannot use the `secrets` context —
+    # using `${{ secrets.X }}` here causes the workflow to fail validation
+    # before any job runs. Drop the field (it's optional; only adds a
+    # clickable link in the Actions UI) or move the value to a repo
+    # Variable (the `vars` context IS allowed in `environment.url`).
     environment:
       name: production
-      url: ${{ secrets.NEXT_PUBLIC_SITE_URL }}
     steps:
       - uses: actions/checkout@v4
 
