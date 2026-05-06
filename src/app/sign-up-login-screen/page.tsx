@@ -1,13 +1,12 @@
 'use client';
 import React, { Suspense, useState, useEffect, useMemo, useCallback } from 'react';
-import Image from 'next/image';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { toast, Toaster } from 'sonner';
 import {
   Eye,
   EyeOff,
-  Mail,
+  User,
   Lock,
   ArrowLeft,
   AlertCircle,
@@ -84,6 +83,237 @@ function HeritageOrnament({ className = '' }: { className?: string }) {
   );
 }
 
+/* ─── Heritage Hexagon (drifting decorative shape for the BG) ─── */
+function HexShape({ className = '' }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 100 100" className={className} fill="none" xmlns="http://www.w3.org/2000/svg">
+      <polygon
+        points="50,3 95,28 95,72 50,97 5,72 5,28"
+        stroke="currentColor"
+        strokeWidth="0.8"
+        opacity="0.7"
+      />
+      <polygon
+        points="50,15 83,33 83,67 50,85 17,67 17,33"
+        stroke="currentColor"
+        strokeWidth="0.5"
+        opacity="0.45"
+      />
+      <circle cx="50" cy="50" r="3" fill="currentColor" opacity="0.5" />
+    </svg>
+  );
+}
+
+/* ─── Heritage Emblem Logo — pure SVG with multi-layer SMIL animation ─── */
+function HeritageLogo({ size = 64, className = '' }: { size?: number; className?: string }) {
+  // Unique gradient ids so multiple instances on a page do not clash
+  const goldId = 'tm-logo-gold';
+  const glowId = 'tm-logo-glow';
+  const jewelId = 'tm-logo-jewel';
+  return (
+    <svg
+      viewBox="0 0 120 120"
+      width={size}
+      height={size}
+      className={className}
+      xmlns="http://www.w3.org/2000/svg"
+      role="img"
+      aria-label="شعار تراث مصر"
+    >
+      <defs>
+        <linearGradient id={goldId} x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#fff5d0" />
+          <stop offset="40%" stopColor="#e8d5a0" />
+          <stop offset="60%" stopColor="#c6a052" />
+          <stop offset="100%" stopColor="#8a6a26" />
+        </linearGradient>
+        <radialGradient id={glowId} cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="#c6a052" stopOpacity="0.5" />
+          <stop offset="100%" stopColor="#c6a052" stopOpacity="0" />
+        </radialGradient>
+        <radialGradient id={jewelId} cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="#fff5d0" />
+          <stop offset="60%" stopColor="#e8d5a0" />
+          <stop offset="100%" stopColor="#c6a052" />
+        </radialGradient>
+      </defs>
+
+      {/* Soft golden glow halo — gentle breathing */}
+      <circle cx="60" cy="60" r="58" fill={`url(#${glowId})`}>
+        <animate attributeName="opacity" values="0.55;1;0.55" dur="3.5s" repeatCount="indefinite" />
+      </circle>
+
+      {/* Outer solid ring — subtle pulse */}
+      <circle cx="60" cy="60" r="48" fill="none" stroke={`url(#${goldId})`} strokeWidth="2.2">
+        <animate attributeName="r" values="48;49.4;48" dur="4s" repeatCount="indefinite" />
+      </circle>
+
+      {/* Dashed ring — counter-rotating */}
+      <g>
+        <animateTransform
+          attributeName="transform"
+          attributeType="XML"
+          type="rotate"
+          from="360 60 60"
+          to="0 60 60"
+          dur="28s"
+          repeatCount="indefinite"
+        />
+        <circle
+          cx="60"
+          cy="60"
+          r="48"
+          fill="none"
+          stroke={`url(#${goldId})`}
+          strokeWidth="0.9"
+          strokeDasharray="3 6"
+          opacity="0.55"
+        />
+      </g>
+
+      {/* Inner thin ring — opacity pulse */}
+      <circle
+        cx="60"
+        cy="60"
+        r="36"
+        fill="none"
+        stroke={`url(#${goldId})`}
+        strokeWidth="0.9"
+        opacity="0.7"
+      >
+        <animate
+          attributeName="opacity"
+          values="0.45;0.85;0.45"
+          dur="4s"
+          repeatCount="indefinite"
+        />
+      </circle>
+
+      {/* 8-point Islamic star — clockwise rotation */}
+      <g>
+        <animateTransform
+          attributeName="transform"
+          attributeType="XML"
+          type="rotate"
+          from="0 60 60"
+          to="360 60 60"
+          dur="22s"
+          repeatCount="indefinite"
+        />
+        <polygon
+          points="60,30 67,53 90,60 67,67 60,90 53,67 30,60 53,53"
+          fill={`url(#${goldId})`}
+          stroke="#8a6a26"
+          strokeWidth="0.4"
+        />
+        <polygon
+          points="60,38 65,55 82,60 65,65 60,82 55,65 38,60 55,55"
+          fill="#0e1a2c"
+          opacity="0.55"
+        />
+      </g>
+
+      {/* Central jewel — heartbeat pulse */}
+      <circle cx="60" cy="60" r="6.5" fill={`url(#${jewelId})`}>
+        <animate attributeName="r" values="6.2;7.6;6.2" dur="2s" repeatCount="indefinite" />
+      </circle>
+      <circle cx="60" cy="60" r="2.8" fill="#fff5d0">
+        <animate attributeName="r" values="2.5;3.6;2.5" dur="2s" repeatCount="indefinite" />
+        <animate attributeName="opacity" values="0.85;1;0.85" dur="2s" repeatCount="indefinite" />
+      </circle>
+
+      {/* Cardinal markers — staggered twinkling (4 phases of a 3s cycle) */}
+      <circle cx="60" cy="9" r="1.8" fill="#c6a052">
+        <animate
+          attributeName="opacity"
+          values="0.3;1;0.3"
+          dur="3s"
+          begin="0s"
+          repeatCount="indefinite"
+        />
+      </circle>
+      <circle cx="111" cy="60" r="1.8" fill="#c6a052">
+        <animate
+          attributeName="opacity"
+          values="0.3;1;0.3"
+          dur="3s"
+          begin="0.75s"
+          repeatCount="indefinite"
+        />
+      </circle>
+      <circle cx="60" cy="111" r="1.8" fill="#c6a052">
+        <animate
+          attributeName="opacity"
+          values="0.3;1;0.3"
+          dur="3s"
+          begin="1.5s"
+          repeatCount="indefinite"
+        />
+      </circle>
+      <circle cx="9" cy="60" r="1.8" fill="#c6a052">
+        <animate
+          attributeName="opacity"
+          values="0.3;1;0.3"
+          dur="3s"
+          begin="2.25s"
+          repeatCount="indefinite"
+        />
+      </circle>
+
+      {/* Diagonal markers — twinkling at half speed */}
+      <circle cx="24" cy="24" r="1" fill="#c6a052">
+        <animate
+          attributeName="opacity"
+          values="0.2;0.85;0.2"
+          dur="4s"
+          begin="0s"
+          repeatCount="indefinite"
+        />
+      </circle>
+      <circle cx="96" cy="24" r="1" fill="#c6a052">
+        <animate
+          attributeName="opacity"
+          values="0.2;0.85;0.2"
+          dur="4s"
+          begin="1s"
+          repeatCount="indefinite"
+        />
+      </circle>
+      <circle cx="96" cy="96" r="1" fill="#c6a052">
+        <animate
+          attributeName="opacity"
+          values="0.2;0.85;0.2"
+          dur="4s"
+          begin="2s"
+          repeatCount="indefinite"
+        />
+      </circle>
+      <circle cx="24" cy="96" r="1" fill="#c6a052">
+        <animate
+          attributeName="opacity"
+          values="0.2;0.85;0.2"
+          dur="4s"
+          begin="3s"
+          repeatCount="indefinite"
+        />
+      </circle>
+    </svg>
+  );
+}
+
+/* ─── Resolve a username to an email by appending the company domain ─── */
+const COMPANY_DOMAIN =
+  (typeof process !== 'undefined' && process.env.NEXT_PUBLIC_COMPANY_DOMAIN) || 'turathmasr.com';
+
+function resolveLoginIdentifier(input: string): string {
+  const trimmed = input.trim();
+  if (!trimmed) return '';
+  // If it already looks like an email, use as-is.
+  if (trimmed.includes('@')) return trimmed;
+  // Otherwise treat it as a username and append the configured company domain.
+  return `${trimmed}@${COMPANY_DOMAIN}`;
+}
+
 // useSearchParams() forces this page out of static rendering, so the inner
 // component must live inside a <Suspense> boundary (Next.js 15 requirement).
 function LoginPageInner() {
@@ -112,7 +342,7 @@ function LoginPageInner() {
   /* ─── Generate particles (memoized) ─── */
   const particles = useMemo(
     () =>
-      Array.from({ length: 28 }, (_, i) => ({
+      Array.from({ length: 22 }, (_, i) => ({
         id: i,
         delay: Math.random() * 14,
         size: Math.random() * 4 + 2,
@@ -122,20 +352,19 @@ function LoginPageInner() {
     []
   );
 
-  /* ─── Auth logic — UNCHANGED from previous version ─── */
+  /* ─── Auth logic — UNCHANGED except for the username→email resolver. ─── */
   const onSubmit = useCallback(
     async (data: LoginForm) => {
       setIsLoading(true);
       setLoginError('');
 
       try {
-        const identifier = data.email.trim();
-        // NOTE: login requires a real email address.
-        // The previous "admin" alias and auto-domain-append shortcuts have been
-        // removed for security — they leaked the admin email and made identity
-        // probing trivial.
-        if (!identifier.includes('@')) {
-          setLoginError('يرجى إدخال البريد الإلكتروني الكامل');
+        // Allow the user to type either a full email OR just their username.
+        // Pure usernames get the configured company domain appended (defaults
+        // to turathmasr.com if NEXT_PUBLIC_COMPANY_DOMAIN is unset).
+        const identifier = resolveLoginIdentifier(data.email);
+        if (!identifier || !identifier.includes('@')) {
+          setLoginError('يرجى إدخال البريد الإلكتروني أو اسم المستخدم');
           setIsLoading(false);
           return;
         }
@@ -239,66 +468,215 @@ function LoginPageInner() {
         </svg>
       </div>
 
-      {/* ─── Decorative heritage stars (background depth) ─── */}
+      {/* ─── Decorative heritage stars (slowly rotating) ─── */}
       <HeritageOrnament
         aria-hidden
-        className="absolute top-[8%] left-[12%] w-20 h-20 text-[#c6a052] animate-float opacity-30 hidden md:block"
+        className="absolute top-[6%] left-[10%] w-20 h-20 text-[#c6a052] animate-slow-rotate opacity-30 hidden md:block"
       />
       <HeritageOrnament
         aria-hidden
-        className="absolute bottom-[10%] right-[8%] w-16 h-16 text-[#c6a052] animate-float opacity-20 hidden md:block"
-      />
-      <HeritageOrnament
-        aria-hidden
-        className="absolute top-[58%] left-[6%] w-12 h-12 text-[#c6a052] animate-float opacity-15 hidden lg:block"
+        className="absolute bottom-[8%] right-[6%] w-16 h-16 text-[#c6a052] animate-slow-rotate opacity-20 hidden md:block"
       />
 
+      {/* ─── Drifting heritage hexagons (orbit-style motion) ─── */}
+      <HexShape
+        aria-hidden
+        className="absolute top-[14%] right-[18%] w-28 h-28 text-[#c6a052] animate-drift-a opacity-[0.18] hidden md:block"
+      />
+      <HexShape
+        aria-hidden
+        className="absolute bottom-[18%] left-[14%] w-24 h-24 text-[#4be0ff] animate-drift-b opacity-[0.10] hidden md:block"
+      />
+      <HexShape
+        aria-hidden
+        className="absolute top-[55%] left-[28%] w-16 h-16 text-[#c6a052] animate-drift-a opacity-[0.12] hidden lg:block"
+      />
+
+      {/* ─── Diagonal scan-sweep highlight (atmospheric) ─── */}
+      <div aria-hidden className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-0 -left-1/3 w-1/2 h-full bg-gradient-to-r from-transparent via-[#c6a052]/8 to-transparent animate-scan-sweep" />
+      </div>
+
       {/* ─── Main content ─── */}
-      <div className="relative z-10 w-full max-w-[480px]">
+      <div className="relative z-10 w-full max-w-[520px] flex flex-col items-center">
         {/* ─── Welcome / brand strip ─── */}
         <header className="text-center mb-7 reveal-0">
-          <span className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.4em] text-[#c6a052]/80 mb-4">
+          <span className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.4em] text-[#c6a052]/80 mb-3">
             <Sparkles size={11} className="opacity-70" />
             <span>Heritage Management</span>
             <Sparkles size={11} className="opacity-70" />
           </span>
-          <h1 className="text-[34px] sm:text-[40px] font-extrabold text-white leading-tight drop-shadow-lg">
+          <h1 className="text-[28px] sm:text-[36px] font-extrabold text-white leading-tight drop-shadow-lg">
             مرحبًا بك في لوحة تحكم{' '}
             <span className="islamic-shimmer bg-clip-text text-transparent">تراث مصر</span>
           </h1>
-          <p className="text-white/55 text-[13px] sm:text-sm mt-3 max-w-[420px] mx-auto leading-relaxed">
+          <p className="text-white/55 text-[12.5px] sm:text-sm mt-2.5 max-w-[420px] mx-auto leading-relaxed">
             إدارة الطلبات، الشحن، المخزون وخدمة العملاء من مكان واحد
           </p>
         </header>
 
-        {/* ─── Glass card ─── */}
-        <section
-          className="islamic-glass-card rounded-[28px] p-7 sm:p-9 reveal-1"
+        {/* ─── Electric Circle ─── */}
+        <div
+          className="electric-circle relative w-[min(94vw,460px)] aspect-square mx-auto reveal-1"
           aria-label="نموذج تسجيل الدخول"
         >
-          {/* ─── Logo + heading ─── */}
-          <div className="flex flex-col items-center mb-7">
-            <div className="relative mb-4 group">
-              <div
-                aria-hidden
-                className="absolute inset-0 rounded-full bg-[#c6a052]/30 blur-xl opacity-60 group-hover:opacity-90 transition-opacity duration-500"
-              />
-              <Image
-                src="/assets/images/new_logo.jpg"
-                alt="تراث مصر"
-                width={92}
-                height={92}
-                priority
-                className="relative w-[92px] h-[92px] rounded-full object-cover shadow-[0_8px_32px_rgba(198,160,82,0.45)] border-2 border-[#c6a052]/30 transition-transform duration-500 group-hover:scale-[1.04]"
-              />
-            </div>
-            <h2 className="text-lg font-bold text-white tracking-wide">تسجيل الدخول</h2>
-            <p className="text-white/45 text-xs mt-1">أدخل بياناتك للمتابعة بأمان</p>
-          </div>
+          {/* Inner content layer (z-index above the ::before/::after pseudos) */}
+          <div className="absolute inset-0 flex items-center justify-center">
+            <form
+              onSubmit={handleSubmit(onSubmit)}
+              className="w-full max-w-[270px] sm:max-w-[290px]"
+              noValidate
+            >
+              {/* Logo (inline SVG, no external image) */}
+              <div className="flex justify-center mb-3">
+                <div className="relative group">
+                  <div
+                    aria-hidden
+                    className="absolute inset-0 rounded-full bg-[#c6a052]/25 blur-xl opacity-60 group-hover:opacity-95 transition-opacity duration-500"
+                  />
+                  <HeritageLogo
+                    size={68}
+                    className="relative transition-transform duration-500 group-hover:scale-[1.06] drop-shadow-[0_4px_24px_rgba(198,160,82,0.45)]"
+                  />
+                </div>
+              </div>
 
-          {/* ─── Device badge ─── */}
+              {/* Title */}
+              <h2 className="text-center text-[20px] sm:text-[22px] font-bold text-white tracking-wide drop-shadow-[0_0_18px_rgba(75,224,255,0.35)]">
+                تسجيل الدخول
+              </h2>
+              <p className="text-center text-white/50 text-[11px] mt-0.5 mb-5">
+                أدخل بياناتك للمتابعة بأمان
+              </p>
+
+              {/* Error message */}
+              {loginError && (
+                <div
+                  role="alert"
+                  className="flex items-start gap-2 bg-red-500/12 border border-red-500/30 rounded-lg p-2.5 mb-3 text-red-200 text-[11px]"
+                >
+                  <AlertCircle size={13} className="flex-shrink-0 mt-0.5" />
+                  <span className="leading-snug">{loginError}</span>
+                </div>
+              )}
+
+              {/* Email or username */}
+              <div className="mb-3">
+                <label htmlFor="email" className="sr-only">
+                  البريد الإلكتروني أو اسم المستخدم
+                </label>
+                <div className="relative group">
+                  <User
+                    size={15}
+                    aria-hidden
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[#c6a052]/55 group-focus-within:text-[#c6a052] transition-colors duration-300"
+                  />
+                  <input
+                    id="email"
+                    type="text"
+                    dir="ltr"
+                    autoComplete="username"
+                    aria-invalid={errors.email ? 'true' : 'false'}
+                    placeholder="البريد أو اسم المستخدم"
+                    className={`w-full pr-9 pl-3 py-2.5 bg-white/[0.05] border rounded-lg text-[13px] text-white placeholder-white/35 text-right
+                      focus:ring-2 focus:ring-[#4be0ff]/40 focus:border-[#4be0ff]/40 outline-none transition-all duration-300
+                      backdrop-blur-sm shadow-inner shadow-black/20
+                      ${errors.email ? 'border-red-500/55' : 'border-white/10 hover:border-white/20'}`}
+                    {...register('email', {
+                      required: 'يرجى إدخال البريد أو اسم المستخدم',
+                    })}
+                  />
+                </div>
+                {errors.email && (
+                  <p role="alert" className="text-red-400 text-[10.5px] mt-1 mr-1">
+                    {errors.email.message}
+                  </p>
+                )}
+              </div>
+
+              {/* Password */}
+              <div className="mb-4">
+                <label htmlFor="password" className="sr-only">
+                  كلمة المرور
+                </label>
+                <div className="relative group">
+                  <Lock
+                    size={15}
+                    aria-hidden
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[#c6a052]/55 group-focus-within:text-[#c6a052] transition-colors duration-300"
+                  />
+                  <input
+                    id="password"
+                    type={showPassword ? 'text' : 'password'}
+                    dir="ltr"
+                    placeholder="كلمة المرور"
+                    autoComplete="current-password"
+                    aria-invalid={errors.password ? 'true' : 'false'}
+                    className={`w-full pr-9 pl-9 py-2.5 bg-white/[0.05] border rounded-lg text-[13px] text-white placeholder-white/35 text-right
+                      focus:ring-2 focus:ring-[#4be0ff]/40 focus:border-[#4be0ff]/40 outline-none transition-all duration-300
+                      backdrop-blur-sm shadow-inner shadow-black/20
+                      ${errors.password ? 'border-red-500/55' : 'border-white/10 hover:border-white/20'}`}
+                    {...register('password', { required: 'يرجى إدخال كلمة المرور' })}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    aria-label={showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
+                    className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40 hover:text-[#c6a052] focus:text-[#c6a052] focus:outline-none transition-colors duration-300"
+                  >
+                    {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
+                </div>
+                {errors.password && (
+                  <p role="alert" className="text-red-400 text-[10.5px] mt-1 mr-1">
+                    {errors.password.message}
+                  </p>
+                )}
+              </div>
+
+              {/* Submit */}
+              <button
+                type="submit"
+                disabled={isLoading}
+                aria-busy={isLoading}
+                className="relative overflow-hidden w-full py-2.5 bg-gradient-to-l from-[#c6a052] via-[#b9913f] to-[#a07d2e]
+                  hover:from-[#d4af61] hover:via-[#c79c47] hover:to-[#b8912e]
+                  text-white font-bold text-[13.5px] tracking-wide rounded-lg
+                  shadow-[0_10px_30px_-10px_rgba(198,160,82,0.6)]
+                  hover:shadow-[0_18px_44px_-10px_rgba(198,160,82,0.75),0_0_24px_-4px_rgba(75,224,255,0.4)]
+                  hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.99]
+                  focus:outline-none focus-visible:ring-2 focus-visible:ring-[#4be0ff]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0e1a2c]
+                  transition-all duration-300 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0
+                  flex items-center justify-center gap-2 group"
+              >
+                <span
+                  aria-hidden
+                  className="absolute inset-0 -translate-x-full group-hover:translate-x-full bg-gradient-to-r from-transparent via-white/25 to-transparent transition-transform duration-700"
+                />
+                {isLoading ? (
+                  <>
+                    <span className="w-3.5 h-3.5 border-[2.5px] border-white/30 border-t-white rounded-full animate-spin" />
+                    <span>جاري التحقق...</span>
+                  </>
+                ) : (
+                  <>
+                    <span>دخول آمن</span>
+                    <ArrowLeft
+                      size={15}
+                      className="transition-transform duration-300 group-hover:-translate-x-1"
+                    />
+                  </>
+                )}
+              </button>
+            </form>
+          </div>
+        </div>
+
+        {/* ─── Below circle: device, trust, stats ─── */}
+        <div className="mt-7 flex flex-col items-center gap-4 reveal-2">
+          {/* Device */}
           <div
-            className="flex items-center justify-center gap-2 bg-white/[0.04] backdrop-blur-sm rounded-full py-1.5 px-4 mb-6 border border-[#c6a052]/15"
+            className="flex items-center justify-center gap-2 bg-white/[0.04] backdrop-blur-sm rounded-full py-1.5 px-3.5 border border-[#c6a052]/15"
             aria-label="نوع الجهاز"
           >
             <DeviceIcon device={deviceType} />
@@ -307,162 +685,33 @@ function LoginPageInner() {
             </span>
           </div>
 
-          {/* ─── Error message ─── */}
-          {loginError && (
-            <div
-              role="alert"
-              className="flex items-start gap-2 bg-red-500/10 border border-red-500/25 rounded-xl p-4 mb-6 text-red-200 text-xs reveal-1"
-            >
-              <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />
-              <span>{loginError}</span>
-            </div>
-          )}
-
-          {/* ─── Form ─── */}
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-5" noValidate>
-            {/* Email */}
-            <div className="reveal-1">
-              <label
-                htmlFor="email"
-                className="block text-[13px] font-medium text-white/65 mb-2 mr-1"
-              >
-                البريد الإلكتروني
-              </label>
-              <div className="relative group">
-                <Mail
-                  size={18}
-                  aria-hidden
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-[#c6a052]/45 group-focus-within:text-[#c6a052] transition-colors duration-300"
-                />
-                <input
-                  id="email"
-                  type="email"
-                  dir="ltr"
-                  className={`w-full pr-11 pl-4 py-3.5 bg-white/[0.06] border rounded-xl text-white placeholder-white/25
-                    focus:ring-2 focus:ring-[#c6a052]/45 focus:border-[#c6a052]/40 outline-none transition-all duration-300
-                    backdrop-blur-sm shadow-inner shadow-black/10
-                    ${errors.email ? 'border-red-500/55' : 'border-white/[0.09] hover:border-white/15'}`}
-                  placeholder="name@example.com"
-                  autoComplete="email"
-                  aria-invalid={errors.email ? 'true' : 'false'}
-                  {...register('email', { required: 'يرجى إدخال البريد الإلكتروني' })}
-                />
-              </div>
-              {errors.email && (
-                <p role="alert" className="text-red-400 text-xs mt-1.5 mr-1">
-                  {errors.email.message}
-                </p>
-              )}
-            </div>
-
-            {/* Password */}
-            <div className="reveal-2">
-              <label
-                htmlFor="password"
-                className="block text-[13px] font-medium text-white/65 mb-2 mr-1"
-              >
-                كلمة المرور
-              </label>
-              <div className="relative group">
-                <Lock
-                  size={18}
-                  aria-hidden
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-[#c6a052]/45 group-focus-within:text-[#c6a052] transition-colors duration-300"
-                />
-                <input
-                  id="password"
-                  type={showPassword ? 'text' : 'password'}
-                  className={`w-full pr-11 pl-12 py-3.5 bg-white/[0.06] border rounded-xl text-white placeholder-white/25
-                    focus:ring-2 focus:ring-[#c6a052]/45 focus:border-[#c6a052]/40 outline-none transition-all duration-300
-                    backdrop-blur-sm shadow-inner shadow-black/10
-                    ${errors.password ? 'border-red-500/55' : 'border-white/[0.09] hover:border-white/15'}`}
-                  placeholder="••••••••"
-                  dir="ltr"
-                  aria-invalid={errors.password ? 'true' : 'false'}
-                  {...register('password', { required: 'يرجى إدخال كلمة المرور' })}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  aria-label={showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
-                  className="absolute left-4 top-1/2 -translate-y-1/2 text-white/35 hover:text-[#c6a052] focus:text-[#c6a052] focus:outline-none transition-colors duration-300"
-                >
-                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                </button>
-              </div>
-              {errors.password && (
-                <p role="alert" className="text-red-400 text-xs mt-1.5 mr-1">
-                  {errors.password.message}
-                </p>
-              )}
-            </div>
-
-            {/* Submit */}
-            <div className="reveal-3 pt-2">
-              <button
-                type="submit"
-                disabled={isLoading}
-                aria-busy={isLoading}
-                className="relative overflow-hidden w-full py-[15px] bg-gradient-to-l from-[#c6a052] via-[#b9913f] to-[#a07d2e]
-                  hover:from-[#d4af61] hover:via-[#c79c47] hover:to-[#b8912e]
-                  text-white font-bold text-[15px] tracking-wide rounded-xl
-                  shadow-[0_10px_30px_-10px_rgba(198,160,82,0.55)]
-                  hover:shadow-[0_18px_44px_-10px_rgba(198,160,82,0.7)]
-                  hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.99]
-                  focus:outline-none focus-visible:ring-2 focus-visible:ring-[#c6a052]/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0c1929]
-                  transition-all duration-300 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0
-                  flex items-center justify-center gap-3 group"
-              >
-                {/* Shimmer sweep on hover */}
-                <span
-                  aria-hidden
-                  className="absolute inset-0 -translate-x-full group-hover:translate-x-full bg-gradient-to-r from-transparent via-white/20 to-transparent transition-transform duration-700"
-                />
-                {isLoading ? (
-                  <>
-                    <span className="w-5 h-5 border-[3px] border-white/30 border-t-white rounded-full animate-spin" />
-                    <span>جاري التحقق...</span>
-                  </>
-                ) : (
-                  <>
-                    <span>دخول آمن</span>
-                    <ArrowLeft
-                      size={18}
-                      className="transition-transform duration-300 group-hover:-translate-x-1"
-                    />
-                  </>
-                )}
-              </button>
-            </div>
-          </form>
-
-          {/* ─── Trust note ─── */}
-          <div className="reveal-4 mt-7 flex items-center justify-center gap-2 text-[11px] text-white/45">
+          {/* Trust */}
+          <div className="flex items-center justify-center gap-2 text-[11px] text-white/45">
             <ShieldCheck size={13} className="text-emerald-400/70" />
             <span>اتصال آمن مشفّر · بياناتك محمية</span>
           </div>
 
-          {/* ─── Stats strip ─── */}
-          <div className="reveal-4 mt-6 pt-5 border-t border-white/[0.06] grid grid-cols-3 gap-2 text-center text-white">
+          {/* Stats */}
+          <div className="grid grid-cols-3 gap-6 sm:gap-10 text-center text-white">
             <div>
-              <p className="font-bold text-sm text-[#c6a052]">+5k</p>
+              <p className="font-bold text-base text-[#c6a052]">+5k</p>
               <p className="text-white/35 text-[9px] uppercase tracking-[0.18em] mt-0.5">
                 طلب شهري
               </p>
             </div>
-            <div className="border-x border-white/[0.06]">
-              <p className="font-bold text-sm text-[#c6a052]">98%</p>
+            <div className="border-x border-white/[0.08] px-6 sm:px-10">
+              <p className="font-bold text-base text-[#c6a052]">98%</p>
               <p className="text-white/35 text-[9px] uppercase tracking-[0.18em] mt-0.5">توصيل</p>
             </div>
             <div>
-              <p className="font-bold text-sm text-[#c6a052]">4.9</p>
+              <p className="font-bold text-base text-[#c6a052]">4.9</p>
               <p className="text-white/35 text-[9px] uppercase tracking-[0.18em] mt-0.5">تقييم</p>
             </div>
           </div>
-        </section>
+        </div>
 
-        {/* ─── Footer ─── */}
-        <p className="reveal-4 text-center text-[10px] text-white/25 mt-7 tracking-[0.22em] font-light">
+        {/* Footer */}
+        <p className="reveal-2 text-center text-[10px] text-white/25 mt-6 tracking-[0.22em] font-light">
           تراث مصر — TURATH MASR &copy; {new Date().getFullYear()}
         </p>
       </div>

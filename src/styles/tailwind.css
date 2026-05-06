@@ -324,4 +324,127 @@
     background-clip: text;
     animation: shimmer 4s linear infinite;
   }
+
+  /* ─── Electric Circle Login ring (Phase 11.1 — hybrid gold + cyan) ─── */
+  @keyframes electric-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .electric-circle {
+    position: relative;
+    border-radius: 9999px;
+    isolation: isolate;
+  }
+
+  /* The rotating conic gradient — sits behind everything */
+  .electric-circle::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 9999px;
+    background: conic-gradient(
+      from 0deg,
+      rgba(12, 25, 41, 0) 0deg,
+      rgba(12, 25, 41, 0) 240deg,
+      rgba(198, 160, 82, 0.45) 270deg,
+      #c6a052 290deg,
+      #fff5d0 310deg,
+      #4be0ff 322deg,
+      #fff5d0 334deg,
+      #c6a052 350deg,
+      rgba(198, 160, 82, 0.45) 358deg,
+      rgba(12, 25, 41, 0) 360deg
+    );
+    animation: electric-spin 3.6s linear infinite;
+    filter: drop-shadow(0 0 18px rgba(198, 160, 82, 0.55))
+      drop-shadow(0 0 28px rgba(75, 224, 255, 0.22));
+    z-index: -2;
+  }
+
+  /* The dark navy inner mask — leaves only the thin ring visible */
+  .electric-circle::after {
+    content: '';
+    position: absolute;
+    inset: 5px;
+    border-radius: 9999px;
+    background: radial-gradient(circle at 50% 50%, #0e1a2c 0%, #060c18 100%);
+    z-index: -1;
+  }
+
+  /* Reduce motion: stop the ring from spinning */
+  @media (prefers-reduced-motion: reduce) {
+    .electric-circle::before {
+      animation: none;
+    }
+  }
+
+  /* ─── Phase 11.2 — extra background animation ─── */
+  @keyframes drift-orbit-a {
+    0% {
+      transform: translate(0, 0) rotate(0deg);
+    }
+    50% {
+      transform: translate(40px, -30px) rotate(180deg);
+    }
+    100% {
+      transform: translate(0, 0) rotate(360deg);
+    }
+  }
+  @keyframes drift-orbit-b {
+    0% {
+      transform: translate(0, 0) rotate(0deg);
+    }
+    50% {
+      transform: translate(-50px, 40px) rotate(-180deg);
+    }
+    100% {
+      transform: translate(0, 0) rotate(-360deg);
+    }
+  }
+  @keyframes slow-rotate {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @keyframes scan-sweep {
+    0% {
+      transform: translateX(-120%) skewX(-25deg);
+      opacity: 0;
+    }
+    20% {
+      opacity: 0.65;
+    }
+    80% {
+      opacity: 0.65;
+    }
+    100% {
+      transform: translateX(120%) skewX(-25deg);
+      opacity: 0;
+    }
+  }
+
+  .animate-drift-a {
+    animation: drift-orbit-a 25s ease-in-out infinite;
+  }
+  .animate-drift-b {
+    animation: drift-orbit-b 35s ease-in-out infinite;
+  }
+  .animate-slow-rotate {
+    animation: slow-rotate 60s linear infinite;
+    transform-origin: center;
+  }
+  .animate-scan-sweep {
+    animation: scan-sweep 12s ease-in-out infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .animate-drift-a,
+    .animate-drift-b,
+    .animate-slow-rotate,
+    .animate-scan-sweep {
+      animation: none;
+    }
+  }
 }
