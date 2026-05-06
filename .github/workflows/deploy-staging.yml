@@ -88,11 +88,38 @@ jobs:
             echo "  Hint: the value must start with 'https://' and end with '.supabase.co'"
             fail=1
           fi
-          # Anon key looks like a JWT (3 base64 segments separated by dots)
-          if [[ "$V_NEXT_PUBLIC_SUPABASE_ANON_KEY" =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]]; then
-            echo "NEXT_PUBLIC_SUPABASE_ANON_KEY is a JWT     : PASS"
+          # Anon / publishable key shape check.
+          #
+          # Accept either:
+          #   1. Legacy JWT format: 3 base64url segments separated by dots
+          #      (usually starts with "eyJ").
+          #   2. New Supabase publishable key starting with "sb_publishable_".
+          #
+          # Reject:
+          #   - Empty value.
+          #   - "sb_secret_*" (that's a server-side secret key, not a
+          #     client-side anon/publishable key — leaking it bypasses RLS).
+          #   - The literal string "service_role" (defense-in-depth in case
+          #     someone pasted a decoded JWT payload by mistake).
+          #   - Any other shape.
+          #
+          # Only PASS/FAIL labels are echoed — never the value itself.
+          KEY="$V_NEXT_PUBLIC_SUPABASE_ANON_KEY"
+          if [ -z "$KEY" ]; then
+            echo "NEXT_PUBLIC_SUPABASE_ANON_KEY is anon key  : FAIL (empty)"
+            fail=1
+          elif [[ "$KEY" == sb_secret_* ]]; then
+            echo "NEXT_PUBLIC_SUPABASE_ANON_KEY is anon key  : FAIL (sb_secret_* — that is a server secret, not anon/publishable)"
+            fail=1
+          elif [[ "$KEY" == *service_role* ]]; then
+            echo "NEXT_PUBLIC_SUPABASE_ANON_KEY is anon key  : FAIL (contains literal 'service_role')"
+            fail=1
+          elif [[ "$KEY" == sb_publishable_* ]]; then
+            echo "NEXT_PUBLIC_SUPABASE_ANON_KEY is anon key  : PASS (publishable)"
+          elif [[ "$KEY" =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]]; then
+            echo "NEXT_PUBLIC_SUPABASE_ANON_KEY is anon key  : PASS (JWT)"
           else
-            echo "NEXT_PUBLIC_SUPABASE_ANON_KEY is a JWT     : FAIL"
+            echo "NEXT_PUBLIC_SUPABASE_ANON_KEY is anon key  : FAIL (unknown shape — expected JWT or sb_publishable_*)"
             fail=1
           fi
           if [ "$fail" -eq 1 ]; then
