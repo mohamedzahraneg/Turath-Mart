@@ -457,11 +457,22 @@ export default function InventoryPage() {
     try {
       const supabase = createClient();
 
+      // Phase 20F: explicit inventory column list. Net wire payload
+      // is unchanged here (the page render genuinely uses every
+      // column — name, sku, available, withdrawn, min_stock, price,
+      // category, images, colors — and id for keys/CRUD), but we
+      // lock the contract so future schema additions don't silently
+      // leak into the response. Schema verified against production.
       const [invRes, ordRes] = await Promise.all([
         supabase
           .from('turath_masr_inventory')
-          .select('*')
+          .select(
+            'id, name, sku, available, withdrawn, min_stock, price, category, images, colors, created_at'
+          )
           .order('created_at', { ascending: false }),
+        // Already explicit; products + status are the only two columns
+        // consumed by the order-side withdrawn-amount aggregation
+        // below. Left as-is.
         supabase.from('turath_masr_orders').select('products, status'),
       ]);
 

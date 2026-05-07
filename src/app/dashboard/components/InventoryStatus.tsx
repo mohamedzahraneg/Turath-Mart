@@ -23,9 +23,15 @@ export default function InventoryStatus() {
     setIsRefreshing(true);
     try {
       const supabase = createClient();
+      // Phase 20F: explicit columns. The widget render below only
+      // reads id/name/available/withdrawn/min_stock/price; the
+      // previous select('*') also shipped sku, category, images
+      // (text[]), colors (text[]), created_at — none of which this
+      // widget uses. Schema verified against production
+      // turath_masr_inventory.
       const { data, error } = await supabase
         .from('turath_masr_inventory')
-        .select('*')
+        .select('id, name, available, withdrawn, min_stock, price')
         .order('available', { ascending: true });
 
       if (error) throw error;
@@ -53,7 +59,11 @@ export default function InventoryStatus() {
 
   useEffect(() => {
     fetchInventory();
-    const interval = setInterval(fetchInventory, 600000); // refresh every 10 mins
+    // Phase 20F: extended from 10 min to 30 min. Inventory rarely
+    // changes that often, the manual refresh button at L78 covers
+    // user-initiated freshness, and a dashboard tab left open all
+    // day no longer fires 6 background fetches per hour.
+    const interval = setInterval(fetchInventory, 1800000);
     return () => clearInterval(interval);
   }, []);
 
