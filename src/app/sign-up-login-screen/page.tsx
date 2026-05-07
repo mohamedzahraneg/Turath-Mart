@@ -322,6 +322,11 @@ function LoginPageInner() {
   const [loginError, setLoginError] = useState('');
   const [deviceType, setDeviceType] = useState('كمبيوتر');
   const [mounted, setMounted] = useState(false);
+  // Phase 11C: client-side cooldown after a Supabase Auth rate-limit hit.
+  // Prevents the user from re-submitting (and re-throttling themselves)
+  // while the per-IP window is still cooling down. Counts down in the
+  // submit button so the user has a clear "wait this many seconds" cue.
+  const [cooldownSec, setCooldownSec] = useState(0);
   const { signIn } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -330,6 +335,13 @@ function LoginPageInner() {
     setDeviceType(getDeviceLabel());
     setMounted(true);
   }, []);
+
+  // Cooldown ticker — decrements once per second until zero.
+  useEffect(() => {
+    if (cooldownSec <= 0) return;
+    const t = setTimeout(() => setCooldownSec((s) => Math.max(0, s - 1)), 1000);
+    return () => clearTimeout(t);
+  }, [cooldownSec]);
 
   const {
     register,
@@ -402,8 +414,8 @@ function LoginPageInner() {
           router.replace(landingPage);
         }, 800);
       } catch (err: any) {
-        // Phase 11B: classify the error so the user-facing copy matches the
-        // actual failure mode. The previous catch labeled every error
+        // Phase 11B/11C: classify the error so the user-facing copy matches
+        // the actual failure mode. The previous catch labeled every error
         // "بيانات غير صحيحة" (wrong credentials) — including rate-limit,
         // network, and email-not-confirmed errors — which misled users.
         //
@@ -411,14 +423,22 @@ function LoginPageInner() {
         // they go to console.error only (visible to devs in DevTools).
         // The user-facing string is one of a small fixed set of Arabic
         // copies, picked by pattern-matching err.message.
+        //
+        // Phase 11C addition: when we detect a rate-limit, also start a
+        // 60-second client-side cooldown so the user can't re-submit and
+        // make their own throttle window worse. The toast message echoes
+        // the same specific copy as the inline alert (was generic before,
+        // which obscured the real failure mode).
         console.error('Login exception:', err);
         const rawMsg: string = (err && typeof err.message === 'string' && err.message) || '';
         const status: number | undefined =
           (err && typeof err.status === 'number' && err.status) || undefined;
 
         let userMsg: string;
+        let isRateLimited = false;
         if (status === 429 || /rate.?limit|too.?many.?requests/i.test(rawMsg)) {
           userMsg = 'تم تجاوز عدد محاولات الدخول. يرجى الانتظار قليلًا ثم المحاولة مرة أخرى.';
+          isRateLimited = true;
         } else if (/invalid.?(login.?)?credentials|invalid.?email.?or.?password/i.test(rawMsg)) {
           userMsg = 'البريد الإلكتروني أو كلمة المرور غير صحيحة.';
         } else if (/email.?not.?confirmed|not.?confirmed/i.test(rawMsg)) {
@@ -429,7 +449,17 @@ function LoginPageInner() {
           userMsg = 'فشل تسجيل الدخول. حاول مرة أخرى لاحقًا.';
         }
         setLoginError(userMsg);
-        toast.error('فشل تسجيل الدخول');
+        // Toast carries the SAME specific message — used to be the generic
+        // "فشل تسجيل الدخول" which made the toast useless to a user trying
+        // to debug their own attempt.
+        toast.error(userMsg);
+        if (isRateLimited) {
+          // 60 seconds is well under the typical Supabase per-IP window
+          // (~30 attempts/hour) but enough to break the user's instinct to
+          // hammer the button. The button text counts down so they see
+          // progress.
+          setCooldownSec(60);
+        }
       } finally {
         setIsLoading(false);
       }
@@ -662,7 +692,7 @@ function LoginPageInner() {
               {/* Submit */}
               <button
                 type="submit"
-                disabled={isLoading}
+                disabled={isLoading || cooldownSec > 0}
                 aria-busy={isLoading}
                 className="relative overflow-hidden w-full py-2 sm:py-2.5 bg-gradient-to-l from-[#c6a052] via-[#b9913f] to-[#a07d2e]
                   hover:from-[#d4af61] hover:via-[#c79c47] hover:to-[#b8912e]
@@ -683,6 +713,11 @@ function LoginPageInner() {
                     <span className="w-3.5 h-3.5 border-[2.5px] border-white/30 border-t-white rounded-full animate-spin" />
                     <span>جاري التحقق...</span>
                   </>
+                ) : cooldownSec > 0 ? (
+                  // Phase 11C: cooldown after rate-limit. Counts down so the
+                  // user has a clear "wait this many seconds" cue and is
+                  // mechanically prevented from re-throttling themselves.
+                  <span>يرجى الانتظار {cooldownSec} ثانية</span>
                 ) : (
                   <>
                     <span>دخول آمن</span>
