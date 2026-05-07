@@ -235,7 +235,14 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       if (user) {
         const supabase = getSupabaseClient();
         if (supabase) {
+          // Phase 17: include user_id (auth.users uuid). Required by the
+          // sessions_own_insert RLS policy
+          //   WITH CHECK (user_id = auth.uid())
+          // — without it, the insert silently fails under RLS and the
+          // logout event is never logged. This is also the column we
+          // want populated for traceability/joins to auth.users.
           await supabase.from('turath_masr_sessions').insert({
+            user_id: user.id,
             user_email: user.email || '—',
             user_name: user.user_metadata?.full_name || '—',
             role_id: currentRoleId || '—',
