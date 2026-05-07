@@ -1,22 +1,8 @@
 'use client';
 import React, { useState, useMemo, useEffect } from 'react';
+import dynamic from 'next/dynamic';
 import Image from 'next/image';
 import AppLayout from '@/components/AppLayout';
-import {
-  AreaChart,
-  Area,
-  BarChart,
-  Bar,
-  PieChart,
-  Pie,
-  Cell,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  Legend,
-} from 'recharts';
 import {
   TrendingUp,
   TrendingDown,
@@ -36,6 +22,22 @@ import {
   Hash,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
+
+// Phase 20E: lazy-load recharts via a dedicated client module so the
+// /reports route's initial JS chunk drops the recharts payload (~150 kB
+// minified). Charts render after the data fetch completes anyway, so a
+// tiny just-in-time chunk fetch is cheaper than carrying recharts on
+// every page visit. ssr:false is required because recharts uses browser
+// APIs (ResizeObserver) that aren't available during SSG.
+const MonthlyAreaChart = dynamic(() => import('./ReportsCharts').then((m) => m.MonthlyAreaChart), {
+  ssr: false,
+});
+const StatusPieChart = dynamic(() => import('./ReportsCharts').then((m) => m.StatusPieChart), {
+  ssr: false,
+});
+const MonthlyBarChart = dynamic(() => import('./ReportsCharts').then((m) => m.MonthlyBarChart), {
+  ssr: false,
+});
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -74,30 +76,9 @@ const MONTH_NAMES = [
   'ديسمبر',
 ];
 
-// ─── Components ──────────────────────────────────────────────────────────────
-
-const CustomTooltip = ({ active, payload, label }: any) => {
-  if (active && payload && payload.length) {
-    return (
-      <div
-        className="bg-white border border-[hsl(var(--border))] rounded-xl shadow-lg p-3 text-sm"
-        dir="rtl"
-      >
-        <p className="font-semibold text-[hsl(var(--foreground))] mb-2">{label}</p>
-        <div className="space-y-1.5">
-          {payload.map((entry: any, i: number) => (
-            <div key={i} className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }} />
-              <span className="text-[hsl(var(--muted-foreground))] text-xs">{entry.name}:</span>
-              <span className="font-bold text-xs">{entry.value.toLocaleString('en-US')}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  }
-  return null;
-};
+// CustomTooltip moved to ./ReportsCharts.tsx in Phase 20E (it's only
+// consumed by the recharts components, so it rides in the same lazy
+// chunk).
 
 const PERIOD_OPTIONS = [
   { key: 'month', label: 'هذا الشهر', months: 1 },
@@ -120,12 +101,18 @@ export default function ReportsPage() {
       setLoading(true);
       try {
         const supabase = createClient();
+        // Phase 20E: explicit inventory column list. The render uses
+        // only name, sku, available, images (see allProducts JSX
+        // below); the previous select('*') also shipped category,
+        // colors (text[]), price, min_stock, withdrawn, id, created_at
+        // — the local mapper overwrites `withdrawn` so the DB value is
+        // pure waste on the wire. Schema verified against production.
         const [oRes, iRes] = await Promise.all([
           supabase
             .from('turath_masr_orders')
             .select('id, created_at, status, total, shipping_fee, products, region')
             .order('created_at', { ascending: true }),
-          supabase.from('turath_masr_inventory').select('*'),
+          supabase.from('turath_masr_inventory').select('name, sku, available, images'),
         ]);
 
         if (oRes.data) setDbOrders(oRes.data);
@@ -597,54 +584,7 @@ export default function ReportsPage() {
               </div>
             </div>
             <div className="h-[320px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart
-                  data={filteredMonthly}
-                  margin={{ top: 0, right: 0, left: -20, bottom: 0 }}
-                >
-                  <defs>
-                    <linearGradient id="colorOrdersRec" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#1e3a8a" stopOpacity={0.15} />
-                      <stop offset="95%" stopColor="#1e3a8a" stopOpacity={0.01} />
-                    </linearGradient>
-                    <linearGradient id="colorDeliveredRec" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#15803d" stopOpacity={0.15} />
-                      <stop offset="95%" stopColor="#15803d" stopOpacity={0.01} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                  <XAxis
-                    dataKey="month"
-                    tick={{ fontSize: 10, fontWeight: 700, fill: '#94a3b8' }}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <YAxis
-                    tick={{ fontSize: 10, fontWeight: 700, fill: '#94a3b8' }}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Area
-                    type="monotone"
-                    dataKey="orders"
-                    name="الأوردرات"
-                    stroke="#1e3a8a"
-                    strokeWidth={3}
-                    fillOpacity={1}
-                    fill="url(#colorOrdersRec)"
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="delivered"
-                    name="المسلمة"
-                    stroke="#15803d"
-                    strokeWidth={3}
-                    fillOpacity={1}
-                    fill="url(#colorDeliveredRec)"
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
+              <MonthlyAreaChart data={filteredMonthly} />
             </div>
           </div>
 
@@ -656,25 +596,7 @@ export default function ReportsPage() {
               توزيع الطلبات حسب الحالة التشغيلية
             </p>
             <div className="h-[220px] w-full relative">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={aggregatedData.status}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={65}
-                    outerRadius={90}
-                    paddingAngle={6}
-                    dataKey="value"
-                    stroke="none"
-                  >
-                    {aggregatedData.status.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
-                    ))}
-                  </Pie>
-                  <Tooltip />
-                </PieChart>
-              </ResponsiveContainer>
+              <StatusPieChart data={aggregatedData.status} />
               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
                 <span className="text-3xl font-black text-gray-900 font-mono tracking-tighter">
                   {dbOrders.length}
@@ -757,44 +679,7 @@ export default function ReportsPage() {
                 </p>
               </div>
               <div className="h-[240px] w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={filteredMonthly}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                    <XAxis
-                      dataKey="month"
-                      tick={{ fontSize: 10, fontWeight: 700, fill: '#94a3b8' }}
-                      axisLine={false}
-                      tickLine={false}
-                    />
-                    <YAxis
-                      tick={{ fontSize: 10, fontWeight: 700, fill: '#94a3b8' }}
-                      axisLine={false}
-                      tickLine={false}
-                    />
-                    <Tooltip content={<CustomTooltip />} />
-                    <Bar
-                      dataKey="orders"
-                      name="مستلم"
-                      fill="#1e3a8a"
-                      radius={[4, 4, 0, 0]}
-                      barSize={18}
-                    />
-                    <Bar
-                      dataKey="delivered"
-                      name="مسلم"
-                      fill="#15803d"
-                      radius={[4, 4, 0, 0]}
-                      barSize={18}
-                    />
-                    <Bar
-                      dataKey="returned"
-                      name="مرتجع"
-                      fill="#dc2626"
-                      radius={[4, 4, 0, 0]}
-                      barSize={18}
-                    />
-                  </BarChart>
-                </ResponsiveContainer>
+                <MonthlyBarChart data={filteredMonthly} />
               </div>
             </div>
           </div>
