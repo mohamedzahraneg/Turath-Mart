@@ -20,11 +20,16 @@
 //   - Defense-in-depth validation here too (the RPC also validates).
 //   - Generic error responses; never echoes the raw Postgres error.
 //
-// Error semantics
-//   - 400 invalid_input  — malformed JSON or missing/invalid fields
-//   - 405 method_not_allowed — anything other than POST
-//   - 500 internal_error — Supabase returned an unexpected error
+// Error semantics (Phase 14A)
 //   - 200 { success: true, id }
+//   - 400 invalid_input          — malformed JSON or missing/invalid fields
+//                                   (also catches Postgres SQLSTATE 22023:
+//                                   invalid_phone / empty_message /
+//                                   message_too_long / invalid_order_id)
+//   - 409 duplicate_submission   — same phone + same message within 2 min
+//   - 429 rate_limited           — per-phone or global cap exceeded
+//   - 405 method_not_allowed     — anything other than POST
+//   - 500 internal_error         — Supabase returned an unexpected error
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { NextResponse } from 'next/server';
@@ -120,9 +125,26 @@ export async function POST(request: Request) {
   });
 
   if (error) {
-    // Map RPC validation errors to 400, anything else to 500.
+    // Phase 14A error mapping: classify by Postgres SQLSTATE + message
+    // text raised by submit_customer_chat. SQLSTATE comes back on the
+    // PostgrestError as `code`; the message text is the bare error
+    // identifier we used in `RAISE EXCEPTION '...' USING ERRCODE = ...`.
+    const code = (error as { code?: string }).code || '';
     const msg = (error as { message?: string }).message || '';
-    if (/invalid_phone|invalid_message|invalid_order_id|22023/i.test(msg)) {
+
+    // 409 duplicate (exact same body within the duplicate window)
+    if (msg === 'duplicate_submission') {
+      return NextResponse.json({ error: 'duplicate_submission' }, { status: 409 });
+    }
+    // 429 rate-limited (per-phone OR global)
+    if (msg === 'rate_limited') {
+      return NextResponse.json({ error: 'rate_limited' }, { status: 429 });
+    }
+    // 400 input validation: SQLSTATE 22023 OR specific known messages
+    if (
+      code === '22023' ||
+      /^(invalid_phone|empty_message|message_too_long|invalid_order_id)$/.test(msg)
+    ) {
       return NextResponse.json({ error: 'invalid_input' }, { status: 400 });
     }
     console.error('[customer-chat-api] submit_customer_chat failed', error);

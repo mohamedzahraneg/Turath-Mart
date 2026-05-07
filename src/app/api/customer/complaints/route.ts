@@ -28,11 +28,16 @@
 //   complaints to a specific order would need a separate additive
 //   migration (out of scope for Phase 14).
 //
-// Error semantics
-//   - 400 invalid_input  — malformed JSON or missing/invalid fields
-//   - 405 method_not_allowed — anything other than POST
-//   - 500 internal_error — Supabase returned an unexpected error
+// Error semantics (Phase 14A)
 //   - 200 { success: true, id }
+//   - 400 invalid_input          — malformed JSON or missing/invalid fields
+//                                   (also catches Postgres SQLSTATE 22023:
+//                                   invalid_phone / empty_subject /
+//                                   subject_too_long / notes_too_long)
+//   - 409 duplicate_submission   — same phone + same subject within 10 min
+//   - 429 rate_limited           — per-phone or global cap exceeded
+//   - 405 method_not_allowed     — anything other than POST
+//   - 500 internal_error         — Supabase returned an unexpected error
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { NextResponse } from 'next/server';
@@ -108,8 +113,20 @@ export async function POST(request: Request) {
   });
 
   if (error) {
+    // Phase 14A error mapping — see chat route for the same pattern.
+    const code = (error as { code?: string }).code || '';
     const msg = (error as { message?: string }).message || '';
-    if (/invalid_phone|invalid_subject|invalid_notes|22023/i.test(msg)) {
+
+    if (msg === 'duplicate_submission') {
+      return NextResponse.json({ error: 'duplicate_submission' }, { status: 409 });
+    }
+    if (msg === 'rate_limited') {
+      return NextResponse.json({ error: 'rate_limited' }, { status: 429 });
+    }
+    if (
+      code === '22023' ||
+      /^(invalid_phone|empty_subject|subject_too_long|notes_too_long)$/.test(msg)
+    ) {
       return NextResponse.json({ error: 'invalid_input' }, { status: 400 });
     }
     console.error('[customer-complaints-api] submit_customer_complaint failed', error);
