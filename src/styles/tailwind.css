@@ -250,10 +250,31 @@
   }
 
   /* ─── Islamic Login Page ─── */
+  /* Background is a slow 4-color gradient. Palette deliberately darkened
+     compared to v1 — on mobile / iPhones with wide-gamut displays the
+     previous lighter blues (#12233d, #2a1a08) made the page look washed
+     out at the gradient peaks. The new palette stays under ~12% lightness
+     across the whole cycle so the dark navy heritage feel is preserved
+     regardless of where the gradient animation is in its loop. */
   .islamic-login-bg {
-    background: linear-gradient(-45deg, #1a0f05, #0c1929, #12233d, #2a1a08);
+    background: linear-gradient(-45deg, #0a0904, #060c18, #0a1626, #1a1207);
     background-size: 400% 400%;
     animation: gradient-shift 20s ease infinite;
+  }
+
+  /* Scoped Safari autofill override — only applies inside the login page
+     wrapper. iOS Safari paints autofilled inputs with a cream/yellow
+     background that clashes with the dark theme. We override it to a
+     translucent dark fill with white text, matching the rest of the form. */
+  .islamic-login-bg input:-webkit-autofill,
+  .islamic-login-bg input:-webkit-autofill:hover,
+  .islamic-login-bg input:-webkit-autofill:focus,
+  .islamic-login-bg input:-webkit-autofill:active {
+    -webkit-text-fill-color: #ffffff !important;
+    -webkit-box-shadow: 0 0 0 1000px rgba(20, 30, 50, 0.85) inset !important;
+    caret-color: #c6a052 !important;
+    border-radius: inherit !important;
+    transition: background-color 600000s ease-in-out 0s !important;
   }
 
   .islamic-glass-card {
