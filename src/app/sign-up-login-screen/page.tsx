@@ -1,5 +1,5 @@
 'use client';
-import React, { Suspense, useState, useEffect, useMemo, useCallback } from 'react';
+import React, { Suspense, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { toast, Toaster } from 'sonner';
@@ -334,6 +334,40 @@ function LoginPageInner() {
   useEffect(() => {
     setDeviceType(getDeviceLabel());
     setMounted(true);
+  }, []);
+
+  // Phase 18: clear any stale local auth state when the login page mounts.
+  // Background — when the browser holds a refresh token that the auth
+  // server has already rotated/invalidated, the supabase-js auto-refresh
+  // path retries the bad token in a tight loop (observed: 100 calls to
+  // /auth/v1/token?grant_type=refresh_token in 7s, all 400/429), which
+  // burns the per-IP rate budget on /token. The next legitimate
+  // signInWithPassword() then comes back as 429 and the user sees
+  // "تم تجاوز عدد محاولات الدخول" on what looks like a first attempt.
+  //
+  // signOut({ scope: 'local' }) is purely client-side: it clears the
+  // SDK's in-memory session and the auth cookie/localStorage, with
+  // NO network call to /auth/v1/logout (so it cannot itself contribute
+  // to rate-limit pressure). Already-signed-in users who somehow land
+  // on this URL are caught earlier by the middleware redirect at
+  // middleware.ts:40-46, so this cleanup only runs when the page is
+  // actually rendered (i.e. user is unauthenticated or holding stale
+  // tokens — which is exactly when we want it to run).
+  //
+  // The hasCleanedRef guard prevents React 18 StrictMode from running
+  // the effect twice in dev, which would (harmlessly) double the
+  // signOut call. We also explicitly skip if there is no client (SSR
+  // safety) so the effect only runs in the browser.
+  const hasCleanedRef = useRef(false);
+  useEffect(() => {
+    if (hasCleanedRef.current) return;
+    hasCleanedRef.current = true;
+    const supabase = createClient();
+    if (!supabase) return;
+    void supabase.auth.signOut({ scope: 'local' }).catch(() => {
+      // Local cleanup failure is non-fatal — the user can still try to
+      // sign in. Swallow rather than surface a confusing toast.
+    });
   }, []);
 
   // Cooldown ticker — decrements once per second until zero.

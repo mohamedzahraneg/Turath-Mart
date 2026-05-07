@@ -29,12 +29,19 @@ export async function middleware(request: NextRequest) {
   // 2. Wire up Supabase against this request's cookies.
   const { supabase, response } = createMiddlewareSupabaseClient(request);
 
-  // 3. Read session (refreshes the access token via the cookie handler if needed).
+  // 3. Read session from cookies — Phase 18: switched from getUser() to
+  // getSession() to stop the per-request /auth/v1/user call that was
+  // triggering /token?grant_type=refresh_token storms when the cookie
+  // held a stale token. getSession() is cookie-only (no network), and
+  // the redirect logic only needs presence-of-session, not JWT
+  // re-validation. Authorization on protected pages remains enforced
+  // by RLS + per-route checks (this middleware only decides where to
+  // route the browser).
   const {
-    data: { user },
-  } = await supabase.auth.getUser();
+    data: { session },
+  } = await supabase.auth.getSession();
 
-  const authed = !!user;
+  const authed = !!session?.user;
 
   // 4. If user is already signed in and visits the login screen → bounce them home.
   if (authed && isAuthRoute(pathname)) {
