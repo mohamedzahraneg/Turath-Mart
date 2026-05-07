@@ -242,20 +242,25 @@ export default function OrdersTableSection() {
   const loadOrders = useCallback(async () => {
     try {
       const supabase = createClient();
-      // Phase 20C-1: replaced select('*') with the explicit list of columns
-      // that the row mapper below actually consumes. The previous select('*')
-      // was shipping every order column on every refresh, including the
-      // `lines` jsonb (full line-item snapshots — easily kilobytes per row),
-      // `tracking_token`, `created_by_ip`, `created_by_location`,
-      // `created_by_user_id`, `assigned_to`, `updated_by`, `delivery_notes`,
-      // `eta`, `delegate_phone`, `warranty`, `free_shipping`, `deleted_at`,
-      // `updated_at`, etc. None of those are read by the table view, so they
-      // were pure payload bloat. Realtime + the window event listener fire
-      // this query on every order change, so the savings compound.
+      // Phase 20C-1: replaced select('*') with an explicit list of columns
+      // the row mapper actually consumes. Skipped fields with no
+      // wire/render value (notably the `lines` jsonb — kilobytes per row).
+      //
+      // Phase 20C-1 hotfix: removed `ip` from the list. The column does
+      // NOT exist in turath_masr_orders (the real column is
+      // `created_by_ip`); under select('*') the mapper's `row.ip` was
+      // silently `undefined` and the `|| ''` fallback masked it. With an
+      // explicit list, Postgres rejects the entire query with
+      // `42703: column "ip" does not exist` (400), the `if (error)` arm
+      // below returns early, and allOrders never populates — so the table
+      // appeared "stuck for minutes" until a hard refresh. The mapper at
+      // line below still does `ip: row.ip || ''` and continues to produce
+      // `''` (the field is genuinely never populated for any row), so
+      // behaviour is identical to pre-PR-#14.
       const { data, error } = await supabase
         .from('turath_masr_orders')
         .select(
-          'id, order_num, created_by, created_by_device, customer, phone, phone2, region, district, address, products, quantity, subtotal, shipping_fee, extra_shipping_fee, express_shipping, total, status, date, time, day, notes, ip, delegate_name, created_at'
+          'id, order_num, created_by, created_by_device, customer, phone, phone2, region, district, address, products, quantity, subtotal, shipping_fee, extra_shipping_fee, express_shipping, total, status, date, time, day, notes, delegate_name, created_at'
         )
         .order('created_at', { ascending: false });
 
