@@ -1,13 +1,91 @@
 'use client';
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { usePathname } from 'next/navigation';
 import type { Session, AuthChangeEvent } from '@supabase/supabase-js';
 import { createClient, resetSupabaseClient } from '@/lib/supabase/client';
 import { clearAppStorage } from '@/lib/auth/storage';
+import { isAuthRoute } from '@/lib/auth/routes';
 import {
   canAccessPath,
   getDefaultRouteForPermissions,
   getPermissionsForRoleId,
 } from '@/lib/permissions/permissions';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 20D-Fix1 — Profile/role cache.
+//
+// Every signed-in page used to pay a 1-2 query tax on mount + on every
+// onAuthStateChange tick (token refresh ~hourly emits a TOKEN_REFRESHED
+// event which flips the user object reference and re-fires syncProfile).
+// At the EG → eu-central-2 latency floor (~700-1000 ms / Supabase request),
+// that's ~2 seconds before any page-specific code runs.
+//
+// Strategy:
+//  • Module-scope memory cache for instant hits across SPA navigation
+//    (providers don't unmount, but the cache also survives Strict Mode
+//    double-invoke in dev).
+//  • sessionStorage backup so the cache survives hard refresh + new
+//    tab. Keyed by user.id so multi-account switches invalidate naturally.
+//  • TTL: 5 minutes. Role changes in the DB take up to 5 min to
+//    propagate to the in-page state — that's an acceptable trade-off
+//    for the perf win since admin role changes are rare.
+//  • Invalidated explicitly on signOut and on profile-fetch error
+//    (so a stale role doesn't get stuck if the API was misbehaving).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PROFILE_CACHE_KEY = 'tm.auth.profile.v1';
+const PROFILE_CACHE_TTL_MS = 5 * 60 * 1000;
+
+type ProfileCacheEntry = {
+  userId: string;
+  roleId: string;
+  roleName: string;
+  permissions: string[] | null;
+  expiresAt: number;
+};
+
+let _profileMemCache: ProfileCacheEntry | null = null;
+
+function readProfileCache(userId: string): ProfileCacheEntry | null {
+  const now = Date.now();
+  if (_profileMemCache && _profileMemCache.userId === userId && _profileMemCache.expiresAt > now) {
+    return _profileMemCache;
+  }
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(PROFILE_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ProfileCacheEntry;
+    if (parsed.userId !== userId || parsed.expiresAt <= now) {
+      window.sessionStorage.removeItem(PROFILE_CACHE_KEY);
+      return null;
+    }
+    _profileMemCache = parsed;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeProfileCache(entry: ProfileCacheEntry) {
+  _profileMemCache = entry;
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify(entry));
+  } catch {
+    // sessionStorage unavailable / quota — memory cache still works.
+  }
+}
+
+function clearProfileCache() {
+  _profileMemCache = null;
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.removeItem(PROFILE_CACHE_KEY);
+  } catch {
+    // ignore
+  }
+}
 
 // Re-export for backward compatibility — many call-sites import these directly
 // from '@/contexts/AuthContext'. The actual implementations live in
@@ -64,6 +142,15 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [customPermissions, setCustomPermissions] = useState<string[] | null>(null);
   const [roleLoading, setRoleLoading] = useState(true);
 
+  // Phase 20D-Fix1: gate provider effects on the auth route. When a
+  // user lands on /sign-up-login-screen with a stale cookie session,
+  // supabase getSession briefly returns a session before signOut
+  // clears it; without this gate we'd fire syncProfile against the
+  // dying session and add a wasted ~1-second Supabase round-trip to
+  // the login page mount.
+  const pathname = usePathname();
+  const onAuthRoute = isAuthRoute(pathname || '');
+
   // ═══════════════════════════════════════════════════════════════════════════════
   // STEP 1: Listen to Supabase auth state changes (login/logout)
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -109,6 +196,28 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   // ═══════════════════════════════════════════════════════════════════════════════
   useEffect(() => {
     if (!user) {
+      setRoleLoading(false);
+      return;
+    }
+
+    // Phase 20D-Fix1: skip syncProfile while on the login route. If the
+    // cookie still holds a stale session, middleware would already have
+    // redirected an authed user away from this page; a transient `user`
+    // here is a logout-in-progress and shouldn't trigger a network call.
+    if (onAuthRoute) {
+      setRoleLoading(false);
+      return;
+    }
+
+    // Phase 20D-Fix1: serve from cache if same user.id and not expired.
+    // The two profile/role queries are by far the most frequent
+    // provider-level cost — caching them turns hard-refresh + token
+    // refresh from "two ~1-second Supabase round-trips" into "instant".
+    const cached = readProfileCache(user.id);
+    if (cached) {
+      setCurrentRoleId(cached.roleId);
+      setCurrentRole(cached.roleName);
+      setCustomPermissions(cached.permissions);
       setRoleLoading(false);
       return;
     }
@@ -160,25 +269,41 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           if (effectivePerms.length === 0) {
             effectivePerms = getPermissionsForRoleId(roleId);
           }
-          setCustomPermissions(effectivePerms.length > 0 ? effectivePerms : null);
+          const finalPerms = effectivePerms.length > 0 ? effectivePerms : null;
+          setCustomPermissions(finalPerms);
+          // Phase 20D-Fix1: write cache only on the success path.
+          writeProfileCache({
+            userId: user.id,
+            roleId,
+            roleName,
+            permissions: finalPerms,
+            expiresAt: Date.now() + PROFILE_CACHE_TTL_MS,
+          });
         } else {
-          // No profile found - use defaults
+          // No profile found - use defaults. Don't cache the default
+          // fallback: a transient auth/RLS error here shouldn't pin a
+          // user to r6 for 5 minutes.
           setCurrentRoleId('r6');
           setCurrentRole('خدمة عملاء');
           setCustomPermissions(getPermissionsForRoleId('r6'));
+          clearProfileCache();
         }
       } catch (err) {
         console.error('Error syncing profile:', err);
         setCurrentRoleId('r6');
         setCurrentRole('خدمة عملاء');
         setCustomPermissions(getPermissionsForRoleId('r6'));
+        // Phase 20D-Fix1: on error, drop any stale cache so we retry
+        // fresh on the next mount/event rather than serving the old
+        // (possibly wrong) role.
+        clearProfileCache();
       } finally {
         setRoleLoading(false);
       }
     };
 
     syncProfile();
-  }, [user]);
+  }, [user, onAuthRoute]);
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // hasAccess - check if user can access a specific route.
@@ -264,6 +389,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     setCurrentRole(null);
     setCurrentRoleId(null);
     setCustomPermissions(null);
+
+    // Phase 20D-Fix1: drop the profile cache so the next signed-in
+    // user (different account, or same user re-signing in) starts
+    // fresh rather than getting the old role for up to 5 minutes.
+    clearProfileCache();
 
     // 3. Sign out from Supabase first (clears its own auth cookies/storage)
     try {
