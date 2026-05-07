@@ -135,12 +135,19 @@ function SupportChatPanel({ customer, onClose }: { customer: Customer; onClose: 
   const supabase = createClient();
 
   const fetchMessages = useCallback(async () => {
+    // Phase 20C-2: explicit columns (was select('*')). The render only
+    // uses id, sender, message, created_at; the chat_type column is
+    // already constrained by the .eq() filter so it doesn't need to come
+    // back. .limit(500) bounds payload for chatty customers — the
+    // realtime INSERT subscription below appends new messages on top, so
+    // the cap doesn't lose live updates. Schema verified before commit.
     const { data, error } = await supabase
       .from('turath_masr_crm_chat')
-      .select('*')
+      .select('id, sender, message, created_at')
       .eq('customer_phone', customer.phone)
       .eq('chat_type', 'support')
-      .order('created_at', { ascending: true });
+      .order('created_at', { ascending: true })
+      .limit(500);
 
     if (!error && data) setMessages(data as ChatMessage[]);
     setLoading(false);
@@ -289,9 +296,12 @@ function ComplaintDetailsModal({
   const supabase = createClient();
 
   const fetchLogs = useCallback(async () => {
+    // Phase 20C-2: explicit columns (was select('*')). All 6 columns are
+    // consumed by the render. complaint_id is already constrained by
+    // the .eq() filter, so we omit it. Schema verified before commit.
     const { data, error } = await supabase
       .from('turath_masr_crm_complaint_logs')
-      .select('*')
+      .select('id, noted_by_name, note, old_status, new_status, created_at')
       .eq('complaint_id', complaint.id)
       .order('created_at', { ascending: false });
 
@@ -632,15 +642,27 @@ export default function CRMPage() {
     setLoading(true);
     try {
       const supabase = createClient();
+      // Phase 20C-2: three explicit-column selects (were select('*')).
+      // The orders query was the worst offender — every refresh shipped
+      // every order's `lines` jsonb (full line-item snapshot), warranty,
+      // tracking_token, audit fields, etc. just to compute customer
+      // tier/totals. The local OrderRowMin/CustomerMetaRow/ComplaintRowMin
+      // types below + the consumer paths (filter at L723, complaint
+      // modal at L378-385) are the source of truth for the column lists.
+      // No `.limit()` added — customer aggregation needs the full order
+      // history per customer to compute totalSpent/totalOrders/tier.
+      // Schema verified before commit.
       const { data: oData } = await supabase
         .from('turath_masr_orders')
-        .select('*')
+        .select('phone, customer, total, created_at')
         .order('created_at', { ascending: false });
       const { data: cData } = await supabase
         .from('turath_masr_crm_complaints')
-        .select('*')
+        .select('id, customer_phone, subject, status, notes, created_at')
         .order('created_at', { ascending: false });
-      const { data: metaData } = await supabase.from('turath_masr_customers').select('*');
+      const { data: metaData } = await supabase
+        .from('turath_masr_customers')
+        .select('phone, full_name, total_orders, total_spent, updated_at, segment');
 
       if (oData) {
         const map = new Map<string, Customer>();
