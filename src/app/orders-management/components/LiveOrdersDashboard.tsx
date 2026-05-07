@@ -143,9 +143,17 @@ export default function LiveOrdersDashboard() {
       const today = new Date();
       const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
+      // Phase 20C-1: replaced select('*') with the explicit columns the
+      // mapper below + agent-aggregation actually read. Live Orders is
+      // already date-bounded (gte today), but select('*') still shipped
+      // the heavy `lines` jsonb plus PII/audit columns that the live
+      // dashboard never displays. The query fires on every realtime
+      // update of any row in turath_masr_orders, so the savings compound.
       const { data, error } = await supabase
         .from('turath_masr_orders')
-        .select('*')
+        .select(
+          'id, order_num, customer, region, products, total, status, delegate_name, time, updated_at, created_at'
+        )
         .gte('created_at', todayStr) // only today's orders or active orders
         .order('updated_at', { ascending: false });
 
