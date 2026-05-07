@@ -217,7 +217,17 @@ export default function LiveOrdersDashboard() {
     return () => clearInterval(interval);
   }, []);
 
-  // Realtime subscription + fallback polling every 30s (was 10s)
+  // Realtime subscription only.
+  //
+  // Phase 20B QW-C: removed the 30-second `setInterval(fetchLiveOrders,
+  // 30000)` fallback. The realtime channel below already fires
+  // fetchLiveOrders on every INSERT/UPDATE/DELETE on turath_masr_orders,
+  // so the polling was a duplicate refresh path that re-shipped the full
+  // orders payload every 30s even when nothing changed. If the realtime
+  // socket drops, supabase-js auto-reconnects (and the user can also use
+  // the manual "إيقاف"/"متصل" toggle to force a fresh subscription).
+  // The 1-second setTick interval below is unrelated — it only updates
+  // the "X seconds ago" display text and does not query the DB.
   useEffect(() => {
     fetchLiveOrders();
     if (!isLive) return;
@@ -228,9 +238,7 @@ export default function LiveOrdersDashboard() {
         fetchLiveOrders();
       })
       .subscribe();
-    const interval = setInterval(fetchLiveOrders, 30000);
     return () => {
-      clearInterval(interval);
       supabase.removeChannel(channel);
     };
   }, [isLive, fetchLiveOrders]);

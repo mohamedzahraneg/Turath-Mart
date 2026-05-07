@@ -1,5 +1,6 @@
 'use client';
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import dynamic from 'next/dynamic';
 import {
   Search,
   ChevronDown,
@@ -19,8 +20,16 @@ import {
 } from 'lucide-react';
 import { toast, Toaster } from 'sonner';
 import StatusUpdateModal from './StatusUpdateModal';
-import OrderDetailModal from './OrderDetailModal';
-import AuditLogModal from './AuditLogModal';
+// Phase 20B QW-A: OrderDetailModal (~1,286 lines) and AuditLogModal (~303
+// lines) only render after the user clicks a row / opens audit history.
+// next/dynamic puts each in its own lazy chunk so the initial
+// /orders-management JS no longer pays for them on first load.
+// StatusUpdateModal stays statically imported — it's smaller, frequently
+// reached, and StatusUpdateModal pulls audit helpers from AuditLogModal
+// via static named-export imports (re-exporting helpers would be a
+// refactor outside this PR's scope).
+const OrderDetailModal = dynamic(() => import('./OrderDetailModal'), { ssr: false });
+const AuditLogModal = dynamic(() => import('./AuditLogModal'), { ssr: false });
 import { createClient } from '@/lib/supabase/client';
 import { useAuth, getPermissionsForRoleId } from '@/contexts/AuthContext';
 import { canBulkManageOrders } from '@/lib/constants/roles';
