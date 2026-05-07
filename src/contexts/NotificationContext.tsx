@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import { useAuth } from '@/contexts/AuthContext';
 
 export interface Notification {
   id: string;
@@ -41,6 +42,23 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
   const [unreadCount, setUnreadCount] = useState(0);
   const [newOrdersCount, setNewOrdersCount] = useState(0);
   const [loading, setLoading] = useState(true);
+
+  // Phase 18: gate all network/realtime activity on the authenticated
+  // user. The previous implementation mounted realtime channels and
+  // fetched notifications on EVERY page load — including
+  // /sign-up-login-screen — which contributed to the stale-token
+  // refresh storm: the realtime client tried to authenticate with
+  // whatever JWT happened to be in the auth cookie, and on any
+  // 401/expired path it would reconnect in a loop, each cycle
+  // triggering supabase-js to attempt a /token?grant_type=refresh_token
+  // request. Tying these effects to `user` means:
+  //   - on the login page (no user) we open zero channels and make
+  //     zero RLS-gated SELECTs.
+  //   - on logout, the cleanup branch of the effect removes the
+  //     channels before signOut clears the JWT.
+  //   - after a successful sign-in, `user` flips truthy and the
+  //     subscriptions/fetches start naturally.
+  const { user } = useAuth();
 
   const supabase = createClient();
 
@@ -83,6 +101,18 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
   }, [fetchNotifications, fetchNewOrdersCount]);
 
   useEffect(() => {
+    // Phase 18: skip fetches and realtime when there's no user. Reset
+    // state so a fresh login doesn't render stale counts from a
+    // previous session, and so the loading flag goes false (otherwise
+    // a logged-out shell can show a permanent loading spinner).
+    if (!user) {
+      setNotifications([]);
+      setUnreadCount(0);
+      setNewOrdersCount(0);
+      setLoading(false);
+      return;
+    }
+
     refresh();
 
     // 1. Listen for new notifications
@@ -109,7 +139,7 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
       supabase.removeChannel(notifSubscription);
       supabase.removeChannel(orderSubscription);
     };
-  }, [supabase, refresh, fetchNotifications, fetchNewOrdersCount]);
+  }, [user, supabase, refresh, fetchNotifications, fetchNewOrdersCount]);
 
   const markAsRead = async (id: string) => {
     try {
