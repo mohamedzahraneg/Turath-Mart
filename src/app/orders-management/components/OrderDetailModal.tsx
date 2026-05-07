@@ -46,6 +46,10 @@ interface OrderLine {
 interface Order {
   id: string;
   orderNum: string;
+  // Phase 13C: per-order unguessable UUID used by the new
+  // /track/t/<token> public URL. May be undefined for legacy callers
+  // that have not yet selected the column from the DB row.
+  trackingToken?: string | null;
   createdBy: string;
   createdByIp?: string;
   createdByLocation?: string;
@@ -106,10 +110,15 @@ function DeviceIcon({ device }: { device?: string }) {
   return <Monitor size={12} />;
 }
 
-// Generate a unique tracking link per order
-function getTrackingLink(orderNum: string): string {
-  const base = typeof window !== 'undefined' ? window.location.origin : 'https://turath_masr.com';
-  return `${base}/track/${orderNum}`;
+// Generate a unique tracking link per order.
+// Phase 13C: prefer the unguessable /track/t/<tracking_token> URL when the
+// order has a token (every order does after Phase 13A backfilled). Falls
+// back to /track/<order_num> defensively when the token is missing.
+function getTrackingLink(order: { orderNum: string; trackingToken?: string | null }): string {
+  const base = typeof window !== 'undefined' ? window.location.origin : 'https://turathmasr.com';
+  return order.trackingToken
+    ? `${base}/track/t/${order.trackingToken}`
+    : `${base}/track/${order.orderNum}`;
 }
 
 // Load WhatsApp template from localStorage
@@ -187,6 +196,9 @@ export default function OrderDetailModal({ order, onClose }: Props) {
           const mappedOrder: Order = {
             id: data.id,
             orderNum: data.order_num,
+            // Phase 13C: forwarded so getTrackingLink() can build the
+            // /track/t/<token> share URL.
+            trackingToken: data.tracking_token ?? null,
             createdBy: data.created_by,
             createdByIp: data.created_by_ip || undefined,
             createdByLocation: data.created_by_location || undefined,
@@ -244,6 +256,12 @@ export default function OrderDetailModal({ order, onClose }: Props) {
 
     const handleNotifs = () => fetchOrderNotifications();
 
+    // Phase 13C: kick off one fetch on mount so liveOrder picks up
+    // tracking_token (parent table queries do not yet select it). Without
+    // this the first paint of the "tracking link" tab would fall back to
+    // /track/<order_num> until a window event arrives.
+    handleOrders();
+
     window.addEventListener('turath_masr_audit_updated', handleAudit);
     window.addEventListener('turath_masr_orders_updated', handleOrders);
 
@@ -273,7 +291,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
   const statusInfo = STATUS_BADGE_MAP[liveOrder.status] || STATUS_BADGE_MAP['new'];
   const extraFee = liveOrder.extraShippingFee || 0;
   const shippingLabel = liveOrder.expressShipping ? 'شحن سريع' : 'تكلفة الشحن';
-  const trackingLink = getTrackingLink(liveOrder.orderNum);
+  const trackingLink = getTrackingLink(liveOrder);
 
   const buildWAMessage = () => {
     return waTemplate

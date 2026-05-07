@@ -305,6 +305,11 @@ export default function AddOrderModal({ onClose }: Props) {
   const [step, setStep] = useState(1);
   const [orderSuccess, setOrderSuccess] = useState(false);
   const [successOrderNum, setSuccessOrderNum] = useState('');
+  // Phase 13C: server-generated tracking_token returned by the upsert. Used
+  // to build the new /track/t/<token> link in the WhatsApp message; falls
+  // back to /track/<order_num> when missing (defensive — never observed in
+  // practice after Phase 13A backfilled every existing order).
+  const [successTrackingToken, setSuccessTrackingToken] = useState<string | null>(null);
   const [waTemplate, setWaTemplate] = useState('');
   const [successPhone, setSuccessPhone] = useState('');
   const [successCustomer, setSuccessCustomer] = useState('');
@@ -682,42 +687,50 @@ export default function AddOrderModal({ onClose }: Props) {
     // Save to Supabase
     try {
       const supabase = createClient();
-      const { error } = await supabase.from('turath_masr_orders').upsert(
-        {
-          id: newOrder.id,
-          order_num: newOrder.orderNum,
-          created_by: newOrder.createdBy,
-          created_by_device: newOrder.createdByDevice,
-          // Authenticated user UUID — required by the orders_authenticated_insert
-          // RLS policy: WITH CHECK (created_by_user_id IS NULL OR
-          //                         created_by_user_id = auth.uid())
-          created_by_user_id: user.id,
-          customer: newOrder.customer,
-          phone: newOrder.phone,
-          phone2: newOrder.phone2 || null,
-          region: newOrder.region,
-          district: newOrder.district || null,
-          address: newOrder.address,
-          products: newOrder.products,
-          quantity: newOrder.quantity,
-          subtotal: newOrder.subtotal,
-          shipping_fee: newOrder.shippingFee,
-          // extra_shipping_fee already coerced to 0 at line where newOrder is built
-          // when IS_ADMIN is false; client-side guard. RLS provides defence-in-depth.
-          extra_shipping_fee: newOrder.extraShippingFee || 0,
-          express_shipping: newOrder.expressShipping || false,
-          free_shipping: newOrder.freeShipping || false,
-          total: newOrder.total,
-          status: newOrder.status,
-          date: newOrder.date,
-          time: newOrder.time,
-          day: newOrder.day || null,
-          notes: newOrder.notes || null,
-          warranty: newOrder.warranty || null,
-          lines: newOrder.lines || null,
-        },
-        { onConflict: 'id' }
-      );
+      // Phase 13C: chain `.select('tracking_token').single()` after the
+      // upsert so we get back the server-generated tracking_token (DB
+      // DEFAULT gen_random_uuid()) in the same round-trip. This is the
+      // value we want for the new /track/t/<token> share link.
+      const { data: upserted, error } = await supabase
+        .from('turath_masr_orders')
+        .upsert(
+          {
+            id: newOrder.id,
+            order_num: newOrder.orderNum,
+            created_by: newOrder.createdBy,
+            created_by_device: newOrder.createdByDevice,
+            // Authenticated user UUID — required by the orders_authenticated_insert
+            // RLS policy: WITH CHECK (created_by_user_id IS NULL OR
+            //                         created_by_user_id = auth.uid())
+            created_by_user_id: user.id,
+            customer: newOrder.customer,
+            phone: newOrder.phone,
+            phone2: newOrder.phone2 || null,
+            region: newOrder.region,
+            district: newOrder.district || null,
+            address: newOrder.address,
+            products: newOrder.products,
+            quantity: newOrder.quantity,
+            subtotal: newOrder.subtotal,
+            shipping_fee: newOrder.shippingFee,
+            // extra_shipping_fee already coerced to 0 at line where newOrder is built
+            // when IS_ADMIN is false; client-side guard. RLS provides defence-in-depth.
+            extra_shipping_fee: newOrder.extraShippingFee || 0,
+            express_shipping: newOrder.expressShipping || false,
+            free_shipping: newOrder.freeShipping || false,
+            total: newOrder.total,
+            status: newOrder.status,
+            date: newOrder.date,
+            time: newOrder.time,
+            day: newOrder.day || null,
+            notes: newOrder.notes || null,
+            warranty: newOrder.warranty || null,
+            lines: newOrder.lines || null,
+          },
+          { onConflict: 'id' }
+        )
+        .select('tracking_token')
+        .single();
 
       if (error) {
         throw error;
@@ -735,6 +748,13 @@ export default function AddOrderModal({ onClose }: Props) {
       await new Promise((r) => setTimeout(r, 800));
       setIsSubmitting(false);
       setSuccessOrderNum(orderNum);
+      // Phase 13C: capture the tracking_token returned by the upsert.
+      // It is null only if the column is missing (shouldn't happen post
+      // Phase 13A) or if a non-default RLS hides it from the row that came
+      // back. Either way we fall through to the order_num link.
+      setSuccessTrackingToken(
+        (upserted as { tracking_token?: string | null } | null)?.tracking_token ?? null
+      );
       setSuccessPhone(phone);
       setSuccessCustomer(customerName);
       setSuccessTotal(grandTotal);
@@ -769,6 +789,7 @@ export default function AddOrderModal({ onClose }: Props) {
     setStep(1);
     setOrderSuccess(false);
     setSuccessOrderNum('');
+    setSuccessTrackingToken(null);
     // Generate a new order number for the next order
     generateOrderNumber().then((num) => setOrderNum(num));
   };
@@ -805,7 +826,12 @@ export default function AddOrderModal({ onClose }: Props) {
               type="button"
               className="w-full py-3 px-6 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 transition-all shadow-lg active:scale-95 bg-green-500 hover:bg-green-600 text-white"
               onClick={() => {
-                const trackingLink = `turathmasr.com/track/${successOrderNum}`;
+                // Phase 13C: prefer the unguessable tracking_token URL.
+                // Fall back to the legacy /track/<order_num> URL only when
+                // we somehow didn't get a token back from the upsert.
+                const trackingLink = successTrackingToken
+                  ? `turathmasr.com/track/t/${successTrackingToken}`
+                  : `turathmasr.com/track/${successOrderNum}`;
                 // Build products list with proper names from productCards
                 const productsList = successLines
                   .map((l) => {
