@@ -18,7 +18,7 @@
 // =============================================================================
 
 'use client';
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Image from 'next/image';
 import {
   Package,
@@ -46,7 +46,6 @@ import {
   FileText,
   Award,
 } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
 
 interface TrackingOrder {
   orderNum: string;
@@ -93,13 +92,6 @@ interface StatusStep {
   timestamp?: string;
   completed: boolean;
   active: boolean;
-}
-
-interface ChatMessage {
-  id: string;
-  sender: 'customer' | 'delegate' | 'support';
-  text: string;
-  time: string;
 }
 
 const STATUS_FLOW = ['new', 'preparing', 'warehouse', 'shipping', 'delivered'];
@@ -470,7 +462,45 @@ const ORDERS_MANAGEMENT_MOCK: TrackingOrder[] = [
   },
 ];
 
-// ─── Chat Panel (UPDATED - Separate delegate and support chats) ───────────────
+// ─── Phase 15 — customer-side chat & complaint forms ─────────────────────────
+//
+// Phase 14 (PR #7) added two SECURITY DEFINER RPCs and matching POST routes:
+//   POST /api/customer/chat        → submit_customer_chat
+//   POST /api/customer/complaints  → submit_customer_complaint
+// Phase 14A then hardened them with phone normalisation, length caps,
+// per-phone rate limits, global caps, and duplicate guards.
+//
+// The legacy widgets used the browser anon Supabase client to .insert()
+// directly into turath_masr_crm_chat / turath_masr_crm_complaints and to
+// subscribe to realtime updates on those tables. After Phase 3 RLS
+// hardening (20260505c) those direct writes silently fail, and there is
+// intentionally NO public read path (no SELECT RPC), so realtime/history
+// rendering would always show empty.
+//
+// The new components below are write-only forms that call the Phase 14
+// API routes. The customer must enter their own phone — the public
+// tracking DTO never returns it (PII). On success we show a confirmation
+// banner; we do not attempt to render staff replies (they reach the
+// customer through the existing WhatsApp channel managed by CRM staff).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PHONE_RE = /^[0-9+ ]{5,32}$/;
+
+const CHAT_ERR_MAP: Record<string, string> = {
+  invalid_input: 'بيانات غير صحيحة. تحقق من رقم الهاتف والرسالة.',
+  duplicate_submission: 'لقد أرسلت نفس الرسالة قبل قليل.',
+  rate_limited: 'تم تجاوز حد الإرسال. حاول مرة أخرى بعد قليل.',
+  internal_error: 'تعذر الإرسال الآن. حاول مرة أخرى.',
+};
+
+const COMPLAINT_ERR_MAP: Record<string, string> = {
+  invalid_input: 'بيانات غير صحيحة. تحقق من رقم الهاتف وسبب الشكوى.',
+  duplicate_submission: 'لقد أرسلت نفس الشكوى قبل قليل.',
+  rate_limited: 'تم تجاوز حد الإرسال. حاول مرة أخرى بعد قليل.',
+  internal_error: 'تعذر إرسال الشكوى الآن. حاول مرة أخرى.',
+};
+
+type SubmitStatus = { kind: 'idle' | 'success' | 'error'; text?: string };
 
 interface ChatPanelProps {
   type: 'delegate' | 'support';
@@ -479,162 +509,66 @@ interface ChatPanelProps {
 }
 
 function ChatPanel({ type, order, onClose }: ChatPanelProps) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [loadingChat, setLoadingChat] = useState(true);
-
-  // Load messages from Supabase - FILTERED by chat_type
-  useEffect(() => {
-    const loadMessages = async () => {
-      try {
-        const supabase = createClient();
-        const { data } = await supabase
-          .from('turath_masr_crm_chat')
-          .select('*')
-          .eq('customer_phone', order.phone)
-          .eq('chat_type', type)
-          .order('created_at', { ascending: true });
-        if (data && data.length > 0) {
-          setMessages(
-            data.map((m: any) => ({
-              id: m.id || `msg-${m.created_at}`,
-              sender:
-                m.sender === 'customer' ? 'customer' : type === 'delegate' ? 'delegate' : 'support',
-              text: m.message,
-              time: (() => {
-                const d = new Date(m.created_at);
-                const days = [
-                  '\u0627\u0644\u0623\u062d\u062f',
-                  '\u0627\u0644\u0627\u062b\u0646\u064a\u0646',
-                  '\u0627\u0644\u062b\u0644\u0627\u062b\u0627\u0621',
-                  '\u0627\u0644\u0623\u0631\u0628\u0639\u0627\u0621',
-                  '\u0627\u0644\u062e\u0645\u064a\u0633',
-                  '\u0627\u0644\u062c\u0645\u0639\u0629',
-                  '\u0627\u0644\u0633\u0628\u062a',
-                ];
-                return `${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
-              })(),
-            }))
-          );
-        }
-      } catch (err) {
-        console.error('Error loading chat:', err);
-      }
-      setLoadingChat(false);
-    };
-    loadMessages();
-
-    // Subscribe to realtime updates - FILTERED by chat_type
-    const supabase = createClient();
-    const channel = supabase
-      .channel(`chat-track-${type}-${order.phone}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'turath_masr_crm_chat',
-          filter: `customer_phone=eq.${order.phone}`,
-        },
-        (payload: any) => {
-          const m = payload.new;
-          // Only show messages for this chat type
-          if (m.chat_type && m.chat_type !== type) return;
-          setMessages((prev) => {
-            if (prev.some((p) => p.id === m.id)) return prev;
-            return [
-              ...prev,
-              {
-                id: m.id || `msg-${m.created_at}`,
-                sender:
-                  m.sender === 'customer'
-                    ? 'customer'
-                    : type === 'delegate'
-                      ? 'delegate'
-                      : 'support',
-                text: m.message,
-                time: (() => {
-                  const d = new Date(m.created_at);
-                  const days = [
-                    '\u0627\u0644\u0623\u062d\u062f',
-                    '\u0627\u0644\u0627\u062b\u0646\u064a\u0646',
-                    '\u0627\u0644\u062b\u0644\u0627\u062b\u0627\u0621',
-                    '\u0627\u0644\u0623\u0631\u0628\u0639\u0627\u0621',
-                    '\u0627\u0644\u062e\u0645\u064a\u0633',
-                    '\u0627\u0644\u062c\u0645\u0639\u0629',
-                    '\u0627\u0644\u0633\u0628\u062a',
-                  ];
-                  return `${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
-                })(),
-              },
-            ];
-          });
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [order.phone, type]);
+  const [phone, setPhone] = useState('');
   const [input, setInput] = useState('');
-  const bottomRef = useRef<HTMLDivElement>(null);
-
-  const initialMessages: ChatMessage[] =
-    type === 'delegate'
-      ? [
-          {
-            id: 'init-1',
-            sender: 'delegate',
-            text: `مرحباً ${order.customer}، أنا ${order.delegate || 'المندوب'} وسأقوم بتوصيل طلبك. هل لديك أي استفسار؟`,
-            time: order.time || '09:00',
-          },
-        ]
-      : [
-          {
-            id: 'init-1',
-            sender: 'support',
-            text: `مرحباً ${order.customer}، كيف يمكنني مساعدتك بخصوص الطلب رقم ${order.orderNum}؟`,
-            time: '09:00',
-          },
-        ];
-
-  const displayMessages = messages;
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [displayMessages]);
+  const [submitting, setSubmitting] = useState(false);
+  const [status, setStatus] = useState<SubmitStatus>({ kind: 'idle' });
 
   const sendMessage = async () => {
-    if (!input.trim()) return;
-    const now = new Date().toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    });
-    const newMsg: ChatMessage = {
-      id: `msg-${Date.now()}`,
-      sender: 'customer',
-      text: input.trim(),
-      time: now,
-    };
-    setMessages((prev) => [...prev, newMsg]);
-    setInput('');
-    // Save to Supabase with chat_type
-    try {
-      const supabase = createClient();
-      await supabase.from('turath_masr_crm_chat').insert({
-        customer_phone: order.phone,
-        sender: 'customer',
-        message: input.trim(),
-        chat_type: type,
-      });
-    } catch (err) {
-      console.error('Error saving chat message:', err);
+    if (submitting) return;
+    const phoneT = phone.trim();
+    const msgT = input.trim();
+    if (!PHONE_RE.test(phoneT)) {
+      setStatus({ kind: 'error', text: 'يرجى إدخال رقم هاتف صحيح (5-32 رقم).' });
+      return;
     }
+    if (msgT.length === 0) {
+      setStatus({ kind: 'error', text: 'يرجى كتابة رسالة.' });
+      return;
+    }
+    if (msgT.length > 1000) {
+      setStatus({ kind: 'error', text: 'الرسالة طويلة جدًا (الحد 1000 حرف).' });
+      return;
+    }
+
+    setSubmitting(true);
+    setStatus({ kind: 'idle' });
+    try {
+      const res = await fetch('/api/customer/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer_phone: phoneT,
+          message: msgT,
+          chat_type: type,
+          order_id: order.orderNum || null,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (res.ok) {
+        setStatus({
+          kind: 'success',
+          text: 'تم استلام رسالتك. سيتواصل معك فريق الدعم قريبًا عبر الواتساب.',
+        });
+        setInput('');
+      } else {
+        const code = typeof data?.error === 'string' ? data.error : '';
+        setStatus({
+          kind: 'error',
+          text: CHAT_ERR_MAP[code] || 'تعذر الإرسال. حاول مرة أخرى.',
+        });
+      }
+    } catch {
+      setStatus({ kind: 'error', text: 'تعذر الاتصال. تحقق من الإنترنت وحاول مجددًا.' });
+    }
+    setSubmitting(false);
   };
 
   const title = type === 'delegate' ? `محادثة مع ${order.delegate || 'المندوب'}` : 'خدمة العملاء';
-  const avatarBg = type === 'delegate' ? 'bg-[hsl(211,67%,28%)]' : 'bg-emerald-600';
+  const accent = type === 'delegate' ? 'bg-[hsl(211,67%,28%)]' : 'bg-emerald-600';
+  const accentHover = type === 'delegate' ? 'hover:bg-[hsl(211,67%,22%)]' : 'hover:bg-emerald-700';
+  const focusRing =
+    type === 'delegate' ? 'focus:ring-[hsl(211,67%,28%)]' : 'focus:ring-emerald-400';
   const avatarLetter = type === 'delegate' ? order.delegate?.charAt(0) || 'م' : 'خ';
 
   return (
@@ -643,69 +577,84 @@ function ChatPanel({ type, order, onClose }: ChatPanelProps) {
       dir="rtl"
     >
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div
-        className="relative bg-white w-full sm:max-w-md sm:rounded-2xl flex flex-col shadow-2xl"
-        style={{ height: '85vh', maxHeight: '600px' }}
-      >
+      <div className="relative bg-white w-full sm:max-w-md sm:rounded-2xl flex flex-col shadow-2xl max-h-[90vh]">
         <div
-          className={`flex items-center gap-3 px-4 py-3 ${type === 'delegate' ? 'bg-[hsl(211,67%,28%)]' : 'bg-emerald-600'} sm:rounded-t-2xl`}
+          className={`flex items-center gap-3 px-4 py-3 ${accent} sm:rounded-t-2xl flex-shrink-0`}
         >
-          <div
-            className={`w-10 h-10 rounded-full ${avatarBg} border-2 border-white/30 flex items-center justify-center text-white font-bold text-lg flex-shrink-0`}
-          >
+          <div className="w-10 h-10 rounded-full bg-white/20 border-2 border-white/30 flex items-center justify-center text-white font-bold text-lg flex-shrink-0">
             {avatarLetter}
           </div>
           <div className="flex-1">
             <p className="text-white font-bold text-sm">{title}</p>
-            <p className="text-white/70 text-xs flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-green-400 inline-block" />
-              متصل الآن
-            </p>
+            <p className="text-white/70 text-xs">{order.orderNum}</p>
           </div>
           <button
             onClick={onClose}
             className="p-1.5 hover:bg-white/20 rounded-lg transition-colors"
+            aria-label="إغلاق"
           >
             <X size={18} className="text-white" />
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50">
-          {displayMessages.map((msg) => {
-            const isCustomer = msg.sender === 'customer';
-            return (
-              <div key={msg.id} className={`flex ${isCustomer ? 'justify-start' : 'justify-end'}`}>
-                <div
-                  className={`max-w-[75%] rounded-2xl px-3 py-2 ${isCustomer ? 'bg-white border border-gray-200 text-gray-800' : type === 'delegate' ? 'bg-[hsl(211,67%,28%)] text-white' : 'bg-emerald-600 text-white'}`}
-                >
-                  <p className="text-sm leading-relaxed">{msg.text}</p>
-                  <p
-                    className={`text-[10px] mt-1 ${isCustomer ? 'text-gray-400' : 'text-white/60'} text-left`}
-                  >
-                    {msg.time}
-                  </p>
-                </div>
-              </div>
-            );
-          })}
-          <div ref={bottomRef} />
-        </div>
-        <div className="p-3 border-t border-gray-100 bg-white sm:rounded-b-2xl">
-          <div className="flex items-center gap-2">
+
+        <div className="p-4 space-y-4 overflow-y-auto">
+          <p className="text-xs text-gray-600 leading-relaxed">
+            اكتب رقم هاتفك الذي استلمت عليه تأكيد الطلب ورسالتك. سيتواصل معك فريق الدعم عبر الواتساب
+            في أقرب وقت.
+          </p>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1.5">رقم الهاتف *</label>
             <input
-              className="flex-1 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]"
+              type="tel"
+              dir="ltr"
+              inputMode="tel"
+              autoComplete="tel"
+              className={`w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 ${focusRing}`}
+              placeholder="مثال: 01012345678"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              maxLength={32}
+              disabled={submitting}
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1.5">الرسالة *</label>
+            <textarea
+              className={`w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 ${focusRing} resize-none`}
               placeholder="اكتب رسالتك..."
+              rows={4}
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
+              maxLength={1000}
+              disabled={submitting}
             />
-            <button
-              onClick={sendMessage}
-              disabled={!input.trim()}
-              className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors flex-shrink-0 ${input.trim() ? (type === 'delegate' ? 'bg-[hsl(211,67%,28%)] hover:bg-[hsl(211,67%,22%)]' : 'bg-emerald-600 hover:bg-emerald-700') + ' text-white' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
-            >
-              <Send size={16} />
-            </button>
+            <p className="mt-1 text-[10px] text-gray-400 text-left">{input.length}/1000</p>
           </div>
+
+          {status.kind === 'success' && (
+            <div className="rounded-xl bg-green-50 border border-green-200 px-3 py-2 flex items-start gap-2">
+              <CheckCircle size={14} className="text-green-600 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-green-700 leading-relaxed">{status.text}</p>
+            </div>
+          )}
+          {status.kind === 'error' && (
+            <div className="rounded-xl bg-red-50 border border-red-200 px-3 py-2 flex items-start gap-2">
+              <AlertCircle size={14} className="text-red-600 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-red-700 leading-relaxed">{status.text}</p>
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={sendMessage}
+            disabled={submitting || !input.trim() || !phone.trim()}
+            className={`w-full flex items-center justify-center gap-2 ${accent} ${accentHover} text-white rounded-xl py-3 text-sm font-bold transition-colors disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed`}
+          >
+            <Send size={14} />
+            {submitting ? 'جارٍ الإرسال...' : 'إرسال'}
+          </button>
         </div>
       </div>
     </div>
@@ -720,194 +669,61 @@ interface ComplaintModalProps {
 }
 
 function ComplaintModal({ order, onClose }: ComplaintModalProps) {
-  const [step, setStep] = useState<'form' | 'chat'>('form');
+  const [phone, setPhone] = useState('');
   const [reason, setReason] = useState('');
   const [details, setDetails] = useState('');
-  const [submitted, setSubmitted] = useState(false);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [chatInput, setChatInput] = useState('');
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const storageKey = `complaint_chat_${order.orderNum}`;
-
-  useEffect(() => {
-    // Load existing chat from Supabase
-    const loadChat = async () => {
-      try {
-        const supabase = createClient();
-        const { data } = await supabase
-          .from('turath_masr_crm_chat')
-          .select('*')
-          .eq('customer_phone', order.phone)
-          .order('created_at', { ascending: true });
-        if (data && data.length > 0) {
-          setChatMessages(
-            data.map((m: any) => ({
-              id: m.id || `msg-${m.created_at}`,
-              sender: m.sender as 'customer' | 'support',
-              text: m.message,
-              time: (() => {
-                const d = new Date(m.created_at);
-                const days = [
-                  '\u0627\u0644\u0623\u062d\u062f',
-                  '\u0627\u0644\u0627\u062b\u0646\u064a\u0646',
-                  '\u0627\u0644\u062b\u0644\u0627\u062b\u0627\u0621',
-                  '\u0627\u0644\u0623\u0631\u0628\u0639\u0627\u0621',
-                  '\u0627\u0644\u062e\u0645\u064a\u0633',
-                  '\u0627\u0644\u062c\u0645\u0639\u0629',
-                  '\u0627\u0644\u0633\u0628\u062a',
-                ];
-                return `${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
-              })(),
-            }))
-          );
-        }
-      } catch {}
-    };
-    loadChat();
-
-    // Subscribe to realtime
-    const supabase = createClient();
-    const channel = supabase
-      .channel(`complaint-chat-${order.phone}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'turath_masr_crm_chat',
-          filter: `customer_phone=eq.${order.phone}`,
-        },
-        (payload: any) => {
-          const m = payload.new;
-          setChatMessages((prev) => {
-            if (prev.some((p) => p.id === m.id)) return prev;
-            return [
-              ...prev,
-              {
-                id: m.id || `msg-${m.created_at}`,
-                sender: m.sender as 'customer' | 'support',
-                text: m.message,
-                time: (() => {
-                  const d = new Date(m.created_at);
-                  const days = [
-                    '\u0627\u0644\u0623\u062d\u062f',
-                    '\u0627\u0644\u0627\u062b\u0646\u064a\u0646',
-                    '\u0627\u0644\u062b\u0644\u0627\u062b\u0627\u0621',
-                    '\u0627\u0644\u0623\u0631\u0628\u0639\u0627\u0621',
-                    '\u0627\u0644\u062e\u0645\u064a\u0633',
-                    '\u0627\u0644\u062c\u0645\u0639\u0629',
-                    '\u0627\u0644\u0633\u0628\u062a',
-                  ];
-                  return `${d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })} - ${days[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
-                })(),
-              },
-            ];
-          });
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [order.phone]);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages]);
+  const [submitting, setSubmitting] = useState(false);
+  const [status, setStatus] = useState<SubmitStatus>({ kind: 'idle' });
 
   const submitComplaint = async () => {
-    if (!reason) return;
-    try {
-      const supabase = createClient();
-      // Save complaint to Supabase
-      const { data: complaintData } = await supabase
-        .from('turath_masr_crm_complaints')
-        .insert({
-          customer_phone: order.phone,
-          subject: reason,
-          status: 'open',
-          notes: details || null,
-          created_by: order.customer || 'عميل',
-        })
-        .select()
-        .single();
-
-      // Create notification for the team
-      await supabase.from('turath_masr_notifications').insert({
-        type: 'complaint',
-        title: 'شكوى جديدة',
-        message: `شكوى من ${order.customer} بخصوص "${reason}" - طلب رقم ${order.orderNum}`,
-        order_id: order.orderNum,
-        order_num: order.orderNum,
-        created_by: order.customer || 'عميل',
-      });
-
-      // Also save first chat message to Supabase
-      await supabase.from('turath_masr_crm_chat').insert({
-        customer_phone: order.phone,
-        sender: 'customer',
-        message: `شكوى: ${reason}${details ? ' - ' + details : ''} (طلب رقم ${order.orderNum})`,
-      });
-    } catch (err) {
-      console.error('Error saving complaint:', err);
+    if (submitting) return;
+    const phoneT = phone.trim();
+    if (!PHONE_RE.test(phoneT)) {
+      setStatus({ kind: 'error', text: 'يرجى إدخال رقم هاتف صحيح (5-32 رقم).' });
+      return;
+    }
+    if (!reason) {
+      setStatus({ kind: 'error', text: 'يرجى اختيار سبب الشكوى.' });
+      return;
+    }
+    const subject = `${reason} — طلب رقم ${order.orderNum}`.slice(0, 120);
+    const notesT = details.trim();
+    if (notesT.length > 2000) {
+      setStatus({ kind: 'error', text: 'تفاصيل الشكوى طويلة جدًا (الحد 2000 حرف).' });
+      return;
     }
 
-    const initNow = new Date();
-    const initDays = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
-    const initTimeStr = initNow.toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-    });
-    const initDateStr = `${initDays[initNow.getDay()]} ${initNow.toLocaleDateString('en-GB')}`;
-    const initMsg: ChatMessage = {
-      id: 'init-1',
-      sender: 'support',
-      text: `تم استلام شكواك بخصوص "${reason}" للطلب رقم ${order.orderNum}. سيتواصل معك أحد ممثلي خدمة العملاء في أقرب وقت. هل تريد إضافة تفاصيل أخرى؟`,
-      time: `${initTimeStr} - ${initDateStr}`,
-    };
-    const msgs = [initMsg];
-    setChatMessages(msgs);
-    localStorage.setItem(storageKey, JSON.stringify(msgs));
-    setSubmitted(true);
-    setStep('chat');
-  };
-
-  const sendChatMessage = async () => {
-    if (!chatInput.trim()) return;
-    const now = new Date();
-    const days = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
-    const timeStr = now.toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-    });
-    const dateStr = `${days[now.getDay()]} ${now.toLocaleDateString('en-GB')}`;
-    const newMsg: ChatMessage = {
-      id: `msg-${Date.now()}`,
-      sender: 'customer',
-      text: chatInput.trim(),
-      time: `${timeStr} - ${dateStr}`,
-    };
-    setChatMessages((prev) => [...prev, newMsg]);
-    setChatInput('');
-
-    // Save to Supabase
+    setSubmitting(true);
+    setStatus({ kind: 'idle' });
     try {
-      const supabase = createClient();
-      await supabase.from('turath_masr_crm_chat').insert({
-        customer_phone: order.phone,
-        sender: 'customer',
-        message: chatInput.trim(),
+      const res = await fetch('/api/customer/complaints', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer_phone: phoneT,
+          subject,
+          notes: notesT || null,
+        }),
       });
-    } catch (err) {
-      console.error('Error saving chat message:', err);
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (res.ok) {
+        setStatus({
+          kind: 'success',
+          text: 'تم تسجيل شكواك. سيتواصل معك فريق خدمة العملاء قريبًا عبر الواتساب.',
+        });
+        setReason('');
+        setDetails('');
+      } else {
+        const code = typeof data?.error === 'string' ? data.error : '';
+        setStatus({
+          kind: 'error',
+          text: COMPLAINT_ERR_MAP[code] || 'تعذر إرسال الشكوى. حاول مرة أخرى.',
+        });
+      }
+    } catch {
+      setStatus({ kind: 'error', text: 'تعذر الاتصال. تحقق من الإنترنت وحاول مجددًا.' });
     }
-
-    // Replies will come from support via CRM (realtime)
+    setSubmitting(false);
   };
 
   return (
@@ -916,117 +732,105 @@ function ComplaintModal({ order, onClose }: ComplaintModalProps) {
       dir="rtl"
     >
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div
-        className="relative bg-white w-full sm:max-w-md sm:rounded-2xl flex flex-col shadow-2xl"
-        style={{ height: step === 'chat' ? '85vh' : 'auto', maxHeight: '600px' }}
-      >
-        <div className="flex items-center gap-3 px-4 py-3 bg-red-600 sm:rounded-t-2xl">
+      <div className="relative bg-white w-full sm:max-w-md sm:rounded-2xl flex flex-col shadow-2xl max-h-[90vh]">
+        <div className="flex items-center gap-3 px-4 py-3 bg-red-600 sm:rounded-t-2xl flex-shrink-0">
           <div className="w-10 h-10 rounded-full bg-red-700 border-2 border-white/30 flex items-center justify-center flex-shrink-0">
             <AlertCircle size={20} className="text-white" />
           </div>
           <div className="flex-1">
-            <p className="text-white font-bold text-sm">
-              {step === 'form' ? 'تقديم شكوى' : 'خدمة العملاء — شكوى'}
-            </p>
+            <p className="text-white font-bold text-sm">تقديم شكوى</p>
             <p className="text-white/70 text-xs">{order.orderNum}</p>
           </div>
           <button
             onClick={onClose}
             className="p-1.5 hover:bg-white/20 rounded-lg transition-colors"
+            aria-label="إغلاق"
           >
             <X size={18} className="text-white" />
           </button>
         </div>
 
-        {step === 'form' ? (
-          <div className="p-5 space-y-4 overflow-y-auto">
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">سبب الشكوى *</label>
-              <div className="grid grid-cols-1 gap-2">
-                {COMPLAINT_REASONS.map((r) => (
-                  <button
-                    key={r}
-                    onClick={() => setReason(r)}
-                    className={`text-right px-4 py-2.5 rounded-xl border text-sm transition-all ${reason === r ? 'bg-red-50 border-red-400 text-red-700 font-medium' : 'border-gray-200 text-gray-700 hover:border-gray-300 hover:bg-gray-50'}`}
-                  >
-                    {r}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
-                تفاصيل إضافية (اختياري)
-              </label>
-              <textarea
-                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-400 resize-none"
-                placeholder="اكتب تفاصيل الشكوى هنا..."
-                rows={3}
-                value={details}
-                onChange={(e) => setDetails(e.target.value)}
-              />
-            </div>
-            <button
-              onClick={submitComplaint}
-              disabled={!reason}
-              className={`w-full py-3 rounded-xl text-sm font-bold transition-colors ${reason ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
-            >
-              إرسال الشكوى والتواصل مع خدمة العملاء
-            </button>
+        <div className="p-4 space-y-4 overflow-y-auto">
+          <p className="text-xs text-gray-600 leading-relaxed">
+            اكتب رقم هاتفك الذي استلمت عليه تأكيد الطلب، اختر سبب الشكوى، وأضف تفاصيل (اختياري).
+            سيتواصل معك فريق خدمة العملاء عبر الواتساب.
+          </p>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1.5">رقم الهاتف *</label>
+            <input
+              type="tel"
+              dir="ltr"
+              inputMode="tel"
+              autoComplete="tel"
+              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-400"
+              placeholder="مثال: 01012345678"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              maxLength={32}
+              disabled={submitting}
+            />
           </div>
-        ) : (
-          <>
-            {submitted && (
-              <div className="mx-4 mt-3 bg-green-50 border border-green-200 rounded-xl px-3 py-2 flex items-center gap-2">
-                <CheckCircle size={14} className="text-green-600 flex-shrink-0" />
-                <p className="text-xs text-green-700 font-medium">
-                  تم تسجيل شكواك بنجاح — يمكنك الآن التحدث مع خدمة العملاء
-                </p>
-              </div>
-            )}
-            <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50">
-              {chatMessages.map((msg) => {
-                const isCustomer = msg.sender === 'customer';
-                return (
-                  <div
-                    key={msg.id}
-                    className={`flex ${isCustomer ? 'justify-start' : 'justify-end'}`}
-                  >
-                    <div
-                      className={`max-w-[75%] rounded-2xl px-3 py-2 ${isCustomer ? 'bg-white border border-gray-200 text-gray-800' : 'bg-red-600 text-white'}`}
-                    >
-                      <p className="text-sm leading-relaxed">{msg.text}</p>
-                      <p
-                        className={`text-[10px] mt-1 ${isCustomer ? 'text-gray-400' : 'text-white/60'} text-left`}
-                      >
-                        {msg.time}
-                      </p>
-                    </div>
-                  </div>
-                );
-              })}
-              <div ref={bottomRef} />
-            </div>
-            <div className="p-3 border-t border-gray-100 bg-white sm:rounded-b-2xl">
-              <div className="flex items-center gap-2">
-                <input
-                  className="flex-1 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-400"
-                  placeholder="اكتب رسالتك..."
-                  value={chatInput}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && sendChatMessage()}
-                />
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1.5">سبب الشكوى *</label>
+            <div className="grid grid-cols-1 gap-2">
+              {COMPLAINT_REASONS.map((r) => (
                 <button
-                  onClick={sendChatMessage}
-                  disabled={!chatInput.trim()}
-                  className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors flex-shrink-0 ${chatInput.trim() ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-gray-100 text-gray-400 cursor-not-allowed'}`}
+                  key={r}
+                  type="button"
+                  onClick={() => setReason(r)}
+                  disabled={submitting}
+                  className={`text-right px-4 py-2.5 rounded-xl border text-sm transition-all ${
+                    reason === r
+                      ? 'bg-red-50 border-red-400 text-red-700 font-medium'
+                      : 'border-gray-200 text-gray-700 hover:border-gray-300 hover:bg-gray-50'
+                  }`}
                 >
-                  <Send size={16} />
+                  {r}
                 </button>
-              </div>
+              ))}
             </div>
-          </>
-        )}
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+              تفاصيل إضافية (اختياري)
+            </label>
+            <textarea
+              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-400 resize-none"
+              placeholder="اكتب تفاصيل الشكوى هنا..."
+              rows={3}
+              value={details}
+              onChange={(e) => setDetails(e.target.value)}
+              maxLength={2000}
+              disabled={submitting}
+            />
+            <p className="mt-1 text-[10px] text-gray-400 text-left">{details.length}/2000</p>
+          </div>
+
+          {status.kind === 'success' && (
+            <div className="rounded-xl bg-green-50 border border-green-200 px-3 py-2 flex items-start gap-2">
+              <CheckCircle size={14} className="text-green-600 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-green-700 leading-relaxed">{status.text}</p>
+            </div>
+          )}
+          {status.kind === 'error' && (
+            <div className="rounded-xl bg-red-50 border border-red-200 px-3 py-2 flex items-start gap-2">
+              <AlertCircle size={14} className="text-red-600 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-red-700 leading-relaxed">{status.text}</p>
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={submitComplaint}
+            disabled={submitting || !reason || !phone.trim()}
+            className="w-full py-3 rounded-xl text-sm font-bold transition-colors bg-red-600 hover:bg-red-700 text-white disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+          >
+            {submitting ? 'جارٍ الإرسال...' : 'إرسال الشكوى'}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -2180,13 +1984,13 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
         )}
 
         {/* Support & Complaint Actions */}
-        {/* TODO (post-RLS): re-enable the in-page chat / complaint widgets
-            once a secure API route + token-based authorisation is built.
-            Until then, the buttons are disabled and the customer is asked
-            to contact the company via the channel from their confirmation
-            message. The previous behaviour wrote directly to
-            turath_masr_crm_chat / turath_masr_crm_complaints from the
-            anonymous client, which is now blocked by RLS. */}
+        {/* Phase 15 — these buttons open in-page forms wired to the Phase
+            14 API routes (POST /api/customer/chat and
+            POST /api/customer/complaints). The RPCs behind those routes
+            are SECURITY DEFINER and bypass RLS, with rate-limit + duplicate
+            guards in 20260507c. Customer enters their own phone — the
+            public tracking DTO never returns it. WhatsApp remains a
+            fallback for cases where the customer can't reach the form. */}
         <div className="bg-white rounded-2xl border border-[hsl(var(--border))] shadow-sm p-4 space-y-3">
           <div className="flex items-center gap-2 mb-1">
             <Headphones size={16} className="text-emerald-600" />
@@ -2195,39 +1999,34 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
           <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 px-4 py-3 text-sm text-emerald-800">
             <p className="font-bold mb-1">للتواصل معنا</p>
             <p className="text-xs leading-relaxed text-emerald-700">
-              يمكنك الرد على رسالة الواتساب التي وصلتك عند تأكيد الطلب للتحدث مع خدمة العملاء أو
-              تسجيل أي ملاحظة. خاصية الدردشة المباشرة من هذه الصفحة قيد التطوير.
+              تواصل مع فريق الدعم أو سجّل شكوى من هنا، أو استخدم الواتساب الذي وصلك عند تأكيد الطلب.
             </p>
           </div>
           <button
             type="button"
-            disabled
-            aria-disabled="true"
-            className="w-full flex items-center gap-3 bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 cursor-not-allowed opacity-60"
-            title="قريباً"
+            onClick={() => setActiveChat('support')}
+            className="w-full flex items-center gap-3 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-xl px-4 py-3 transition-colors"
           >
-            <div className="w-9 h-9 bg-gray-300 rounded-xl flex items-center justify-center flex-shrink-0">
+            <div className="w-9 h-9 bg-emerald-600 rounded-xl flex items-center justify-center flex-shrink-0">
               <Headphones size={16} className="text-white" />
             </div>
             <div className="text-right flex-1">
-              <p className="text-sm font-bold text-gray-700">تحدث مع خدمة العملاء</p>
-              <p className="text-xs text-gray-500">قريبًا — يرجى استخدام الواتساب مؤقتًا</p>
+              <p className="text-sm font-bold text-emerald-800">تحدث مع خدمة العملاء</p>
+              <p className="text-xs text-emerald-700">سيتواصل معك فريق الدعم عبر الواتساب</p>
             </div>
-            <ChevronDown size={16} className="text-gray-400 -rotate-90" />
+            <ChevronDown size={16} className="text-emerald-500 -rotate-90" />
           </button>
           <button
             type="button"
-            disabled
-            aria-disabled="true"
-            className="w-full flex items-center gap-3 bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 cursor-not-allowed opacity-60"
-            title="قريباً"
+            onClick={() => setShowComplaint(true)}
+            className="w-full flex items-center gap-3 bg-red-50 hover:bg-red-100 border border-red-200 rounded-xl px-4 py-3 transition-colors"
           >
-            <div className="w-9 h-9 bg-gray-300 rounded-xl flex items-center justify-center flex-shrink-0">
+            <div className="w-9 h-9 bg-red-600 rounded-xl flex items-center justify-center flex-shrink-0">
               <AlertCircle size={16} className="text-white" />
             </div>
             <div className="text-right flex-1">
-              <p className="text-sm font-bold text-gray-700">تقديم شكوى</p>
-              <p className="text-xs text-gray-500">قريبًا — يرجى استخدام الواتساب مؤقتًا</p>
+              <p className="text-sm font-bold text-red-800">تقديم شكوى</p>
+              <p className="text-xs text-red-700">سيتواصل معك فريق خدمة العملاء</p>
             </div>
             <ChevronDown size={16} className="text-red-500 -rotate-90" />
           </button>
