@@ -101,19 +101,28 @@ export default function CustomerProfilePage() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      // 1. Fetch Orders
+      // Phase 20C-2: four explicit-column selects (were select('*')).
+      // All listed columns are consumed by render or by the upsert at
+      // handleSaveMetadata. The phone/customer_phone columns are already
+      // constrained by the .eq() filters so they don't need to come
+      // back. No .limit() added — single-customer datasets are bounded
+      // by reality. Schema verified before commit.
+
+      // 1. Fetch Orders — render uses order_num, products, status, total,
+      //    created_at; L152/L159 also reads `customer` as fallback name.
       const { data: oData } = await supabase
         .from('turath_masr_orders')
-        .select('*')
+        .select('order_num, products, status, total, created_at, customer')
         .eq('phone', phone)
         .order('created_at', { ascending: false });
 
       if (oData) setOrders(oData);
 
-      // 2. Fetch Complaints & Their Logs
+      // 2. Fetch Complaints & Their Logs — render uses id, subject, status,
+      //    notes, created_at (logs are merged below).
       const { data: cData } = await supabase
         .from('turath_masr_crm_complaints')
-        .select('*')
+        .select('id, subject, status, notes, created_at')
         .eq('customer_phone', phone)
         .order('created_at', { ascending: false });
 
@@ -123,11 +132,13 @@ export default function CustomerProfilePage() {
         type ComplaintLogRowMin = { complaint_id: string; [key: string]: unknown };
         const cTyped = cData as ComplaintRowMin[];
 
-        // Fetch logs for all these complaints
+        // Fetch logs for all these complaints — render uses id,
+        // noted_by_name, note, old_status, new_status, created_at;
+        // complaint_id is needed for the client-side .filter() merge.
         const complaintIds = cTyped.map((c) => c.id);
         const { data: lData } = await supabase
           .from('turath_masr_crm_complaint_logs')
-          .select('*')
+          .select('id, complaint_id, noted_by_name, note, old_status, new_status, created_at')
           .in('complaint_id', complaintIds)
           .order('created_at', { ascending: true });
 
@@ -139,10 +150,11 @@ export default function CustomerProfilePage() {
         setComplaints(complaintsWithLogs as unknown as Complaint[]);
       }
 
-      // 3. Fetch Metadata
+      // 3. Fetch Metadata — render/state uses phone, full_name, email,
+      //    address, notes, segment.
       const { data: mData } = await supabase
         .from('turath_masr_customers')
-        .select('*')
+        .select('phone, full_name, email, address, notes, segment')
         .eq('phone', phone)
         .single();
 
