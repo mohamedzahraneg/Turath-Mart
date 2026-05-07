@@ -2,7 +2,11 @@ import { imageHosts } from './image-hosts.config.mjs';
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   productionBrowserSourceMaps: false, // disabled for faster builds & smaller bundles
-  output: 'standalone',
+  // Phase 16: removed `output: 'standalone'`. Production runs via `next start`
+  // (PM2 process turath-mart-main → `npm start`), so the standalone artifact
+  // was dead output and Next.js logged "this config requires
+  // node .next/standalone/server.js" on every request boot. The default
+  // build (regular `.next/`) is what the running site actually serves.
   distDir: process.env.DIST_DIR || '.next',
   // TypeScript and ESLint now run during build.
   // Re-enabled in Phase 6 after typecheck reached 0 errors and lint reached
