@@ -62,3 +62,6 @@ prod_*.sql
 #  duplicating here as defense-in-depth)
 supabase/.branches/
 supabase/.temp/
+
+# ─── Local production schema baseline (never commit) ───────────────────────────
+supabase/migrations/20260101000000_schema_baseline_from_production.sql
