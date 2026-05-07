@@ -41,6 +41,12 @@ type ProfileCacheEntry = {
   roleId: string;
   roleName: string;
   permissions: string[] | null;
+  // Phase 20D-Fix2: also persist the user's display name from
+  // `profiles.full_name` so consumers (e.g. Sidebar) can read it from
+  // the cache instead of firing their own `from('profiles')` query on
+  // every page mount. Old v1 cache entries without this field continue
+  // to work — readers fall back to user_metadata.full_name when null.
+  profileFullName: string | null;
   expiresAt: number;
 };
 
@@ -110,6 +116,10 @@ interface AuthContextType {
   currentRole: string | null;
   currentRoleId: string | null;
   customPermissions: string[] | null;
+  // Phase 20D-Fix2: cached display name from profiles.full_name. Lets
+  // consumers like Sidebar render the user's name without firing their
+  // own `from('profiles')` query.
+  profileFullName: string | null;
   setCurrentRole: (role: string | null) => void;
   setCurrentRoleId: (roleId: string | null) => void;
   setCustomPermissions: (perms: string[] | null) => void;
@@ -140,6 +150,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [currentRole, setCurrentRole] = useState<string | null>(null);
   const [currentRoleId, setCurrentRoleId] = useState<string | null>(null);
   const [customPermissions, setCustomPermissions] = useState<string[] | null>(null);
+  const [profileFullName, setProfileFullName] = useState<string | null>(null);
   const [roleLoading, setRoleLoading] = useState(true);
 
   // Phase 20D-Fix1: gate provider effects on the auth route. When a
@@ -182,6 +193,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         setCurrentRole(null);
         setCurrentRoleId(null);
         setCustomPermissions(null);
+        setProfileFullName(null);
         setRoleLoading(false);
       }
     });
@@ -218,6 +230,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       setCurrentRoleId(cached.roleId);
       setCurrentRole(cached.roleName);
       setCustomPermissions(cached.permissions);
+      // Phase 20D-Fix2: profileFullName may be missing on old (v1) cache
+      // entries — fall back to null so consumers use user_metadata.
+      setProfileFullName(cached.profileFullName ?? null);
       setRoleLoading(false);
       return;
     }
@@ -271,12 +286,16 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           }
           const finalPerms = effectivePerms.length > 0 ? effectivePerms : null;
           setCustomPermissions(finalPerms);
-          // Phase 20D-Fix1: write cache only on the success path.
+          // Phase 20D-Fix2: also derive + persist the display name.
+          const fullName = profile.full_name || null;
+          setProfileFullName(fullName);
+          // Phase 20D-Fix1/Fix2: write cache only on the success path.
           writeProfileCache({
             userId: user.id,
             roleId,
             roleName,
             permissions: finalPerms,
+            profileFullName: fullName,
             expiresAt: Date.now() + PROFILE_CACHE_TTL_MS,
           });
         } else {
@@ -286,6 +305,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           setCurrentRoleId('r6');
           setCurrentRole('خدمة عملاء');
           setCustomPermissions(getPermissionsForRoleId('r6'));
+          setProfileFullName(null);
           clearProfileCache();
         }
       } catch (err) {
@@ -293,6 +313,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         setCurrentRoleId('r6');
         setCurrentRole('خدمة عملاء');
         setCustomPermissions(getPermissionsForRoleId('r6'));
+        setProfileFullName(null);
         // Phase 20D-Fix1: on error, drop any stale cache so we retry
         // fresh on the next mount/event rather than serving the old
         // (possibly wrong) role.
@@ -389,6 +410,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     setCurrentRole(null);
     setCurrentRoleId(null);
     setCustomPermissions(null);
+    setProfileFullName(null);
 
     // Phase 20D-Fix1: drop the profile cache so the next signed-in
     // user (different account, or same user re-signing in) starts
@@ -438,6 +460,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     currentRole,
     currentRoleId,
     customPermissions,
+    profileFullName,
     setCurrentRole,
     setCurrentRoleId,
     setCustomPermissions,

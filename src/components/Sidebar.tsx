@@ -1,5 +1,5 @@
 'use client';
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import AppLogo from '@/components/ui/AppLogo';
@@ -112,10 +112,8 @@ interface SidebarProps {
 function Sidebar({ currentPath = '' }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [userName, setUserName] = useState('المستخدم');
-  const [userRoleLabel, setUserRoleLabel] = useState('موظف');
   const [showNotifications, setShowNotifications] = useState(false);
-  const { currentRole, currentRoleId, hasAccess, signOut, user } = useAuth();
+  const { currentRole, currentRoleId, profileFullName, hasAccess, signOut, user } = useAuth();
   const { newOrdersCount, unreadCount } = useNotifications();
   const router = useRouter();
 
@@ -125,54 +123,23 @@ function Sidebar({ currentPath = '' }: SidebarProps) {
 
   const isActive = (href: string) => currentPath === href || currentPath.startsWith(href);
 
-  // Get user name and role from Supabase profile (no localStorage)
-  useEffect(() => {
-    if (!user) {
-      setUserName('المستخدم');
-      setUserRoleLabel('موظف');
-      return;
-    }
-    // Fetch name from Supabase profile
-    const fetchProfile = async () => {
-      try {
-        const supabase = (await import('@/lib/supabase/client')).createClient();
-        if (!supabase) return;
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('full_name, role_name, role_id')
-          .eq('id', user.id)
-          .single();
-        if (profile) {
-          const name =
-            profile.full_name ||
-            user?.user_metadata?.full_name ||
-            user?.email?.split('@')[0] ||
-            'المستخدم';
-          setUserName(name);
-          const roleId = profile.role_id || currentRoleId;
-          if (roleId && ROLE_LABELS[roleId]) {
-            setUserRoleLabel(ROLE_LABELS[roleId]);
-          } else {
-            setUserRoleLabel(profile.role_name || currentRole || 'موظف');
-          }
-        } else {
-          // Fallback to user metadata
-          const name = user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'المستخدم';
-          setUserName(name);
-          if (currentRoleId && ROLE_LABELS[currentRoleId]) {
-            setUserRoleLabel(ROLE_LABELS[currentRoleId]);
-          } else {
-            setUserRoleLabel(currentRole || 'موظف');
-          }
-        }
-      } catch {
-        const name = user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'المستخدم';
-        setUserName(name);
-        setUserRoleLabel(currentRole || 'موظف');
-      }
-    };
-    fetchProfile();
-  }, [currentRole, currentRoleId, user]);
+  // Phase 20D-Fix2: derive display name + role label directly from
+  // AuthContext instead of firing our own `from('profiles')` query on
+  // every page mount. AuthContext already fetches profiles.full_name
+  // (cached for 5 min, keyed by user.id) and exposes it as
+  // `profileFullName`. Removing this duplicate query was the residual
+  // tax that survived Phase 20D-Fix1's provider-level cache — every
+  // page mount now skips a Supabase round-trip from EG → eu-central-2.
+  //
+  // Fallback chain unchanged: profile name → auth user_metadata →
+  // email local part → "المستخدم".
+  const userName = !user
+    ? 'المستخدم'
+    : profileFullName || user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'المستخدم';
+
+  const userRoleLabel = !user
+    ? 'موظف'
+    : (currentRoleId && ROLE_LABELS[currentRoleId]) || currentRole || 'موظف';
 
   const handleLogout = async () => {
     try {
