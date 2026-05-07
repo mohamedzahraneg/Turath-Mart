@@ -402,8 +402,33 @@ function LoginPageInner() {
           router.replace(landingPage);
         }, 800);
       } catch (err: any) {
+        // Phase 11B: classify the error so the user-facing copy matches the
+        // actual failure mode. The previous catch labeled every error
+        // "بيانات غير صحيحة" (wrong credentials) — including rate-limit,
+        // network, and email-not-confirmed errors — which misled users.
+        //
+        // Raw Supabase error messages are deliberately kept OUT of the UI;
+        // they go to console.error only (visible to devs in DevTools).
+        // The user-facing string is one of a small fixed set of Arabic
+        // copies, picked by pattern-matching err.message.
         console.error('Login exception:', err);
-        setLoginError(`بيانات غير صحيحة: ${err.message}`);
+        const rawMsg: string = (err && typeof err.message === 'string' && err.message) || '';
+        const status: number | undefined =
+          (err && typeof err.status === 'number' && err.status) || undefined;
+
+        let userMsg: string;
+        if (status === 429 || /rate.?limit|too.?many.?requests/i.test(rawMsg)) {
+          userMsg = 'تم تجاوز عدد محاولات الدخول. يرجى الانتظار قليلًا ثم المحاولة مرة أخرى.';
+        } else if (/invalid.?(login.?)?credentials|invalid.?email.?or.?password/i.test(rawMsg)) {
+          userMsg = 'البريد الإلكتروني أو كلمة المرور غير صحيحة.';
+        } else if (/email.?not.?confirmed|not.?confirmed/i.test(rawMsg)) {
+          userMsg = 'البريد الإلكتروني لم يتم تأكيده بعد.';
+        } else if (/failed.?to.?fetch|network|networkerror|fetch.?error/i.test(rawMsg)) {
+          userMsg = 'تعذّر الاتصال بالخادم. تحقق من الإنترنت ثم حاول مرة أخرى.';
+        } else {
+          userMsg = 'فشل تسجيل الدخول. حاول مرة أخرى لاحقًا.';
+        }
+        setLoginError(userMsg);
         toast.error('فشل تسجيل الدخول');
       } finally {
         setIsLoading(false);
