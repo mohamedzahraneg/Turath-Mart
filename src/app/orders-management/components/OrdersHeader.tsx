@@ -1,5 +1,6 @@
 'use client';
 import React, { useState } from 'react';
+import dynamic from 'next/dynamic';
 import {
   Plus,
   Download,
@@ -9,7 +10,10 @@ import {
   CheckCircle,
   Package,
 } from 'lucide-react';
-import AddOrderModal from './AddOrderModal';
+// Phase 20B QW-A: AddOrderModal is ~1,950 lines and only renders after the
+// user clicks "Add". next/dynamic puts it in its own lazy chunk so the
+// initial /orders-management JS shrinks by that whole module.
+const AddOrderModal = dynamic(() => import('./AddOrderModal'), { ssr: false });
 import { createClient } from '@/lib/supabase/client';
 
 export default function OrdersHeader() {
