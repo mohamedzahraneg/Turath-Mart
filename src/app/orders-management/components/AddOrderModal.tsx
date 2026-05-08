@@ -742,6 +742,26 @@ export default function AddOrderModal({ onClose }: Props) {
       // as SECURITY DEFINER so r6 (customer service) does not need write
       // access to turath_masr_notifications under the new RLS.
 
+      // Phase 22A: best-effort customer upsert (identity only). Runs
+      // *after* the order has already succeeded, and any error is
+      // logged-and-ignored so it cannot roll back the order. CRM
+      // derives totalOrders / totalSpent live from orders, so this
+      // path writes only phone + full_name + updated_at — never the
+      // stored counters. RLS allows r1/r2/r5/r6 to write customers;
+      // other roles will trip the policy and we accept that silently
+      // since the customer row is non-essential for delivery flow.
+      const { error: customerErr } = await supabase.from('turath_masr_customers').upsert(
+        {
+          phone: newOrder.phone,
+          full_name: newOrder.customer,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'phone' }
+      );
+      if (customerErr) {
+        console.error('Customer upsert (non-blocking):', customerErr);
+      }
+
       // Notify other components that orders have been updated
       window.dispatchEvent(new CustomEvent('turath_masr_orders_updated'));
 

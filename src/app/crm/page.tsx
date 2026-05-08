@@ -642,16 +642,16 @@ export default function CRMPage() {
     setLoading(true);
     try {
       const supabase = createClient();
-      // Phase 20C-2: three explicit-column selects (were select('*')).
-      // The orders query was the worst offender — every refresh shipped
-      // every order's `lines` jsonb (full line-item snapshot), warranty,
-      // tracking_token, audit fields, etc. just to compute customer
-      // tier/totals. The local OrderRowMin/CustomerMetaRow/ComplaintRowMin
-      // types below + the consumer paths (filter at L723, complaint
-      // modal at L378-385) are the source of truth for the column lists.
-      // No `.limit()` added — customer aggregation needs the full order
-      // history per customer to compute totalSpent/totalOrders/tier.
-      // Schema verified before commit.
+      // Phase 22A: customers table is now the identity source (full_name
+      // + optional segment override for manual tier upgrades) but
+      // totalOrders / totalSpent / lastOrderDate are ALWAYS recomputed
+      // live from orders. The previous shape stored per-customer
+      // counters on turath_masr_customers and only fell back to live
+      // aggregation when the row was missing — which left the counters
+      // open to drift after status changes, refunds, or out-of-band
+      // order edits. AddOrderModal's post-create upsert (Phase 22A)
+      // writes only identity columns, never counters, by design.
+      // Phase 20C-2: explicit-column selects retained — no select('*').
       const { data: oData } = await supabase
         .from('turath_masr_orders')
         .select('phone, customer, total, created_at')
@@ -662,19 +662,14 @@ export default function CRMPage() {
         .order('created_at', { ascending: false });
       const { data: metaData } = await supabase
         .from('turath_masr_customers')
-        .select('phone, full_name, total_orders, total_spent, updated_at, segment');
+        .select('phone, full_name, segment');
 
       if (oData) {
         const map = new Map<string, Customer>();
 
-        // Initial map from metadata (if table exists)
-        // Inline row types — TODO: replace with generated Supabase types.
         type CustomerMetaRow = {
           phone: string;
           full_name?: string | null;
-          total_orders?: number | null;
-          total_spent?: number | null;
-          updated_at?: string | null;
           segment?: string | null;
         };
         type OrderRowMin = {
@@ -684,23 +679,8 @@ export default function CRMPage() {
           created_at: string;
         };
         type ComplaintRowMin = { customer_phone: string };
-        const metaTyped = (metaData ?? []) as CustomerMetaRow[];
-
-        if (metaTyped.length > 0) {
-          metaTyped.forEach((m) => {
-            map.set(m.phone, {
-              id: m.phone,
-              name: m.full_name || '',
-              phone: m.phone,
-              totalOrders: m.total_orders || 0,
-              totalSpent: Number(m.total_spent) || 0,
-              lastOrderDate: m.updated_at || '',
-              tier: (m.segment as any) || 'regular',
-              orders: [],
-              complaints: [],
-            });
-          });
-        }
+        const metaByPhone = new Map<string, CustomerMetaRow>();
+        ((metaData ?? []) as CustomerMetaRow[]).forEach((m) => metaByPhone.set(m.phone, m));
 
         (oData as OrderRowMin[]).forEach((order) => {
           const key = order.phone;
@@ -718,27 +698,24 @@ export default function CRMPage() {
             });
           }
           const c = map.get(key)!;
-
-          // Only increment if not already using metadata totals (or just recalculate for fresh data)
-          // For now, let's recalculate from orders to ensure real-time accuracy,
-          // while keeping the 'tier' and 'name' from metadata.
-          if (!metaTyped.find((m) => m.phone === key)) {
-            c.totalOrders += 1;
-            c.totalSpent += Number(order.total || 0);
-          }
-
+          c.totalOrders += 1;
+          c.totalSpent += Number(order.total || 0);
           if (new Date(order.created_at) > new Date(c.lastOrderDate))
             c.lastOrderDate = order.created_at;
         });
 
         const custArray = Array.from(map.values());
         custArray.forEach((c) => {
-          // If no manual tier in metadata, auto-calculate
-          const hasMeta = metaTyped.find((m) => m.phone === c.phone);
-          if (!hasMeta) {
-            if (c.totalOrders >= 10 || c.totalSpent >= 5000) c.tier = 'vip';
-            else if (c.totalOrders >= 5 || c.totalSpent >= 2000) c.tier = 'gold';
-            else if (c.totalOrders >= 2 || c.totalSpent >= 500) c.tier = 'silver';
+          const meta = metaByPhone.get(c.phone);
+          if (meta?.full_name) c.name = meta.full_name;
+
+          if (c.totalOrders >= 10 || c.totalSpent >= 5000) c.tier = 'vip';
+          else if (c.totalOrders >= 5 || c.totalSpent >= 2000) c.tier = 'gold';
+          else if (c.totalOrders >= 2 || c.totalSpent >= 500) c.tier = 'silver';
+          // Manual segment override (e.g. CRM-op promoted a customer)
+          // wins over auto-tier only when explicitly non-default.
+          if (meta?.segment && meta.segment !== 'regular') {
+            c.tier = meta.segment as Customer['tier'];
           }
 
           if (cData) {
