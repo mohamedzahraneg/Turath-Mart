@@ -22,6 +22,7 @@ import {
   Hash,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
+import { normalizeStatus } from '@/lib/reporting/orderMetrics';
 
 // Phase 20E: lazy-load recharts via a dedicated client module so the
 // /reports route's initial JS chunk drops the recharts payload (~150 kB
@@ -176,38 +177,44 @@ export default function ReportsPage() {
       const m = date.getMonth() + 1;
       const y = date.getFullYear();
 
+      // Phase 22E: route every status check through the shared
+      // normalizer so /reports and /dashboard never disagree on what
+      // counts as delivered / returned / cancelled.
+      const norm = normalizeStatus(o.status);
+      const isDelivered = norm === 'delivered';
+      const isShipping = norm === 'shipping';
+      const isReturned = norm === 'returned';
+      const isCancelled = norm === 'cancelled';
+
       const targetMonth = monthsData.find((x) => x.m === m && x.year === y);
       if (targetMonth) {
         targetMonth.orders += 1;
-        if (o.status === 'delivered') {
+        if (isDelivered) {
           targetMonth.delivered += 1;
           targetMonth.revenue += o.total;
-        } else if (o.status === 'returned') {
+        } else if (isReturned) {
           targetMonth.returned += 1;
         }
       }
 
       // --- Update KPI Stats (Only if in selected range) ---
-      const s = (o.status || '').toLowerCase();
-      const isDelivered = s === 'delivered' || s === 'تم التسليم';
-      const isShipping = s === 'shipping' || s === 'جاري الشحن';
-      const isReturned = s === 'returned' || s === 'مرتجع';
-      const isCancelled = s === 'cancelled' || s === 'ملغي';
-      const isPreparing = s === 'preparing' || s === 'جاري التجهيز';
-      const isWarehouse = s === 'warehouse' || s === 'في المستودع';
-
       if (isInRange) {
         if (isDelivered) stats.delivered++;
         else if (isShipping) stats.shipping++;
         else if (isReturned) stats.returned++;
         else if (isCancelled) stats.cancelled++;
-        else if (isPreparing || isWarehouse || s === 'new') stats.pending++;
+        // new / preparing / warehouse / unknown all bucket into pending.
         else stats.pending++;
 
-        const sFee = Number(o.shipping_fee) || 0;
-        stats.shippingFees += sFee;
-
+        // Phase 22E: shippingFees is delivered-only. The previous
+        // code summed shipping_fee across every order in the period
+        // — including cancelled and returned ones — and then
+        // subtracted that from deliveredRevenue to get "remaining",
+        // which over-deducted shipping for orders we never earned
+        // revenue from. Tying shipping cost to delivered-only revenue
+        // keeps "remaining" honest as productRevenue.
         if (isDelivered) {
+          stats.shippingFees += Number(o.shipping_fee) || 0;
           stats.deliveredRevenue += Number(o.total) || 0;
         }
 
@@ -242,7 +249,7 @@ export default function ReportsPage() {
             if (normalizedName) {
               if (!prodMap[normalizedName]) prodMap[normalizedName] = { orders: 0, revenue: 0 };
               prodMap[normalizedName].orders += count;
-              if (o.status === 'delivered') {
+              if (isDelivered) {
                 prodMap[normalizedName].revenue += Math.floor(Number(o.total) / parts.length);
               }
             }
@@ -495,7 +502,7 @@ export default function ReportsPage() {
             {
               label: 'إجمالي التحصيل',
               value: dbOrders
-                .filter((o) => o.status === 'delivered')
+                .filter((o) => normalizeStatus(o.status) === 'delivered')
                 .reduce((s, o) => s + (o.total || 0), 0)
                 .toLocaleString('en-US'),
               sub: 'قيمة نقدية (صافي)',
@@ -503,9 +510,12 @@ export default function ReportsPage() {
               color: 'emerald',
             },
             {
+              // Phase 22E: this number is delivered-only — see the
+              // aggregation loop above. Sub clarifies the scope so
+              // users don't read it as a period-wide expense roll-up.
               label: 'مصروفات الشحن',
               value: aggregatedData.financials.totalShipping.toLocaleString('en-US'),
-              sub: 'مرصودة (صافي)',
+              sub: 'للطلبات المسلمة',
               icon: <Truck size={22} />,
               color: 'orange',
             },
