@@ -15,6 +15,7 @@ import {
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { isAdminRole } from '@/lib/constants/roles';
+import { calculateOrderMetrics } from '@/lib/reporting/orderMetrics';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -24,6 +25,7 @@ import { isAdminRole } from '@/lib/constants/roles';
 interface OrderRow {
   status: string | null;
   total: number | null;
+  shipping_fee?: number | null;
   region?: string | null;
   created_at?: string | null;
 }
@@ -33,7 +35,13 @@ interface KPIData {
   deliveredOrders: number;
   shippingOrders: number;
   pendingOrders: number;
+  // Phase 22E: returnedOrders and cancelledOrders are now SEPARATE.
+  // The "Returns Summary" card surfaces failedOrders (= returned +
+  // cancelled). Anywhere a percentage or rate is shown, label it as
+  // "returns & cancellations" — never just "returns".
   returnedOrders: number;
+  cancelledOrders: number;
+  failedOrders: number;
   totalRevenue: number;
   successRate: number;
   topRegion: { name: string; count: number };
@@ -68,6 +76,8 @@ export default function DashboardKPIs() {
     shippingOrders: 0,
     pendingOrders: 0,
     returnedOrders: 0,
+    cancelledOrders: 0,
+    failedOrders: 0,
     totalRevenue: 0,
     successRate: 0,
     topRegion: { name: '—', count: 0 },
@@ -101,16 +111,19 @@ export default function DashboardKPIs() {
         prevEnd = new Date(now.getFullYear(), now.getMonth(), 1);
       }
 
-      // 1. Current Stats
+      // 1. Current Stats. shipping_fee added to the select so the
+      // shared metrics helper can compute productRevenue accurately
+      // — dashboard doesn't display it today but the helper is the
+      // single source of truth and we want it correct here too.
       const { data: orders, error } = await supabase
         .from('turath_masr_orders')
-        .select('status, total, region, created_at')
+        .select('status, total, shipping_fee, region, created_at')
         .gte('created_at', start.toISOString());
 
       // 2. Previous Stats for Growth
       const { data: prevOrders } = await supabase
         .from('turath_masr_orders')
-        .select('status, total')
+        .select('status, total, shipping_fee')
         .gte('created_at', prevStart.toISOString())
         .lt('created_at', prevEnd.toISOString());
 
@@ -120,24 +133,12 @@ export default function DashboardKPIs() {
         const typedOrders = orders as OrderRow[];
         const typedPrev = (prevOrders ?? []) as OrderRow[];
 
-        const stats = {
-          total: typedOrders.length,
-          delivered: typedOrders.filter((o) => o.status === 'delivered').length,
-          shipping: typedOrders.filter((o) => o.status === 'shipping').length,
-          returned: typedOrders.filter((o) => ['returned', 'cancelled'].includes(o.status ?? ''))
-            .length,
-          revenue: typedOrders
-            .filter((o) => o.status === 'delivered')
-            .reduce((s: number, o) => s + (o.total ?? 0), 0),
-        };
-
-        const prevStats = {
-          totalOrders: typedPrev.length,
-          deliveredOrders: typedPrev.filter((o) => o.status === 'delivered').length,
-          totalRevenue: typedPrev
-            .filter((o) => o.status === 'delivered')
-            .reduce((s: number, o) => s + (o.total ?? 0), 0),
-        };
+        // Phase 22E: single source of truth for status buckets +
+        // revenue formulas. `failedOrders` is the explicit name for
+        // the returned + cancelled bundle; we no longer overload
+        // the name `returnedOrders` to mean "returned or cancelled".
+        const metrics = calculateOrderMetrics(typedOrders);
+        const prevMetrics = calculateOrderMetrics(typedPrev);
 
         const regions: Record<string, number> = {};
         typedOrders.forEach((o) => {
@@ -146,18 +147,21 @@ export default function DashboardKPIs() {
         const topR = Object.entries(regions).sort((a, b) => b[1] - a[1])[0] || ['—', 0];
 
         setData({
-          totalOrders: stats.total,
-          deliveredOrders: stats.delivered,
-          shippingOrders: stats.shipping,
-          pendingOrders: Math.max(
-            0,
-            stats.total - stats.delivered - stats.returned - stats.shipping
-          ),
-          returnedOrders: stats.returned,
-          totalRevenue: stats.revenue,
-          successRate: stats.total > 0 ? Math.round((stats.delivered / stats.total) * 100) : 0,
+          totalOrders: metrics.totalOrders,
+          deliveredOrders: metrics.deliveredOrders,
+          shippingOrders: metrics.shippingOrders,
+          pendingOrders: metrics.pendingOrders,
+          returnedOrders: metrics.returnedOrders,
+          cancelledOrders: metrics.cancelledOrders,
+          failedOrders: metrics.failedOrders,
+          totalRevenue: metrics.grossRevenue,
+          successRate: Math.round(metrics.successRate * 100),
           topRegion: { name: topR[0], count: topR[1] as number },
-          previousData: prevStats,
+          previousData: {
+            totalOrders: prevMetrics.totalOrders,
+            deliveredOrders: prevMetrics.deliveredOrders,
+            totalRevenue: prevMetrics.grossRevenue,
+          },
         });
       }
       setLastUpdated(
@@ -378,7 +382,12 @@ export default function DashboardKPIs() {
           </div>
         </div>
 
-        {/* Returns Summary */}
+        {/* Returns Summary — Phase 22E: surface failedOrders (returned
+            + cancelled) under an explicit combined label. The previous
+            "returnedOrders" field secretly bundled cancellations under
+            the word "returned"; the new shape exposes returned and
+            cancelled separately and uses `failedOrders` for the bundle
+            so the rate and label are honest. */}
         <div className="bg-white border border-gray-100 rounded-3xl p-6 shadow-sm flex items-center justify-between">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 rounded-2xl bg-red-50 text-red-600 flex items-center justify-center shadow-lg shadow-red-100">
@@ -386,20 +395,20 @@ export default function DashboardKPIs() {
             </div>
             <div>
               <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
-                المرتجعات والتوالي
+                المرتجعات والإلغاءات
               </p>
               <p className="text-xl font-bold text-gray-900">
-                {loading ? '—' : data.returnedOrders}{' '}
+                {loading ? '—' : data.failedOrders}{' '}
                 <span className="text-[10px] text-gray-400">طلب</span>
               </p>
               <div className="flex items-center gap-1.5 mt-1">
                 <p className="text-[10px] font-bold text-red-600">
                   {data.totalOrders > 0
-                    ? ((data.returnedOrders / data.totalOrders) * 100).toFixed(1)
+                    ? ((data.failedOrders / data.totalOrders) * 100).toFixed(1)
                     : 0}
                   %
                 </p>
-                <p className="text-[10px] text-gray-400 font-medium">معدل الارتجاع الكلي</p>
+                <p className="text-[10px] text-gray-400 font-medium">نسبة المرتجعات والإلغاءات</p>
               </div>
             </div>
           </div>
