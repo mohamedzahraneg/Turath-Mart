@@ -112,9 +112,12 @@ function DelegateChatWithDetails({
     const loadMessages = async () => {
       try {
         const supabase = createClient();
+        // Phase 21B: explicit columns. The mapper below reads only id,
+        // sender, message, created_at; chat_type is constrained by the
+        // .eq() filter, so we don't need it back. Schema verified.
         const { data } = await supabase
           .from('turath_masr_crm_chat')
-          .select('*')
+          .select('id, sender, message, created_at')
           .eq('customer_phone', order.phone)
           .eq('chat_type', 'delegate')
           .order('created_at', { ascending: true });
@@ -494,9 +497,25 @@ export default function ShippingPage() {
   const fetchOrders = async () => {
     try {
       const supabase = createClient();
+      // Phase 21B: explicit columns. The mapper below maps DB rows
+      // into the local Order shape using only these 18 fields. The
+      // previous select('*') also shipped:
+      //   • `lines` jsonb (per-order full line-item snapshots —
+      //     kilobytes per row, never read by this page)
+      //   • tracking_token, created_by_user_id, assigned_to,
+      //     updated_by, updated_at, extra_shipping_fee,
+      //     express_shipping, free_shipping, created_by_device,
+      //     created_by_ip, created_by_location, warranty, quantity,
+      //     subtotal, day  — none consumed by the mapper or the
+      //     shipping-page render path.
+      // Status updates and assignment changes don't go through this
+      // query (they use StatusUpdateModal which fetches its own row),
+      // so narrowing here is safe. Schema verified before commit.
       const { data, error } = await supabase
         .from('turath_masr_orders')
-        .select('*')
+        .select(
+          'id, order_num, created_by, customer, phone, phone2, region, district, address, products, total, shipping_fee, status, date, time, notes, delegate_name, created_at'
+        )
         .order('created_at', { ascending: false });
 
       if (!error && data) {
