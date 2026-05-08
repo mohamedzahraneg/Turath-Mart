@@ -64,22 +64,41 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [delegates, setDelegates] = useState<string[]>([]);
   const [selectedDelegate, setSelectedDelegate] = useState(order.delegateName || '');
+  // Phase 22B: maintain a name → profile.id resolver so the status
+  // write can populate `assigned_to` (UUID) alongside `delegate_name`
+  // (text). Names that are shared by ≥ 2 profiles are tracked in
+  // `ambiguousDelegateNames` and resolve to null on write — matching
+  // the conservative rule from the Phase 22B SQL backfill.
+  const [delegateNameToProfileId, setDelegateNameToProfileId] = useState<Record<string, string>>(
+    {}
+  );
+  const [ambiguousDelegateNames, setAmbiguousDelegateNames] = useState<Set<string>>(new Set());
 
   // Load delegates from Supabase profiles (role_id r3 or r4)
   React.useEffect(() => {
     const loadDelegates = async () => {
       const delegateSet = new Set<string>();
+      const nameToId: Record<string, string> = {};
+      const ambiguous = new Set<string>();
       try {
         const supabase = createClient();
         // 1. PRIMARY SOURCE: Load delegates from Supabase profiles table
         const { data: profileDelegates } = await supabase
           .from('profiles')
-          .select('full_name, email')
+          .select('id, full_name, email')
           .in('role_id', ['r3', 'r4']);
         if (profileDelegates) {
           profileDelegates.forEach((p: any) => {
-            const name = p.full_name || p.email?.split('@')[0] || '';
-            if (name) delegateSet.add(name);
+            const rawName = p.full_name || p.email?.split('@')[0] || '';
+            if (!rawName) return;
+            const norm = String(rawName).trim();
+            if (!norm) return;
+            delegateSet.add(rawName);
+            if (nameToId[norm] && nameToId[norm] !== p.id) {
+              ambiguous.add(norm);
+            } else {
+              nameToId[norm] = p.id;
+            }
           });
         }
         // 2. SECONDARY SOURCE: Also include delegate names from existing orders
@@ -97,6 +116,8 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
         console.error('Error loading delegates:', err);
       }
       setDelegates(Array.from(delegateSet).sort());
+      setDelegateNameToProfileId(nameToId);
+      setAmbiguousDelegateNames(ambiguous);
     };
     loadDelegates();
   }, []);
@@ -181,9 +202,24 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
       const supabase = createClient();
       // Add updated_by traceability for the orders_editor_update RLS policy
       // and for the post-migration audit trail. authUser.id is the auth.users UUID.
+      //
+      // Phase 22B: dual-write delegate identity. `delegate_name` (text)
+      // stays as a display cache — old orders without `assigned_to`
+      // still render. `assigned_to` (UUID → auth.users) is the new
+      // primary key; we resolve it from `delegate_name` via the
+      // profiles map built at mount. Names shared by ≥2 profiles
+      // (e.g. duplicate "Ali") resolve to null — same conservative
+      // rule used by the Phase 22B SQL backfill — so the dropdown
+      // stays usable but we never commit to the wrong UUID silently.
+      const normDelegate = (selectedDelegate || '').trim();
+      const resolvedAssignedTo =
+        normDelegate && !ambiguousDelegateNames.has(normDelegate)
+          ? delegateNameToProfileId[normDelegate] || null
+          : null;
       const updatePayload: Record<string, unknown> = {
         status: data.newStatus,
         delegate_name: selectedDelegate || null,
+        assigned_to: resolvedAssignedTo,
       };
       if (authUser?.id) {
         updatePayload.updated_by = authUser.id;
@@ -213,8 +249,6 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
       // staff-only notifications table just produced noise. TODO: when a
       // customer notification channel is built, add it via a separate
       // SECURITY DEFINER RPC that knows how to deliver it.
-      // TODO: move delegate_name (TEXT) to assigned_to (uuid REFERENCES
-      // auth.users) once user→delegate identity mapping is built.
 
       window.dispatchEvent(new CustomEvent('turath_masr_orders_updated'));
     } catch (err) {
