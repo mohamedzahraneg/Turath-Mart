@@ -40,7 +40,10 @@ import {
   findArea,
   findNeighborhood,
   findNeighborhoodOccurrences,
+  findCoverageOccurrences,
+  searchCoverageByName,
   isParent,
+  type CoverageSearchEntry,
 } from '@/lib/shipping/coverageHierarchy';
 import { resolveShippingFeeFromCoverage } from '@/lib/shipping/resolveShippingFee';
 import type { ShippingDistrict, ShippingGovernorate } from '@/lib/shipping/types';
@@ -310,6 +313,75 @@ function createLine(productType: string, basePrice: number): OrderLine {
   };
 }
 
+/**
+ * Phase 22N-Fix1 — single suggestion-row renderer reused by both
+ * "in this gov" and "other gov" sections of the area dropdown.
+ * Customer-facing wording — never "غير مفعلة"; disabled entries
+ * surface as "خارج التغطية" instead.
+ */
+function CoverageSuggestionRow({
+  entry,
+  governorate,
+  onPick,
+}: {
+  entry: CoverageSearchEntry;
+  governorate: string;
+  onPick: () => void;
+}) {
+  const enabled = entry.enabled !== false && entry.governorateEnabled !== false;
+  const sameGov = normalizeArabic(entry.governorateName) === normalizeArabic(governorate);
+  const subtitle = (() => {
+    if (entry.level === 0) return null;
+    if (entry.level === 1) {
+      return sameGov ? null : `محافظة ${entry.governorateName}`;
+    }
+    // level 2 — neighborhood
+    return sameGov
+      ? `تابع إلى ${entry.parentAreaName}`
+      : `تابع إلى ${entry.parentAreaName} — محافظة ${entry.governorateName}`;
+  })();
+  return (
+    <li
+      onMouseDown={(e) => {
+        e.preventDefault();
+        onPick();
+      }}
+      className={`flex items-center justify-between gap-2 px-3 py-2 ${
+        enabled ? 'cursor-pointer hover:bg-[hsl(var(--muted))]/40' : 'opacity-60 cursor-not-allowed'
+      }`}
+      role="option"
+      aria-disabled={!enabled}
+      aria-selected={false}
+    >
+      <span className="flex flex-col min-w-0">
+        <span className="flex items-center gap-1.5">
+          <span className="font-medium">
+            {entry.level === 0 ? `محافظة ${entry.name}` : entry.name}
+          </span>
+          {entry.level === 1 &&
+            entry.type &&
+            (entry.type === 'markaz' || entry.type === 'kism' || entry.type === 'city') && (
+              <span className="text-[9px] text-slate-400">
+                {entry.type === 'markaz' ? 'مركز' : entry.type === 'kism' ? 'قسم' : 'مدينة'}
+              </span>
+            )}
+          {entry.level === 2 && <span className="text-[9px] text-slate-400">حي</span>}
+        </span>
+        {subtitle && (
+          <span className="text-[10px] text-[hsl(var(--muted-foreground))]">{subtitle}</span>
+        )}
+      </span>
+      <span className="flex items-center gap-1 text-[10px] flex-shrink-0">
+        {!enabled && (
+          <span className="px-1.5 py-0.5 rounded bg-red-50 text-red-600 border border-red-100">
+            خارج التغطية
+          </span>
+        )}
+      </span>
+    </li>
+  );
+}
+
 function lineTotal(line: OrderLine): number {
   const base = line.unitPrice * line.quantity;
   const flash = line.includeFlashlight ? line.flashlightPrice * line.quantity : 0;
@@ -537,8 +609,22 @@ export default function AddOrderModal({ onClose }: Props) {
     return () => clearInterval(interval);
   }, []);
 
+  // Phase 22N-Fix1 — when the user clicks a cross-governorate result
+  // in the area dropdown, we set governorate + district + neighborhood
+  // together. The two reset effects below would otherwise clear the
+  // district + neighborhood as a side-effect of the gov / district
+  // change. This ref lets the click-handler suppress ONE round of the
+  // clears so the new values land cleanly. Reset to false after each
+  // effect run so user-driven gov / area changes still clear properly.
+  const skipNextCrossGovReset = useRef(false);
+
   // Reset district + neighborhood when governorate changes
   useEffect(() => {
+    if (skipNextCrossGovReset.current) {
+      // Suppress this clear and the follow-up district-change clear
+      // — both fire as a result of the cross-gov pick.
+      return;
+    }
     setDistrict('');
     setNeighborhood('');
   }, [governorate]);
@@ -546,6 +632,13 @@ export default function AddOrderModal({ onClose }: Props) {
   // Reset neighborhood when district changes — the typed neighborhood
   // is contextual to the selected area, so changing the area clears it.
   useEffect(() => {
+    if (skipNextCrossGovReset.current) {
+      // Cross-gov pick already set the neighborhood explicitly; the
+      // pick is the last in the same react event so we land here once
+      // and clear the flag.
+      skipNextCrossGovReset.current = false;
+      return;
+    }
     setNeighborhood('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [district]);
@@ -748,31 +841,54 @@ export default function AddOrderModal({ onClose }: Props) {
     return availableNeighborhoods.filter((n) => normalizeArabic(n.name).includes(neighborhoodNorm));
   })();
 
-  // Area dropdown rows. Driven by the hierarchical regions: the
-  // dropdown lists every TOP-LEVEL area in the current governorate.
-  // Disabled areas appear with a soft-disabled style; clicking them
-  // is a no-op. Customer-facing wording — never "غير مفعلة" — is
-  // pushed only to the inline hint via `districtStrictError` / the
-  // submit validator.
-  type AreaSuggestionRow = {
-    name: string;
-    enabled: boolean;
-    type?: string;
-    source?: string;
-    childCount: number;
-  };
-  const areaSuggestionRows: AreaSuggestionRow[] = (() => {
-    const gov = selectedGovEntry;
-    const rows: AreaSuggestionRow[] = (gov?.districts ?? []).map((a) => ({
-      name: a.name,
-      enabled: a.enabled !== false,
-      type: a.type,
-      source: a.source,
-      childCount: a.children?.length ?? 0,
-    }));
-    if (!districtNorm) return rows;
-    return rows.filter((r) => normalizeArabic(r.name).includes(districtNorm));
+  // ─── Phase 22N-Fix1 — cross-governorate area dropdown ────────────────────
+  // The dropdown now searches ALL governorates so duplicate names like
+  // `الهرم` (الجيزة top-level enabled) vs `الهرم` (تابع إلى مركز
+  // الواسطى — محافظة بنى سويف, disabled) both appear. Results are
+  // partitioned into two sections by `governorateName`:
+  //   • داخل {selected-gov}
+  //   • نتائج في محافظات أخرى
+  // When the typed query is empty, we fall back to listing the
+  // selected governorate's top-level areas (so the dropdown stays
+  // populated for first-focus before the user types).
+  const SUGGESTION_LIMIT_PER_SECTION = 50;
+  const areaSuggestionsAll: CoverageSearchEntry[] = (() => {
+    if (!districtNorm) {
+      // Empty query: list top-level areas in the selected gov.
+      const gov = selectedGovEntry;
+      if (!gov) return [];
+      const out: CoverageSearchEntry[] = [];
+      for (const a of gov.districts ?? []) {
+        out.push({
+          governorateName: gov.name,
+          governorateEnabled: gov.enabled !== false,
+          level: 1,
+          name: a.name,
+          displayName: `${a.name} — محافظة ${gov.name}`,
+          enabled: a.enabled !== false,
+          source: a.source,
+          needsReview: a.needsReview,
+          type: a.type,
+          aliases: a.aliases,
+          fee: a.fee ?? null,
+          shippingFee: a.shippingFee ?? null,
+          canonicalDistrictName: a.name,
+          searchableText: normalizeArabic(a.name),
+        });
+      }
+      return out;
+    }
+    // Substring search across every governorate / area / neighborhood.
+    return searchCoverageByName(district, hierarchicalRegions, {
+      matchMode: 'substring',
+    });
   })();
+  const areaSuggestionsInGov = areaSuggestionsAll.filter(
+    (e) => normalizeArabic(e.governorateName) === normalizeArabic(governorate)
+  );
+  const areaSuggestionsOtherGov = areaSuggestionsAll.filter(
+    (e) => normalizeArabic(e.governorateName) !== normalizeArabic(governorate)
+  );
 
   // Phase 22M — disabled-but-known matches in the CURRENT governorate.
   // These are entries the admin has explicitly turned OFF in
@@ -1015,7 +1131,18 @@ export default function AddOrderModal({ onClose }: Props) {
     if (!district.trim()) {
       errs.district = 'المنطقة مطلوبة';
     } else if (!canonicalDistrictMatch) {
-      errs.district = districtStrictError ?? 'هذه المنطقة خارج نطاق التغطية حاليًا.';
+      // Phase 22N-Fix1 — when the typed value matches an area in
+      // ANOTHER governorate (or matches a neighborhood elsewhere
+      // entirely), tell the user to pick a result rather than
+      // surfacing the generic out-of-coverage message. The user
+      // can then either click a result row (auto-switch the gov)
+      // or type a fully canonical name to clear the ambiguity.
+      const exactHits = findCoverageOccurrences(district, hierarchicalRegions);
+      if (exactHits.length > 1) {
+        errs.district = 'برجاء اختيار المنطقة من النتائج لتحديد المحافظة الصحيحة.';
+      } else {
+        errs.district = districtStrictError ?? 'هذه المنطقة خارج نطاق التغطية حاليًا.';
+      }
     } else if (selectedAreaEntry && selectedAreaEntry.enabled === false) {
       errs.district = 'هذه المنطقة خارج نطاق التغطية حاليًا.';
     }
@@ -1593,62 +1720,111 @@ export default function AddOrderModal({ onClose }: Props) {
                           size={14}
                           className="absolute right-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))] pointer-events-none"
                         />
-                        {showDistrictSuggestions && areaSuggestionRows.length > 0 && (
+                        {showDistrictSuggestions && areaSuggestionsAll.length > 0 && (
                           <div className="absolute z-30 mt-1 w-full rounded-lg border border-[hsl(var(--border))] bg-white shadow-lg text-sm">
-                            <p className="px-3 py-1.5 text-[11px] text-[hsl(var(--muted-foreground))] border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/30">
-                              تم العثور على {areaSuggestionRows.length} نتيجة داخل {governorate}
-                            </p>
-                            <ul
-                              className="max-h-56 overflow-y-auto divide-y divide-[hsl(var(--border))]"
-                              role="listbox"
-                            >
-                              {areaSuggestionRows.map((row) => (
-                                <li
-                                  key={`area-suggestion-${row.name}`}
-                                  onMouseDown={(e) => {
-                                    e.preventDefault();
-                                    if (!row.enabled) return; // disabled rows are display-only
-                                    setDistrict(row.name);
-                                    setShowDistrictSuggestions(false);
-                                  }}
-                                  className={`flex items-center justify-between gap-2 px-3 py-2 ${
-                                    row.enabled
-                                      ? 'cursor-pointer hover:bg-[hsl(var(--muted))]/40'
-                                      : 'opacity-60 cursor-not-allowed'
-                                  }`}
-                                  role="option"
-                                  aria-selected={district === row.name}
-                                  aria-disabled={!row.enabled}
-                                >
-                                  <span className="flex items-center gap-1.5">
-                                    {row.name}
-                                    {row.childCount > 0 && (
-                                      <span className="text-[10px] text-[hsl(var(--muted-foreground))]">
-                                        ({row.childCount} حي)
-                                      </span>
-                                    )}
-                                  </span>
-                                  <span className="flex items-center gap-1 text-[10px]">
-                                    {row.type && (
-                                      <span className="px-1.5 py-0.5 rounded bg-slate-50 text-slate-500 border border-slate-100">
-                                        {row.type === 'markaz'
-                                          ? 'مركز'
-                                          : row.type === 'kism'
-                                            ? 'قسم'
-                                            : row.type === 'city'
-                                              ? 'مدينة'
-                                              : row.type}
-                                      </span>
-                                    )}
-                                    {!row.enabled && (
-                                      <span className="px-1.5 py-0.5 rounded bg-red-50 text-red-600 border border-red-100">
-                                        خارج التغطية
-                                      </span>
-                                    )}
-                                  </span>
-                                </li>
-                              ))}
-                            </ul>
+                            <div className="max-h-72 overflow-y-auto">
+                              {/* Phase 22N-Fix1 — Section A: matches in
+                                  the currently-selected governorate. */}
+                              {areaSuggestionsInGov.length > 0 && (
+                                <>
+                                  <p className="px-3 py-1.5 text-[11px] text-[hsl(var(--muted-foreground))] border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/30 sticky top-0">
+                                    داخل محافظة {governorate} — {areaSuggestionsInGov.length} نتيجة
+                                  </p>
+                                  <ul
+                                    className="divide-y divide-[hsl(var(--border))]"
+                                    role="listbox"
+                                  >
+                                    {areaSuggestionsInGov
+                                      .slice(0, SUGGESTION_LIMIT_PER_SECTION)
+                                      .map((entry) => (
+                                        <CoverageSuggestionRow
+                                          key={`in-${entry.level}-${entry.governorateName}-${entry.parentAreaName ?? ''}-${entry.name}`}
+                                          entry={entry}
+                                          governorate={governorate}
+                                          onPick={() => {
+                                            // Same gov — set the area /
+                                            // neighborhood. Disabled
+                                            // entries are display-only.
+                                            if (!entry.enabled || !entry.governorateEnabled) return;
+                                            if (entry.level === 0) {
+                                              // user clicked governorate
+                                              // row: just close the
+                                              // dropdown (gov is already
+                                              // selected).
+                                              setShowDistrictSuggestions(false);
+                                              return;
+                                            }
+                                            if (entry.level === 1) {
+                                              setDistrict(entry.name);
+                                              setNeighborhood('');
+                                            } else if (entry.level === 2) {
+                                              setDistrict(entry.parentAreaName ?? '');
+                                              setNeighborhood(entry.name);
+                                            }
+                                            setShowDistrictSuggestions(false);
+                                          }}
+                                        />
+                                      ))}
+                                  </ul>
+                                </>
+                              )}
+                              {/* Section B: matches in OTHER
+                                  governorates. Click → switch the
+                                  governorate AND the area + neighborhood
+                                  in one step. */}
+                              {areaSuggestionsOtherGov.length > 0 && (
+                                <>
+                                  <p className="px-3 py-1.5 text-[11px] text-amber-700 border-y border-[hsl(var(--border))] bg-amber-50/60 sticky top-0">
+                                    نتائج في محافظات أخرى — {areaSuggestionsOtherGov.length}
+                                  </p>
+                                  <ul
+                                    className="divide-y divide-[hsl(var(--border))]"
+                                    role="listbox"
+                                  >
+                                    {areaSuggestionsOtherGov
+                                      .slice(0, SUGGESTION_LIMIT_PER_SECTION)
+                                      .map((entry) => (
+                                        <CoverageSuggestionRow
+                                          key={`out-${entry.level}-${entry.governorateName}-${entry.parentAreaName ?? ''}-${entry.name}`}
+                                          entry={entry}
+                                          governorate={governorate}
+                                          onPick={() => {
+                                            if (!entry.enabled || !entry.governorateEnabled) return;
+                                            // Phase 22N-Fix1 — set the
+                                            // skip flag so the
+                                            // governorate / district
+                                            // useEffects below don't
+                                            // clobber these values, then
+                                            // batch the state updates
+                                            // (gov first so the gov-
+                                            // change effect sees the
+                                            // skip flag is true).
+                                            skipNextCrossGovReset.current = true;
+                                            setGovernorate(entry.governorateName);
+                                            if (entry.level === 0) {
+                                              setDistrict('');
+                                              setNeighborhood('');
+                                            } else if (entry.level === 1) {
+                                              setDistrict(entry.name);
+                                              setNeighborhood('');
+                                            } else if (entry.level === 2) {
+                                              setDistrict(entry.parentAreaName ?? '');
+                                              setNeighborhood(entry.name);
+                                            }
+                                            setShowDistrictSuggestions(false);
+                                          }}
+                                        />
+                                      ))}
+                                  </ul>
+                                </>
+                              )}
+                              {areaSuggestionsAll.length > SUGGESTION_LIMIT_PER_SECTION * 2 && (
+                                <p className="px-3 py-1.5 text-[10px] text-[hsl(var(--muted-foreground))] border-t border-[hsl(var(--border))] bg-[hsl(var(--muted))]/20">
+                                  + {areaSuggestionsAll.length - SUGGESTION_LIMIT_PER_SECTION * 2}{' '}
+                                  نتيجة أخرى — اكتب اسماً أكثر تحديداً لتضييق النتائج.
+                                </p>
+                              )}
+                            </div>
                           </div>
                         )}
                       </div>

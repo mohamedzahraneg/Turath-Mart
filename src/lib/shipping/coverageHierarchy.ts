@@ -560,6 +560,138 @@ export function findNeighborhoodOccurrences(
   return out;
 }
 
+// ─── Phase 22N-Fix1 — cross-governorate search ───────────────────────────────
+//
+// The Phase 22N transformer's `findArea` / `findNeighborhood` are scoped
+// to a single governorate (used by the order writer to commit a
+// canonical name). The order MODAL needs the opposite: every match
+// across every governorate, so the user can disambiguate between
+// duplicates like `الهرم` (الجيزة top-level enabled) vs `الهرم` (تابع إلى
+// مركز الواسطى — محافظة بنى سويف, disabled).
+//
+// Three helpers below:
+//
+//   • searchCoverageByName(query, regions, { matchMode })
+//     — internal primitive. Walks every gov / area / child and emits
+//       a typed `CoverageSearchEntry` for every hit. Substring is the
+//       default (powers the autosuggest dropdown); `matchMode: 'exact'`
+//       is what `validateStep1` uses when checking whether a typed
+//       value resolves to a canonical entry.
+//   • findAreaOccurrences(query, regions)
+//     — top-level area matches across every governorate (exact-match
+//       on name OR alias).
+//   • findCoverageOccurrences(query, regions)
+//     — every match (governorate / area / neighborhood) with exact-
+//       match semantics. Used to detect ambiguous typed-only submit
+//       (multiple matches → block + ask user to pick a canonical).
+//
+// Each helper preserves the dedup contract from Phase 22N: the same
+// child name CAN validly exist under multiple parents in the same
+// governorate (each cloned by the transformer); the dedup key is
+// `(level, governorate, parent, name)`.
+
+interface MatchModeOptions {
+  /** `'substring'` (default) for the dropdown, `'exact'` for validation. */
+  matchMode?: 'substring' | 'exact';
+}
+
+function nameMatcher(qNorm: string, mode: 'substring' | 'exact'): (name: string) => boolean {
+  return (name: string) => {
+    const n = normalizeArabic(name);
+    if (mode === 'exact') return n === qNorm;
+    return n.includes(qNorm);
+  };
+}
+
+function aliasMatcher(
+  qNorm: string,
+  mode: 'substring' | 'exact'
+): (aliases: string[] | undefined) => boolean {
+  const m = nameMatcher(qNorm, mode);
+  return (aliases) => (aliases ?? []).some((a) => m(a));
+}
+
+/**
+ * Walk every gov / area / child and emit a `CoverageSearchEntry` per
+ * matching node (governorate / area / neighborhood). Default match
+ * mode is substring; pass `{ matchMode: 'exact' }` for validation.
+ *
+ * Empty / missing `query` returns `[]` so callers can chain without
+ * a null check.
+ */
+export function searchCoverageByName(
+  query: string,
+  regions: ShippingGovernorate[],
+  options?: MatchModeOptions
+): CoverageSearchEntry[] {
+  const qNorm = normalizeArabic(query);
+  if (!qNorm) return [];
+  const mode = options?.matchMode ?? 'substring';
+  const matchName = nameMatcher(qNorm, mode);
+  const matchAlias = aliasMatcher(qNorm, mode);
+
+  const out: CoverageSearchEntry[] = [];
+  const seen = new Set<string>(); // dedup key — see contract above
+
+  const push = (e: CoverageSearchEntry) => {
+    const dedup = [
+      e.level,
+      normalizeArabic(e.governorateName),
+      normalizeArabic(e.parentAreaName ?? ''),
+      normalizeArabic(e.name),
+    ].join('::');
+    if (seen.has(dedup)) return;
+    seen.add(dedup);
+    out.push(e);
+  };
+
+  for (const gov of regions) {
+    const govEnabled = gov.enabled !== false;
+    if (matchName(gov.name)) {
+      push(makeGovernorateEntry(gov));
+    }
+    for (const area of gov.districts ?? []) {
+      if (matchName(area.name) || matchAlias(area.aliases)) {
+        push(makeAreaEntry(gov.name, govEnabled, area));
+      }
+      for (const child of area.children ?? []) {
+        if (matchName(child.name) || matchAlias(child.aliases)) {
+          push(makeNeighborhoodEntry(gov.name, govEnabled, area, child));
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Top-level area matches across every governorate. EXACT-match by
+ * default (validation use case). Pass `{ matchMode: 'substring' }` if
+ * you need the autosuggest behaviour.
+ */
+export function findAreaOccurrences(
+  query: string,
+  regions: ShippingGovernorate[],
+  options?: MatchModeOptions
+): CoverageSearchEntry[] {
+  const opts: MatchModeOptions = { matchMode: options?.matchMode ?? 'exact' };
+  return searchCoverageByName(query, regions, opts).filter((e) => e.level === 1);
+}
+
+/**
+ * Every (governorate / area / neighborhood) match across every
+ * governorate. EXACT-match by default. Powers the
+ * "ambiguous typed-only submit" block in `validateStep1`.
+ */
+export function findCoverageOccurrences(
+  query: string,
+  regions: ShippingGovernorate[],
+  options?: MatchModeOptions
+): CoverageSearchEntry[] {
+  const opts: MatchModeOptions = { matchMode: options?.matchMode ?? 'exact' };
+  return searchCoverageByName(query, regions, opts);
+}
+
 /** Type guard / clarity helper. */
 export function isParent(area: ShippingDistrict): boolean {
   return Array.isArray(area.children) && area.children.length > 0;
