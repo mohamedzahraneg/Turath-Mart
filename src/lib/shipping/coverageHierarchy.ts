@@ -149,12 +149,41 @@ function dedupKey(name: string): string {
 
 // ─── normalizeCoverageHierarchy ──────────────────────────────────────────────
 
+export interface NormalizeCoverageHierarchyOptions {
+  /**
+   * Phase 22N-Fix2 — when `false`, the transformer ONLY emits entries
+   * that exist in the input data. The two "generated" branches are
+   * suppressed:
+   *
+   *   • Step 5 placeholder parents — children whose `parent` pointer
+   *     references a non-existent area no longer get a synthesised
+   *     `enabled: false` parent. The child is demoted to top-level
+   *     so live data is preserved without inventing a new parent.
+   *   • Step 6 proposed children — names listed in
+   *     `MANUAL_HIERARCHY_RULES.children` but not present in the live
+   *     row are NOT added as `manual_supplement` placeholder children.
+   *
+   * Default `true` (backward-compatible — what dry-run scripts +
+   * quality reports want, since they're auditing what a future
+   * authorised import COULD propose).
+   *
+   * Set `false` for any RUNTIME UI surface (new-order modal,
+   * settings) so customers / admins only see real data —
+   * `settings_regions` is the single source of truth.
+   */
+  includeGeneratedPlaceholders?: boolean;
+}
+
 /**
  * Public entry point. Takes the raw `settings_regions` array and
  * returns a normalised, hierarchical version. Pure — never mutates
  * input.
  */
-export function normalizeCoverageHierarchy(liveRaw: unknown): ShippingGovernorate[] {
+export function normalizeCoverageHierarchy(
+  liveRaw: unknown,
+  options?: NormalizeCoverageHierarchyOptions
+): ShippingGovernorate[] {
+  const includePlaceholders = options?.includeGeneratedPlaceholders !== false;
   if (!Array.isArray(liveRaw)) return [];
   const out: ShippingGovernorate[] = [];
 
@@ -193,7 +222,7 @@ export function normalizeCoverageHierarchy(liveRaw: unknown): ShippingGovernorat
       ...(g as unknown as ShippingGovernorate),
       name: govName,
       enabled: g.enabled !== false,
-      districts: groupGovernorate(govName, flat),
+      districts: groupGovernorate(govName, flat, includePlaceholders),
     };
     if (typeof g.fee === 'number' || g.fee === null) {
       govShape.fee = g.fee as number | null;
@@ -210,8 +239,20 @@ export function normalizeCoverageHierarchy(liveRaw: unknown): ShippingGovernorat
 /**
  * Build the hierarchical `districts` for one governorate. Returns
  * top-level areas, each with `children` populated.
+ *
+ * Phase 22N-Fix2 — `includePlaceholders` gates the two "generated"
+ * branches:
+ *   • Step 3 cloning is only allowed for parents that exist as
+ *     orphans in the live row.
+ *   • Step 5 placeholder-parent creation is suppressed; children
+ *     with no live parent are demoted to top-level.
+ *   • Step 6 proposed-children loop is skipped entirely.
  */
-function groupGovernorate(govName: string, flat: ShippingDistrict[]): ShippingDistrict[] {
+function groupGovernorate(
+  govName: string,
+  flat: ShippingDistrict[],
+  includePlaceholders: boolean
+): ShippingDistrict[] {
   // Step 1: separate items that EXPLICITLY have a parent pointer from
   // items that don't. Parent-pointer wins over manual rules — admin
   // curation > heuristic.
@@ -221,6 +262,13 @@ function groupGovernorate(govName: string, flat: ShippingDistrict[]): ShippingDi
     if (d.parent && d.parent.trim()) explicitChildren.push(d);
     else orphans.push(d);
   }
+
+  // Phase 22N-Fix2 — set of names that exist as ORPHANS in live data.
+  // Used by Step 3 (when placeholders are suppressed) to gate cloning
+  // to parents that actually exist. Empty set means "no live parents
+  // recognised" → all rule-routed orphans stay top-level.
+  const liveOrphanNamesNorm = new Set<string>();
+  for (const o of orphans) liveOrphanNamesNorm.add(normalizeArabic(o.name));
 
   // Step 2: among orphans, identify which are CURATED top-level
   // parents (`isManualParent`). Those stay top-level; the rest
@@ -238,14 +286,11 @@ function groupGovernorate(govName: string, flat: ShippingDistrict[]): ShippingDi
   // the same governorate (e.g. الحي الأول under both مدينة 6 اكتوبر
   // and مدينة الشيخ زايد). When the rules return more than one
   // candidate, we CLONE the entry under each parent — preserving its
-  // `enabled` / `fee` / `source` flags — instead of keeping it
-  // top-level + flagged for review. The user disambiguates by
-  // selecting the parent area first, and the search index renders one
-  // row per (parent, child) pair so customers see both options.
-  //
-  // Uniqueness key for a child becomes (governorate, parent, child
-  // normalised name); the duplicate-collapse rule in Step 5 keys by
-  // the same triple, so it's safe to push N copies here.
+  // `enabled` / `fee` / `source` flags. Phase 22N-Fix2: when
+  // `includePlaceholders` is false, only clone to candidate parents
+  // that EXIST in live data (i.e. are in `liveOrphanNamesNorm`). If
+  // none of the candidates is a live parent, the orphan stays top-
+  // level so we never invent a parent the customer can pick from.
   const orphanedTopLevel: ShippingDistrict[] = [];
   const attachedFromRules: ShippingDistrict[] = []; // (district, parentName) tuples
   for (const d of remaining) {
@@ -254,7 +299,14 @@ function groupGovernorate(govName: string, flat: ShippingDistrict[]): ShippingDi
       orphanedTopLevel.push(d);
       continue;
     }
-    for (const cand of candidates) {
+    const validCandidates = includePlaceholders
+      ? candidates
+      : candidates.filter((c) => liveOrphanNamesNorm.has(normalizeArabic(c.parent)));
+    if (validCandidates.length === 0) {
+      orphanedTopLevel.push(d);
+      continue;
+    }
+    for (const cand of validCandidates) {
       attachedFromRules.push({ ...d, parent: cand.parent });
     }
   }
@@ -284,7 +336,10 @@ function groupGovernorate(govName: string, flat: ShippingDistrict[]): ShippingDi
   }
 
   // Step 5: for every (explicitChildren ∪ attachedFromRules), find the
-  // parent in topLevel. Create a placeholder if missing.
+  // parent in topLevel. Phase 22N-Fix2 — when placeholders are
+  // suppressed, do NOT create a synthesised parent; instead demote
+  // the child to top-level so its live data is preserved without
+  // inventing a new parent name.
   const allChildren: ShippingDistrict[] = [...explicitChildren, ...attachedFromRules];
   const seenChildKey = new Set<string>(); // dedup children with same name under same parent
   for (const c of allChildren) {
@@ -292,7 +347,19 @@ function groupGovernorate(govName: string, flat: ShippingDistrict[]): ShippingDi
     const parentKey = dedupKey(parentName);
     let idx = topLevelByKey.get(parentKey);
     if (idx === undefined) {
-      // Create placeholder parent
+      if (!includePlaceholders) {
+        // Demote to top-level with no parent pointer. Source / enabled
+        // / fee flags preserved verbatim.
+        const demoted: ShippingDistrict = { ...c };
+        delete demoted.parent;
+        const childKey = dedupKey(c.name);
+        if (topLevelByKey.has(childKey)) continue;
+        topLevelByKey.set(childKey, topLevel.length);
+        topLevel.push({ ...demoted, children: [] });
+        continue;
+      }
+      // Create placeholder parent (default behaviour — used by dry-run
+      // / quality-report scripts that audit what an import COULD do).
       const placeholder: ShippingDistrict = {
         name: parentName,
         enabled: false,
@@ -313,10 +380,13 @@ function groupGovernorate(govName: string, flat: ShippingDistrict[]): ShippingDi
   }
 
   // Step 6: for every curated parent that's a known commercial label,
-  // PROPOSE missing children placeholders so the new-order modal can
-  // show them in the dropdown. Each placeholder is
+  // PROPOSE missing children placeholders. Each placeholder is
   // `enabled: false, source: 'manual_supplement', needsReview: true`
-  // — never auto-enabled.
+  // — never auto-enabled. Phase 22N-Fix2 — skipped when
+  // `includePlaceholders` is false so runtime UI surfaces (new-order
+  // modal, settings) only see entries that actually exist in
+  // `settings_regions`. Settings is the single source of truth.
+  if (!includePlaceholders) return topLevel;
   for (let i = 0; i < topLevel.length; i += 1) {
     const p = topLevel[i];
     if (!isManualParent(govName, p.name)) continue;
