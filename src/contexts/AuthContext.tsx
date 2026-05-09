@@ -1,6 +1,6 @@
 'use client';
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import type { Session, AuthChangeEvent } from '@supabase/supabase-js';
 import { createClient, resetSupabaseClient } from '@/lib/supabase/client';
 import { clearAppStorage } from '@/lib/auth/storage';
@@ -10,6 +10,12 @@ import {
   getDefaultRouteForPermissions,
   getPermissionsForRoleId,
 } from '@/lib/permissions/permissions';
+import { useIdleLogout } from '@/hooks/useIdleLogout';
+
+// Phase 22G — idle auto-logout threshold.
+// Confirmed 180 s (3 min) on PR #24 review. Single named constant so
+// any future tweak is a one-line change without touching the hook.
+const IDLE_LOGOUT_TIMEOUT_MS = 180_000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase 20D-Fix1 — Profile/role cache.
@@ -161,6 +167,28 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   // the login page mount.
   const pathname = usePathname();
   const onAuthRoute = isAuthRoute(pathname || '');
+  const router = useRouter();
+
+  // Phase 22G: idle auto-logout. Armed only when a user is signed in
+  // AND not already on the login page. signOut() runs first so the
+  // session-end log + state cleanup fire normally; the explicit
+  // router.replace afterwards mirrors Sidebar.handleLogout's pattern
+  // and lands the user on a fresh /sign-up-login-screen (no `?next=`
+  // query — idle expiry shouldn't auto-resume the prior page on
+  // re-login). If signOut throws we still redirect so the user is
+  // never stranded on an authenticated page with a dead session.
+  useIdleLogout({
+    enabled: !!user && !onAuthRoute,
+    timeoutMs: IDLE_LOGOUT_TIMEOUT_MS,
+    onIdle: async () => {
+      try {
+        await signOut();
+      } catch (e) {
+        console.error('Idle auto-logout signOut error:', e);
+      }
+      router.replace('/sign-up-login-screen');
+    },
+  });
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // STEP 1: Listen to Supabase auth state changes (login/logout)
