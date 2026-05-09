@@ -18,7 +18,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { ROLE_IDS, type RoleId } from '@/lib/constants/roles';
-import { DEFAULT_LANDING_ROUTE } from '@/lib/auth/routes';
 
 // ─── Permission → Route mapping ──────────────────────────────────────────────
 export const PERMISSION_ROUTE_MAP: Record<string, string[]> = {
@@ -115,15 +114,51 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
 ];
 
 // ─── Default landing route priority ──────────────────────────────────────────
-const PERMISSION_DEFAULT_ROUTE_PRIORITY = [
-  'view_dashboard',
-  'view_orders',
-  'view_shipping',
-  'view_reports',
-  'view_inventory',
-  'view_customers',
-  'manage_users',
-  'system_settings',
+//
+// Route-keyed priority list (Phase 22I-Fix1 follow-up). Each entry pairs
+// a candidate landing route with the FULL set of permissions that grant
+// access to it — not just the read-prefixed `view_*` flag. A user holds
+// any one of those permissions and the route becomes a valid landing.
+// The list is iterated top-to-bottom; the first route the user can
+// access is returned.
+//
+// Examples:
+//   • holds `view_dashboard` → /dashboard
+//   • holds only `customer_support` (no `view_customers`) → /crm
+//   • holds only `update_status` (no `view_orders`) → /orders-management
+//   • holds only `manage_roles` (no `manage_users`) → /roles
+//   • holds no permission in this list → null (caller surfaces error)
+//
+// IMPORTANT: keep the per-route permission set in sync with
+// PERMISSION_ROUTE_MAP above. Any permission that maps to a route in
+// PERMISSION_ROUTE_MAP must also appear here, otherwise users holding
+// only that permission would land on null despite having access.
+const ROUTE_DEFAULT_PRIORITY: ReadonlyArray<{
+  route: string;
+  permissions: ReadonlyArray<string>;
+}> = [
+  { route: '/dashboard', permissions: ['view_dashboard'] },
+  {
+    route: '/orders-management',
+    permissions: [
+      'view_orders',
+      'create_orders',
+      'edit_orders',
+      'delete_orders',
+      'orders_manage',
+      'update_status',
+    ],
+  },
+  {
+    route: '/shipping',
+    permissions: ['view_shipping', 'manage_shipping', 'assign_courier', 'view_delegates'],
+  },
+  { route: '/reports', permissions: ['view_reports', 'export_reports'] },
+  { route: '/inventory', permissions: ['view_inventory', 'edit_inventory'] },
+  { route: '/crm', permissions: ['view_customers', 'manage_customers', 'customer_support'] },
+  { route: '/users', permissions: ['manage_users'] },
+  { route: '/roles', permissions: ['manage_roles'] },
+  { route: '/settings', permissions: ['system_settings'] },
 ];
 
 // ─── Pure helpers ────────────────────────────────────────────────────────────
@@ -131,22 +166,38 @@ const PERMISSION_DEFAULT_ROUTE_PRIORITY = [
 /**
  * Resolve the default landing route for a set of effective permissions.
  *
- * Phase 22I: the fallback returned when no priority permission matches
- * (or when permissions is empty) is now `DEFAULT_LANDING_ROUTE`
- * (= /dashboard) rather than the hard-coded '/shipping' that was here
- * historically. The role-aware priority lookup below is unchanged —
- * a delegate (view_shipping only) still resolves to /shipping via the
- * priority match. Only the "I have nothing better to suggest" path
- * now points at the dashboard.
+ * Phase 22I-Fix1 (clarified): returns `null` when the permission set
+ * yields no routable destination — never blindly falls back to
+ * /dashboard or /shipping. The lookup is strictly permission-driven:
+ * no role IDs are referenced anywhere, and any permission that grants
+ * access to a route makes that route a valid landing candidate (so a
+ * user with only `customer_support` lands on /crm, a user with only
+ * `update_status` lands on /orders-management, and so on).
+ *
+ * Behaviour by case:
+ *   • holds `view_dashboard`         → '/dashboard'
+ *   • holds any orders permission    → '/orders-management'
+ *   • holds any shipping permission  → '/shipping'
+ *   • holds any reports permission   → '/reports'
+ *   • holds any inventory permission → '/inventory'
+ *   • holds any CRM permission       → '/crm'
+ *   • holds `manage_users`           → '/users'
+ *   • holds `manage_roles`           → '/roles'
+ *   • holds `system_settings`        → '/settings'
+ *   • permissions empty or no match  → null
+ *
+ * Callers handle null by either staying on the login page with an error
+ * (login flow) or forcing a re-auth round-trip (AppLayout).
+ * DEFAULT_LANDING_ROUTE remains the server-side middleware constant
+ * but is no longer consulted as a fallback here.
  */
-export function getDefaultRouteForPermissions(permissions: string[]): string {
-  if (!permissions || permissions.length === 0) return DEFAULT_LANDING_ROUTE;
-  for (const perm of PERMISSION_DEFAULT_ROUTE_PRIORITY) {
-    if (permissions.includes(perm)) {
-      return PERMISSION_ROUTE_MAP[perm]?.[0] ?? DEFAULT_LANDING_ROUTE;
-    }
+export function getDefaultRouteForPermissions(permissions: string[]): string | null {
+  if (!permissions || permissions.length === 0) return null;
+  const held = new Set(permissions);
+  for (const { route, permissions: candidates } of ROUTE_DEFAULT_PRIORITY) {
+    if (candidates.some((p) => held.has(p))) return route;
   }
-  return DEFAULT_LANDING_ROUTE;
+  return null;
 }
 
 /** Get the static permission list for a known role id. */
