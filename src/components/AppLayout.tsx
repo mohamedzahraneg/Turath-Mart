@@ -52,6 +52,36 @@ export default function AppLayout({ children, currentPath = '' }: AppLayoutProps
       return;
     }
 
+    // Phase 22J-Fix2 — wait when the user is signed in but the role
+    // has not yet been resolved.
+    //
+    // Background: AuthContext gates its syncProfile effect on
+    // `onAuthRoute`. When a user signs in on /sign-up-login-screen,
+    // syncProfile takes the bail-out branch and sets
+    // `roleLoading = false` without loading the role; `currentRoleId`
+    // stays null. The login page then router.replace's to a protected
+    // route (e.g. /dashboard). Pathname flips → onAuthRoute flips →
+    // AuthContext's syncProfile re-runs and queues
+    // `setRoleLoading(true)` — but that state update is committed on
+    // the NEXT render. The CURRENT render commit still carries the
+    // stale `roleLoading = false`. AppLayout's effect runs in this
+    // same commit, sees `user` truthy + `currentRoleId` null +
+    // `roleLoading` false, falls through to the redirect block, and
+    // bounces the freshly-signed-in user back to
+    // /sign-up-login-screen → middleware redirects again to
+    // DEFAULT_LANDING_ROUTE → AppLayout redirects again → loop. The
+    // loop self-resolves once syncProfile commits its real role on a
+    // later render, but by then the URL has flickered through login
+    // and the user typically perceives "I had to log in twice".
+    //
+    // The fix: never make routing decisions when user is set but
+    // currentRoleId is null. Treat it as still-loading and wait.
+    // syncProfile always settles to either a real role or the r6
+    // fallback in its catch branch, so this guard is bounded — it
+    // never indefinitely blocks. The render-side guard below (in the
+    // bail-out block) shows AuthLoadingScreen during the same window.
+    if (user && !currentRoleId) return;
+
     // Admin (r1) has full access
     if (isAdminRole(currentRoleId)) return;
 
@@ -97,6 +127,12 @@ export default function AppLayout({ children, currentPath = '' }: AppLayoutProps
   if (!isPublic) {
     if (loading || roleLoading) return <AuthLoadingScreen />;
     if (!user && !currentRoleId) return <AuthLoadingScreen />;
+    // Phase 22J-Fix2 — same condition as the effect guard above.
+    // Show the loading screen while syncProfile is in the queued-but-
+    // not-committed window after a fresh signIn navigation, instead
+    // of either flashing protected content or letting child queries
+    // run with an unresolved role.
+    if (user && !currentRoleId) return <AuthLoadingScreen />;
     if (!isAdminRole(currentRoleId) && !hasAccess(activePath)) return <AuthLoadingScreen />;
   }
 
