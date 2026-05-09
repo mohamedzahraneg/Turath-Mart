@@ -137,6 +137,43 @@ const AR_MONTH_NAMES = [
   'ديسمبر',
 ] as const;
 
+// Phase 22H-Fix1: per-line product thumbnail on the token tracking
+// page. Source bytes come from /api/track-token/[token]/line-image/
+// [index], which decodes the base64 stored on the line and serves
+// it with `Cache-Control: public, max-age=86400, immutable` — so the
+// 30-second polling DTO stays slim while the image still appears in
+// the row. `unoptimized` skips next/image's resize pipeline (the
+// stored images are already small JPEGs and the route is same-origin
+// so optimisation adds latency without compression wins). On any
+// load error we fall back to the existing emoji placeholder.
+function TrackLineImage({
+  token,
+  index,
+  emoji,
+  alt,
+}: {
+  token: string;
+  index: number;
+  emoji?: string;
+  alt: string;
+}) {
+  const [errored, setErrored] = React.useState(false);
+  if (errored) {
+    return <span className="text-xl">{emoji || '📦'}</span>;
+  }
+  return (
+    <Image
+      src={`/api/track-token/${encodeURIComponent(token)}/line-image/${index}`}
+      alt={alt}
+      width={44}
+      height={44}
+      unoptimized
+      onError={() => setErrored(true)}
+      className="w-full h-full object-cover"
+    />
+  );
+}
+
 function formatCreationTimestamp(iso: string | null | undefined): string {
   if (!iso) return '';
   const d = new Date(iso);
@@ -1955,28 +1992,22 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
                 {order.lines && order.lines.length > 0 ? (
                   <div className="space-y-2">
                     {order.lines.map((line, idx) => {
-                      const hasImg =
-                        line.image &&
-                        (line.image.startsWith('data:') ||
-                          line.image.startsWith('http') ||
-                          line.image.startsWith('/'));
+                      // Phase 22H-Fix1: image bytes are served by the
+                      // dedicated /line-image/ endpoint, not embedded
+                      // in the polling DTO. We always attempt the URL
+                      // and fall back to the emoji on error.
                       return (
                         <div
                           key={`track-line-${idx}`}
                           className="flex items-center gap-3 bg-[hsl(var(--muted))]/30 rounded-xl p-2.5 border border-[hsl(var(--border))]"
                         >
                           <div className="w-11 h-11 rounded-xl overflow-hidden flex-shrink-0 bg-white border border-[hsl(var(--border))] flex items-center justify-center">
-                            {hasImg ? (
-                              <Image
-                                src={line.image!}
-                                alt={line.label}
-                                width={44}
-                                height={44}
-                                className="w-full h-full object-cover"
-                              />
-                            ) : (
-                              <span className="text-xl">{line.emoji || '📦'}</span>
-                            )}
+                            <TrackLineImage
+                              token={token}
+                              index={idx}
+                              emoji={line.emoji}
+                              alt={line.label}
+                            />
                           </div>
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-semibold text-[hsl(var(--foreground))] leading-tight">
