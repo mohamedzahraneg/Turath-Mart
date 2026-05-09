@@ -43,7 +43,17 @@ export type ShippingDistrictType =
   | 'village'
   | 'shiakha'
   | 'area'
-  | 'compound';
+  | 'compound'
+  // Phase 22N — additional node kinds the manual-rules layer can produce.
+  | 'branch';
+
+/**
+ * Phase 22N — node kinds the *transformer* can label. Subset of
+ * `ShippingDistrictType` plus `governorate` for top-level. Kept as a
+ * separate alias so consumers can be explicit when they only handle the
+ * post-transform shapes.
+ */
+export type ShippingCoverageNodeType = ShippingDistrictType;
 
 export type ShippingSource = 'existing' | 'official' | 'manual_supplement';
 
@@ -53,9 +63,21 @@ export interface ShippingDistrict {
   /** Canonical Arabic name as displayed in UI and stored in orders. */
   name: string;
   /** Whether the area is currently in coverage. Default `true` for legacy rows. */
-  enabled: boolean;
-  /** Optional override; falls back to the governorate fee when undefined. */
-  shippingFee?: number;
+  enabled?: boolean;
+  /**
+   * Phase 22N — per-district shipping fee in EGP. Two field names are
+   * accepted for backward compatibility:
+   *  • `fee`         — newer canonical name introduced in Phase 22N.
+   *  • `shippingFee` — original Phase 22M field, still honoured by every
+   *                    reader. Writers may emit either; readers should
+   *                    consult both via `resolveShippingFee` (see
+   *                    `src/lib/shipping/resolveShippingFee.ts`).
+   *
+   * `null` is treated identically to `undefined` — "inherit from
+   * parent". Explicit `0` is a real value (free shipping).
+   */
+  fee?: number | null;
+  shippingFee?: number | null;
   /** Hierarchy classification — drives display badges only. */
   type?: ShippingDistrictType;
   /** Parent district name within the same governorate. Used for nesting. */
@@ -66,6 +88,13 @@ export interface ShippingDistrict {
   source?: ShippingSource;
   /** True when the entry needs a human review before exposing to customers. */
   needsReview?: boolean;
+  /**
+   * Phase 22N — optional nested children. The on-disk row in production
+   * does NOT carry this field today (every entry is flat with a
+   * `parent` pointer). The hierarchy transformer builds this in-memory
+   * for UI rendering and search; persistence still writes flat data.
+   */
+  children?: ShippingDistrict[];
 }
 
 export interface ShippingGovernorate {
@@ -73,9 +102,14 @@ export interface ShippingGovernorate {
   id?: string;
   name: string;
   /** Per-governorate flat fee in EGP. Currency is implicit (EGP). */
-  fee: number;
+  fee?: number | null;
+  /**
+   * Phase 22N — alias for `fee` for parity with the district shape.
+   * Either name works on read; writers may emit either.
+   */
+  shippingFee?: number | null;
   /** Whether the entire governorate is in coverage. */
-  enabled: boolean;
+  enabled?: boolean;
   /** Flat list — children represent their parent via `district.parent`. */
   districts: ShippingDistrict[];
   /** Provenance — defaults to 'existing' for legacy rows. */

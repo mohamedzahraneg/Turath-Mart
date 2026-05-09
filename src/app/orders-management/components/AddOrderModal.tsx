@@ -27,21 +27,25 @@ import { useAuth } from '@/contexts/AuthContext';
 import { canUseAdminOnlyFinancialFields } from '@/lib/constants/roles';
 import { isValidEgyptianMobile } from '@/lib/validators/phone';
 import { normalizeArabic } from '@/lib/utils/arabic';
-// Phase 22M-Fix1 — hierarchy-aware coverage search. The helper flattens
-// `settings_regions` into a typed list and exposes `decideNeighborhoodCoverage`
-// so the inline hint and the submit validator share one source of truth
-// for messaging. The area-level decision still lives in this file
-// (`districtStrictError`) so the existing Phase 22M wording is preserved
-// byte-identically; we only wire the helper for the new neighborhood
-// layer + the richer area dropdown rows.
+// Phase 22N — true hierarchy. The hierarchy transformer converts the
+// raw `settings_regions` array (mixed legacy strings + Phase 22M
+// objects) into nested top-level areas with `children`, applies the
+// curated manual-rule overlay, and exposes lookup helpers. The fee
+// resolver implements the three-level inheritance
+// (neighborhood → area → governorate). Customer-facing wording in
+// this modal NEVER uses "غير مفعلة"; disabled entries surface as
+// "خارج نطاق التغطية حاليًا" so customers see one consistent message.
 import {
-  buildCoverageSearchIndex,
-  decideNeighborhoodCoverage,
-  findExactAreaInGov,
-  listAreasInGov,
-  listNeighborhoodsInArea,
+  normalizeCoverageHierarchy,
+  flattenCoverageHierarchy,
+  findArea,
+  findNeighborhood,
+  findNeighborhoodOccurrences,
+  isParent,
   type CoverageSearchEntry,
-} from '@/lib/shipping/coverageSearch';
+} from '@/lib/shipping/coverageHierarchy';
+import { resolveShippingFeeFromCoverage } from '@/lib/shipping/resolveShippingFee';
+import type { ShippingDistrict, ShippingGovernorate } from '@/lib/shipping/types';
 import { getDisplayName, getRoleLabel } from '@/lib/utils/userDisplay';
 
 interface ProductItem {
@@ -696,57 +700,76 @@ export default function AddOrderModal({ onClose }: Props) {
   // and source so the dropdown can render badges. The old slim
   // string[] is retired with the dropdown rewrite.)
 
-  // ─── Phase 22M-Fix1 — hierarchy-aware coverage layer ───────────────────────
-  // The Phase 22M scan above is kept for backward compatibility with the
-  // area-level hint. Phase 22M-Fix1 layers a typed search index on top so
-  //   (a) AddOrderModal and SettingsPage share one helper, and
-  //   (b) we can display neighborhoods (children of an area) in a second
-  //       input on the new-order modal.
-  const coverageIndex: CoverageSearchEntry[] = (() => {
+  // ─── Phase 22N — true coverage hierarchy ───────────────────────────────────
+  // Replaces the Phase 22M-Fix1 search-index helpers with a hierarchy
+  // transformer. The transformer reads the live `settings_regions`
+  // array (mixed legacy + Phase 22M shape) and produces nested top-
+  // level areas with `children` populated. Manual rules add the
+  // commercial parent → child links the live data is missing
+  // (e.g. التجمع الخامس → القاهرة الجديدة) WITHOUT writing to the DB.
+  //
+  // The new helper exposes everything the modal needs: lookups
+  // (`findArea` / `findNeighborhood`), grouped flat search index, and
+  // the ambiguous "this neighborhood lives under multiple parents"
+  // result via `findNeighborhoodOccurrences`.
+  const hierarchicalRegions: ShippingGovernorate[] = (() => {
     if (dbRegions.length === 0) return [];
-    return buildCoverageSearchIndex(dbRegions);
+    return normalizeCoverageHierarchy(dbRegions);
   })();
-  // The exact area record matched in the current governorate (top-level
-  // entry, not a neighborhood). Drives "is the typed area valid?" and
-  // gates whether the neighborhood input should accept input.
-  const selectedAreaEntry: CoverageSearchEntry | null = (() => {
+  const coverageIndex: CoverageSearchEntry[] = flattenCoverageHierarchy(hierarchicalRegions);
+
+  // Currently-selected area as a domain entity (carries `children`,
+  // `fee`, etc.). `null` when the user hasn't typed a valid area yet.
+  const selectedAreaEntry: ShippingDistrict | null = (() => {
     if (!district.trim()) return null;
-    return findExactAreaInGov(coverageIndex, governorate, district);
+    return findArea(governorate, district, hierarchicalRegions);
   })();
-  // Neighborhoods configured under the current (governorate, area).
-  const availableNeighborhoods = (() => {
-    if (!selectedAreaEntry) return [] as CoverageSearchEntry[];
-    return listNeighborhoodsInArea(coverageIndex, governorate, selectedAreaEntry.areaName);
+  // Selected governorate domain entity (for the gov-level fee).
+  const selectedGovEntry: ShippingGovernorate | null = (() => {
+    const gov = hierarchicalRegions.find(
+      (g) => normalizeArabic(g.name) === normalizeArabic(governorate)
+    );
+    return gov ?? null;
   })();
-  // Neighborhood-search decision — drives the inline hint + submit
-  // validator for the second input. Empty neighborhood is silent.
-  const neighborhoodDecision = decideNeighborhoodCoverage(
-    coverageIndex,
-    governorate,
-    district,
-    neighborhood
-  );
+  // Children of the currently-selected area (could be empty when the
+  // area is a leaf — most CAPMAS markaz/kism have no curated children).
+  const availableNeighborhoods: ShippingDistrict[] = (selectedAreaEntry?.children ?? []).slice();
+  const areaHasChildren = isParent(selectedAreaEntry ?? ({ name: '' } as ShippingDistrict));
+  // Currently-typed / selected neighborhood resolved against the area.
+  const selectedNeighborhoodEntry: ShippingDistrict | null = (() => {
+    if (!neighborhood.trim() || !selectedAreaEntry) return null;
+    return findNeighborhood(governorate, selectedAreaEntry.name, neighborhood, hierarchicalRegions);
+  })();
   const neighborhoodNorm = normalizeArabic(neighborhood);
   const neighborhoodSuggestions = (() => {
     if (!neighborhoodNorm) return availableNeighborhoods;
-    return availableNeighborhoods.filter((n) =>
-      normalizeArabic(n.areaName).includes(neighborhoodNorm)
-    );
+    return availableNeighborhoods.filter((n) => normalizeArabic(n.name).includes(neighborhoodNorm));
   })();
-  // Richer area dropdown rows. Includes disabled areas in the same
-  // governorate (with a "غير مفعلة" badge) so users see why they can't
-  // pick them. Each row carries the enabled flag, optional source /
-  // needsReview metadata, and the canonical name to commit when clicked.
+
+  // Area dropdown rows. Driven by the hierarchical regions: the
+  // dropdown lists every TOP-LEVEL area in the current governorate.
+  // Disabled areas appear with a soft-disabled style; clicking them
+  // is a no-op. Customer-facing wording — never "غير مفعلة" — is
+  // pushed only to the inline hint via `districtStrictError` / the
+  // submit validator.
   type AreaSuggestionRow = {
     name: string;
     enabled: boolean;
     type?: string;
     source?: string;
+    childCount: number;
   };
   const areaSuggestionRows: AreaSuggestionRow[] = (() => {
-    const all = listAreasInGov(coverageIndex, governorate);
-    if (!districtNorm) return all;
-    return all.filter((a) => normalizeArabic(a.name).includes(districtNorm));
+    const gov = selectedGovEntry;
+    const rows: AreaSuggestionRow[] = (gov?.districts ?? []).map((a) => ({
+      name: a.name,
+      enabled: a.enabled !== false,
+      type: a.type,
+      source: a.source,
+      childCount: a.children?.length ?? 0,
+    }));
+    if (!districtNorm) return rows;
+    return rows.filter((r) => normalizeArabic(r.name).includes(districtNorm));
   })();
 
   // Phase 22M — disabled-but-known matches in the CURRENT governorate.
@@ -830,26 +853,52 @@ export default function AddOrderModal({ onClose }: Props) {
   // (See declaration earlier in this component for the rest of the
   // Phase 22M-Fix1 layer — coverageIndex, areaSuggestionRows,
   // selectedAreaEntry, neighborhoodDecision, neighborhoodSuggestions.)
-  // Phase 22M — message ladder, in priority order:
-  //   1. empty            → null (handled by "المنطقة مطلوبة" elsewhere)
-  //   2. canonical match  → null (valid)
-  //   3. neighborhood     → "هذا الحي تابع إلى المنطقة X — محافظة Y"
-  //   4. disabled current → "هذه المنطقة موجودة ولكنها غير مفعلة"
-  //   5. cross-gov exact  → "هذه المنطقة تابعة إلى محافظة X..."
-  //   6. unknown          → "هذه المنطقة خارج نطاق التغطية حاليًا"
+  // Phase 22N — area-level decision (customer-facing wording). Replaces
+  // the Phase 22M-Fix1 admin-flavoured messages: "غير مفعلة" never
+  // surfaces to a customer; disabled entries say "خارج نطاق التغطية"
+  // instead. Priority ladder, byte-for-byte shared with `validateStep1`
+  // to guarantee inline hint and submit error stay aligned:
   //
-  // The inline hint AND the validateStep1 error read this same
-  // string so wording never drifts between the two surfaces.
+  //   1. empty                         → null (handled by "المنطقة مطلوبة")
+  //   2. valid (enabled gov + enabled area)
+  //                                    → null (valid)
+  //   3. governorate disabled          → "هذه المحافظة خارج نطاق التغطية حاليًا"
+  //   4. exact match in this gov, but disabled area
+  //                                    → "هذه المنطقة خارج نطاق التغطية حاليًا"
+  //   5. neighborhood under one parent in this gov
+  //                                    → "هذا الحي تابع إلى ${parent}"
+  //   6. exact match in another gov
+  //                                    → "هذه المنطقة تابعة إلى محافظة …"
+  //   7. unknown                       → "خارج نطاق التغطية حاليًا"
   const districtStrictError: string | null = (() => {
     if (!district.trim()) return null;
-    if (canonicalDistrictMatch) return null;
+    if (canonicalDistrictMatch) {
+      // Validate also the gov + area enabled state.
+      const govEnabled = selectedGovEntry?.enabled !== false;
+      const areaEnabled = selectedAreaEntry?.enabled !== false;
+      if (!govEnabled) return 'هذه المحافظة خارج نطاق التغطية حاليًا.';
+      if (!areaEnabled) return 'هذه المنطقة خارج نطاق التغطية حاليًا.';
+      return null;
+    }
+    // Look across the hierarchical regions for the typed value.
+    const occurrences = findNeighborhoodOccurrences(district, hierarchicalRegions);
+    const sameGovHit = occurrences.find(
+      (o) => normalizeArabic(o.governorate.name) === normalizeArabic(governorate)
+    );
+    if (sameGovHit) {
+      return `هذا الحي تابع إلى ${sameGovHit.area.name} - محافظة ${sameGovHit.governorate.name}.`;
+    }
+    if (occurrences.length > 0) {
+      const first = occurrences[0];
+      return `هذا الحي تابع إلى ${first.area.name} - محافظة ${first.governorate.name}.`;
+    }
     if (neighborhoodMatch && neighborhoodMatch.parent) {
-      const parentLabel = neighborhoodMatch.parent;
-      const govLabel = neighborhoodMatch.gov;
-      return `هذا الحي تابع إلى ${parentLabel} - محافظة ${govLabel}.`;
+      // Fallback to the legacy index hint (kept for Phase 22M data
+      // that still relies on the flat scan).
+      return `هذا الحي تابع إلى ${neighborhoodMatch.parent} - محافظة ${neighborhoodMatch.gov}.`;
     }
     if (disabledMatchInCurrentGov) {
-      return 'هذه المنطقة موجودة ولكنها غير مفعلة ضمن التغطية حاليًا.';
+      return 'هذه المنطقة خارج نطاق التغطية حاليًا.';
     }
     if (crossGovExactNames.length === 1) {
       return `هذه المنطقة تابعة إلى محافظة ${crossGovExactNames[0]}. برجاء تغيير المحافظة لاختيارها.`;
@@ -860,13 +909,66 @@ export default function AddOrderModal({ onClose }: Props) {
     return 'هذه المنطقة خارج نطاق التغطية حاليًا.';
   })();
 
-  const regionFee = (() => {
-    if (dbRegions.length > 0) {
-      const region = dbRegions.find((r: any) => r.name === governorate);
-      return region ? Number(region.fee) : 0;
+  // Phase 22N — neighborhood inline hint + validation message. Same
+  // structure as the area hint: priority-ordered, customer-facing.
+  type NeighborhoodHintKind = 'valid' | 'disabled' | 'other-area' | 'cross-gov' | 'unknown';
+  const neighborhoodHint: { kind: NeighborhoodHintKind; message: string } | null = (() => {
+    if (!neighborhood.trim()) return null;
+    // No area chosen: try to point user at the right parent.
+    if (!selectedAreaEntry) {
+      const occurrences = findNeighborhoodOccurrences(neighborhood, hierarchicalRegions);
+      if (occurrences.length === 0) {
+        return { kind: 'unknown', message: 'هذا الحي خارج نطاق التغطية حاليًا.' };
+      }
+      const sameGov = occurrences.find(
+        (o) => normalizeArabic(o.governorate.name) === normalizeArabic(governorate)
+      );
+      const pick = sameGov ?? occurrences[0];
+      return {
+        kind: sameGov ? 'other-area' : 'cross-gov',
+        message: `هذا الحي تابع إلى ${pick.area.name} - محافظة ${pick.governorate.name}.`,
+      };
     }
-    return 0;
+    // Area selected — try direct match.
+    if (selectedNeighborhoodEntry) {
+      if (selectedNeighborhoodEntry.enabled === false) {
+        return { kind: 'disabled', message: 'هذا الحي خارج نطاق التغطية حاليًا.' };
+      }
+      return { kind: 'valid', message: '' };
+    }
+    // Look elsewhere for the neighborhood — under different parents.
+    const occurrences = findNeighborhoodOccurrences(neighborhood, hierarchicalRegions);
+    const sameGov = occurrences.find(
+      (o) => normalizeArabic(o.governorate.name) === normalizeArabic(governorate)
+    );
+    if (sameGov) {
+      return {
+        kind: 'other-area',
+        message: `هذا الحي تابع إلى ${sameGov.area.name} - محافظة ${sameGov.governorate.name}.`,
+      };
+    }
+    if (occurrences.length > 0) {
+      const first = occurrences[0];
+      return {
+        kind: 'cross-gov',
+        message: `هذا الحي تابع إلى ${first.area.name} - محافظة ${first.governorate.name}.`,
+      };
+    }
+    return { kind: 'unknown', message: 'هذا الحي خارج نطاق التغطية حاليًا.' };
   })();
+
+  // Phase 22N — three-level shipping fee resolution. Inherits from
+  // governorate → area → neighborhood. Empty / null fees inherit;
+  // explicit `0` is respected as "free shipping at this level".
+  const feeResolution = resolveShippingFeeFromCoverage({
+    governorate: selectedGovEntry,
+    area: selectedAreaEntry,
+    neighborhood: selectedNeighborhoodEntry,
+  });
+  // Backward-compat: keep `regionFee` so existing math + WhatsApp
+  // template bindings continue to work. The new resolution is the
+  // authoritative source when a hierarchical match exists.
+  const regionFee = feeResolution.fee;
   const shippingCost = freeShipping ? 0 : expressShipping ? ADMIN_SETTINGS.EXPRESS_FEE : regionFee;
   const extraFeeAmount = IS_ADMIN ? extraShippingFee : 0;
   const subtotal = lines.reduce((s, l) => s + lineTotal(l), 0);
@@ -903,18 +1005,27 @@ export default function AddOrderModal({ onClose }: Props) {
     // another governorate" and "out of coverage" is built once in
     // `districtStrictError` above and reused here so the inline hint
     // and the submit error can never drift.
+    if (!governorate.trim()) {
+      errs.governorate = 'المحافظة مطلوبة';
+    } else if (selectedGovEntry && selectedGovEntry.enabled === false) {
+      errs.governorate = 'هذه المحافظة خارج نطاق التغطية حاليًا.';
+    }
     if (!district.trim()) {
       errs.district = 'المنطقة مطلوبة';
     } else if (!canonicalDistrictMatch) {
       errs.district = districtStrictError ?? 'هذه المنطقة خارج نطاق التغطية حاليًا.';
+    } else if (selectedAreaEntry && selectedAreaEntry.enabled === false) {
+      errs.district = 'هذه المنطقة خارج نطاق التغطية حاليًا.';
     }
-    // Phase 22M-Fix1 — neighborhood is optional, but if the user TYPED
-    // something, the same coverage rules apply: it must canonically
-    // match a configured neighborhood under the selected area, and it
-    // must be `enabled`. Empty neighborhood is fine.
-    if (neighborhood.trim()) {
-      if (neighborhoodDecision.kind !== 'valid') {
-        errs.neighborhood = neighborhoodDecision.message ?? 'هذا الحي خارج نطاق التغطية حاليًا.';
+    // Phase 22N — neighborhood is REQUIRED when the selected area has
+    // children (curated commercial parent like القاهرة الجديدة or 6
+    // أكتوبر). For leaf areas it stays optional. Customer-facing
+    // wording — never "غير مفعلة".
+    if (selectedAreaEntry && areaHasChildren && !neighborhood.trim()) {
+      errs.neighborhood = 'الحي / القرية / الشياخة مطلوب لهذه المنطقة.';
+    } else if (neighborhood.trim()) {
+      if (!neighborhoodHint || neighborhoodHint.kind !== 'valid') {
+        errs.neighborhood = neighborhoodHint?.message ?? 'هذا الحي خارج نطاق التغطية حاليًا.';
       }
     }
     if (!address.trim() || address.trim().length < 10) errs.address = 'العنوان قصير جداً';
@@ -1507,7 +1618,14 @@ export default function AddOrderModal({ onClose }: Props) {
                                   aria-selected={district === row.name}
                                   aria-disabled={!row.enabled}
                                 >
-                                  <span>{row.name}</span>
+                                  <span className="flex items-center gap-1.5">
+                                    {row.name}
+                                    {row.childCount > 0 && (
+                                      <span className="text-[10px] text-[hsl(var(--muted-foreground))]">
+                                        ({row.childCount} حي)
+                                      </span>
+                                    )}
+                                  </span>
                                   <span className="flex items-center gap-1 text-[10px]">
                                     {row.type && (
                                       <span className="px-1.5 py-0.5 rounded bg-slate-50 text-slate-500 border border-slate-100">
@@ -1522,12 +1640,7 @@ export default function AddOrderModal({ onClose }: Props) {
                                     )}
                                     {!row.enabled && (
                                       <span className="px-1.5 py-0.5 rounded bg-red-50 text-red-600 border border-red-100">
-                                        غير مفعلة
-                                      </span>
-                                    )}
-                                    {row.source === 'manual_supplement' && (
-                                      <span className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-100">
-                                        إضافة يدوية
+                                        خارج التغطية
                                       </span>
                                     )}
                                   </span>
@@ -1581,7 +1694,9 @@ export default function AddOrderModal({ onClose }: Props) {
                         they haven't picked a city/markaz yet. The hint
                         text guides them to the right parent. */}
                     <div>
-                      <label className="label-text">الحي / القرية / الشياخة (اختياري)</label>
+                      <label className="label-text">
+                        الحي / القرية / الشياخة {areaHasChildren ? '*' : '(اختياري)'}
+                      </label>
                       <div className="relative">
                         <input
                           type="text"
@@ -1589,7 +1704,7 @@ export default function AddOrderModal({ onClose }: Props) {
                           className={`input-field pr-9 ${errors.neighborhood ? 'border-red-400' : ''}`}
                           placeholder={
                             selectedAreaEntry
-                              ? `ابحث داخل ${selectedAreaEntry.areaName}...`
+                              ? `ابحث داخل ${selectedAreaEntry.name}...`
                               : 'اختر المنطقة أولاً، أو اكتب اسم الحي للبحث الواسع'
                           }
                           value={neighborhood}
@@ -1601,73 +1716,74 @@ export default function AddOrderModal({ onClose }: Props) {
                         />
                       </div>
 
-                      {/* Suggestion strip: only shown when there are
-                          configured neighborhoods under the selected
-                          area. Each row shows enabled / disabled badge
-                          + the parent label so the user has full
-                          context without leaving the form. */}
+                      {/* Phase 22N — children dropdown of the selected
+                          area. Disabled children are SUGGESTED but not
+                          selectable; clicking is a no-op and the
+                          customer-facing wording uses
+                          "خارج نطاق التغطية حاليًا" — never the admin
+                          term "غير مفعلة". */}
                       {selectedAreaEntry && availableNeighborhoods.length > 0 && (
                         <div className="mt-1">
                           <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">
                             تم العثور على {neighborhoodSuggestions.length} حي داخل{' '}
-                            {selectedAreaEntry.areaName}
+                            {selectedAreaEntry.name}
                           </p>
                           {neighborhoodSuggestions.length > 0 && (
                             <ul
                               className="max-h-40 overflow-y-auto rounded-lg border border-[hsl(var(--border))] bg-white text-sm divide-y divide-[hsl(var(--border))]"
                               role="listbox"
                             >
-                              {neighborhoodSuggestions.map((n) => (
-                                <li
-                                  key={`nh-suggestion-${n.governorateName}|${n.parent}|${n.areaName}`}
-                                  onMouseDown={(e) => {
-                                    e.preventDefault();
-                                    if (!n.areaEnabled) return;
-                                    setNeighborhood(n.areaName);
-                                  }}
-                                  className={`flex items-center justify-between gap-2 px-3 py-2 ${
-                                    n.areaEnabled
-                                      ? 'cursor-pointer hover:bg-[hsl(var(--muted))]/40'
-                                      : 'opacity-60 cursor-not-allowed'
-                                  }`}
-                                  role="option"
-                                  aria-selected={neighborhood === n.areaName}
-                                  aria-disabled={!n.areaEnabled}
-                                >
-                                  <span>{n.areaName}</span>
-                                  <span className="flex items-center gap-1 text-[10px]">
-                                    {!n.areaEnabled && (
-                                      <span className="px-1.5 py-0.5 rounded bg-red-50 text-red-600 border border-red-100">
-                                        غير مفعلة
-                                      </span>
-                                    )}
-                                    {n.needsReview && (
-                                      <span className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-100">
-                                        تحتاج مراجعة
-                                      </span>
-                                    )}
-                                  </span>
-                                </li>
-                              ))}
+                              {neighborhoodSuggestions.map((n) => {
+                                const enabled = n.enabled !== false;
+                                return (
+                                  <li
+                                    key={`nh-suggestion-${governorate}|${selectedAreaEntry.name}|${n.name}`}
+                                    onMouseDown={(e) => {
+                                      e.preventDefault();
+                                      if (!enabled) return;
+                                      setNeighborhood(n.name);
+                                    }}
+                                    className={`flex items-center justify-between gap-2 px-3 py-2 ${
+                                      enabled
+                                        ? 'cursor-pointer hover:bg-[hsl(var(--muted))]/40'
+                                        : 'opacity-60 cursor-not-allowed'
+                                    }`}
+                                    role="option"
+                                    aria-selected={neighborhood === n.name}
+                                    aria-disabled={!enabled}
+                                  >
+                                    <span>{n.name}</span>
+                                    <span className="flex items-center gap-1 text-[10px]">
+                                      {!enabled && (
+                                        <span className="px-1.5 py-0.5 rounded bg-red-50 text-red-600 border border-red-100">
+                                          خارج التغطية
+                                        </span>
+                                      )}
+                                    </span>
+                                  </li>
+                                );
+                              })}
                             </ul>
                           )}
                         </div>
                       )}
 
                       {/* Inline coverage hint for the typed neighborhood.
-                          Same priority ladder as the area input: amber
-                          for "actionable" outcomes (other-area /
-                          cross-gov / disabled), red for unknown. */}
-                      {!!neighborhoodDecision.message && !errors.neighborhood && (
+                          Customer-facing wording — see
+                          `neighborhoodHint` derivation above. Amber for
+                          "actionable" cases (under another parent /
+                          cross-gov), red for unknown / disabled. */}
+                      {!!neighborhoodHint && !errors.neighborhood && (
                         <p
                           className={`text-xs mt-1 flex items-start gap-1 ${
-                            neighborhoodDecision.kind === 'unknown'
+                            neighborhoodHint.kind === 'unknown' ||
+                            neighborhoodHint.kind === 'disabled'
                               ? 'text-red-500'
                               : 'text-amber-600'
                           }`}
                         >
                           <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
-                          <span>{neighborhoodDecision.message}</span>
+                          <span>{neighborhoodHint.message}</span>
                         </p>
                       )}
                       {errors.neighborhood && (
