@@ -417,30 +417,25 @@ function LoginPageInner() {
         }
         const authData = await signIn(identifier, data.password);
 
-        // Phase 22I-Fix1: resolve the user's role + permissions BEFORE
-        // computing the landing route, so the redirect is permission-
-        // aware. Phase 22I had short-circuited this to a flat
-        // DEFAULT_LANDING_ROUTE (/dashboard), which forced delegates
-        // through a /dashboard URL flash before AppLayout bounced
-        // them — the spec now forbids that. AuthContext fetches the
-        // profile asynchronously on auth-state-change, but we also
-        // need the role here, synchronously, to avoid racing the
-        // first redirect against the auth listener.
+        // Phase 22I-Fix1: resolve the user's permissions BEFORE
+        // computing the landing route. Strictly permission-driven —
+        // no role-name special-casing, no r4/r6/etc. hardcoding, no
+        // "if userRole === 'delegate' then r4" fallback chain. We
+        // read role_id and permissions from the profile, fall back
+        // to user_metadata.role_id if the profile is missing the
+        // column, and let getPermissionsForRoleId resolve role_id →
+        // permission set generically. If the resulting permission
+        // set is empty, the landing pick below will return null and
+        // the user will see the "no permissions" error — never
+        // routed to /dashboard or /shipping by accident.
         const supabase = createClient();
         const { data: profile } = await supabase
           .from('profiles')
-          .select('role, role_id, permissions')
+          .select('role_id, permissions')
           .eq('id', authData.user.id)
           .single();
 
-        const userRole = profile?.role || 'employee';
-        let finalRoleId: string = profile?.role_id || authData.user.user_metadata?.role_id || '';
-        if (!finalRoleId) {
-          if (userRole === 'admin') finalRoleId = 'r1';
-          else if (userRole === 'supervisor') finalRoleId = 'r2';
-          else if (userRole === 'delegate') finalRoleId = 'r4';
-          else finalRoleId = 'r6';
-        }
+        const finalRoleId: string = profile?.role_id || authData.user.user_metadata?.role_id || '';
 
         const rawPerms = profile?.permissions;
         const dbPerms: string[] = Array.isArray(rawPerms) ? rawPerms : [];
@@ -450,17 +445,19 @@ function LoginPageInner() {
         toast.success(`مرحباً! تم تسجيل الدخول — ${deviceType}`);
 
         // Phase 22I-Fix1: permission-aware landing pick.
-        //   • Honour `?next=` only when it's a valid internal path AND
+        //   • Honour `?next=` only when it's a same-origin path AND
         //     the user actually has access to it (canAccessPath).
-        //   • Otherwise fall through to the role-aware default
-        //     returned by getDefaultRouteForPermissions.
-        //   • If no priority permission matches at all, bail with
-        //     a user-facing error and stay on the login screen.
+        //   • Otherwise fall through to the permission-aware default
+        //     returned by getDefaultRouteForPermissions — which is
+        //     route-keyed and never returns a route the user can't
+        //     reach.
+        //   • If no permission-matched route exists, bail with a
+        //     user-facing error and stay on the login screen.
         const nextParam = searchParams?.get('next');
         const nextIsSafe =
           typeof nextParam === 'string' &&
           nextParam.startsWith('/') &&
-          canAccessPath(nextParam, finalRoleId, customPerms);
+          canAccessPath(nextParam, finalRoleId || null, customPerms);
         const defaultLanding = getDefaultRouteForPermissions(effectivePerms);
         const landingPage: string | null = nextIsSafe ? nextParam : defaultLanding;
 
