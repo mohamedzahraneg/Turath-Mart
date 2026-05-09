@@ -27,6 +27,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { canUseAdminOnlyFinancialFields } from '@/lib/constants/roles';
 import { isValidEgyptianMobile } from '@/lib/validators/phone';
 import { normalizeArabic } from '@/lib/utils/arabic';
+import { getDisplayName, getRoleLabel } from '@/lib/utils/userDisplay';
 
 interface ProductItem {
   productType: string;
@@ -299,8 +300,20 @@ function lineTotal(line: OrderLine): number {
 }
 
 export default function AddOrderModal({ onClose }: Props) {
-  const { user, currentRoleId } = useAuth();
+  const { user, currentRoleId, currentRole, profileFullName } = useAuth();
   const IS_ADMIN = canUseAdminOnlyFinancialFields(currentRoleId);
+
+  // Phase 22L — derive the display name + role for the order's
+  // `created_by` audit field. Replaces the previous hardcoded
+  // 'موظف خدمة عملاء' so a real admin or CS rep is recorded against
+  // the order they create. Resolves through the shared helper so the
+  // role label (currentRole / role-id fallback) is canonical.
+  const createdByRoleLabel =
+    currentRole && currentRole.trim() ? currentRole : getRoleLabel(currentRoleId ?? '');
+  const createdByDisplayName = getDisplayName(
+    [profileFullName, user?.user_metadata?.full_name, user?.email],
+    createdByRoleLabel
+  );
 
   const [orderNum, setOrderNum] = useState('جاري التحميل...');
   const [currentDateTime, setCurrentDateTime] = useState({ date: '', time: '', day: '' });
@@ -777,7 +790,11 @@ export default function AddOrderModal({ onClose }: Props) {
     const newOrder = {
       id: `order-${Date.now()}`,
       orderNum,
-      createdBy: 'موظف خدمة عملاء',
+      // Phase 22L — real display name from the signed-in profile
+      // instead of a hardcoded label. The new value flows into
+      // turath_masr_orders.created_by (text) and is read by every
+      // surface that renders "بواسطة" via UserStamp.
+      createdBy: createdByDisplayName,
       createdByDevice: deviceType,
       customer: customerName,
       phone,
