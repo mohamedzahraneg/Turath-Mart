@@ -18,7 +18,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { ROLE_IDS, type RoleId } from '@/lib/constants/roles';
-import { DEFAULT_LANDING_ROUTE } from '@/lib/auth/routes';
 
 // ─── Permission → Route mapping ──────────────────────────────────────────────
 export const PERMISSION_ROUTE_MAP: Record<string, string[]> = {
@@ -131,22 +130,29 @@ const PERMISSION_DEFAULT_ROUTE_PRIORITY = [
 /**
  * Resolve the default landing route for a set of effective permissions.
  *
- * Phase 22I: the fallback returned when no priority permission matches
- * (or when permissions is empty) is now `DEFAULT_LANDING_ROUTE`
- * (= /dashboard) rather than the hard-coded '/shipping' that was here
- * historically. The role-aware priority lookup below is unchanged —
- * a delegate (view_shipping only) still resolves to /shipping via the
- * priority match. Only the "I have nothing better to suggest" path
- * now points at the dashboard.
+ * Phase 22I-Fix1: returns `null` when the permission set yields no
+ * routable destination — never blindly falls back to /dashboard or
+ * /shipping. A user must actually carry the permission gating a route
+ * before this helper will return it. Callers handle null by either
+ * staying on the login page with an error (login flow) or forcing a
+ * re-auth round-trip (AppLayout). DEFAULT_LANDING_ROUTE is still the
+ * `/dashboard` server-side constant used by middleware, but the
+ * client-side landing pick is strictly permission-aware.
+ *
+ * Behaviour by case:
+ *   • permissions has `view_dashboard` → '/dashboard'
+ *   • permissions has only `view_shipping` (delegate) → '/shipping'
+ *   • permissions has only `view_orders` → '/orders-management'
+ *   • permissions empty or no priority match → null
  */
-export function getDefaultRouteForPermissions(permissions: string[]): string {
-  if (!permissions || permissions.length === 0) return DEFAULT_LANDING_ROUTE;
+export function getDefaultRouteForPermissions(permissions: string[]): string | null {
+  if (!permissions || permissions.length === 0) return null;
   for (const perm of PERMISSION_DEFAULT_ROUTE_PRIORITY) {
     if (permissions.includes(perm)) {
-      return PERMISSION_ROUTE_MAP[perm]?.[0] ?? DEFAULT_LANDING_ROUTE;
+      return PERMISSION_ROUTE_MAP[perm]?.[0] ?? null;
     }
   }
-  return DEFAULT_LANDING_ROUTE;
+  return null;
 }
 
 /** Get the static permission list for a known role id. */

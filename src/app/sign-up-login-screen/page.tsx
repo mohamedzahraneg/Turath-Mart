@@ -18,7 +18,11 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { createClient } from '@/lib/supabase/client';
-import { DEFAULT_LANDING_ROUTE } from '@/lib/auth/routes';
+import {
+  getDefaultRouteForPermissions,
+  getPermissionsForRoleId,
+  canAccessPath,
+} from '@/lib/permissions/permissions';
 import { getDeviceLabel } from '@/lib/utils/device';
 
 interface LoginForm {
@@ -411,25 +415,65 @@ function LoginPageInner() {
           setIsLoading(false);
           return;
         }
-        await signIn(identifier, data.password);
-        // Phase 22I: dropped the post-signIn profile prefetch + role
-        // resolution. It only existed to feed the per-role landing
-        // pick (now replaced by DEFAULT_LANDING_ROUTE), and the
-        // AuthContext fetches the profile itself on auth-state-change
-        // — so removing this saves one DB round-trip per login.
+        const authData = await signIn(identifier, data.password);
+
+        // Phase 22I-Fix1: resolve the user's role + permissions BEFORE
+        // computing the landing route, so the redirect is permission-
+        // aware. Phase 22I had short-circuited this to a flat
+        // DEFAULT_LANDING_ROUTE (/dashboard), which forced delegates
+        // through a /dashboard URL flash before AppLayout bounced
+        // them — the spec now forbids that. AuthContext fetches the
+        // profile asynchronously on auth-state-change, but we also
+        // need the role here, synchronously, to avoid racing the
+        // first redirect against the auth listener.
+        const supabase = createClient();
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('role, role_id, permissions')
+          .eq('id', authData.user.id)
+          .single();
+
+        const userRole = profile?.role || 'employee';
+        let finalRoleId: string = profile?.role_id || authData.user.user_metadata?.role_id || '';
+        if (!finalRoleId) {
+          if (userRole === 'admin') finalRoleId = 'r1';
+          else if (userRole === 'supervisor') finalRoleId = 'r2';
+          else if (userRole === 'delegate') finalRoleId = 'r4';
+          else finalRoleId = 'r6';
+        }
+
+        const rawPerms = profile?.permissions;
+        const dbPerms: string[] = Array.isArray(rawPerms) ? rawPerms : [];
+        const customPerms: string[] | null = dbPerms.length > 0 ? dbPerms : null;
+        const effectivePerms = dbPerms.length > 0 ? dbPerms : getPermissionsForRoleId(finalRoleId);
 
         toast.success(`مرحباً! تم تسجيل الدخول — ${deviceType}`);
-        // Phase 22I: when no explicit `?next=` round-trip is in play,
-        // send the user to DEFAULT_LANDING_ROUTE (= /dashboard).
-        // Role-based bouncing is enforced by AppLayout — users who
-        // lack `view_dashboard` get redirected to a route they can
-        // actually see via getDefaultRouteForPermissions. Picking the
-        // role-aware default *here* meant delegates landed on
-        // /shipping post-login, which the spec explicitly forbids
-        // ("لا تجعل /shipping هي default landing").
+
+        // Phase 22I-Fix1: permission-aware landing pick.
+        //   • Honour `?next=` only when it's a valid internal path AND
+        //     the user actually has access to it (canAccessPath).
+        //   • Otherwise fall through to the role-aware default
+        //     returned by getDefaultRouteForPermissions.
+        //   • If no priority permission matches at all, bail with
+        //     a user-facing error and stay on the login screen.
         const nextParam = searchParams?.get('next');
-        const landingPage =
-          nextParam && nextParam.startsWith('/') ? nextParam : DEFAULT_LANDING_ROUTE;
+        const nextIsSafe =
+          typeof nextParam === 'string' &&
+          nextParam.startsWith('/') &&
+          canAccessPath(nextParam, finalRoleId, customPerms);
+        const defaultLanding = getDefaultRouteForPermissions(effectivePerms);
+        const landingPage: string | null = nextIsSafe ? nextParam : defaultLanding;
+
+        if (!landingPage) {
+          // Authed but the permission set yields no routable
+          // destination. Surface a clear error and let the user (or
+          // an admin) intervene. Avoid sending them to /dashboard or
+          // /shipping when they have no permission to see either.
+          toast.error('لم يتم تعيين صلاحيات لحسابك. يرجى التواصل مع المدير.');
+          setLoginError('لم يتم تعيين صلاحيات لحسابك. يرجى التواصل مع المدير.');
+          setIsLoading(false);
+          return;
+        }
 
         setTimeout(() => {
           router.replace(landingPage);

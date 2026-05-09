@@ -7,7 +7,7 @@ import {
   getDefaultRouteForPermissions,
   getPermissionsForRoleId,
 } from '@/contexts/AuthContext';
-import { isPublicRoute, isAuthRoute, DEFAULT_LANDING_ROUTE } from '@/lib/auth/routes';
+import { isPublicRoute, isAuthRoute } from '@/lib/auth/routes';
 import { isAdminRole } from '@/lib/constants/roles';
 
 interface AppLayoutProps {
@@ -64,14 +64,20 @@ export default function AppLayout({ children, currentPath = '' }: AppLayoutProps
         permissions = getPermissionsForRoleId(currentRoleId);
       }
 
-      // Phase 22I: when we have no permissions to consult (truly empty
-      // permission set), fall back to DEFAULT_LANDING_ROUTE rather than
-      // a hard-coded '/shipping'. /dashboard is the canonical default;
-      // role-aware bouncing for users who actually carry permissions
-      // continues to flow through getDefaultRouteForPermissions.
-      const defaultRoute =
-        permissions.length > 0 ? getDefaultRouteForPermissions(permissions) : DEFAULT_LANDING_ROUTE;
-      router.replace(defaultRoute);
+      // Phase 22I-Fix1: getDefaultRouteForPermissions is now strictly
+      // permission-aware and returns null when the user has no
+      // priority-matched permission. We never blind-fall to /dashboard
+      // or /shipping — instead, an authed user with no accessible
+      // route is forwarded to the login page, which surfaces a
+      // "no permissions configured" error and stops the redirect
+      // loop that the previous '/dashboard' fallback would create
+      // for users without view_dashboard.
+      const defaultRoute = getDefaultRouteForPermissions(permissions);
+      if (defaultRoute) {
+        router.replace(defaultRoute);
+      } else {
+        router.replace(`/sign-up-login-screen?next=${encodeURIComponent(activePath)}`);
+      }
     }
   }, [
     activePath,
