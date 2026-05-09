@@ -53,8 +53,14 @@ export interface CustomerSummary {
 }
 
 export interface ReturningCustomerLookup {
-  /** Tracks which view to render: 'idle' / 'loading' / 'no-match' / 'match' / 'error' */
-  status: 'idle' | 'loading' | 'no-match' | 'match' | 'error';
+  /**
+   * Tracks which view to render. Phase 22O-Fix1 added `multi-match`
+   * for when the agent's broad search (name OR phone prefix) hits
+   * more than one customer; the card renders a picker list that
+   * collapses to the existing `match` view once one candidate is
+   * picked.
+   */
+  status: 'idle' | 'loading' | 'no-match' | 'match' | 'multi-match' | 'error';
   customer: CustomerSummary | null;
   /** Up to N unique past addresses, newest first. */
   addresses: PastAddress[];
@@ -62,6 +68,15 @@ export interface ReturningCustomerLookup {
   addressesTotalBeforeCap: number;
   /** Last-error message — non-blocking; the modal still works. */
   errorMessage: string | null;
+  /**
+   * Phase 22O-Fix1 — populated when `status === 'multi-match'`. Each
+   * row is a customer summary the broad search found; click one to
+   * transition into the single-match view (the parent re-runs the
+   * lookup against that exact phone). Capped to a sensible UI size.
+   */
+  candidates: CustomerSummary[];
+  /** Total candidates found before the cap. */
+  candidatesTotalBeforeCap: number;
 }
 
 export interface ReturningCustomerCardProps {
@@ -80,6 +95,13 @@ export interface ReturningCustomerCardProps {
   onUpdateCustomer: (input: { customer: CustomerSummary; address: PastAddress | null }) => void;
   /** Dismiss the card; keep the typed phone but clear name/address. */
   onTreatAsNew: () => void;
+  /**
+   * Phase 22O-Fix1 — fired when the agent clicks a row in the
+   * `multi-match` candidates list. The parent re-runs the lookup
+   * against that exact phone so the card can render the full
+   * single-match view (with the deduplicated addresses).
+   */
+  onPickCandidate: (candidate: CustomerSummary) => void;
 }
 
 /**
@@ -119,8 +141,17 @@ export default function ReturningCustomerCard({
   onUseCustomer,
   onUpdateCustomer,
   onTreatAsNew,
+  onPickCandidate,
 }: ReturningCustomerCardProps) {
-  const { status, customer, addresses, addressesTotalBeforeCap, errorMessage } = lookup;
+  const {
+    status,
+    customer,
+    addresses,
+    addressesTotalBeforeCap,
+    errorMessage,
+    candidates,
+    candidatesTotalBeforeCap,
+  } = lookup;
 
   // Local: which radio row the agent picked. `null` = newest / default
   // (latest address). `'__new__'` = "إضافة عنوان جديد".
@@ -179,6 +210,74 @@ export default function ReturningCustomerCard({
       <div className="mt-2 px-3 py-2 bg-gray-50 border border-gray-100 rounded-xl text-[11px] text-gray-500 flex items-center gap-1.5">
         <UserPlus size={12} className="text-gray-400" />
         <span>عميل جديد — سيتم إنشاء ملف تلقائيًا بعد حفظ الطلب.</span>
+      </div>
+    );
+  }
+
+  // ─── Multi-match: candidate picker ───────────────────────────────────────
+  // Phase 22O-Fix1 — when the broad search hits more than one
+  // customer, render a compact picker. Picking a candidate fires the
+  // single-match lookup so the parent can fetch deduped addresses
+  // and show the full card.
+  if (status === 'multi-match' && candidates.length > 0) {
+    return (
+      <div className="mt-2 rounded-2xl border-2 border-blue-200 bg-blue-50/40 shadow-sm overflow-hidden animate-in slide-in-from-top-2 duration-300">
+        <div className="px-4 py-2.5 bg-blue-100/60 border-b border-blue-200 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 size={14} className="text-blue-600 flex-shrink-0" />
+            <span className="text-xs font-black text-blue-800">
+              تم العثور على {candidatesTotalBeforeCap}{' '}
+              {candidatesTotalBeforeCap === 1 ? 'عميل' : 'عميل'} مطابق
+            </span>
+          </div>
+          {candidatesTotalBeforeCap > candidates.length && (
+            <span className="text-[10px] text-blue-700/70">
+              يعرض {candidates.length} — قم بتحديد البحث للوصول إلى الباقي
+            </span>
+          )}
+        </div>
+        <ul className="max-h-72 overflow-y-auto divide-y divide-blue-100">
+          {candidates.map((c) => (
+            <li key={`candidate-${c.phone}`}>
+              <button
+                type="button"
+                onClick={() => onPickCandidate(c)}
+                className="w-full flex items-center justify-between gap-2 px-4 py-2.5 text-right hover:bg-white transition-all group"
+              >
+                <span className="flex flex-col min-w-0">
+                  <span className="text-xs font-bold text-gray-800 truncate">
+                    {c.fullName ?? '—'}
+                  </span>
+                  <span className="text-[10px] text-gray-500 mt-0.5 flex items-center gap-2">
+                    <span className="font-mono">{maskPhone(c.phone)}</span>
+                    <span>•</span>
+                    <span>
+                      {c.totalOrders} {c.totalOrders === 1 ? 'طلب' : 'طلبات'}
+                    </span>
+                    {c.lastOrderDate && (
+                      <>
+                        <span>•</span>
+                        <span>{formatLastOrderDate(c.lastOrderDate)}</span>
+                      </>
+                    )}
+                  </span>
+                </span>
+                <span className="text-[10px] text-blue-600 font-bold opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                  اختيار ←
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+        <div className="px-4 py-2 border-t border-blue-100 flex justify-end">
+          <button
+            type="button"
+            onClick={onTreatAsNew}
+            className="text-[11px] text-gray-500 hover:text-gray-700 underline-offset-2 hover:underline"
+          >
+            إضافة كعميل جديد
+          </button>
+        </div>
       </div>
     );
   }
@@ -395,6 +494,10 @@ export interface OrderRowForLookup {
   district: string | null;
   neighborhood: string | null;
   address: string | null;
+  /** Phase 22O-Fix1 — primary phone from the row; needed when the
+   *  broad search returns rows for multiple distinct customers and
+   *  the parent has to bucket orders by phone. */
+  phone: string | null;
   phone2: string | null;
   /** Order grand total — used by the customer summary aggregator. */
   total: number | null;

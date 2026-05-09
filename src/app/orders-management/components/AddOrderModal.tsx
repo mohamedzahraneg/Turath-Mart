@@ -465,6 +465,8 @@ export default function AddOrderModal({ onClose }: Props) {
     addresses: [],
     addressesTotalBeforeCap: 0,
     errorMessage: null,
+    candidates: [],
+    candidatesTotalBeforeCap: 0,
   });
   // When the agent clicks "إضافة كعميل جديد", we hide the card for the
   // rest of this modal session even if the typed phone still matches.
@@ -666,30 +668,59 @@ export default function AddOrderModal({ onClose }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [district]);
 
-  // Phase 22O — returning-customer lookup. Debounced against the typed
-  // phone (≥7 digits triggers, 300 ms quiet window). Runs two narrow
-  // queries in parallel:
-  //   • turath_masr_customers — canonical profile (full_name, totals)
-  //   • turath_masr_orders     — past addresses (deduped, capped, sorted)
+  // ─── Phase 22O-Fix1 — broad customer search ─────────────────────────────
   //
-  // The query is read-only. The card never writes; the only DB write
-  // remains the order-creation upsert in handleSubmit.
+  // Triggers when EITHER:
+  //   • normalised phone has ≥ 5 digits (prefix search), or
+  //   • customer name has ≥ 2 trimmed chars (Arabic-aware contains).
   //
-  // Cap kept at 5 unique addresses for this phase. When more exist,
-  // the card surfaces the count in its header
-  // ("العناوين السابقة (5 من 12)").
+  // Three resolution paths:
+  //   1. Exact 11-digit phone → existing single-match path.
+  //   2. Phone prefix ≥ 5 OR name search → broad search. If exactly
+  //      one customer matches, collapse to single-match (with full
+  //      addresses). If multiple, render a candidate picker; the
+  //      agent picks one and the parent re-runs the exact-phone path.
+  //   3. Nothing matches → 'no-match'.
+  //
+  // The lookup is read-only — never writes. 300 ms debounce, both
+  // input watchers share the same timer so rapid typing in either
+  // field collapses into a single query.
+  //
+  // Arabic name match uses PostgREST `ilike '%query%'`. Postgres does
+  // NOT collapse alef variants (أ/إ/آ/ا) or yaa (ى/ي) for `ilike`;
+  // we accept that limitation for v1 — the agent normally types the
+  // canonical Arabic form and the stored full_name is canonical too.
+  // A future phase could surface a SECURITY DEFINER RPC that
+  // normalises both sides, but it isn't worth the complexity yet.
   const PAST_ADDRESS_CAP = 5;
-  const PHONE_MIN_DIGITS_FOR_LOOKUP = 7;
+  const PHONE_MIN_DIGITS_FOR_LOOKUP = 5;
+  const NAME_MIN_CHARS_FOR_LOOKUP = 2;
+  const CANDIDATE_LIMIT = 12;
   useEffect(() => {
     if (suppressCustomerLookup) return; // user clicked "إضافة كعميل جديد"
-    const normalized = normalizePhone(phone);
-    if (normalized.length < PHONE_MIN_DIGITS_FOR_LOOKUP) {
+
+    const normalizedTyped = normalizePhone(phone);
+    const trimmedName = customerName.trim();
+    const exactPhone =
+      normalizedTyped.length === 11 && isValidEgyptianMobile(normalizedTyped)
+        ? normalizedTyped
+        : null;
+    const phonePrefix =
+      exactPhone === null && normalizedTyped.length >= PHONE_MIN_DIGITS_FOR_LOOKUP
+        ? normalizedTyped
+        : null;
+    const nameQuery =
+      exactPhone === null && trimmedName.length >= NAME_MIN_CHARS_FOR_LOOKUP ? trimmedName : null;
+
+    if (!exactPhone && !phonePrefix && !nameQuery) {
       setCustomerLookup({
         status: 'idle',
         customer: null,
         addresses: [],
         addressesTotalBeforeCap: 0,
         errorMessage: null,
+        candidates: [],
+        candidatesTotalBeforeCap: 0,
       });
       return;
     }
@@ -700,30 +731,47 @@ export default function AddOrderModal({ onClose }: Props) {
     const t = window.setTimeout(async () => {
       try {
         const supabase = createClient();
-        // Run both queries in parallel — neither blocks the other.
+
+        // Build the OR filter for each table. PostgREST escapes `%`
+        // and `,` carefully — we keep both sides simple by sticking to
+        // alphanumeric + Arabic chars. `like` for digit prefixes,
+        // `ilike` for Arabic names (case-insensitive).
+        const customerFilters: string[] = [];
+        const orderFilters: string[] = [];
+        if (exactPhone) {
+          customerFilters.push(`phone.eq.${exactPhone}`);
+          orderFilters.push(`phone.eq.${exactPhone}`);
+        } else {
+          if (phonePrefix) {
+            customerFilters.push(`phone.like.${phonePrefix}*`);
+            orderFilters.push(`phone.like.${phonePrefix}*`);
+          }
+          if (nameQuery) {
+            customerFilters.push(`full_name.ilike.*${nameQuery}*`);
+            orderFilters.push(`customer.ilike.*${nameQuery}*`);
+          }
+        }
+
         const [{ data: customerRows, error: customerErr }, { data: orderRows, error: orderErr }] =
           await Promise.all([
             supabase
               .from('turath_masr_customers')
               .select('phone, full_name, total_spent, total_orders, updated_at')
-              .eq('phone', normalized)
-              .limit(1),
+              .or(customerFilters.join(','))
+              .order('updated_at', { ascending: false })
+              .limit(CANDIDATE_LIMIT * 2),
             supabase
               .from('turath_masr_orders')
-              // Narrow select — no select('*') (Phase 20C-1 perf rule).
-              // `phone2` lets the card surface the secondary number;
-              // `date` + `created_at` drive ordering / "آخر طلب".
               .select(
                 'order_num, customer, phone, phone2, region, district, neighborhood, address, total, status, date, created_at'
               )
-              .eq('phone', normalized)
+              .or(orderFilters.join(','))
               .order('created_at', { ascending: false })
-              .limit(50),
+              .limit(200),
           ]);
 
         if (cancelled) return;
         if (customerErr || orderErr) {
-          // Non-blocking — the modal still works without the card.
           // eslint-disable-next-line no-console
           console.warn(
             '[returning-customer-lookup]',
@@ -735,70 +783,136 @@ export default function AddOrderModal({ onClose }: Props) {
             addresses: [],
             addressesTotalBeforeCap: 0,
             errorMessage: customerErr?.message ?? orderErr?.message ?? null,
+            candidates: [],
+            candidatesTotalBeforeCap: 0,
           });
           return;
         }
 
         const orders = (orderRows ?? []) as OrderRowForLookup[];
-        if (orders.length === 0 && (!customerRows || customerRows.length === 0)) {
+
+        // Group orders by phone — the broad search may return rows
+        // for many distinct customers when the agent typed a name.
+        const ordersByPhone = new Map<string, OrderRowForLookup[]>();
+        for (const o of orders) {
+          if (!o.phone) continue;
+          const existing = ordersByPhone.get(o.phone);
+          if (existing) existing.push(o);
+          else ordersByPhone.set(o.phone, [o]);
+        }
+
+        // Distinct phones drive the candidate set. For each phone we
+        // build a CustomerSummary using the canonical
+        // turath_masr_customers row when present, otherwise
+        // aggregating from the orders.
+        type CustomerRow = {
+          phone: string;
+          full_name: string | null;
+          total_spent: number | null;
+          total_orders: number | null;
+          updated_at: string | null;
+        };
+        const customersByPhone = new Map<string, CustomerRow>();
+        for (const c of (customerRows ?? []) as CustomerRow[]) {
+          customersByPhone.set(c.phone, c);
+        }
+
+        const allPhones = new Set<string>([...customersByPhone.keys(), ...ordersByPhone.keys()]);
+
+        if (allPhones.size === 0) {
           setCustomerLookup({
             status: 'no-match',
             customer: null,
             addresses: [],
             addressesTotalBeforeCap: 0,
             errorMessage: null,
+            candidates: [],
+            candidatesTotalBeforeCap: 0,
           });
           return;
         }
 
-        // Build a CustomerSummary. Prefer the canonical
-        // `turath_masr_customers` row when present; fall back to
-        // aggregating the order rows (covers customers added via the
-        // best-effort upsert that hasn't run yet).
-        const canonical = customerRows?.[0] ?? null;
-        const aggregated = orders.reduce(
-          (acc, o) => {
-            const t = Number(o.total) || 0;
-            // Phase 22E reports use delivered-only revenue. The card
-            // shows the LIFETIME revenue (delivered or not) so the
-            // agent sees what the customer has agreed to spend, not
-            // just what arrived. Documented in code so the deviation
-            // is intentional, not a bug.
-            acc.totalSpent += t;
-            acc.totalOrders += 1;
-            return acc;
-          },
-          { totalSpent: 0, totalOrders: 0 }
-        );
-        const lastOrderDate =
-          orders[0]?.date ?? (orders[0]?.created_at ? orders[0].created_at.slice(0, 10) : null);
-        const lastOrderPhone2 =
-          (orders.find((o) => o.phone2 && o.phone2.trim()) as { phone2?: string } | undefined)
-            ?.phone2 ?? null;
-
-        const summary: CustomerSummary = {
-          fullName: canonical?.full_name ?? orders[0]?.customer ?? null,
-          phone: normalized,
-          phone2: lastOrderPhone2,
-          totalOrders:
-            typeof canonical?.total_orders === 'number' && canonical.total_orders > 0
-              ? canonical.total_orders
-              : aggregated.totalOrders,
-          totalSpent:
-            typeof canonical?.total_spent === 'number' && canonical.total_spent > 0
-              ? Number(canonical.total_spent)
-              : aggregated.totalSpent,
-          lastOrderDate,
+        const buildSummary = (p: string): CustomerSummary => {
+          const c = customersByPhone.get(p);
+          const phoneOrders = ordersByPhone.get(p) ?? [];
+          const aggregated = phoneOrders.reduce(
+            (acc, o) => {
+              const t = Number(o.total) || 0;
+              // LIFETIME revenue here (Phase 22E delivered-only
+              // reports stay unchanged — see Phase 22O code comments).
+              acc.totalSpent += t;
+              acc.totalOrders += 1;
+              return acc;
+            },
+            { totalSpent: 0, totalOrders: 0 }
+          );
+          const lastOrderDate =
+            phoneOrders[0]?.date ??
+            (phoneOrders[0]?.created_at ? phoneOrders[0].created_at.slice(0, 10) : null);
+          const phone2 =
+            (
+              phoneOrders.find((o) => o.phone2 && o.phone2.trim()) as
+                | { phone2?: string }
+                | undefined
+            )?.phone2 ?? null;
+          return {
+            fullName: c?.full_name ?? phoneOrders[0]?.customer ?? null,
+            phone: p,
+            phone2,
+            totalOrders:
+              typeof c?.total_orders === 'number' && c.total_orders > 0
+                ? c.total_orders
+                : aggregated.totalOrders,
+            totalSpent:
+              typeof c?.total_spent === 'number' && c.total_spent > 0
+                ? Number(c.total_spent)
+                : aggregated.totalSpent,
+            lastOrderDate,
+          };
         };
 
-        const { addresses, totalBeforeCap } = buildUniqueAddresses(orders, PAST_ADDRESS_CAP);
+        // Sort candidates by recency (most recent customer.updated_at
+        // OR most recent order.created_at, whichever is fresher).
+        // Falls back to alphabetical when both are missing so the
+        // ordering is at least deterministic.
+        const candidatesSorted = Array.from(allPhones)
+          .map(buildSummary)
+          .sort((a, b) => {
+            const aDate = a.lastOrderDate ?? '';
+            const bDate = b.lastOrderDate ?? '';
+            if (aDate !== bDate) return bDate.localeCompare(aDate);
+            return (a.fullName ?? '').localeCompare(b.fullName ?? '');
+          });
 
+        // Single match (or pinned candidate) → fetch deduped addresses.
+        if (allPhones.size === 1 || exactPhone) {
+          const single = exactPhone
+            ? (candidatesSorted.find((c) => c.phone === exactPhone) ?? candidatesSorted[0])
+            : candidatesSorted[0];
+          const phoneOrders = ordersByPhone.get(single.phone) ?? [];
+          const { addresses, totalBeforeCap } = buildUniqueAddresses(phoneOrders, PAST_ADDRESS_CAP);
+          setCustomerLookup({
+            status: 'match',
+            customer: single,
+            addresses,
+            addressesTotalBeforeCap: totalBeforeCap,
+            errorMessage: null,
+            candidates: [],
+            candidatesTotalBeforeCap: 0,
+          });
+          return;
+        }
+
+        // Multi match → render the candidate picker.
+        const totalBeforeCap = candidatesSorted.length;
         setCustomerLookup({
-          status: 'match',
-          customer: summary,
-          addresses,
-          addressesTotalBeforeCap: totalBeforeCap,
+          status: 'multi-match',
+          customer: null,
+          addresses: [],
+          addressesTotalBeforeCap: 0,
           errorMessage: null,
+          candidates: candidatesSorted.slice(0, CANDIDATE_LIMIT),
+          candidatesTotalBeforeCap: totalBeforeCap,
         });
       } catch (err) {
         if (cancelled) return;
@@ -810,6 +924,8 @@ export default function AddOrderModal({ onClose }: Props) {
           addresses: [],
           addressesTotalBeforeCap: 0,
           errorMessage: err instanceof Error ? err.message : null,
+          candidates: [],
+          candidatesTotalBeforeCap: 0,
         });
       }
     }, 300);
@@ -818,7 +934,7 @@ export default function AddOrderModal({ onClose }: Props) {
       cancelled = true;
       window.clearTimeout(t);
     };
-  }, [phone, suppressCustomerLookup]);
+  }, [phone, customerName, suppressCustomerLookup]);
 
   // Phase 22O — apply a returning-customer payload to the form. Used
   // by both "استخدام بيانات العميل" (close the card afterwards) and
@@ -872,6 +988,8 @@ export default function AddOrderModal({ onClose }: Props) {
         addresses: [],
         addressesTotalBeforeCap: 0,
         errorMessage: null,
+        candidates: [],
+        candidatesTotalBeforeCap: 0,
       });
       setSuppressCustomerLookup(true);
       toast.success('تم تحميل بيانات العميل السابقة بنجاح');
@@ -894,6 +1012,19 @@ export default function AddOrderModal({ onClose }: Props) {
     applyCustomerLookup({ ...input, closeCard: false });
   };
 
+  // Phase 22O-Fix1 — when the agent clicks a candidate row in the
+  // multi-match picker, rewrite the phone + name fields with the
+  // canonical values. The lookup effect's debounce will fire and
+  // since the rewritten phone is a valid 11-digit Egyptian mobile,
+  // the exact-phone path runs — collapsing the card to single-match
+  // with deduped addresses. We also clear the lookup-suppression
+  // flag in case the agent had earlier hit "إضافة كعميل جديد".
+  const handlePickCandidate = (candidate: CustomerSummary) => {
+    setSuppressCustomerLookup(false);
+    setPhone(candidate.phone);
+    if (candidate.fullName) setCustomerName(candidate.fullName);
+  };
+
   const handleTreatAsNew = () => {
     setSuppressCustomerLookup(true);
     setCustomerLookup({
@@ -902,6 +1033,8 @@ export default function AddOrderModal({ onClose }: Props) {
       addresses: [],
       addressesTotalBeforeCap: 0,
       errorMessage: null,
+      candidates: [],
+      candidatesTotalBeforeCap: 0,
     });
     // Clear name + address so the agent starts a fresh entry. Keep
     // the typed phone (the whole point of this branch).
@@ -1643,6 +1776,8 @@ export default function AddOrderModal({ onClose }: Props) {
       addresses: [],
       addressesTotalBeforeCap: 0,
       errorMessage: null,
+      candidates: [],
+      candidatesTotalBeforeCap: 0,
     });
     // Generate a new order number for the next order
     generateOrderNumber().then((num) => setOrderNum(num));
@@ -1890,6 +2025,7 @@ export default function AddOrderModal({ onClose }: Props) {
                         onUseCustomer={handleUseCustomer}
                         onUpdateCustomer={handleUpdateCustomer}
                         onTreatAsNew={handleTreatAsNew}
+                        onPickCandidate={handlePickCandidate}
                       />
                     </div>
 
