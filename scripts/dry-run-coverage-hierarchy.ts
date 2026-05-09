@@ -106,7 +106,21 @@ interface Report {
     flatMovedToChildren: number;
     newProposedChildren: number;
   }>;
+  /**
+   * Real routing failures the transformer could not resolve. After the
+   * Phase 22N-Fix, multi-parent matches (e.g. الحي الأول) are NOT
+   * conflicts — they're cloned under each parent.
+   */
   conflicts: Array<{
+    governorate: string;
+    district: string;
+    parentCandidates: string[];
+  }>;
+  /**
+   * Multi-parent matches — info-only. Same name validly exists under
+   * multiple parents; the transformer attaches a copy under each.
+   */
+  multiParentMatches: Array<{
     governorate: string;
     district: string;
     parentCandidates: string[];
@@ -132,6 +146,7 @@ function inspect(input: RawGov[]): Report {
   };
   const perGov: Report['perGov'] = [];
   const conflicts: Report['conflicts'] = [];
+  const multiParentMatches: Report['multiParentMatches'] = [];
 
   // Pre-count input enabled flags for invariant check
   const inputEnabledByGovName = new Map<string, number>();
@@ -217,13 +232,20 @@ function inspect(input: RawGov[]): Report {
     // Detect ambiguity conflicts: among input districts that are
     // orphans, find any whose name claims more than one parent under
     // this governorate.
+    // Phase 22N-Fix: multi-parent matches are NOT conflicts. The
+    // transformer clones the child under each candidate parent and the
+    // user disambiguates by area selection. We track them as
+    // "multi-parent matches" for visibility but they don't go into
+    // the `conflicts` array. A real conflict is one where the
+    // transformer cannot route a district at all (none reach this
+    // branch in current data — kept for future detection).
     for (const dRaw of input.find((g) => g.name === gov.name)?.districts ?? []) {
       const name =
         typeof dRaw === 'string' ? dRaw : String((dRaw as Record<string, unknown>)?.name ?? '');
       if (!name.trim()) continue;
       const candidates = findManualParents(gov.name, name);
       if (candidates.length > 1 && !isManualParent(gov.name, name)) {
-        conflicts.push({
+        multiParentMatches.push({
           governorate: gov.name,
           district: name,
           parentCandidates: candidates.map((c) => c.parent),
@@ -247,7 +269,7 @@ function inspect(input: RawGov[]): Report {
   // input enabled flags.
   totals.enabledPreserved = totals.enabledTotalAfter - totals.newProposedChildren;
 
-  return { source: 'supabase', totals, perGov, conflicts };
+  return { source: 'supabase', totals, perGov, conflicts, multiParentMatches };
 }
 
 void isParent; // referenced for symmetry; helper file imports it for types
@@ -275,7 +297,7 @@ function asHuman(report: Report): string {
   }
   out.push('');
   out.push(
-    `## Conflicts (ambiguous parent — kept top-level + needsReview): ${report.conflicts.length}`
+    `## Conflicts (real routing failures the transformer could not resolve): ${report.conflicts.length}`
   );
   for (const c of report.conflicts.slice(0, 25)) {
     out.push(
@@ -284,6 +306,18 @@ function asHuman(report: Report): string {
   }
   if (report.conflicts.length > 25) {
     out.push(`  … +${report.conflicts.length - 25} more`);
+  }
+  out.push('');
+  out.push(
+    `## Multi-parent matches (info-only — same name cloned under each parent): ${report.multiParentMatches.length}`
+  );
+  for (const c of report.multiParentMatches.slice(0, 25)) {
+    out.push(
+      `  • ${c.governorate} :: ${c.district}  →  cloned under: ${c.parentCandidates.join(' | ')}`
+    );
+  }
+  if (report.multiParentMatches.length > 25) {
+    out.push(`  … +${report.multiParentMatches.length - 25} more`);
   }
   return out.join('\n');
 }

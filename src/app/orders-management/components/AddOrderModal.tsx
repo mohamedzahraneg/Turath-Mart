@@ -37,12 +37,10 @@ import { normalizeArabic } from '@/lib/utils/arabic';
 // "خارج نطاق التغطية حاليًا" so customers see one consistent message.
 import {
   normalizeCoverageHierarchy,
-  flattenCoverageHierarchy,
   findArea,
   findNeighborhood,
   findNeighborhoodOccurrences,
   isParent,
-  type CoverageSearchEntry,
 } from '@/lib/shipping/coverageHierarchy';
 import { resolveShippingFeeFromCoverage } from '@/lib/shipping/resolveShippingFee';
 import type { ShippingDistrict, ShippingGovernorate } from '@/lib/shipping/types';
@@ -716,7 +714,11 @@ export default function AddOrderModal({ onClose }: Props) {
     if (dbRegions.length === 0) return [];
     return normalizeCoverageHierarchy(dbRegions);
   })();
-  const coverageIndex: CoverageSearchEntry[] = flattenCoverageHierarchy(hierarchicalRegions);
+  // (`flattenCoverageHierarchy(hierarchicalRegions)` was used by an
+  // earlier draft of this layer for governorate-level autosuggest;
+  // the modal currently uses domain lookups (`findArea`,
+  // `findNeighborhoodOccurrences`) directly. The flat index helper
+  // remains exported for the settings page + future search UX.)
 
   // Currently-selected area as a domain entity (carries `children`,
   // `fee`, etc.). `null` when the user hasn't typed a valid area yet.

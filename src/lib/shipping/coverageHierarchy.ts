@@ -31,10 +31,13 @@
 //      exactly ONE candidate, attach to it.
 //   C. If the candidate set is empty, leave the entry top-level.
 //   D. If multiple candidates exist (e.g. `الحي الأول` belongs under
-//      both 6 أكتوبر and الشيخ زايد), keep the entry top-level and
-//      flag `needsReview: true`. The new-order modal disambiguates
-//      via the user's area selection; the settings page renders it
-//      as ambiguous so the admin can clean it up.
+//      both 6 أكتوبر and الشيخ زايد), the transformer CLONES the
+//      entry once per candidate parent — the same name can validly
+//      live under multiple parents in the same governorate. The
+//      child uniqueness key is (governorate, parent, name); it is
+//      NOT (governorate, name). The user disambiguates by selecting
+//      the area first; the search index emits one row per
+//      (parent, child) pair so the customer sees both options.
 //
 // Adding a placeholder parent:
 //
@@ -230,21 +233,29 @@ function groupGovernorate(govName: string, flat: ShippingDistrict[]): ShippingDi
   }
 
   // Step 3: try to attach `remaining` orphans via `findManualParents`.
-  // If exactly one candidate, attach. If zero or many, keep top-level
-  // (with `needsReview: true` for ambiguous matches).
+  //
+  // Phase 22N-Fix: same name CAN validly exist under multiple parents in
+  // the same governorate (e.g. الحي الأول under both مدينة 6 اكتوبر
+  // and مدينة الشيخ زايد). When the rules return more than one
+  // candidate, we CLONE the entry under each parent — preserving its
+  // `enabled` / `fee` / `source` flags — instead of keeping it
+  // top-level + flagged for review. The user disambiguates by
+  // selecting the parent area first, and the search index renders one
+  // row per (parent, child) pair so customers see both options.
+  //
+  // Uniqueness key for a child becomes (governorate, parent, child
+  // normalised name); the duplicate-collapse rule in Step 5 keys by
+  // the same triple, so it's safe to push N copies here.
   const orphanedTopLevel: ShippingDistrict[] = [];
   const attachedFromRules: ShippingDistrict[] = []; // (district, parentName) tuples
-  const attachedFromRulesParents: string[] = [];
   for (const d of remaining) {
     const candidates = findManualParents(govName, d.name);
-    if (candidates.length === 1) {
-      attachedFromRules.push({ ...d, parent: candidates[0].parent });
-      attachedFromRulesParents.push(candidates[0].parent);
-    } else if (candidates.length > 1) {
-      // Ambiguous — keep top-level + flag for review
-      orphanedTopLevel.push({ ...d, needsReview: true });
-    } else {
+    if (candidates.length === 0) {
       orphanedTopLevel.push(d);
+      continue;
+    }
+    for (const cand of candidates) {
+      attachedFromRules.push({ ...d, parent: cand.parent });
     }
   }
 
