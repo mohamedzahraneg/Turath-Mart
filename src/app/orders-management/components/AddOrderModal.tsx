@@ -19,11 +19,14 @@ import {
   Minus,
   CheckCircle,
   Eye,
+  Search,
+  AlertTriangle,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { canUseAdminOnlyFinancialFields } from '@/lib/constants/roles';
 import { isValidEgyptianMobile } from '@/lib/validators/phone';
+import { normalizeArabic } from '@/lib/utils/arabic';
 
 interface ProductItem {
   productType: string;
@@ -559,6 +562,126 @@ export default function AddOrderModal({ onClose }: Props) {
     );
   })();
 
+  // Phase 22K — full coverage map across every enabled governorate +
+  // district. Used by the smart-search input to detect three cases:
+  //   1. user's query matches a district inside the CURRENT governorate
+  //      → render as a suggestion the user can click.
+  //   2. query matches a district inside ANOTHER governorate → show a
+  //      hint so the user knows the area is covered, just under a
+  //      different governorate.
+  //   3. query matches nothing → show the "out of coverage" hint.
+  // Falls back to the hardcoded GOVERNORATES_DISTRICTS map when the DB
+  // settings haven't loaded yet, mirroring availableDistricts above.
+  // Local types just for this block to avoid widening the file's
+  // existing dbRegions:any contract — the wider clean-up is out of
+  // scope for Phase 22K.
+  type DistrictEntry = { name?: string; enabled?: boolean } | string;
+  type RegionEntry = {
+    name?: string;
+    enabled?: boolean;
+    districts?: DistrictEntry[];
+  };
+  const allCoveredDistricts: Array<{ name: string; gov: string }> = (() => {
+    if (dbRegions.length === 0) {
+      return Object.entries(GOVERNORATES_DISTRICTS).flatMap(([gov, districts]) =>
+        (districts as string[])
+          .filter((d) => !ADMIN_SETTINGS.DISABLED_DISTRICTS.includes(d))
+          .map((name) => ({ name, gov }))
+      );
+    }
+    return (dbRegions as RegionEntry[])
+      .filter((r) => r.enabled !== false)
+      .flatMap((r) =>
+        (r.districts || [])
+          .filter((d) => (typeof d === 'object' ? d.enabled !== false : true))
+          .map((d) => ({
+            name: (typeof d === 'object' ? (d.name ?? '') : d) as string,
+            gov: (r.name ?? '') as string,
+          }))
+          .filter((d) => d.name && d.name.trim() && d.gov)
+      );
+  })();
+
+  // Search state for the district input. Suggestions are shown while
+  // the user is focused or actively typing. Click on a suggestion sets
+  // the canonical district name and closes the dropdown.
+  const [showDistrictSuggestions, setShowDistrictSuggestions] = useState(false);
+  const districtNorm = normalizeArabic(district);
+
+  // Suggestions = districts in the CURRENT governorate that match the
+  // query (substring on the normalised form). When the input is empty
+  // we still show the first 8 entries so users can browse the list
+  // without typing.
+  const districtSuggestions: string[] = (() => {
+    if (!districtNorm) return availableDistricts.slice(0, 8);
+    return availableDistricts.filter((d) => normalizeArabic(d).includes(districtNorm)).slice(0, 8);
+  })();
+
+  // Phase 22K-Fix1 — strict exact match for validation + inline hint.
+  //
+  // The dropdown above keeps SUBSTRING matching (autocomplete utility
+  // — types "هرم" → suggestion "الهرم" appears so the user can click
+  // it). Validation and the inline hint, however, use EXACT normalised
+  // equality so the saved order is always tied to a configured
+  // district. This matches the Phase 22K-Fix1 spec:
+  //
+  //   • If the typed value canonically equals a district inside the
+  //     CURRENT governorate → valid; the order persists the canonical
+  //     name, not the raw input.
+  //   • If it canonically equals a district under ANOTHER governorate
+  //     → block submit and instruct the user to switch governorate.
+  //   • Otherwise → "out of coverage", block submit.
+  //
+  // canonicalDistrictMatch is the canonical name from settings when
+  // the user's input matches it exactly under the current governorate.
+  // It is the ONLY value the order payload uses below.
+  const canonicalDistrictMatch: string | null = (() => {
+    if (!districtNorm) return null;
+    return availableDistricts.find((d) => normalizeArabic(d) === districtNorm) ?? null;
+  })();
+
+  // Other governorates whose canonical districts EXACTLY match the
+  // typed query. Drives the "تابعة إلى محافظة X" message. Distinct on
+  // (gov, canonical-name) so the same gov can't be listed twice when
+  // multiple canonicals collide on normalisation.
+  const crossGovExactMatches: Array<{ name: string; gov: string }> = (() => {
+    if (!districtNorm) return [];
+    const seen = new Set<string>();
+    const out: Array<{ name: string; gov: string }> = [];
+    for (const d of allCoveredDistricts) {
+      if (d.gov === governorate) continue;
+      if (normalizeArabic(d.name) !== districtNorm) continue;
+      const key = `${d.gov}|${d.name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(d);
+    }
+    return out;
+  })();
+
+  // Distinct list of OTHER governorates that cover the typed area
+  // exactly. Drives the wording in both the inline hint and the
+  // submit error.
+  const crossGovExactNames: string[] = (() => {
+    const set = new Set<string>();
+    for (const m of crossGovExactMatches) set.add(m.gov);
+    return Array.from(set);
+  })();
+
+  // Build the strict message once and reuse it for the inline hint
+  // AND the validateStep1 error so wording cannot drift.
+  const districtStrictError: string | null = (() => {
+    if (!district.trim()) return null; // empty → handled by "المنطقة مطلوبة"
+    if (canonicalDistrictMatch) return null; // valid
+    if (crossGovExactNames.length === 1) {
+      return `هذه المنطقة تابعة إلى محافظة ${crossGovExactNames[0]}. برجاء تغيير المحافظة لاختيارها.`;
+    }
+    if (crossGovExactNames.length > 1) {
+      return `هذه المنطقة تابعة إلى محافظات: ${crossGovExactNames.join('، ')}. برجاء تغيير المحافظة لاختيارها.`;
+    }
+    return 'هذه المنطقة خارج نطاق التغطية حاليًا.';
+  })();
+
   const regionFee = (() => {
     if (dbRegions.length > 0) {
       const region = dbRegions.find((r: any) => r.name === governorate);
@@ -595,7 +718,18 @@ export default function AddOrderModal({ onClose }: Props) {
     if (!customerName.trim()) errs.customerName = 'اسم العميل مطلوب';
     if (!isValidEgyptianMobile(phone)) errs.phone = 'رقم موبايل مصري غير صحيح';
     if (phone2 && !isValidEgyptianMobile(phone2)) errs.phone2 = 'رقم موبايل مصري غير صحيح';
-    if (!district) errs.district = 'المنطقة مطلوبة';
+    // Phase 22K-Fix1 — strict district validation. Empty stays the
+    // legacy "المنطقة مطلوبة"; otherwise we require an EXACT
+    // normalised match against a configured district in the currently
+    // selected governorate. The error wording for "covered under
+    // another governorate" and "out of coverage" is built once in
+    // `districtStrictError` above and reused here so the inline hint
+    // and the submit error can never drift.
+    if (!district.trim()) {
+      errs.district = 'المنطقة مطلوبة';
+    } else if (!canonicalDistrictMatch) {
+      errs.district = districtStrictError ?? 'هذه المنطقة خارج نطاق التغطية حاليًا.';
+    }
     if (!address.trim() || address.trim().length < 10) errs.address = 'العنوان قصير جداً';
     setErrors(errs);
     return Object.keys(errs).length === 0;
@@ -649,7 +783,12 @@ export default function AddOrderModal({ onClose }: Props) {
       phone,
       phone2: phone2 || undefined,
       region: governorate,
-      district,
+      // Phase 22K-Fix1 — persist the CANONICAL district name from
+      // shipping settings, not the raw input. validateStep1 above has
+      // already enforced canonicalDistrictMatch is set; the `??
+      // district` is defensive in case a future caller invokes
+      // handleSubmit without going through the validator.
+      district: canonicalDistrictMatch ?? district,
       address,
       products: productsSummary || 'لا يوجد منتجات',
       quantity: lines.reduce((s, l) => s + l.quantity, 0),
@@ -1113,26 +1252,91 @@ export default function AddOrderModal({ onClose }: Props) {
                       </div>
                     </div>
 
+                    {/* Phase 22K — smart district search.
+                        Replaces the previous <select> with a typeable
+                        input + suggestion dropdown that:
+                          • shows matching districts inside the current
+                            governorate as click-to-select suggestions,
+                          • surfaces a hint when the query matches a
+                            district under a DIFFERENT governorate,
+                          • surfaces an out-of-coverage hint otherwise.
+                        Matching is normalised for Arabic alef/yaa/taa-
+                        marbuta variants and extra whitespace via
+                        `normalizeArabic` (src/lib/utils/arabic.ts). */}
                     <div>
                       <label className="label-text">المنطقة / الحي *</label>
                       <div className="relative">
-                        <select
-                          className={`input-field appearance-none pl-8 ${errors.district ? 'border-red-400' : ''}`}
+                        <input
+                          type="text"
+                          autoComplete="off"
+                          className={`input-field pr-9 ${errors.district ? 'border-red-400' : ''}`}
+                          placeholder="اكتب اسم المنطقة..."
                           value={district}
-                          onChange={(e) => setDistrict(e.target.value)}
-                        >
-                          <option value="">-- اختر المنطقة --</option>
-                          {availableDistricts.map((d) => (
-                            <option key={`dist-${d}`} value={d}>
-                              {d}
-                            </option>
-                          ))}
-                        </select>
-                        <ChevronDown
-                          size={14}
-                          className="absolute left-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]"
+                          onChange={(e) => {
+                            setDistrict(e.target.value);
+                            setShowDistrictSuggestions(true);
+                          }}
+                          onFocus={() => setShowDistrictSuggestions(true)}
+                          onBlur={() =>
+                            // Defer hide so an in-progress click on a
+                            // suggestion can register before the
+                            // dropdown unmounts.
+                            setTimeout(() => setShowDistrictSuggestions(false), 150)
+                          }
                         />
+                        <Search
+                          size={14}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))] pointer-events-none"
+                        />
+                        {showDistrictSuggestions && districtSuggestions.length > 0 && (
+                          <ul
+                            className="absolute z-30 mt-1 w-full max-h-56 overflow-y-auto rounded-lg border border-[hsl(var(--border))] bg-white shadow-lg text-sm"
+                            role="listbox"
+                          >
+                            {districtSuggestions.map((d) => (
+                              <li
+                                key={`dist-suggestion-${d}`}
+                                // onMouseDown beats onBlur by firing
+                                // before the input loses focus, so the
+                                // click reliably selects the value.
+                                onMouseDown={(e) => {
+                                  e.preventDefault();
+                                  setDistrict(d);
+                                  setShowDistrictSuggestions(false);
+                                }}
+                                className="px-3 py-2 cursor-pointer hover:bg-[hsl(var(--muted))]/40"
+                                role="option"
+                                aria-selected={district === d}
+                              >
+                                {d}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
                       </div>
+
+                      {/* Phase 22K-Fix1 — strict inline hint.
+                          Wording is built in `districtStrictError`
+                          (above) so it is byte-identical to the
+                          submit error produced by validateStep1. The
+                          hint colour signals severity: amber when the
+                          area IS covered under another governorate
+                          (the user can fix by switching), red when
+                          the area is genuinely out of coverage.
+                          Suppressed entirely when validateStep1 has
+                          already attached a higher-priority error
+                          ("المنطقة مطلوبة") to avoid double-rendering. */}
+                      {!!districtStrictError && !errors.district && (
+                        <p
+                          className={`text-xs mt-1 flex items-start gap-1 ${
+                            crossGovExactNames.length > 0 ? 'text-amber-600' : 'text-red-500'
+                          }`}
+                        >
+                          <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
+                          <span>{districtStrictError}</span>
+                        </p>
+                      )}
+
                       {errors.district && (
                         <p className="text-red-500 text-xs mt-1">{errors.district}</p>
                       )}
