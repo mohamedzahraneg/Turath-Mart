@@ -13,11 +13,9 @@ import {
 import { useIdleLogout } from '@/hooks/useIdleLogout';
 
 // Phase 22G — idle auto-logout threshold.
-// Spec title + requirement bullet say "1 minute"; the prose goal said
-// "180 ثانية" (3 min). Using 60s to match the title and the actionable
-// bullet. Flip to 180_000 here if the longer window is intended —
-// nothing else in the codebase needs to change.
-const IDLE_LOGOUT_TIMEOUT_MS = 60_000;
+// Confirmed 180 s (3 min) on PR #24 review. Single named constant so
+// any future tweak is a one-line change without touching the hook.
+const IDLE_LOGOUT_TIMEOUT_MS = 180_000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase 20D-Fix1 — Profile/role cache.
