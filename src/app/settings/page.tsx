@@ -23,6 +23,7 @@ import {
   // Check is defined locally below as a custom SVG, not imported from lucide-react.
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
+import { toast, Toaster } from 'sonner';
 
 type TabKey =
   | 'company'
@@ -91,14 +92,31 @@ function useSettingsSync<T>(key: string, initial: T) {
   const save = async (newData?: T) => {
     setSaving(true);
     const toSave = newData !== undefined ? newData : data;
+    // Phase 22J: explicit onConflict so PostgREST always uses the `key`
+    // PK for the merge instead of relying on the table-default. The
+    // previous form silently swallowed errors (no toast, no console
+    // log), so an RLS rejection or transient upstream failure looked
+    // identical to "save did nothing" — which is the symptom users
+    // hit when adding districts.
     const { error } = await supabase
       .from('turath_masr_settings')
-      .upsert({ key, value: toSave, updated_at: new Date().toISOString() });
-    if (!error) {
-      setSuccess(true);
-      setTimeout(() => setSuccess(false), 2000);
-      if (newData !== undefined) setData(newData);
+      .upsert({ key, value: toSave, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+    if (error) {
+      // Surface the real error so a permission failure (is_admin
+      // RLS policy on turath_masr_settings) or a network blip is
+      // visible instead of looking like "the button does nothing".
+      // The raw English message goes only to console; the toast is
+      // a short Arabic copy followed by the upstream code/hint
+      // when present.
+      console.error(`Settings save error [${key}]:`, error);
+      const codePart = error.code ? ` (${error.code})` : '';
+      toast.error(`تعذر حفظ الإعدادات${codePart}: ${error.message}`);
+      setSaving(false);
+      return;
     }
+    setSuccess(true);
+    setTimeout(() => setSuccess(false), 2000);
+    if (newData !== undefined) setData(newData);
     setSaving(false);
   };
 
@@ -447,6 +465,12 @@ function DistrictsTab() {
       </div>
     );
 
+  // Phase 22J: switched to functional state updaters so back-to-back
+  // clicks (e.g. "+ إضافة منطقة" then a same-tick keystroke into the
+  // new input) always see the previous render's array, never a stale
+  // closure capture. The previous form spread `regions` from the
+  // outer closure, which would lose the first update if React batched
+  // two updates in the same tick.
   const addRegion = () => {
     if (!isAdmin) return;
     const newRegion: Region = {
@@ -456,17 +480,63 @@ function DistrictsTab() {
       enabled: true,
       districts: [],
     };
-    setRegions([...regions, newRegion]);
+    setRegions((prev) => [...prev, newRegion]);
     setExpanded(newRegion.id);
   };
 
   const removeRegion = (id: string) => {
     if (!isAdmin) return;
-    setRegions(regions.filter((r) => r.id !== id));
+    setRegions((prev) => prev.filter((r) => r.id !== id));
   };
 
   const updateRegion = (id: string, patch: Partial<Region>) => {
-    setRegions(regions.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+    setRegions((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  };
+
+  // Phase 22J: dedicated district mutators that read the latest region
+  // out of the setRegions updater rather than the outer closure. Keeps
+  // a fast click sequence (toggle + type + add) safe regardless of
+  // React batching, and isolates the legacy-string-vs-object
+  // normalisation in one place. The `as any` cast on `name`/`enabled`
+  // mirrors the pre-Fix1 code's defence against rows that still
+  // contain plain-string districts (none in current production data,
+  // but the type signature accepts the union).
+  const addDistrict = (regionId: string) => {
+    if (!isAdmin) return;
+    setRegions((prev) =>
+      prev.map((r) =>
+        r.id === regionId ? { ...r, districts: [...r.districts, { name: '', enabled: true }] } : r
+      )
+    );
+  };
+
+  const updateDistrict = (
+    regionId: string,
+    idx: number,
+    patch: Partial<{ name: string; enabled: boolean }>
+  ) => {
+    setRegions((prev) =>
+      prev.map((r) => {
+        if (r.id !== regionId) return r;
+        const newDistricts = r.districts.map((d, i) => {
+          if (i !== idx) return d;
+          // Normalise legacy plain-string entries to {name, enabled} on edit.
+          const current =
+            typeof d === 'object' ? d : ({ name: d as unknown as string, enabled: true } as any);
+          return { ...current, ...patch };
+        });
+        return { ...r, districts: newDistricts };
+      })
+    );
+  };
+
+  const removeDistrict = (regionId: string, idx: number) => {
+    if (!isAdmin) return;
+    setRegions((prev) =>
+      prev.map((r) =>
+        r.id === regionId ? { ...r, districts: r.districts.filter((_, i) => i !== idx) } : r
+      )
+    );
   };
 
   return (
@@ -590,11 +660,16 @@ function DistrictsTab() {
                     </label>
                     {isAdmin && (
                       <button
-                        onClick={() =>
-                          updateRegion(region.id, {
-                            districts: [...region.districts, { name: '', enabled: true }],
-                          })
-                        }
+                        onClick={(e) => {
+                          // Phase 22J: defensive stopPropagation in case
+                          // the surrounding header layout ever gains a
+                          // toggle handler. The dedicated addDistrict
+                          // helper uses the functional setRegions form
+                          // so a fast user click can't lose the new
+                          // entry to a stale closure.
+                          e.stopPropagation();
+                          addDistrict(region.id);
+                        }}
                         className="text-[10px] font-black text-primary hover:text-primary-dark transition-colors"
                       >
                         + إضافة منطقة
@@ -612,15 +687,7 @@ function DistrictsTab() {
                         >
                           {isAdmin && (
                             <button
-                              onClick={() => {
-                                const newDistricts = [...region.districts];
-                                if (typeof newDistricts[idx] === 'object') {
-                                  (newDistricts[idx] as any).enabled = !dEnabled;
-                                } else {
-                                  newDistricts[idx] = { name: dName, enabled: !dEnabled } as any;
-                                }
-                                updateRegion(region.id, { districts: newDistricts });
-                              }}
+                              onClick={() => updateDistrict(region.id, idx, { enabled: !dEnabled })}
                               className={`w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all ${dEnabled ? 'bg-green-500 border-green-500 text-white' : 'bg-white border-gray-300'}`}
                               title={dEnabled ? 'مفعّل - اضغط للإلغاء' : 'ملغي - اضغط للتفعيل'}
                             >
@@ -631,24 +698,15 @@ function DistrictsTab() {
                             type="text"
                             disabled={!isAdmin}
                             value={dName}
-                            onChange={(e) => {
-                              const newDistricts = [...region.districts];
-                              if (typeof newDistricts[idx] === 'object') {
-                                (newDistricts[idx] as any).name = e.target.value;
-                              } else {
-                                newDistricts[idx] = { name: e.target.value, enabled: true } as any;
-                              }
-                              updateRegion(region.id, { districts: newDistricts });
-                            }}
+                            onChange={(e) =>
+                              updateDistrict(region.id, idx, { name: e.target.value })
+                            }
                             className="flex-1 min-w-0 py-1 bg-transparent text-xs font-medium focus:outline-none disabled:opacity-50"
                             placeholder="اسم المنطقة..."
                           />
                           {isAdmin && (
                             <button
-                              onClick={() => {
-                                const newDistricts = region.districts.filter((_, i) => i !== idx);
-                                updateRegion(region.id, { districts: newDistricts });
-                              }}
+                              onClick={() => removeDistrict(region.id, idx)}
                               className="text-gray-300 hover:text-red-500 transition-colors flex-shrink-0"
                             >
                               <Trash2 size={14} />
@@ -980,6 +1038,11 @@ export default function SettingsPage() {
 
   return (
     <AppLayout currentPath="/settings">
+      {/* Phase 22J: settings save errors (RLS rejection on
+          turath_masr_settings, etc.) are now surfaced via toast.error
+          inside useSettingsSync.save(). The Toaster mounts here so the
+          tab components don't each need to render their own. */}
+      <Toaster richColors position="top-center" />
       <div className="space-y-8 fade-in pb-20 pt-2">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
           <div>
