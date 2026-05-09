@@ -803,9 +803,20 @@ export default function AddOrderModal({ onClose }: Props) {
   // (`findArea` / `findNeighborhood`), grouped flat search index, and
   // the ambiguous "this neighborhood lives under multiple parents"
   // result via `findNeighborhoodOccurrences`.
+  // Phase 22N-Fix2 — `includeGeneratedPlaceholders: false` keeps the
+  // hierarchy view aligned with `settings_regions` exactly. Names from
+  // `MANUAL_HIERARCHY_RULES` that don't exist in the live row no
+  // longer appear in this modal — settings is the single source of
+  // truth for what a customer can pick. If a name is in the rules
+  // file but NOT in `settings_regions`, typing it surfaces
+  // "خارج نطاق التغطية حاليًا" via the existing match logic; admins
+  // can audit the full proposal via the dry-run / quality-report
+  // scripts which still use the placeholder-included view.
   const hierarchicalRegions: ShippingGovernorate[] = (() => {
     if (dbRegions.length === 0) return [];
-    return normalizeCoverageHierarchy(dbRegions);
+    return normalizeCoverageHierarchy(dbRegions, {
+      includeGeneratedPlaceholders: false,
+    });
   })();
   // (`flattenCoverageHierarchy(hierarchicalRegions)` was used by an
   // earlier draft of this layer for governorate-level autosuggest;
