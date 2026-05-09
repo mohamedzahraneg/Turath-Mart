@@ -575,45 +575,86 @@ export default function AddOrderModal({ onClose }: Props) {
     );
   })();
 
-  // Phase 22K — full coverage map across every enabled governorate +
-  // district. Used by the smart-search input to detect three cases:
-  //   1. user's query matches a district inside the CURRENT governorate
-  //      → render as a suggestion the user can click.
-  //   2. query matches a district inside ANOTHER governorate → show a
-  //      hint so the user knows the area is covered, just under a
-  //      different governorate.
-  //   3. query matches nothing → show the "out of coverage" hint.
-  // Falls back to the hardcoded GOVERNORATES_DISTRICTS map when the DB
-  // settings haven't loaded yet, mirroring availableDistricts above.
-  // Local types just for this block to avoid widening the file's
-  // existing dbRegions:any contract — the wider clean-up is out of
-  // scope for Phase 22K.
-  type DistrictEntry = { name?: string; enabled?: boolean } | string;
+  // Phase 22M — full coverage scan with metadata.
+  //
+  // The 22K scan only carried `{ name, gov }` for ENABLED districts in
+  // ENABLED governorates, so we couldn't differentiate "exists but
+  // disabled" from "doesn't exist at all". The 22M scan keeps the
+  // governorate-disabled filter for the canonical-match path but
+  // ALSO emits an `allDistrictsScan` that includes disabled
+  // entries + parent metadata. This drives:
+  //
+  //   • the "موجودة ولكنها غير مفعلة ضمن التغطية حاليًا" message
+  //     (district exists in the live row with enabled=false),
+  //   • the "هذا الحي تابع إلى المنطقة X — محافظة Y" message
+  //     (the typed value matches an entry whose `parent` is set —
+  //     i.e. a neighborhood — so we surface its city + governorate),
+  //   • the "خارج نطاق التغطية حاليًا" fallback when nothing
+  //     matches at all.
+  //
+  // Local types kept inline to avoid widening dbRegions:any across
+  // the file. The wider clean-up is out of scope for 22M.
+  type DistrictEntry =
+    | { name?: string; enabled?: boolean; parent?: string; type?: string }
+    | string;
   type RegionEntry = {
     name?: string;
     enabled?: boolean;
     districts?: DistrictEntry[];
   };
-  const allCoveredDistricts: Array<{ name: string; gov: string }> = (() => {
+
+  type CoverageScanRow = {
+    name: string;
+    gov: string;
+    govEnabled: boolean;
+    enabled: boolean;
+    parent?: string;
+    type?: string;
+  };
+
+  const allDistrictsScan: CoverageScanRow[] = (() => {
     if (dbRegions.length === 0) {
       return Object.entries(GOVERNORATES_DISTRICTS).flatMap(([gov, districts]) =>
-        (districts as string[])
-          .filter((d) => !ADMIN_SETTINGS.DISABLED_DISTRICTS.includes(d))
-          .map((name) => ({ name, gov }))
+        (districts as string[]).map((name) => ({
+          name,
+          gov,
+          govEnabled: true,
+          enabled: !ADMIN_SETTINGS.DISABLED_DISTRICTS.includes(name),
+        }))
       );
     }
-    return (dbRegions as RegionEntry[])
-      .filter((r) => r.enabled !== false)
-      .flatMap((r) =>
-        (r.districts || [])
-          .filter((d) => (typeof d === 'object' ? d.enabled !== false : true))
-          .map((d) => ({
-            name: (typeof d === 'object' ? (d.name ?? '') : d) as string,
-            gov: (r.name ?? '') as string,
-          }))
-          .filter((d) => d.name && d.name.trim() && d.gov)
-      );
+    return (dbRegions as RegionEntry[]).flatMap((r) =>
+      (r.districts || [])
+        .map((d) => {
+          if (typeof d === 'string') {
+            return {
+              name: d.trim(),
+              gov: (r.name ?? '').trim(),
+              govEnabled: r.enabled !== false,
+              enabled: true,
+              parent: undefined as string | undefined,
+              type: undefined as string | undefined,
+            };
+          }
+          return {
+            name: String(d?.name ?? '').trim(),
+            gov: (r.name ?? '').trim(),
+            govEnabled: r.enabled !== false,
+            enabled: d?.enabled !== false,
+            parent: d?.parent ? String(d.parent).trim() : undefined,
+            type: d?.type ? String(d.type) : undefined,
+          };
+        })
+        .filter((d) => d.name && d.gov)
+    );
   })();
+
+  // 22K-shaped slim scan kept for callers that only care about the
+  // enabled/enabled subset. Derived from `allDistrictsScan` so the
+  // two never disagree.
+  const allCoveredDistricts: Array<{ name: string; gov: string }> = allDistrictsScan
+    .filter((d) => d.govEnabled && d.enabled)
+    .map((d) => ({ name: d.name, gov: d.gov }));
 
   // Search state for the district input. Suggestions are shown while
   // the user is focused or actively typing. Click on a suggestion sets
@@ -621,13 +662,40 @@ export default function AddOrderModal({ onClose }: Props) {
   const [showDistrictSuggestions, setShowDistrictSuggestions] = useState(false);
   const districtNorm = normalizeArabic(district);
 
-  // Suggestions = districts in the CURRENT governorate that match the
-  // query (substring on the normalised form). When the input is empty
-  // we still show the first 8 entries so users can browse the list
-  // without typing.
+  // Phase 22M — full search, no truncation. Phase 22K capped the
+  // dropdown at 8 entries; once the seed import lands, governorates
+  // can carry dozens of cities/markaz, and an arbitrary cap hides
+  // valid matches. The dropdown grows up to ~256px tall and scrolls.
   const districtSuggestions: string[] = (() => {
-    if (!districtNorm) return availableDistricts.slice(0, 8);
-    return availableDistricts.filter((d) => normalizeArabic(d).includes(districtNorm)).slice(0, 8);
+    if (!districtNorm) return availableDistricts;
+    return availableDistricts.filter((d) => normalizeArabic(d).includes(districtNorm));
+  })();
+
+  // Phase 22M — disabled-but-known matches in the CURRENT governorate.
+  // These are entries the admin has explicitly turned OFF in
+  // /settings; they should NOT appear as selectable canonicals, but
+  // when the user types one we tell them "موجودة ولكنها غير مفعلة"
+  // instead of mis-routing them through the generic out-of-coverage
+  // message.
+  const disabledMatchInCurrentGov: CoverageScanRow | null = (() => {
+    if (!districtNorm) return null;
+    return (
+      allDistrictsScan.find(
+        (d) => d.gov === governorate && !d.enabled && normalizeArabic(d.name) === districtNorm
+      ) ?? null
+    );
+  })();
+
+  // Phase 22M — neighborhood-level match anywhere. Surfaces a hint
+  // when the user types a child entry (one with `parent` set), so
+  // they know which city/markaz the neighborhood belongs to. Live
+  // production rows currently carry no parents, so this never
+  // triggers today; once the Phase 22M seed is imported it will.
+  const neighborhoodMatch: CoverageScanRow | null = (() => {
+    if (!districtNorm) return null;
+    return (
+      allDistrictsScan.find((d) => d.parent && normalizeArabic(d.name) === districtNorm) ?? null
+    );
   })();
 
   // Phase 22K-Fix1 — strict exact match for validation + inline hint.
@@ -681,11 +749,27 @@ export default function AddOrderModal({ onClose }: Props) {
     return Array.from(set);
   })();
 
-  // Build the strict message once and reuse it for the inline hint
-  // AND the validateStep1 error so wording cannot drift.
+  // Phase 22M — message ladder, in priority order:
+  //   1. empty            → null (handled by "المنطقة مطلوبة" elsewhere)
+  //   2. canonical match  → null (valid)
+  //   3. neighborhood     → "هذا الحي تابع إلى المنطقة X — محافظة Y"
+  //   4. disabled current → "هذه المنطقة موجودة ولكنها غير مفعلة"
+  //   5. cross-gov exact  → "هذه المنطقة تابعة إلى محافظة X..."
+  //   6. unknown          → "هذه المنطقة خارج نطاق التغطية حاليًا"
+  //
+  // The inline hint AND the validateStep1 error read this same
+  // string so wording never drifts between the two surfaces.
   const districtStrictError: string | null = (() => {
-    if (!district.trim()) return null; // empty → handled by "المنطقة مطلوبة"
-    if (canonicalDistrictMatch) return null; // valid
+    if (!district.trim()) return null;
+    if (canonicalDistrictMatch) return null;
+    if (neighborhoodMatch && neighborhoodMatch.parent) {
+      const parentLabel = neighborhoodMatch.parent;
+      const govLabel = neighborhoodMatch.gov;
+      return `هذا الحي تابع إلى ${parentLabel} - محافظة ${govLabel}.`;
+    }
+    if (disabledMatchInCurrentGov) {
+      return 'هذه المنطقة موجودة ولكنها غير مفعلة ضمن التغطية حاليًا.';
+    }
     if (crossGovExactNames.length === 1) {
       return `هذه المنطقة تابعة إلى محافظة ${crossGovExactNames[0]}. برجاء تغيير المحافظة لاختيارها.`;
     }
@@ -1346,7 +1430,16 @@ export default function AddOrderModal({ onClose }: Props) {
                       {!!districtStrictError && !errors.district && (
                         <p
                           className={`text-xs mt-1 flex items-start gap-1 ${
-                            crossGovExactNames.length > 0 ? 'text-amber-600' : 'text-red-500'
+                            // Phase 22M — amber for "actionable / find-
+                            // able" hints (neighborhood under known
+                            // parent, area exists but disabled, area
+                            // exists in another governorate); red only
+                            // when the area is genuinely unknown.
+                            !!neighborhoodMatch ||
+                            !!disabledMatchInCurrentGov ||
+                            crossGovExactNames.length > 0
+                              ? 'text-amber-600'
+                              : 'text-red-500'
                           }`}
                         >
                           <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
