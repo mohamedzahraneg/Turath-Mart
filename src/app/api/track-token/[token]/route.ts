@@ -68,6 +68,10 @@ interface TrackingDTO {
   phone: string | null;
   region: string | null;
   district: string | null;
+  // Phase 22N-Fix3 — optional neighborhood / village / shiakha. NULL
+  // for orders created before the column existed. Server-side
+  // tracking RPC passes the column through unchanged.
+  neighborhood: string | null;
   address: string | null;
   // Existing free-text product summary kept as a fallback when `lines` is null.
   products: string | null;
@@ -179,6 +183,11 @@ export async function GET(_request: Request, context: { params: Promise<{ token:
     phone: typeof row.phone_masked === 'string' ? row.phone_masked : null,
     region: row.region ?? null,
     district: row.district ?? null,
+    // Phase 22N-Fix3 — pass-through. The shape of `row` is whatever
+    // the tracking RPC returns; this read is `null`-safe so legacy
+    // orders without the column show as before.
+    neighborhood:
+      ((row as Record<string, unknown>).neighborhood as string | null | undefined) ?? null,
     address: row.address ?? null,
     products: row.products ?? null,
     quantity: row.quantity ?? null,

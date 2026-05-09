@@ -60,6 +60,10 @@ interface Order {
   phone2?: string;
   region: string;
   district?: string;
+  // Phase 22N-Fix3 — optional neighborhood / village / shiakha
+  // surfaced in the order detail header, invoice print, WhatsApp
+  // template, and PDF.
+  neighborhood?: string | null;
   address: string;
   products: string;
   quantity: number;
@@ -414,7 +418,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
               <p class="section-title">بيانات العميل</p>
               <p class="name">${liveOrder.customer}</p>
               <p>${liveOrder.phone}${liveOrder.phone2 ? ' / ' + liveOrder.phone2 : ''}</p>
-              <p>${liveOrder.region}${liveOrder.district ? ' - ' + liveOrder.district : ''} — ${liveOrder.address}</p>
+              <p>${liveOrder.region}${liveOrder.district ? ' - ' + liveOrder.district : ''}${liveOrder.neighborhood ? ' - ' + liveOrder.neighborhood : ''} — ${liveOrder.address}</p>
             </div>
             <div class="tracking-box">
               <p>رابط تتبع الشحنة:</p>
@@ -547,6 +551,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                     <p className="font-semibold">
                       {liveOrder.region}
                       {liveOrder.district ? ` - ${liveOrder.district}` : ''}
+                      {liveOrder.neighborhood ? ` - ${liveOrder.neighborhood}` : ''}
                     </p>
                   </div>
                   <div>
@@ -794,6 +799,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                     <p className="text-sm font-medium">
                       {liveOrder.region}
                       {liveOrder.district ? ` — ${liveOrder.district}` : ''}
+                      {liveOrder.neighborhood ? ` — ${liveOrder.neighborhood}` : ''}
                     </p>
                     <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">
                       آخر تحديث: {liveOrder.time} — {liveOrder.date}
@@ -1016,7 +1022,9 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                     </p>
                     <p className="text-[hsl(var(--muted-foreground))] mt-1">
                       {liveOrder.region}
-                      {liveOrder.district ? ` - ${liveOrder.district}` : ''} — {liveOrder.address}
+                      {liveOrder.district ? ` - ${liveOrder.district}` : ''}
+                      {liveOrder.neighborhood ? ` - ${liveOrder.neighborhood}` : ''} —{' '}
+                      {liveOrder.address}
                     </p>
                   </div>
 

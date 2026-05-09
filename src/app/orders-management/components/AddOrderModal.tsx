@@ -784,6 +784,11 @@ export default function AddOrderModal({ onClose }: Props) {
   // the user is focused or actively typing. Click on a suggestion sets
   // the canonical district name and closes the dropdown.
   const [showDistrictSuggestions, setShowDistrictSuggestions] = useState(false);
+  // Phase 22N-Fix3 — neighborhood input gets its own focus-driven
+  // popover (same UX as the district dropdown). The previous
+  // implementation rendered an inline `<ul>` underneath the input
+  // which read like a duplicate field.
+  const [showNeighborhoodSuggestions, setShowNeighborhoodSuggestions] = useState(false);
   const districtNorm = normalizeArabic(district);
 
   // (Phase 22M — `districtSuggestions` superseded by `areaSuggestionRows`
@@ -1231,6 +1236,12 @@ export default function AddOrderModal({ onClose }: Props) {
       // district` is defensive in case a future caller invokes
       // handleSubmit without going through the validator.
       district: canonicalDistrictMatch ?? district,
+      // Phase 22N-Fix3 — typed canonical neighborhood / village /
+      // shiakha. Validated in step 1; trimmed; null when the
+      // selected area has no children (the neighborhood input is
+      // hidden in that case). Persisted via the new
+      // `turath_masr_orders.neighborhood` column.
+      neighborhood: neighborhood.trim() || null,
       address,
       products: productsSummary || 'لا يوجد منتجات',
       quantity: lines.reduce((s, l) => s + l.quantity, 0),
@@ -1289,6 +1300,9 @@ export default function AddOrderModal({ onClose }: Props) {
             phone2: newOrder.phone2 || null,
             region: newOrder.region,
             district: newOrder.district || null,
+            // Phase 22N-Fix3 — new `neighborhood` column on
+            // turath_masr_orders. NULL when no children configured.
+            neighborhood: newOrder.neighborhood,
             address: newOrder.address,
             products: newOrder.products,
             quantity: newOrder.quantity,
@@ -1476,6 +1490,15 @@ export default function AddOrderModal({ onClose }: Props) {
                 msg = msg.replace('{products}', productsList);
                 msg = msg.replace('{governorate}', governorate);
                 msg = msg.replace('{district}', district);
+                // Phase 22N-Fix3 — surface the typed neighborhood in
+                // the WhatsApp confirmation. Templates that don't
+                // reference {neighborhood} are unaffected (the
+                // replacement is a no-op when the placeholder is
+                // absent). When the placeholder IS present and the
+                // value is empty, the literal `{neighborhood}` is
+                // collapsed away cleanly below the regular
+                // address replacement.
+                msg = msg.replace('{neighborhood}', neighborhood || '');
                 msg = msg.replace('{address}', address);
                 msg = msg.replace('{shippingCost}', shippingCost.toString());
                 msg = msg.replace('{shippingType}', shippingText);
@@ -1876,109 +1899,111 @@ export default function AddOrderModal({ onClose }: Props) {
                       )}
                     </div>
 
-                    {/* Phase 22M-Fix1 — optional neighborhood / shiakha
-                        / village input. Only meaningful once the area
-                        has been selected, but kept visible at all times
-                        so users can find sub-areas via search even when
-                        they haven't picked a city/markaz yet. The hint
-                        text guides them to the right parent. */}
-                    <div>
-                      <label className="label-text">
-                        الحي / القرية / الشياخة {areaHasChildren ? '*' : '(اختياري)'}
-                      </label>
-                      <div className="relative">
-                        <input
-                          type="text"
-                          autoComplete="off"
-                          className={`input-field pr-9 ${errors.neighborhood ? 'border-red-400' : ''}`}
-                          placeholder={
-                            selectedAreaEntry
-                              ? `ابحث داخل ${selectedAreaEntry.name}...`
-                              : 'اختر المنطقة أولاً، أو اكتب اسم الحي للبحث الواسع'
-                          }
-                          value={neighborhood}
-                          onChange={(e) => setNeighborhood(e.target.value)}
-                        />
-                        <Search
-                          size={14}
-                          className="absolute right-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))] pointer-events-none"
-                        />
-                      </div>
-
-                      {/* Phase 22N — children dropdown of the selected
-                          area. Disabled children are SUGGESTED but not
-                          selectable; clicking is a no-op and the
-                          customer-facing wording uses
-                          "خارج نطاق التغطية حاليًا" — never the admin
-                          term "غير مفعلة". */}
-                      {selectedAreaEntry && availableNeighborhoods.length > 0 && (
-                        <div className="mt-1">
-                          <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">
-                            تم العثور على {neighborhoodSuggestions.length} حي داخل{' '}
-                            {selectedAreaEntry.name}
-                          </p>
-                          {neighborhoodSuggestions.length > 0 && (
-                            <ul
-                              className="max-h-40 overflow-y-auto rounded-lg border border-[hsl(var(--border))] bg-white text-sm divide-y divide-[hsl(var(--border))]"
-                              role="listbox"
-                            >
-                              {neighborhoodSuggestions.map((n) => {
-                                const enabled = n.enabled !== false;
-                                return (
-                                  <li
-                                    key={`nh-suggestion-${governorate}|${selectedAreaEntry.name}|${n.name}`}
-                                    onMouseDown={(e) => {
-                                      e.preventDefault();
-                                      if (!enabled) return;
-                                      setNeighborhood(n.name);
-                                    }}
-                                    className={`flex items-center justify-between gap-2 px-3 py-2 ${
-                                      enabled
-                                        ? 'cursor-pointer hover:bg-[hsl(var(--muted))]/40'
-                                        : 'opacity-60 cursor-not-allowed'
-                                    }`}
-                                    role="option"
-                                    aria-selected={neighborhood === n.name}
-                                    aria-disabled={!enabled}
-                                  >
-                                    <span>{n.name}</span>
-                                    <span className="flex items-center gap-1 text-[10px]">
-                                      {!enabled && (
-                                        <span className="px-1.5 py-0.5 rounded bg-red-50 text-red-600 border border-red-100">
-                                          خارج التغطية
-                                        </span>
-                                      )}
-                                    </span>
-                                  </li>
-                                );
-                              })}
-                            </ul>
+                    {/* Phase 22N-Fix3 — neighborhood / village / shiakha
+                        picker.
+                        • Hidden entirely when the selected area has
+                          NO children (avoids the "(اختياري)" wording
+                          the user complained about).
+                        • Single input + focus-driven popover dropdown
+                          (matches the area input — no duplicate field
+                          underneath).
+                        • Required when the area has children.
+                        • Customer-facing wording — disabled rows show
+                          "خارج التغطية", never "غير مفعلة". */}
+                    {selectedAreaEntry && areaHasChildren && (
+                      <div>
+                        <label className="label-text">الحي / القرية / الشياخة *</label>
+                        <div className="relative">
+                          <input
+                            type="text"
+                            autoComplete="off"
+                            className={`input-field pr-9 ${errors.neighborhood ? 'border-red-400' : ''}`}
+                            placeholder={`ابحث داخل ${selectedAreaEntry.name}...`}
+                            value={neighborhood}
+                            onChange={(e) => {
+                              setNeighborhood(e.target.value);
+                              setShowNeighborhoodSuggestions(true);
+                            }}
+                            onFocus={() => setShowNeighborhoodSuggestions(true)}
+                            onBlur={() =>
+                              // Defer hide so an in-progress click on a
+                              // suggestion can register before the
+                              // dropdown unmounts.
+                              setTimeout(() => setShowNeighborhoodSuggestions(false), 150)
+                            }
+                          />
+                          <Search
+                            size={14}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))] pointer-events-none"
+                          />
+                          {showNeighborhoodSuggestions && neighborhoodSuggestions.length > 0 && (
+                            <div className="absolute z-30 mt-1 w-full rounded-lg border border-[hsl(var(--border))] bg-white shadow-lg text-sm">
+                              <p className="px-3 py-1.5 text-[11px] text-[hsl(var(--muted-foreground))] border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/30">
+                                تم العثور على {neighborhoodSuggestions.length} حي داخل{' '}
+                                {selectedAreaEntry.name}
+                              </p>
+                              <ul
+                                className="max-h-56 overflow-y-auto divide-y divide-[hsl(var(--border))]"
+                                role="listbox"
+                              >
+                                {neighborhoodSuggestions.map((n) => {
+                                  const enabled = n.enabled !== false;
+                                  return (
+                                    <li
+                                      key={`nh-suggestion-${governorate}|${selectedAreaEntry.name}|${n.name}`}
+                                      onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        if (!enabled) return;
+                                        setNeighborhood(n.name);
+                                        setShowNeighborhoodSuggestions(false);
+                                      }}
+                                      className={`flex items-center justify-between gap-2 px-3 py-2 ${
+                                        enabled
+                                          ? 'cursor-pointer hover:bg-[hsl(var(--muted))]/40'
+                                          : 'opacity-60 cursor-not-allowed'
+                                      }`}
+                                      role="option"
+                                      aria-selected={neighborhood === n.name}
+                                      aria-disabled={!enabled}
+                                    >
+                                      <span>{n.name}</span>
+                                      <span className="flex items-center gap-1 text-[10px]">
+                                        {!enabled && (
+                                          <span className="px-1.5 py-0.5 rounded bg-red-50 text-red-600 border border-red-100">
+                                            خارج التغطية
+                                          </span>
+                                        )}
+                                      </span>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            </div>
                           )}
                         </div>
-                      )}
 
-                      {/* Inline coverage hint for the typed neighborhood.
-                          Customer-facing wording — see
-                          `neighborhoodHint` derivation above. Amber for
-                          "actionable" cases (under another parent /
-                          cross-gov), red for unknown / disabled. */}
-                      {!!neighborhoodHint && !errors.neighborhood && (
-                        <p
-                          className={`text-xs mt-1 flex items-start gap-1 ${
-                            neighborhoodHint.kind === 'unknown' ||
-                            neighborhoodHint.kind === 'disabled'
-                              ? 'text-red-500'
-                              : 'text-amber-600'
-                          }`}
-                        >
-                          <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
-                          <span>{neighborhoodHint.message}</span>
-                        </p>
-                      )}
-                      {errors.neighborhood && (
-                        <p className="text-red-500 text-xs mt-1">{errors.neighborhood}</p>
-                      )}
-                    </div>
+                        {/* Inline coverage hint for the typed neighborhood.
+                            Customer-facing wording — amber for
+                            "actionable" cases (under another parent /
+                            cross-gov), red for unknown / disabled. */}
+                        {!!neighborhoodHint && !errors.neighborhood && (
+                          <p
+                            className={`text-xs mt-1 flex items-start gap-1 ${
+                              neighborhoodHint.kind === 'unknown' ||
+                              neighborhoodHint.kind === 'disabled'
+                                ? 'text-red-500'
+                                : 'text-amber-600'
+                            }`}
+                          >
+                            <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
+                            <span>{neighborhoodHint.message}</span>
+                          </p>
+                        )}
+                        {errors.neighborhood && (
+                          <p className="text-red-500 text-xs mt-1">{errors.neighborhood}</p>
+                        )}
+                      </div>
+                    )}
 
                     <div className="sm:col-span-2">
                       <label className="label-text">
@@ -2622,10 +2647,11 @@ export default function AddOrderModal({ onClose }: Props) {
                       </div>
                       <div>
                         <p className="text-[10px] text-[hsl(var(--muted-foreground))] font-semibold mb-0.5">
-                          المحافظة / المنطقة
+                          {neighborhood ? 'المحافظة / المنطقة / الحي' : 'المحافظة / المنطقة'}
                         </p>
                         <p className="font-semibold">
                           {governorate} — {district}
+                          {neighborhood ? ` — ${neighborhood}` : ''}
                         </p>
                       </div>
                       <div>
