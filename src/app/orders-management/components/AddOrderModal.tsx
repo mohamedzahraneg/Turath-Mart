@@ -617,37 +617,69 @@ export default function AddOrderModal({ onClose }: Props) {
     return availableDistricts.filter((d) => normalizeArabic(d).includes(districtNorm)).slice(0, 8);
   })();
 
-  // Cross-governorate hint: where else (under DIFFERENT governorates)
-  // does the query match? Limited to a few entries to keep the message
-  // readable.
-  const crossGovDistrictMatches: Array<{ name: string; gov: string }> = (() => {
+  // Phase 22K-Fix1 — strict exact match for validation + inline hint.
+  //
+  // The dropdown above keeps SUBSTRING matching (autocomplete utility
+  // — types "هرم" → suggestion "الهرم" appears so the user can click
+  // it). Validation and the inline hint, however, use EXACT normalised
+  // equality so the saved order is always tied to a configured
+  // district. This matches the Phase 22K-Fix1 spec:
+  //
+  //   • If the typed value canonically equals a district inside the
+  //     CURRENT governorate → valid; the order persists the canonical
+  //     name, not the raw input.
+  //   • If it canonically equals a district under ANOTHER governorate
+  //     → block submit and instruct the user to switch governorate.
+  //   • Otherwise → "out of coverage", block submit.
+  //
+  // canonicalDistrictMatch is the canonical name from settings when
+  // the user's input matches it exactly under the current governorate.
+  // It is the ONLY value the order payload uses below.
+  const canonicalDistrictMatch: string | null = (() => {
+    if (!districtNorm) return null;
+    return availableDistricts.find((d) => normalizeArabic(d) === districtNorm) ?? null;
+  })();
+
+  // Other governorates whose canonical districts EXACTLY match the
+  // typed query. Drives the "تابعة إلى محافظة X" message. Distinct on
+  // (gov, canonical-name) so the same gov can't be listed twice when
+  // multiple canonicals collide on normalisation.
+  const crossGovExactMatches: Array<{ name: string; gov: string }> = (() => {
     if (!districtNorm) return [];
     const seen = new Set<string>();
     const out: Array<{ name: string; gov: string }> = [];
     for (const d of allCoveredDistricts) {
       if (d.gov === governorate) continue;
-      if (!normalizeArabic(d.name).includes(districtNorm)) continue;
+      if (normalizeArabic(d.name) !== districtNorm) continue;
       const key = `${d.gov}|${d.name}`;
       if (seen.has(key)) continue;
       seen.add(key);
       out.push(d);
-      if (out.length >= 5) break;
     }
     return out;
   })();
 
-  // True when the typed query matches at least one suggestion under
-  // the current governorate. The hint message is suppressed in that
-  // case — the suggestion list itself is the right answer.
-  const districtHasCurrentMatch =
-    !!districtNorm && availableDistricts.some((d) => normalizeArabic(d).includes(districtNorm));
-
-  // Distinct list of OTHER governorates that cover the typed area.
-  // Drives the "هذه المنطقة تابعة إلى محافظة X" message.
-  const crossGovNames: string[] = (() => {
+  // Distinct list of OTHER governorates that cover the typed area
+  // exactly. Drives the wording in both the inline hint and the
+  // submit error.
+  const crossGovExactNames: string[] = (() => {
     const set = new Set<string>();
-    for (const m of crossGovDistrictMatches) set.add(m.gov);
+    for (const m of crossGovExactMatches) set.add(m.gov);
     return Array.from(set);
+  })();
+
+  // Build the strict message once and reuse it for the inline hint
+  // AND the validateStep1 error so wording cannot drift.
+  const districtStrictError: string | null = (() => {
+    if (!district.trim()) return null; // empty → handled by "المنطقة مطلوبة"
+    if (canonicalDistrictMatch) return null; // valid
+    if (crossGovExactNames.length === 1) {
+      return `هذه المنطقة تابعة إلى محافظة ${crossGovExactNames[0]}. برجاء تغيير المحافظة لاختيارها.`;
+    }
+    if (crossGovExactNames.length > 1) {
+      return `هذه المنطقة تابعة إلى محافظات: ${crossGovExactNames.join('، ')}. برجاء تغيير المحافظة لاختيارها.`;
+    }
+    return 'هذه المنطقة خارج نطاق التغطية حاليًا.';
   })();
 
   const regionFee = (() => {
@@ -686,7 +718,18 @@ export default function AddOrderModal({ onClose }: Props) {
     if (!customerName.trim()) errs.customerName = 'اسم العميل مطلوب';
     if (!isValidEgyptianMobile(phone)) errs.phone = 'رقم موبايل مصري غير صحيح';
     if (phone2 && !isValidEgyptianMobile(phone2)) errs.phone2 = 'رقم موبايل مصري غير صحيح';
-    if (!district) errs.district = 'المنطقة مطلوبة';
+    // Phase 22K-Fix1 — strict district validation. Empty stays the
+    // legacy "المنطقة مطلوبة"; otherwise we require an EXACT
+    // normalised match against a configured district in the currently
+    // selected governorate. The error wording for "covered under
+    // another governorate" and "out of coverage" is built once in
+    // `districtStrictError` above and reused here so the inline hint
+    // and the submit error can never drift.
+    if (!district.trim()) {
+      errs.district = 'المنطقة مطلوبة';
+    } else if (!canonicalDistrictMatch) {
+      errs.district = districtStrictError ?? 'هذه المنطقة خارج نطاق التغطية حاليًا.';
+    }
     if (!address.trim() || address.trim().length < 10) errs.address = 'العنوان قصير جداً';
     setErrors(errs);
     return Object.keys(errs).length === 0;
@@ -740,7 +783,12 @@ export default function AddOrderModal({ onClose }: Props) {
       phone,
       phone2: phone2 || undefined,
       region: governorate,
-      district,
+      // Phase 22K-Fix1 — persist the CANONICAL district name from
+      // shipping settings, not the raw input. validateStep1 above has
+      // already enforced canonicalDistrictMatch is set; the `??
+      // district` is defensive in case a future caller invokes
+      // handleSubmit without going through the validator.
+      district: canonicalDistrictMatch ?? district,
       address,
       products: productsSummary || 'لا يوجد منتجات',
       quantity: lines.reduce((s, l) => s + l.quantity, 0),
@@ -1267,24 +1315,25 @@ export default function AddOrderModal({ onClose }: Props) {
                         )}
                       </div>
 
-                      {/* Cross-governorate / out-of-coverage hint.
-                          Suppressed while suggestions inside the
-                          current governorate match — the dropdown
-                          itself is the right answer in that case. */}
-                      {!!district.trim() && !districtHasCurrentMatch && (
+                      {/* Phase 22K-Fix1 — strict inline hint.
+                          Wording is built in `districtStrictError`
+                          (above) so it is byte-identical to the
+                          submit error produced by validateStep1. The
+                          hint colour signals severity: amber when the
+                          area IS covered under another governorate
+                          (the user can fix by switching), red when
+                          the area is genuinely out of coverage.
+                          Suppressed entirely when validateStep1 has
+                          already attached a higher-priority error
+                          ("المنطقة مطلوبة") to avoid double-rendering. */}
+                      {!!districtStrictError && !errors.district && (
                         <p
                           className={`text-xs mt-1 flex items-start gap-1 ${
-                            crossGovNames.length > 0 ? 'text-amber-600' : 'text-red-500'
+                            crossGovExactNames.length > 0 ? 'text-amber-600' : 'text-red-500'
                           }`}
                         >
                           <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
-                          <span>
-                            {crossGovNames.length === 1
-                              ? `هذه المنطقة تابعة إلى محافظة ${crossGovNames[0]} (مغطاة لكن تحت محافظة مختلفة)`
-                              : crossGovNames.length > 1
-                                ? `هذه المنطقة تابعة إلى محافظات: ${crossGovNames.join('، ')} (مغطاة لكن تحت محافظة مختلفة)`
-                                : 'هذه المنطقة خارج نطاق التغطية'}
-                          </span>
+                          <span>{districtStrictError}</span>
                         </p>
                       )}
 
