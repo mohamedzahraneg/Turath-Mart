@@ -48,6 +48,17 @@ import {
 import { resolveShippingFeeFromCoverage } from '@/lib/shipping/resolveShippingFee';
 import type { ShippingDistrict, ShippingGovernorate } from '@/lib/shipping/types';
 import { getDisplayName, getRoleLabel } from '@/lib/utils/userDisplay';
+// Phase 22O — returning-customer smart card + lookup helpers. The
+// card is presentational; the lookup function lives in this file
+// (it owns the Supabase client + state).
+import ReturningCustomerCard, {
+  buildUniqueAddresses,
+  normalizePhone,
+  type ReturningCustomerLookup,
+  type CustomerSummary,
+  type PastAddress,
+  type OrderRowForLookup,
+} from './ReturningCustomerCard';
 
 interface ProductItem {
   productType: string;
@@ -441,12 +452,24 @@ export default function AddOrderModal({ onClose }: Props) {
   const [warranty, setWarranty] = useState('بدون ضمان');
   const [defaultWarrantyLoaded, setDefaultWarrantyLoaded] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [historyMatch, setHistoryMatch] = useState<{
-    customer: string;
-    address: string;
-    district: string;
-    governorate: string;
-  } | null>(null);
+  // Phase 22O — returning-customer smart card. Replaces the old
+  // single-order `historyMatch` block with a richer lookup against
+  // both `turath_masr_customers` (canonical profile) and
+  // `turath_masr_orders` (deduped past addresses). The card is
+  // rendered by `ReturningCustomerCard` and stays decoupled from this
+  // file's order-creation logic — the card only emits callbacks; the
+  // form fields live here.
+  const [customerLookup, setCustomerLookup] = useState<ReturningCustomerLookup>({
+    status: 'idle',
+    customer: null,
+    addresses: [],
+    addressesTotalBeforeCap: 0,
+    errorMessage: null,
+  });
+  // When the agent clicks "إضافة كعميل جديد", we hide the card for the
+  // rest of this modal session even if the typed phone still matches.
+  // Resets on successful submit (next order) via resetForm.
+  const [suppressCustomerLookup, setSuppressCustomerLookup] = useState(false);
 
   // Order lines
   const [lines, setLines] = useState<OrderLine[]>([]);
@@ -643,45 +666,249 @@ export default function AddOrderModal({ onClose }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [district]);
 
-  // Search for history when phone changes
+  // Phase 22O — returning-customer lookup. Debounced against the typed
+  // phone (≥7 digits triggers, 300 ms quiet window). Runs two narrow
+  // queries in parallel:
+  //   • turath_masr_customers — canonical profile (full_name, totals)
+  //   • turath_masr_orders     — past addresses (deduped, capped, sorted)
+  //
+  // The query is read-only. The card never writes; the only DB write
+  // remains the order-creation upsert in handleSubmit.
+  //
+  // Cap kept at 5 unique addresses for this phase. When more exist,
+  // the card surfaces the count in its header
+  // ("العناوين السابقة (5 من 12)").
+  const PAST_ADDRESS_CAP = 5;
+  const PHONE_MIN_DIGITS_FOR_LOOKUP = 7;
   useEffect(() => {
-    if (phone.length === 11 && isValidEgyptianMobile(phone)) {
-      const searchHistory = async () => {
+    if (suppressCustomerLookup) return; // user clicked "إضافة كعميل جديد"
+    const normalized = normalizePhone(phone);
+    if (normalized.length < PHONE_MIN_DIGITS_FOR_LOOKUP) {
+      setCustomerLookup({
+        status: 'idle',
+        customer: null,
+        addresses: [],
+        addressesTotalBeforeCap: 0,
+        errorMessage: null,
+      });
+      return;
+    }
+
+    let cancelled = false;
+    setCustomerLookup((prev) => ({ ...prev, status: 'loading' }));
+
+    const t = window.setTimeout(async () => {
+      try {
         const supabase = createClient();
-        const { data } = await supabase
-          .from('turath_masr_orders')
-          .select('customer, address, district, region')
-          .eq('phone', phone)
-          .order('created_at', { ascending: false })
-          .limit(1);
+        // Run both queries in parallel — neither blocks the other.
+        const [{ data: customerRows, error: customerErr }, { data: orderRows, error: orderErr }] =
+          await Promise.all([
+            supabase
+              .from('turath_masr_customers')
+              .select('phone, full_name, total_spent, total_orders, updated_at')
+              .eq('phone', normalized)
+              .limit(1),
+            supabase
+              .from('turath_masr_orders')
+              // Narrow select — no select('*') (Phase 20C-1 perf rule).
+              // `phone2` lets the card surface the secondary number;
+              // `date` + `created_at` drive ordering / "آخر طلب".
+              .select(
+                'order_num, customer, phone, phone2, region, district, neighborhood, address, total, status, date, created_at'
+              )
+              .eq('phone', normalized)
+              .order('created_at', { ascending: false })
+              .limit(50),
+          ]);
 
-        if (data && data.length > 0) {
-          setHistoryMatch({
-            customer: data[0].customer,
-            address: data[0].address,
-            district: data[0].district || '',
-            governorate: data[0].region || '',
+        if (cancelled) return;
+        if (customerErr || orderErr) {
+          // Non-blocking — the modal still works without the card.
+          // eslint-disable-next-line no-console
+          console.warn(
+            '[returning-customer-lookup]',
+            customerErr?.message ?? orderErr?.message ?? 'unknown error'
+          );
+          setCustomerLookup({
+            status: 'error',
+            customer: null,
+            addresses: [],
+            addressesTotalBeforeCap: 0,
+            errorMessage: customerErr?.message ?? orderErr?.message ?? null,
           });
+          return;
         }
-      };
-      searchHistory();
-    } else {
-      setHistoryMatch(null);
-    }
-  }, [phone]);
 
-  const applyHistory = () => {
-    if (historyMatch) {
-      setCustomerName(historyMatch.customer);
-      setAddress(historyMatch.address);
-      setGovernorate(historyMatch.governorate);
-      // We set a timeout for district to ensure the governorate's district list is available
-      setTimeout(() => {
-        setDistrict(historyMatch.district);
-      }, 50);
-      setHistoryMatch(null);
-      toast.success('تم تحميل بيانات العميل السابقة بنجاح');
+        const orders = (orderRows ?? []) as OrderRowForLookup[];
+        if (orders.length === 0 && (!customerRows || customerRows.length === 0)) {
+          setCustomerLookup({
+            status: 'no-match',
+            customer: null,
+            addresses: [],
+            addressesTotalBeforeCap: 0,
+            errorMessage: null,
+          });
+          return;
+        }
+
+        // Build a CustomerSummary. Prefer the canonical
+        // `turath_masr_customers` row when present; fall back to
+        // aggregating the order rows (covers customers added via the
+        // best-effort upsert that hasn't run yet).
+        const canonical = customerRows?.[0] ?? null;
+        const aggregated = orders.reduce(
+          (acc, o) => {
+            const t = Number(o.total) || 0;
+            // Phase 22E reports use delivered-only revenue. The card
+            // shows the LIFETIME revenue (delivered or not) so the
+            // agent sees what the customer has agreed to spend, not
+            // just what arrived. Documented in code so the deviation
+            // is intentional, not a bug.
+            acc.totalSpent += t;
+            acc.totalOrders += 1;
+            return acc;
+          },
+          { totalSpent: 0, totalOrders: 0 }
+        );
+        const lastOrderDate =
+          orders[0]?.date ?? (orders[0]?.created_at ? orders[0].created_at.slice(0, 10) : null);
+        const lastOrderPhone2 =
+          (orders.find((o) => o.phone2 && o.phone2.trim()) as { phone2?: string } | undefined)
+            ?.phone2 ?? null;
+
+        const summary: CustomerSummary = {
+          fullName: canonical?.full_name ?? orders[0]?.customer ?? null,
+          phone: normalized,
+          phone2: lastOrderPhone2,
+          totalOrders:
+            typeof canonical?.total_orders === 'number' && canonical.total_orders > 0
+              ? canonical.total_orders
+              : aggregated.totalOrders,
+          totalSpent:
+            typeof canonical?.total_spent === 'number' && canonical.total_spent > 0
+              ? Number(canonical.total_spent)
+              : aggregated.totalSpent,
+          lastOrderDate,
+        };
+
+        const { addresses, totalBeforeCap } = buildUniqueAddresses(orders, PAST_ADDRESS_CAP);
+
+        setCustomerLookup({
+          status: 'match',
+          customer: summary,
+          addresses,
+          addressesTotalBeforeCap: totalBeforeCap,
+          errorMessage: null,
+        });
+      } catch (err) {
+        if (cancelled) return;
+        // eslint-disable-next-line no-console
+        console.warn('[returning-customer-lookup] threw', err);
+        setCustomerLookup({
+          status: 'error',
+          customer: null,
+          addresses: [],
+          addressesTotalBeforeCap: 0,
+          errorMessage: err instanceof Error ? err.message : null,
+        });
+      }
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [phone, suppressCustomerLookup]);
+
+  // Phase 22O — apply a returning-customer payload to the form. Used
+  // by both "استخدام بيانات العميل" (close the card afterwards) and
+  // "تحديث بيانات العميل" (keep card visible so the agent can edit).
+  // The address argument can be `null` when the agent picks
+  // "إضافة عنوان جديد" — that branch fills name + phone(s) but
+  // CLEARS the region / district / neighborhood / address.
+  const applyCustomerLookup = ({
+    customer,
+    address,
+    closeCard,
+  }: {
+    customer: CustomerSummary;
+    address: PastAddress | null;
+    closeCard: boolean;
+  }) => {
+    if (customer.fullName) setCustomerName(customer.fullName);
+    // Always rewrite phone fields so the form reflects the canonical
+    // identity (e.g. typing `+201001234567` then clicking "use" keeps
+    // the canonical `01001234567`).
+    setPhone(customer.phone);
+    if (customer.phone2) setPhone2(customer.phone2);
+
+    if (address) {
+      // Set region first; the existing useEffect on `governorate`
+      // will normally clear district / neighborhood, but the
+      // `skipNextCrossGovReset` ref (introduced in Phase 22N-Fix1)
+      // suppresses that one round so our explicit values survive.
+      skipNextCrossGovReset.current = true;
+      setGovernorate(address.region);
+      setDistrict(address.district ?? '');
+      // Phase 22N-Fix3 — fill neighborhood when present. Legacy
+      // orders may have null; the agent will be required to pick a
+      // neighborhood at submit time if the resolved area has
+      // children configured.
+      setNeighborhood(address.neighborhood ?? '');
+      setAddress(address.address);
+    } else {
+      // "إضافة عنوان جديد" — keep name + phone, clear address fields.
+      // Don't fight the gov-change reset effect here; let it run.
+      setGovernorate('القاهرة');
+      setDistrict('');
+      setNeighborhood('');
+      setAddress('');
     }
+
+    if (closeCard) {
+      setCustomerLookup({
+        status: 'idle',
+        customer: null,
+        addresses: [],
+        addressesTotalBeforeCap: 0,
+        errorMessage: null,
+      });
+      setSuppressCustomerLookup(true);
+      toast.success('تم تحميل بيانات العميل السابقة بنجاح');
+    } else {
+      // "تحديث بيانات العميل" — keep the card so the agent can
+      // continue picking other addresses or edit fields. Show a
+      // brief confirmation.
+      toast.success('تم تحميل البيانات — يمكنك تعديل أي حقل قبل الحفظ');
+    }
+  };
+
+  const handleUseCustomer = (input: { customer: CustomerSummary; address: PastAddress | null }) => {
+    applyCustomerLookup({ ...input, closeCard: true });
+  };
+
+  const handleUpdateCustomer = (input: {
+    customer: CustomerSummary;
+    address: PastAddress | null;
+  }) => {
+    applyCustomerLookup({ ...input, closeCard: false });
+  };
+
+  const handleTreatAsNew = () => {
+    setSuppressCustomerLookup(true);
+    setCustomerLookup({
+      status: 'idle',
+      customer: null,
+      addresses: [],
+      addressesTotalBeforeCap: 0,
+      errorMessage: null,
+    });
+    // Clear name + address so the agent starts a fresh entry. Keep
+    // the typed phone (the whole point of this branch).
+    setCustomerName('');
+    setAddress('');
+    setNeighborhood('');
+    // Don't touch governorate/district — the default is fine.
   };
 
   // Get available districts from DB regions (with enable/disable support)
@@ -1406,6 +1633,17 @@ export default function AddOrderModal({ onClose }: Props) {
     setOrderSuccess(false);
     setSuccessOrderNum('');
     setSuccessTrackingToken(null);
+    // Phase 22O — release the "إضافة كعميل جديد" suppression so the
+    // next order's phone lookup runs again. The lookup state itself
+    // resets as soon as `phone` changes via the debounce effect.
+    setSuppressCustomerLookup(false);
+    setCustomerLookup({
+      status: 'idle',
+      customer: null,
+      addresses: [],
+      addressesTotalBeforeCap: 0,
+      errorMessage: null,
+    });
     // Generate a new order number for the next order
     generateOrderNumber().then((num) => setOrderNum(num));
   };
@@ -1641,30 +1879,18 @@ export default function AddOrderModal({ onClose }: Props) {
                         />
                       </div>
                       {errors.phone && <p className="text-red-500 text-xs mt-1">{errors.phone}</p>}
-                      {historyMatch && (
-                        <div className="mt-2 animate-in slide-in-from-top-2 duration-300">
-                          <button
-                            type="button"
-                            onClick={applyHistory}
-                            className="w-full flex items-center justify-between p-3 bg-blue-50 border border-blue-200 rounded-xl hover:bg-blue-100 transition-all text-right group"
-                          >
-                            <div className="flex-1">
-                              <p className="text-[10px] font-bold text-blue-600 uppercase mb-0.5">
-                                العميل موجود مسبقاً
-                              </p>
-                              <p className="text-xs font-bold text-gray-800">
-                                {historyMatch.customer}
-                              </p>
-                              <p className="text-[9px] text-gray-400 mt-0.5 line-clamp-1">
-                                {historyMatch.governorate} — {historyMatch.district}
-                              </p>
-                            </div>
-                            <div className="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center group-hover:scale-110 transition-transform shadow-lg shadow-blue-200">
-                              <Zap size={14} />
-                            </div>
-                          </button>
-                        </div>
-                      )}
+                      {/* Phase 22O — returning-customer smart card.
+                          Renders below the phone input. The card owns
+                          its own loading / no-match / error / match
+                          states so the modal stays clean. The order
+                          form itself is unchanged when the card is
+                          dismissed. */}
+                      <ReturningCustomerCard
+                        lookup={customerLookup}
+                        onUseCustomer={handleUseCustomer}
+                        onUpdateCustomer={handleUpdateCustomer}
+                        onTreatAsNew={handleTreatAsNew}
+                      />
                     </div>
 
                     <div>
