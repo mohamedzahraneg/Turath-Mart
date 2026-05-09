@@ -85,6 +85,9 @@ const MANUAL_SUPPLEMENTS: ManualSupplement[] = [
   {
     governorate: 'الجيزة',
     parent: 'مدينة 6 اكتوبر',
+    // Phase 22M-Fix1 — added الحصري and غرب سوميد per the Phase 22M-Fix1
+    // brief. Both are widely used commercial labels for sub-zones of
+    // 6 أكتوبر that don't appear in CAPMAS COD-AB.
     names: [
       'الحي الأول',
       'الحي الثاني',
@@ -99,6 +102,8 @@ const MANUAL_SUPPLEMENTS: ManualSupplement[] = [
       'الحي الحادي عشر',
       'الحي الثاني عشر',
       'الحي المتميز',
+      'الحصري',
+      'غرب سوميد',
       'حدائق أكتوبر',
       'دريم لاند',
       'بيفرلي هيلز',
@@ -108,6 +113,9 @@ const MANUAL_SUPPLEMENTS: ManualSupplement[] = [
     ],
   },
   // ─── Sheikh Zayed phases + areas ───────────────────────────────────────────
+  // Phase 22M-Fix1 — `بيت الوطن` exists as a separate development under
+  // both القاهرة الجديدة and الشيخ زايد; it's listed in both blocks so
+  // the merge produces a needsReview entry under each parent.
   {
     governorate: 'الجيزة',
     parent: 'مدينة الشيخ زايد',
@@ -129,9 +137,13 @@ const MANUAL_SUPPLEMENTS: ManualSupplement[] = [
       'الرابية',
       'بالم هيلز زايد',
       'سوديك ويست',
+      'بيت الوطن',
     ],
   },
   // ─── New Cairo / Tagamoa neighborhoods ─────────────────────────────────────
+  // Phase 22M-Fix1 — added المستثمرين الشمالية and المستثمرين الجنوبية
+  // per the Phase 22M-Fix1 brief. Both are commercial labels heavily
+  // used in customer addresses around التجمع الخامس.
   {
     governorate: 'القاهرة',
     parent: 'القاهرة الجديدة',
@@ -152,6 +164,8 @@ const MANUAL_SUPPLEMENTS: ManualSupplement[] = [
       'الجولف',
       'البنفسج',
       'الشويفات',
+      'المستثمرين الشمالية',
+      'المستثمرين الجنوبية',
       'كمبوند ميفيدا',
       'كمبوند ماونتن فيو',
       'كمبوند ميراج سيتي',
