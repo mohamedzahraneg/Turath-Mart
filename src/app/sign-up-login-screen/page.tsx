@@ -337,14 +337,33 @@ function LoginPageInner() {
     setMounted(true);
   }, []);
 
-  // Phase 18: clear any stale local auth state when the login page mounts.
-  // Background — when the browser holds a refresh token that the auth
-  // server has already rotated/invalidated, the supabase-js auto-refresh
-  // path retries the bad token in a tight loop (observed: 100 calls to
-  // /auth/v1/token?grant_type=refresh_token in 7s, all 400/429), which
-  // burns the per-IP rate budget on /token. The next legitimate
-  // signInWithPassword() then comes back as 429 and the user sees
-  // "تم تجاوز عدد محاولات الدخول" on what looks like a first attempt.
+  // Phase 18 / 22J: clear any stale local auth state when the login page
+  // mounts.
+  //
+  // Phase 18 background — when the browser holds a refresh token that
+  // the auth server has already rotated/invalidated, the supabase-js
+  // auto-refresh path retries the bad token in a tight loop (observed:
+  // 100 calls to /auth/v1/token?grant_type=refresh_token in 7s, all
+  // 400/429), which burns the per-IP rate budget on /token. The next
+  // legitimate signInWithPassword() then comes back as 429 and the
+  // user sees "تم تجاوز عدد محاولات الدخول" on what looks like a
+  // first attempt.
+  //
+  // Phase 22J fix — the previous implementation was fire-and-forget
+  // (`void supabase.auth.signOut(...)`), which races a concurrent
+  // signIn(): if the user (or a password manager) submits the form
+  // before the cleanup signOut completes, signOut's storage-clear
+  // can land AFTER signIn's storage-write, wiping the freshly-issued
+  // session tokens. The next router.replace(...) then hits middleware
+  // with no cookies, bounces back to /sign-up-login-screen, and the
+  // user has to log in again — the "double login" symptom.
+  //
+  // The fix exposes the cleanup as a Promise on a ref. onSubmit awaits
+  // it (see below) before calling signIn(), so the storage operations
+  // are strictly sequential: cleanup → signIn write. No race possible.
+  // The cleanup itself still runs eagerly on mount so it doesn't add
+  // latency to the typical login (cleanup completes long before the
+  // user finishes typing).
   //
   // signOut({ scope: 'local' }) is purely client-side: it clears the
   // SDK's in-memory session and the auth cookie/localStorage, with
@@ -360,12 +379,13 @@ function LoginPageInner() {
   // signOut call. We also explicitly skip if there is no client (SSR
   // safety) so the effect only runs in the browser.
   const hasCleanedRef = useRef(false);
+  const cleanupPromiseRef = useRef<Promise<unknown> | null>(null);
   useEffect(() => {
     if (hasCleanedRef.current) return;
     hasCleanedRef.current = true;
     const supabase = createClient();
     if (!supabase) return;
-    void supabase.auth.signOut({ scope: 'local' }).catch(() => {
+    cleanupPromiseRef.current = supabase.auth.signOut({ scope: 'local' }).catch(() => {
       // Local cleanup failure is non-fatal — the user can still try to
       // sign in. Swallow rather than surface a confusing toast.
     });
@@ -414,6 +434,22 @@ function LoginPageInner() {
           setLoginError('يرجى إدخال البريد الإلكتروني أو اسم المستخدم');
           setIsLoading(false);
           return;
+        }
+        // Phase 22J: wait for the mount-time cleanup signOut to complete
+        // before issuing signInWithPassword. This serialises the two
+        // storage operations and prevents the cleanup from clobbering
+        // the freshly-issued session tokens. Without this await, a
+        // password-manager auto-fill + auto-submit would routinely race
+        // the cleanup, triggering the "have to log in twice" symptom.
+        if (cleanupPromiseRef.current) {
+          try {
+            await cleanupPromiseRef.current;
+          } catch {
+            // cleanup errors are already swallowed in the effect; the
+            // double-await here is just defensive in case the promise
+            // somehow rejects again.
+          }
+          cleanupPromiseRef.current = null;
         }
         const authData = await signIn(identifier, data.password);
 
