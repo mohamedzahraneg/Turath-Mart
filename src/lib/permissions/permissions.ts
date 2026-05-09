@@ -18,6 +18,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { ROLE_IDS, type RoleId } from '@/lib/constants/roles';
+import { DEFAULT_LANDING_ROUTE } from '@/lib/auth/routes';
 
 // ─── Permission → Route mapping ──────────────────────────────────────────────
 export const PERMISSION_ROUTE_MAP: Record<string, string[]> = {
@@ -127,15 +128,25 @@ const PERMISSION_DEFAULT_ROUTE_PRIORITY = [
 
 // ─── Pure helpers ────────────────────────────────────────────────────────────
 
-/** Resolve the default landing route for a set of effective permissions. */
+/**
+ * Resolve the default landing route for a set of effective permissions.
+ *
+ * Phase 22I: the fallback returned when no priority permission matches
+ * (or when permissions is empty) is now `DEFAULT_LANDING_ROUTE`
+ * (= /dashboard) rather than the hard-coded '/shipping' that was here
+ * historically. The role-aware priority lookup below is unchanged —
+ * a delegate (view_shipping only) still resolves to /shipping via the
+ * priority match. Only the "I have nothing better to suggest" path
+ * now points at the dashboard.
+ */
 export function getDefaultRouteForPermissions(permissions: string[]): string {
-  if (!permissions || permissions.length === 0) return '/shipping';
+  if (!permissions || permissions.length === 0) return DEFAULT_LANDING_ROUTE;
   for (const perm of PERMISSION_DEFAULT_ROUTE_PRIORITY) {
     if (permissions.includes(perm)) {
-      return PERMISSION_ROUTE_MAP[perm]?.[0] ?? '/shipping';
+      return PERMISSION_ROUTE_MAP[perm]?.[0] ?? DEFAULT_LANDING_ROUTE;
     }
   }
-  return '/shipping';
+  return DEFAULT_LANDING_ROUTE;
 }
 
 /** Get the static permission list for a known role id. */

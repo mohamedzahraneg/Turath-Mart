@@ -16,12 +16,9 @@ import {
   ShieldCheck,
   Sparkles,
 } from 'lucide-react';
-import {
-  useAuth,
-  getDefaultRouteForPermissions as getInitialRoute,
-  getPermissionsForRoleId,
-} from '@/contexts/AuthContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { createClient } from '@/lib/supabase/client';
+import { DEFAULT_LANDING_ROUTE } from '@/lib/auth/routes';
 import { getDeviceLabel } from '@/lib/utils/device';
 
 interface LoginForm {
@@ -414,35 +411,25 @@ function LoginPageInner() {
           setIsLoading(false);
           return;
         }
-        const authData = await signIn(identifier, data.password);
-        const supabase = createClient();
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('role, role_id, role_name, permissions, full_name')
-          .eq('id', authData.user.id)
-          .single();
-
-        const userRole = profile?.role || 'employee';
-        let finalRoleId: string = profile?.role_id || authData.user.user_metadata?.role_id || '';
-        if (!finalRoleId) {
-          if (userRole === 'admin') finalRoleId = 'r1';
-          else if (userRole === 'supervisor') finalRoleId = 'r2';
-          else if (userRole === 'delegate') finalRoleId = 'r4';
-          else finalRoleId = 'r6';
-        }
-        const roleName = profile?.role_name || userRole;
-        const rawPerms = profile?.permissions;
-        const dbPerms: string[] = Array.isArray(rawPerms) ? rawPerms : [];
-        const effectivePerms = dbPerms.length > 0 ? dbPerms : getPermissionsForRoleId(finalRoleId);
-
-        // No localStorage needed - AuthContext reads from Supabase directly
+        await signIn(identifier, data.password);
+        // Phase 22I: dropped the post-signIn profile prefetch + role
+        // resolution. It only existed to feed the per-role landing
+        // pick (now replaced by DEFAULT_LANDING_ROUTE), and the
+        // AuthContext fetches the profile itself on auth-state-change
+        // — so removing this saves one DB round-trip per login.
 
         toast.success(`مرحباً! تم تسجيل الدخول — ${deviceType}`);
-        const permissions =
-          effectivePerms.length > 0 ? effectivePerms : getPermissionsForRoleId(finalRoleId);
-        const computedLanding = getInitialRoute(permissions);
+        // Phase 22I: when no explicit `?next=` round-trip is in play,
+        // send the user to DEFAULT_LANDING_ROUTE (= /dashboard).
+        // Role-based bouncing is enforced by AppLayout — users who
+        // lack `view_dashboard` get redirected to a route they can
+        // actually see via getDefaultRouteForPermissions. Picking the
+        // role-aware default *here* meant delegates landed on
+        // /shipping post-login, which the spec explicitly forbids
+        // ("لا تجعل /shipping هي default landing").
         const nextParam = searchParams?.get('next');
-        const landingPage = nextParam && nextParam.startsWith('/') ? nextParam : computedLanding;
+        const landingPage =
+          nextParam && nextParam.startsWith('/') ? nextParam : DEFAULT_LANDING_ROUTE;
 
         setTimeout(() => {
           router.replace(landingPage);
