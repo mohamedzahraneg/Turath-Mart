@@ -1,0 +1,6 @@
+# Generated shipping-coverage seed — see scripts/build-coverage-seed.ts.
+# Excluded from lint for parity with .prettierignore (Prettier ESLint
+# plugin runs on every file, and a 1MB literal-array file makes lint slow
+# without adding any signal — the file is generated and reviewed via the
+# diff in `data/sources/egypt-admin-boundaries.json`).
+src/data/egyptShippingCoverage.seed.ts

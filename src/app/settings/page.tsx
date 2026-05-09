@@ -311,16 +311,29 @@ function ShippingTab() {
 }
 
 // ─── Districts Tab ────────────────────────────────────────────────────────────
+//
+// Phase 22M — districts gained optional metadata fields so we can
+// carry hierarchy (parent/type), provenance (source), and review
+// flags. The legacy `{ name, enabled }` rows that exist in production
+// remain valid; the new fields are all optional and degrade
+// gracefully. The local `Region` keeps `id` required (every persisted
+// row has one) but reuses the shared district shape so the UI can
+// render badges + parent prefixes without re-typing.
+
+import type { ShippingDistrict, ShippingSource } from '@/lib/shipping/types';
+
 interface Region {
   id: string;
   name: string;
   fee: number;
   enabled: boolean;
-  districts: { name: string; enabled: boolean }[];
+  districts: ShippingDistrict[];
+  source?: ShippingSource;
 }
 
 import { useAuth } from '@/contexts/AuthContext';
 import { isAdminRole } from '@/lib/constants/roles';
+import { normalizeArabic } from '@/lib/utils/arabic';
 
 function DistrictsTab() {
   const { currentRoleId } = useAuth();
@@ -457,6 +470,11 @@ function DistrictsTab() {
   ]);
 
   const [expanded, setExpanded] = useState<string | null>(null);
+
+  // Phase 22M — per-governorate search filter. Map of governorate id →
+  // raw query the admin typed. Filter is normalised (Arabic-aware) at
+  // render time. Persisted only for the current session.
+  const [districtFilters, setDistrictFilters] = useState<Record<string, string>>({});
 
   if (loading)
     return (
@@ -654,68 +672,155 @@ function DistrictsTab() {
                 </div>
 
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
                     <label className="text-[10px] font-black text-gray-400 uppercase px-1">
                       المناطق والأحياء
                     </label>
-                    {isAdmin && (
-                      <button
-                        onClick={(e) => {
-                          // Phase 22J: defensive stopPropagation in case
-                          // the surrounding header layout ever gains a
-                          // toggle handler. The dedicated addDistrict
-                          // helper uses the functional setRegions form
-                          // so a fast user click can't lose the new
-                          // entry to a stale closure.
-                          e.stopPropagation();
-                          addDistrict(region.id);
-                        }}
-                        className="text-[10px] font-black text-primary hover:text-primary-dark transition-colors"
-                      >
-                        + إضافة منطقة
-                      </button>
-                    )}
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                    {region.districts.map((district, idx) => {
-                      const dName = typeof district === 'object' ? district.name : district;
-                      const dEnabled = typeof district === 'object' ? district.enabled : true;
-                      return (
-                        <div
-                          key={idx}
-                          className={`relative group flex items-center gap-2 border-2 rounded-xl px-3 py-2 transition-all ${dEnabled ? 'border-gray-100 bg-white' : 'border-red-100 bg-red-50/30 opacity-60'}`}
+                    <div className="flex items-center gap-2">
+                      {/* Phase 22M — per-governorate search box. After
+                          the seed import lands, governorates may carry
+                          dozens of areas; without filtering the page
+                          becomes hard to scan. The filter is purely
+                          client-side and never hides the enabled/
+                          disabled state — it just narrows the visible
+                          rows. */}
+                      <input
+                        type="text"
+                        value={districtFilters[region.id] ?? ''}
+                        onChange={(e) =>
+                          setDistrictFilters((prev) => ({
+                            ...prev,
+                            [region.id]: e.target.value,
+                          }))
+                        }
+                        placeholder="بحث في المناطق..."
+                        className="px-3 py-1.5 bg-gray-50 border-2 border-gray-50 rounded-xl text-xs font-medium focus:outline-none focus:border-primary/50 transition-all placeholder:text-gray-300"
+                      />
+                      {isAdmin && (
+                        <button
+                          onClick={(e) => {
+                            // Phase 22J: defensive stopPropagation in
+                            // case the surrounding header layout ever
+                            // gains a toggle handler. The dedicated
+                            // addDistrict helper uses the functional
+                            // setRegions form so a fast user click can't
+                            // lose the new entry to a stale closure.
+                            e.stopPropagation();
+                            addDistrict(region.id);
+                          }}
+                          className="text-[10px] font-black text-primary hover:text-primary-dark transition-colors whitespace-nowrap"
                         >
-                          {isAdmin && (
-                            <button
-                              onClick={() => updateDistrict(region.id, idx, { enabled: !dEnabled })}
-                              className={`w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all ${dEnabled ? 'bg-green-500 border-green-500 text-white' : 'bg-white border-gray-300'}`}
-                              title={dEnabled ? 'مفعّل - اضغط للإلغاء' : 'ملغي - اضغط للتفعيل'}
-                            >
-                              {dEnabled && <Check size={10} />}
-                            </button>
-                          )}
-                          <input
-                            type="text"
-                            disabled={!isAdmin}
-                            value={dName}
-                            onChange={(e) =>
-                              updateDistrict(region.id, idx, { name: e.target.value })
-                            }
-                            className="flex-1 min-w-0 py-1 bg-transparent text-xs font-medium focus:outline-none disabled:opacity-50"
-                            placeholder="اسم المنطقة..."
-                          />
-                          {isAdmin && (
-                            <button
-                              onClick={() => removeDistrict(region.id, idx)}
-                              className="text-gray-300 hover:text-red-500 transition-colors flex-shrink-0"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })}
+                          + إضافة منطقة
+                        </button>
+                      )}
+                    </div>
                   </div>
+                  {(() => {
+                    // Phase 22M — derive filtered indices ONCE per render.
+                    // Filtering is by Arabic-normalised substring on
+                    // either the district name or its parent name, so
+                    // a search for "أكتوبر" surfaces every entry under
+                    // the 6 أكتوبر umbrella as well as the parent
+                    // entry itself.
+                    const rawFilter = districtFilters[region.id] ?? '';
+                    const normFilter = normalizeArabic(rawFilter);
+                    const filtered = region.districts
+                      .map((d, idx) => ({ d, idx }))
+                      .filter(({ d }) => {
+                        if (!normFilter) return true;
+                        return (
+                          normalizeArabic(d.name).includes(normFilter) ||
+                          normalizeArabic(d.parent ?? '').includes(normFilter)
+                        );
+                      });
+                    return (
+                      <>
+                        {rawFilter && (
+                          <p className="text-[10px] text-gray-400 font-bold">
+                            {filtered.length} نتيجة من {region.districts.length}
+                          </p>
+                        )}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                          {filtered.map(({ d: district, idx }) => {
+                            const dName = district.name;
+                            const dEnabled = district.enabled !== false;
+                            const isManual = district.source === 'manual_supplement';
+                            const isOfficial = district.source === 'official';
+                            const needsReview = !!district.needsReview;
+                            const parent = district.parent;
+                            return (
+                              <div
+                                key={`${region.id}-${idx}`}
+                                className={`relative group flex flex-col gap-1 border-2 rounded-xl px-3 py-2 transition-all ${dEnabled ? 'border-gray-100 bg-white' : 'border-red-100 bg-red-50/30 opacity-60'}`}
+                              >
+                                <div className="flex items-center gap-2">
+                                  {isAdmin && (
+                                    <button
+                                      onClick={() =>
+                                        updateDistrict(region.id, idx, { enabled: !dEnabled })
+                                      }
+                                      className={`w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all ${dEnabled ? 'bg-green-500 border-green-500 text-white' : 'bg-white border-gray-300'}`}
+                                      title={
+                                        dEnabled ? 'مفعّل - اضغط للإلغاء' : 'ملغي - اضغط للتفعيل'
+                                      }
+                                    >
+                                      {dEnabled && <Check size={10} />}
+                                    </button>
+                                  )}
+                                  <input
+                                    type="text"
+                                    disabled={!isAdmin}
+                                    value={dName}
+                                    onChange={(e) =>
+                                      updateDistrict(region.id, idx, { name: e.target.value })
+                                    }
+                                    className="flex-1 min-w-0 py-1 bg-transparent text-xs font-medium focus:outline-none disabled:opacity-50"
+                                    placeholder="اسم المنطقة..."
+                                  />
+                                  {isAdmin && (
+                                    <button
+                                      onClick={() => removeDistrict(region.id, idx)}
+                                      className="text-gray-300 hover:text-red-500 transition-colors flex-shrink-0"
+                                    >
+                                      <Trash2 size={14} />
+                                    </button>
+                                  )}
+                                </div>
+                                {/* Phase 22M — metadata strip. Visible
+                                    only when the district carries
+                                    parent / source / needsReview info,
+                                    so legacy entries stay clean. */}
+                                {(parent || isManual || isOfficial || needsReview) && (
+                                  <div className="flex flex-wrap items-center gap-1.5 pr-7">
+                                    {parent && (
+                                      <span className="text-[9px] font-bold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">
+                                        ضمن: {parent}
+                                      </span>
+                                    )}
+                                    {isManual && (
+                                      <span className="text-[9px] font-bold text-amber-700 bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded">
+                                        إضافة يدوية
+                                      </span>
+                                    )}
+                                    {isOfficial && (
+                                      <span className="text-[9px] font-bold text-blue-700 bg-blue-50 border border-blue-100 px-1.5 py-0.5 rounded">
+                                        مصدر رسمي
+                                      </span>
+                                    )}
+                                    {needsReview && (
+                                      <span className="text-[9px] font-bold text-orange-700 bg-orange-50 border border-orange-100 px-1.5 py-0.5 rounded">
+                                        ⚠ يحتاج مراجعة
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
             )}

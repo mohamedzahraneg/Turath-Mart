@@ -3,3 +3,9 @@ build
 coverage
 node_modules
 public
+
+# Generated shipping-coverage seed — see scripts/build-coverage-seed.ts.
+# The file is large (~1MB / ~6k entries) and is regenerated from
+# data/sources/egypt-admin-boundaries.json. Skipping prettier here keeps
+# `next lint` fast; the generator emits TS-style syntax already.
+src/data/egyptShippingCoverage.seed.ts
