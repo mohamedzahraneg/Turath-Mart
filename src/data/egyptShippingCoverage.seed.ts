@@ -10,8 +10,8 @@
 //   governorates            = 27
 //   ADM2 (markaz/kism/city) = 365
 //   ADM3 (village/shiakha)  = 5716
-//   manual supplements      = 78
-//   total districts         = 6159
+//   manual supplements      = 83
+//   total districts         = 6164
 //
 // Every entry produced here is `enabled: false`. The merge helper in
 // `src/lib/shipping/coverageMerge.ts` preserves admin-curated state
@@ -412,6 +412,8 @@ export const EGYPT_SHIPPING_COVERAGE_SEED: ShippingGovernorate[] = [
       { name: 'الجولف', enabled: false, type: 'neighborhood', parent: 'القاهرة الجديدة', source: 'manual_supplement', needsReview: true },
       { name: 'البنفسج', enabled: false, type: 'neighborhood', parent: 'القاهرة الجديدة', source: 'manual_supplement', needsReview: true },
       { name: 'الشويفات', enabled: false, type: 'neighborhood', parent: 'القاهرة الجديدة', source: 'manual_supplement', needsReview: true },
+      { name: 'المستثمرين الشمالية', enabled: false, type: 'neighborhood', parent: 'القاهرة الجديدة', source: 'manual_supplement', needsReview: true },
+      { name: 'المستثمرين الجنوبية', enabled: false, type: 'neighborhood', parent: 'القاهرة الجديدة', source: 'manual_supplement', needsReview: true },
       { name: 'كمبوند ميفيدا', enabled: false, type: 'neighborhood', parent: 'القاهرة الجديدة', source: 'manual_supplement', needsReview: true },
       { name: 'كمبوند ماونتن فيو', enabled: false, type: 'neighborhood', parent: 'القاهرة الجديدة', source: 'manual_supplement', needsReview: true },
       { name: 'كمبوند ميراج سيتي', enabled: false, type: 'neighborhood', parent: 'القاهرة الجديدة', source: 'manual_supplement', needsReview: true },
@@ -4021,6 +4023,8 @@ export const EGYPT_SHIPPING_COVERAGE_SEED: ShippingGovernorate[] = [
       { name: 'الحي الحادي عشر', enabled: false, type: 'neighborhood', parent: 'مدينة 6 اكتوبر', source: 'manual_supplement', needsReview: true },
       { name: 'الحي الثاني عشر', enabled: false, type: 'neighborhood', parent: 'مدينة 6 اكتوبر', source: 'manual_supplement', needsReview: true },
       { name: 'الحي المتميز', enabled: false, type: 'neighborhood', parent: 'مدينة 6 اكتوبر', source: 'manual_supplement', needsReview: true },
+      { name: 'الحصري', enabled: false, type: 'neighborhood', parent: 'مدينة 6 اكتوبر', source: 'manual_supplement', needsReview: true },
+      { name: 'غرب سوميد', enabled: false, type: 'neighborhood', parent: 'مدينة 6 اكتوبر', source: 'manual_supplement', needsReview: true },
       { name: 'حدائق أكتوبر', enabled: false, type: 'neighborhood', parent: 'مدينة 6 اكتوبر', source: 'manual_supplement', needsReview: true },
       { name: 'دريم لاند', enabled: false, type: 'neighborhood', parent: 'مدينة 6 اكتوبر', source: 'manual_supplement', needsReview: true },
       { name: 'بيفرلي هيلز', enabled: false, type: 'neighborhood', parent: 'مدينة 6 اكتوبر', source: 'manual_supplement', needsReview: true },
@@ -4044,6 +4048,7 @@ export const EGYPT_SHIPPING_COVERAGE_SEED: ShippingGovernorate[] = [
       { name: 'الرابية', enabled: false, type: 'neighborhood', parent: 'مدينة الشيخ زايد', source: 'manual_supplement', needsReview: true },
       { name: 'بالم هيلز زايد', enabled: false, type: 'neighborhood', parent: 'مدينة الشيخ زايد', source: 'manual_supplement', needsReview: true },
       { name: 'سوديك ويست', enabled: false, type: 'neighborhood', parent: 'مدينة الشيخ زايد', source: 'manual_supplement', needsReview: true },
+      { name: 'بيت الوطن', enabled: false, type: 'neighborhood', parent: 'مدينة الشيخ زايد', source: 'manual_supplement', needsReview: true },
     ],
   },
   {

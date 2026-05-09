@@ -476,6 +476,16 @@ function DistrictsTab() {
   // render time. Persisted only for the current session.
   const [districtFilters, setDistrictFilters] = useState<Record<string, string>>({});
 
+  // Phase 22M-Fix1 — per-governorate quick-filter chip + pagination.
+  // After the CAPMAS import a governorate may carry 500+ districts; the
+  // grid is fast in absolute terms but rendering 5–6 of them at once
+  // adds up. Each governorate keeps its own page size and chip state so
+  // expanding one doesn't reset another.
+  type DistrictChipFilter = 'all' | 'manual' | 'needs-review' | 'disabled' | 'official';
+  const [districtChip, setDistrictChip] = useState<Record<string, DistrictChipFilter>>({});
+  const [districtPageSize, setDistrictPageSize] = useState<Record<string, number>>({});
+  const DEFAULT_PAGE_SIZE = 60;
+
   if (loading)
     return (
       <div className="p-10 flex justify-center">
@@ -724,24 +734,98 @@ function DistrictsTab() {
                     // entry itself.
                     const rawFilter = districtFilters[region.id] ?? '';
                     const normFilter = normalizeArabic(rawFilter);
+                    const chip = districtChip[region.id] ?? 'all';
+                    const pageSize = districtPageSize[region.id] ?? DEFAULT_PAGE_SIZE;
                     const filtered = region.districts
                       .map((d, idx) => ({ d, idx }))
                       .filter(({ d }) => {
+                        if (chip === 'manual' && d.source !== 'manual_supplement') return false;
+                        if (chip === 'official' && d.source !== 'official') return false;
+                        if (chip === 'needs-review' && !d.needsReview) return false;
+                        if (chip === 'disabled' && d.enabled !== false) return false;
                         if (!normFilter) return true;
                         return (
                           normalizeArabic(d.name).includes(normFilter) ||
                           normalizeArabic(d.parent ?? '').includes(normFilter)
                         );
                       });
+                    // Phase 22M-Fix1 — counts (ignoring chip / search) so
+                    // the chip labels can show how many entries each
+                    // category has — useful at a glance.
+                    const totals = region.districts.reduce(
+                      (acc, d) => {
+                        if (d.source === 'manual_supplement') acc.manual += 1;
+                        if (d.source === 'official') acc.official += 1;
+                        if (d.needsReview) acc.review += 1;
+                        if (d.enabled === false) acc.disabled += 1;
+                        return acc;
+                      },
+                      { manual: 0, official: 0, review: 0, disabled: 0 }
+                    );
+                    const visible = filtered.slice(0, pageSize);
+                    const hiddenCount = Math.max(0, filtered.length - visible.length);
                     return (
                       <>
-                        {rawFilter && (
-                          <p className="text-[10px] text-gray-400 font-bold">
-                            {filtered.length} نتيجة من {region.districts.length}
-                          </p>
-                        )}
+                        {/* Phase 22M-Fix1 — quick filter chips. The
+                            "manual" / "needs-review" chips help the
+                            admin find the 48 manual supplements that
+                            still want a human review. The "disabled"
+                            chip surfaces every entry the merge
+                            disabled by default. Counts in the chip
+                            labels are governorate-scoped, not global. */}
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {(
+                            [
+                              { id: 'all' as const, label: 'الكل', count: region.districts.length },
+                              {
+                                id: 'manual' as const,
+                                label: 'إضافة يدوية',
+                                count: totals.manual,
+                              },
+                              {
+                                id: 'needs-review' as const,
+                                label: 'يحتاج مراجعة',
+                                count: totals.review,
+                              },
+                              {
+                                id: 'disabled' as const,
+                                label: 'غير مفعلة',
+                                count: totals.disabled,
+                              },
+                              {
+                                id: 'official' as const,
+                                label: 'مصدر رسمي',
+                                count: totals.official,
+                              },
+                            ] as const
+                          )
+                            .filter((c) => c.id === 'all' || c.count > 0)
+                            .map((c) => (
+                              <button
+                                key={`chip-${region.id}-${c.id}`}
+                                type="button"
+                                onClick={() =>
+                                  setDistrictChip((prev) => ({ ...prev, [region.id]: c.id }))
+                                }
+                                className={`px-2 py-0.5 text-[10px] font-black rounded-full border transition-all ${
+                                  chip === c.id
+                                    ? 'bg-gray-900 text-white border-gray-900'
+                                    : 'bg-white text-gray-500 border-gray-200 hover:border-gray-400'
+                                }`}
+                              >
+                                {c.label} <span className="opacity-70">({c.count})</span>
+                              </button>
+                            ))}
+                        </div>
+                        <p className="text-[10px] text-gray-400 font-bold">
+                          {filtered.length === region.districts.length &&
+                          !rawFilter &&
+                          chip === 'all'
+                            ? `${region.districts.length} منطقة / حي / قرية`
+                            : `${filtered.length} نتيجة من ${region.districts.length}`}
+                        </p>
                         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                          {filtered.map(({ d: district, idx }) => {
+                          {visible.map(({ d: district, idx }) => {
                             const dName = district.name;
                             const dEnabled = district.enabled !== false;
                             const isManual = district.source === 'manual_supplement';
@@ -790,11 +874,16 @@ function DistrictsTab() {
                                     only when the district carries
                                     parent / source / needsReview info,
                                     so legacy entries stay clean. */}
-                                {(parent || isManual || isOfficial || needsReview) && (
+                                {(parent || isManual || isOfficial || needsReview || !dEnabled) && (
                                   <div className="flex flex-wrap items-center gap-1.5 pr-7">
                                     {parent && (
                                       <span className="text-[9px] font-bold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">
                                         ضمن: {parent}
+                                      </span>
+                                    )}
+                                    {!dEnabled && (
+                                      <span className="text-[9px] font-bold text-red-600 bg-red-50 border border-red-100 px-1.5 py-0.5 rounded">
+                                        غير مفعلة
                                       </span>
                                     )}
                                     {isManual && (
@@ -818,6 +907,27 @@ function DistrictsTab() {
                             );
                           })}
                         </div>
+                        {/* Phase 22M-Fix1 — pagination. Render the
+                            first `pageSize` results and let the admin
+                            opt into more. Avoids dropping a 500-row
+                            grid into the DOM the moment a governorate
+                            is expanded. */}
+                        {hiddenCount > 0 && (
+                          <div className="flex items-center justify-center pt-2">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setDistrictPageSize((prev) => ({
+                                  ...prev,
+                                  [region.id]: pageSize + DEFAULT_PAGE_SIZE,
+                                }))
+                              }
+                              className="px-3 py-1 text-[11px] font-bold text-primary bg-primary/10 hover:bg-primary/20 rounded-full transition-all"
+                            >
+                              عرض المزيد ({hiddenCount} متبقية)
+                            </button>
+                          </div>
+                        )}
                       </>
                     );
                   })()}
