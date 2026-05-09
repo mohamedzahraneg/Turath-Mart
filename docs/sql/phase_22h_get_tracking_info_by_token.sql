@@ -1,9 +1,10 @@
--- Phase 22H — final state of public.get_tracking_info_by_token(uuid).
+-- Phase 22H + Phase 22H-Fix1 — final state of
+-- public.get_tracking_info_by_token(uuid, boolean).
 --
--- This file is documentation-only. The SQL below was ALREADY APPLIED to
--- production via the Supabase MCP during Phase 22H (PR #25), in two
--- successive migrations:
+-- This file is documentation-only. The SQL below has ALREADY BEEN
+-- APPLIED to production via the Supabase MCP across three migrations:
 --
+--   Phase 22H — PR #25:
 --   1. phase_22h_widen_get_tracking_info_by_token
 --      DROP + CREATE that added customer, phone_masked (server-side
 --      masking), district, address, lines, subtotal, shipping_fee,
@@ -12,7 +13,22 @@
 --   2. phase_22h_strip_image_and_note_from_tracking_lines
 --      CREATE OR REPLACE that narrowed the lines element shape via
 --      `jsonb_agg(elem - 'image' - 'note')` so per-line base64 image
---      data and delegate-only notes never reach the wire.
+--      data and delegate-only notes never reach the wire on the
+--      polling DTO.
+--
+--   Phase 22H-Fix1 — PR (this PR):
+--   3. phase_22h_fix1_token_rpc_optional_images
+--      DROP + CREATE that adds an optional `p_include_images boolean
+--      DEFAULT false` parameter. The default behaviour matches
+--      Phase 22H exactly (image+note stripped from lines). When the
+--      caller passes `p_include_images = true`, lines.image is kept
+--      while lines.note is still stripped — used only by the
+--      /api/track-token/[token]/line-image/[index] endpoint, which
+--      decodes the base64 data URL and serves raw image bytes
+--      with `Cache-Control: public, max-age=86400, immutable`.
+--      The polling endpoint /api/track-token/[token] still calls
+--      this RPC without the second argument so the polling DTO
+--      stays at ~430 bytes for `lines`.
 --
 -- DO NOT RE-RUN this script as part of any deploy. The Supabase
 -- migration history table is the source of truth; this file exists so
@@ -20,8 +36,9 @@
 -- fresh staging / disaster-recovery database if ever needed.
 --
 -- Companion code:
---   src/app/api/track-token/[token]/route.ts  — DTO mapping
---   src/app/track/t/[token]/page.tsx          — render
+--   src/app/api/track-token/[token]/route.ts                       — slim DTO
+--   src/app/api/track-token/[token]/line-image/[index]/route.ts    — image bytes
+--   src/app/track/t/[token]/page.tsx                                — render
 --
 -- Privacy boundary (unchanged from pre-Phase-22H):
 --   • SECURITY DEFINER + explicit search_path = public.
@@ -37,17 +54,24 @@
 --   • Phone is masked SERVER-SIDE so the un-masked number never leaves
 --     the database. Format keeps the operator prefix (010, 011, 012,
 --     015) and the last 3 digits visible.
---   • lines.image and lines.note are stripped per element before the
---     jsonb leaves the function. Image data was 70-200 KB per line in
---     production; tracking page polls every 30 s.
+--   • lines.note is always stripped per element before the jsonb leaves
+--     the function.
+--   • lines.image is stripped UNLESS the caller explicitly opts in via
+--     p_include_images=true. Even when included, the base64 data URL
+--     is never returned to the browser — the dedicated /line-image/
+--     endpoint decodes it server-side and serves raw image bytes.
 --
 -- IMPORTANT: do NOT widen public.get_tracking_info(text). That RPC is
 -- keyed by the short / sequential `order_num` and must stay redacted
 -- to avoid enumeration risk.
 
 DROP FUNCTION IF EXISTS public.get_tracking_info_by_token(uuid);
+DROP FUNCTION IF EXISTS public.get_tracking_info_by_token(uuid, boolean);
 
-CREATE FUNCTION public.get_tracking_info_by_token(p_tracking_token uuid)
+CREATE FUNCTION public.get_tracking_info_by_token(
+  p_tracking_token uuid,
+  p_include_images boolean DEFAULT false
+)
  RETURNS TABLE(
    order_num text,
    status text,
@@ -92,11 +116,15 @@ AS $function$
     o.address,
     o.products,
     o.quantity,
-    -- Strip image (base64 bloat) + note (delegate-only) per element.
-    -- Always return a jsonb array (or NULL if the source was NULL) so
-    -- the client never has to distinguish empty-array from missing.
+    -- Default mode (polling): strip image + note. ~430 bytes per line.
+    -- p_include_images=true: keep image, still strip note. Used only
+    -- by /api/track-token/[token]/line-image/[index].
     CASE
       WHEN o.lines IS NULL THEN NULL
+      WHEN p_include_images THEN (
+        SELECT COALESCE(jsonb_agg(elem - 'note'), '[]'::jsonb)
+        FROM jsonb_array_elements(o.lines) AS elem
+      )
       ELSE (
         SELECT COALESCE(jsonb_agg(elem - 'image' - 'note'), '[]'::jsonb)
         FROM jsonb_array_elements(o.lines) AS elem
@@ -116,5 +144,5 @@ AS $function$
   LIMIT 1;
 $function$;
 
-GRANT EXECUTE ON FUNCTION public.get_tracking_info_by_token(uuid) TO anon;
-GRANT EXECUTE ON FUNCTION public.get_tracking_info_by_token(uuid) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_tracking_info_by_token(uuid, boolean) TO anon;
+GRANT EXECUTE ON FUNCTION public.get_tracking_info_by_token(uuid, boolean) TO authenticated;
