@@ -35,6 +35,8 @@ import { toast, Toaster } from 'sonner';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { useNotifications } from '@/contexts/NotificationContext';
+import { UserStamp } from '@/components/UserStamp';
+import { getDisplayName } from '@/lib/utils/userDisplay';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -292,7 +294,7 @@ function ComplaintDetailsModal({
   const [newStatus, setNewStatus] = useState<string>(complaint.status);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const { user } = useAuth();
+  const { user, profileFullName } = useAuth();
   const supabase = createClient();
 
   const fetchLogs = useCallback(async () => {
@@ -317,8 +319,18 @@ function ComplaintDetailsModal({
     if (!newNote.trim()) return;
     setSubmitting(true);
 
-    // Attempt to get user name from metadata or email
-    const notedByName = user?.user_metadata?.full_name || user?.email || 'موظف خدمة العملاء';
+    // Phase 22L — prefer the cached profile.full_name (from
+    // AuthContext) over the auth metadata. Both surfaces feed the
+    // same getDisplayName chain elsewhere; aligning the write side
+    // means complaint logs going forward consistently carry the
+    // user's real name. The 'موظف خدمة العملاء' fallback is kept as
+    // the last-resort label rather than the literal "مستخدم" so
+    // readers still see a sensible role-shaped string when no
+    // identity is available.
+    const notedByName = getDisplayName(
+      [profileFullName, user?.user_metadata?.full_name, user?.email],
+      'خدمة عملاء'
+    );
 
     // 1. Insert Log
     const { error: logErr } = await supabase.from('turath_masr_crm_complaint_logs').insert({
@@ -429,7 +441,14 @@ function ComplaintDetailsModal({
                           <div className="w-6 h-6 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center">
                             <User size={12} />
                           </div>
-                          <p className="text-xs font-black text-gray-900">{log.noted_by_name}</p>
+                          {/* Phase 22L — UserStamp degrades to a
+                              name-only line because complaint logs
+                              don't carry a per-row role. Future
+                              phases can add `noted_by_role` if we
+                              want the role line here too. */}
+                          <UserStamp name={log.noted_by_name} size="sm" />
+                          {/* Phase 22L: name visualised via UserStamp above
+                              instead of a plain <p>{log.noted_by_name}</p>. */}
                         </div>
                         <span className="text-[10px] text-gray-400 font-bold bg-gray-50 px-2 py-0.5 rounded-lg">
                           {new Date(log.created_at).toLocaleString('ar-EG', {

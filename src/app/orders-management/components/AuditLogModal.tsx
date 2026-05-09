@@ -2,6 +2,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { X, Clock, User, Edit2, RefreshCw, AlertCircle } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
+import { UserStamp } from '@/components/UserStamp';
 
 export interface AuditEntry {
   id: string;
@@ -17,14 +18,11 @@ export interface AuditEntry {
   createdAt: string;
 }
 
-const ROLE_LABEL: Record<string, string> = {
-  manager: 'مدير',
-  admin: 'أدمن',
-  supervisor: 'مشرف شحن',
-  shipping: 'مندوب',
-  data_entry: 'مدخل بيانات',
-  employee: 'موظف',
-};
+// Phase 22L — local ROLE_LABEL replaced by the shared getRoleLabel
+// helper imported below. The previous local map didn't recognise
+// r1..r6 ids and used a different "supervisor → مشرف شحن" mapping
+// from the canonical "مشرف النظام", causing role labels to drift
+// between this modal and the rest of the system.
 
 const ACTION_CONFIG: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
   status_change: {
@@ -249,12 +247,21 @@ export default function AuditLogModal({ orderId, orderNum, onClose }: Props) {
                             {formatDate(log.createdAt)}
                           </span>
                         </div>
-                        <div className="flex items-center gap-1.5 text-xs mb-1">
+                        {/* Phase 22L — two-line user stamp instead
+                            of the legacy inline "name (role)" form.
+                            UserStamp shows full_name on top + Arabic
+                            role label below; resolves r1..r6 ids and
+                            legacy English role names through the
+                            shared getRoleLabel helper so this modal
+                            renders identically to every other audit
+                            surface. Legacy rows that stored
+                            "مستخدم" as the name still render — the
+                            stamp degrades gracefully — but every
+                            new row written via the fixed
+                            StatusUpdateModal carries a real name. */}
+                        <div className="flex items-center gap-1.5 mb-1">
                           <User size={11} />
-                          <span className="font-semibold">{log.changedBy}</span>
-                          <span className="opacity-60">
-                            ({ROLE_LABEL[log.changedByRole] || log.changedByRole})
-                          </span>
+                          <UserStamp name={log.changedBy} role={log.changedByRole} size="sm" />
                         </div>
                         {log.action === 'status_change' && log.oldValue && log.newValue && (
                           <div className="flex items-center gap-2 text-xs mt-1.5 bg-white/50 rounded-lg px-2 py-1">

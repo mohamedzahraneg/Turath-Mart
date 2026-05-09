@@ -8,6 +8,8 @@ import { useAuth, getPermissionsForRoleId } from '@/contexts/AuthContext';
 import { addAuditLog, getAuditLogs } from './AuditLogModal';
 import { createClient } from '@/lib/supabase/client';
 import { isAdminRole } from '@/lib/constants/roles';
+import { getDisplayName, getRoleLabel } from '@/lib/utils/userDisplay';
+import { UserStamp } from '@/components/UserStamp';
 
 interface Order {
   id: string;
@@ -47,12 +49,10 @@ const STATUS_BADGE_MAP: Record<string, string> = {
 // Roles allowed to update order status
 const ALLOWED_ROLES = ['manager', 'supervisor', 'shipping'];
 
-const ROLE_LABEL: Record<string, string> = {
-  manager: 'مدير',
-  supervisor: 'مشرف شحن',
-  shipping: 'مندوب',
-  data_entry: 'مدخل بيانات',
-};
+// Phase 22L — local ROLE_LABEL replaced by the shared getRoleLabel
+// helper imported above. Centralised mapping covers r1..r6 ids,
+// legacy English names, and already-Arabic labels with a single
+// source of truth, eliminating the per-file drift.
 
 interface Props {
   order: Order;
@@ -124,24 +124,28 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
   // `authUser` is the Supabase auth.users object (has `id` UUID for RLS).
   // The local `getCurrentUser()` below is a display-name helper that
   // shadows nothing since we renamed the destructured user here.
-  const { user: authUser, currentRole, currentRoleId } = useAuth();
+  const { user: authUser, currentRole, currentRoleId, profileFullName } = useAuth();
 
   // Permission-based check: check if user has 'update_status' permission
   const userPermissions = currentRoleId ? getPermissionsForRoleId(currentRoleId) : [];
   const canUpdate = isAdminRole(currentRoleId) || userPermissions.includes('update_status');
 
-  // Get current user info from localStorage
+  // Phase 22L — resolve the actor for audit logs from AuthContext, not
+  // localStorage. The previous implementation read `current_user` from
+  // localStorage and, when missing, fell back to ROLE_LABEL[currentRole]
+  // as the *name* — which is exactly how 162 audit_log rows ended up
+  // with `changed_by="مستخدم"` and `changed_by_role="خدمة عملاء"`. The
+  // new chain prefers the cached profile.full_name (Phase 20D-Fix2), then
+  // user_metadata.full_name, then email; getDisplayName drops any
+  // candidate that exactly equals the role label or the legacy
+  // "مستخدم" placeholder so a real name further down the chain can
+  // win. The role line uses currentRole (the Arabic profile.role_name)
+  // so it lines up with the audit_log display surface 1-for-1.
   const getCurrentUser = () => {
-    if (typeof window === 'undefined') return { name: 'مستخدم', role: currentRole };
-    try {
-      const stored = localStorage.getItem('current_user');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        return { name: parsed?.name || parsed?.email || 'مستخدم', role: currentRole };
-      }
-    } catch {}
-    const roleKey = currentRole ?? '';
-    return { name: ROLE_LABEL[roleKey] || 'مستخدم', role: currentRole };
+    const role =
+      currentRole && currentRole.trim() ? currentRole : getRoleLabel(currentRoleId ?? '');
+    const candidates = [profileFullName, authUser?.user_metadata?.full_name, authUser?.email];
+    return { name: getDisplayName(candidates, role), role };
   };
 
   const {
@@ -307,7 +311,7 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
               <p className="text-xs text-[hsl(var(--muted-foreground))] mt-2">
                 دورك الحالي:{' '}
                 <span className="font-semibold text-[hsl(var(--foreground))]">
-                  {ROLE_LABEL[currentRole ?? ''] ||
+                  {getRoleLabel(currentRole ?? currentRoleId ?? '') ||
                     (currentRoleId ? `دور #${currentRoleId}` : currentRole)}
                 </span>
               </p>
@@ -323,7 +327,7 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
               <CheckCircle size={14} className="text-green-600" />
               <span className="text-xs text-green-700 font-semibold">
                 لديك صلاحية تحديث الحالة —{' '}
-                {ROLE_LABEL[currentRole ?? ''] ||
+                {getRoleLabel(currentRole ?? currentRoleId ?? '') ||
                   (currentRoleId ? `دور #${currentRoleId}` : currentRole)}
               </span>
             </div>
@@ -480,13 +484,15 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
                               {dateStr} — {timeStr}
                             </span>
                           </div>
-                          <p className="text-[hsl(var(--muted-foreground))] mt-0.5">
-                            بواسطة:{' '}
-                            <span className="font-semibold text-[hsl(var(--foreground))]">
-                              {h.changedBy}
-                            </span>{' '}
-                            ({ROLE_LABEL[h.changedByRole] || h.changedByRole})
-                          </p>
+                          {/* Phase 22L — two-line user stamp: real
+                              name on top, role on the bottom. Replaces
+                              the previous "name (role)" inline form
+                              that, on legacy rows, rendered as
+                              "مستخدم (خدمة عملاء)". */}
+                          <div className="mt-0.5 flex items-center gap-1 text-[hsl(var(--muted-foreground))]">
+                            <span>بواسطة:</span>
+                            <UserStamp name={h.changedBy} role={h.changedByRole} size="sm" />
+                          </div>
                           {h.note && (
                             <p className="text-[hsl(var(--foreground))] mt-0.5 italic">
                               "{h.note}"

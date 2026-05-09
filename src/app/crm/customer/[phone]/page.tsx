@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { toast, Toaster } from 'sonner';
+import { UserStamp } from '@/components/UserStamp';
 
 // --- Types ---
 interface Order {
@@ -410,9 +411,12 @@ export default function CustomerProfilePage() {
                               className="bg-white border border-gray-100 rounded-xl p-3 flex flex-col gap-1 shadow-sm"
                             >
                               <div className="flex items-center justify-between">
-                                <p className="text-[10px] font-black text-gray-700">
-                                  {log.noted_by_name}
-                                </p>
+                                {/* Phase 22L — UserStamp keeps the
+                                    visual hierarchy stable across CRM
+                                    log surfaces. Role is omitted
+                                    because complaint logs don't
+                                    carry a per-row role. */}
+                                <UserStamp name={log.noted_by_name} size="sm" />
                                 <p className="text-[8px] font-bold text-gray-400">
                                   {new Date(log.created_at).toLocaleString('ar-EG', {
                                     hour: '2-digit',

@@ -28,6 +28,7 @@ import { createClient } from '@/lib/supabase/client';
 import { STATUS_LABELS } from './AuditLogModal';
 import { useAuth } from '@/contexts/AuthContext';
 import { canUseAdminOnlyFinancialFields, canEditOrders } from '@/lib/constants/roles';
+import { UserStamp } from '@/components/UserStamp';
 
 interface OrderLine {
   productType: string;
@@ -868,12 +869,15 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                                 })}
                               </span>
                             </div>
-                            <p className="text-xs text-[hsl(var(--muted-foreground))]">
-                              بواسطة:{' '}
-                              <span className="font-semibold text-[hsl(var(--foreground))]">
-                                {h.changedBy}
-                              </span>
-                            </p>
+                            {/* Phase 22L — show full_name on top +
+                                Arabic role label below. Replaces the
+                                inline "بواسطة: name" form so this
+                                surface matches the audit log modal
+                                and the in-modal status history. */}
+                            <div className="flex items-center gap-1.5 text-xs text-[hsl(var(--muted-foreground))]">
+                              <span>بواسطة:</span>
+                              <UserStamp name={h.changedBy} role={h.changedByRole} size="sm" />
+                            </div>
                             {h.note && (
                               <p className="text-xs text-[hsl(var(--foreground))] mt-1.5 bg-[hsl(var(--muted))]/50 rounded-lg px-2 py-1 italic">
                                 "{h.note}"
@@ -934,8 +938,17 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                               </span>
                               <span className="text-xs font-semibold">{notif.message}</span>
                             </div>
+                            {/* Phase 22L — notifications carry only
+                                the writer's display name string in
+                                turath_masr_notifications.created_by;
+                                no role column. UserStamp degrades
+                                gracefully and just renders the name
+                                line when role is absent. */}
                             {notif.created_by && (
-                              <p className="text-[11px] opacity-80">بواسطة: {notif.created_by}</p>
+                              <div className="flex items-center gap-1.5 text-[11px] opacity-80">
+                                <span>بواسطة:</span>
+                                <UserStamp name={notif.created_by} size="sm" />
+                              </div>
                             )}
                           </div>
                           <div className="text-left flex-shrink-0">
