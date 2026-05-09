@@ -68,6 +68,14 @@ interface TrackingDTO {
   phone: string | null;
   region: string | null;
   district: string | null;
+  // Phase 22N-Fix3 — optional neighborhood / village / shiakha. NULL
+  // for orders created before the column existed. The
+  // `get_tracking_info_by_token` RPC was updated to include the
+  // column in its whitelist (see
+  // 20260510130000_tracking_rpc_add_neighborhood.sql) so the typed
+  // neighborhood is visible on the public token-tracking page in
+  // parity with the admin views.
+  neighborhood: string | null;
   address: string | null;
   // Existing free-text product summary kept as a fallback when `lines` is null.
   products: string | null;
@@ -179,6 +187,14 @@ export async function GET(_request: Request, context: { params: Promise<{ token:
     phone: typeof row.phone_masked === 'string' ? row.phone_masked : null,
     region: row.region ?? null,
     district: row.district ?? null,
+    // Phase 22N-Fix3 — RPC whitelists this column (see
+    // 20260510130000_tracking_rpc_add_neighborhood.sql). The cast
+    // via `Record<string, unknown>` is here because the local `row`
+    // type doesn't enumerate every RPC column; the runtime shape is
+    // checked by the SQL function signature. NULL for legacy
+    // orders.
+    neighborhood:
+      ((row as Record<string, unknown>).neighborhood as string | null | undefined) ?? null,
     address: row.address ?? null,
     products: row.products ?? null,
     quantity: row.quantity ?? null,

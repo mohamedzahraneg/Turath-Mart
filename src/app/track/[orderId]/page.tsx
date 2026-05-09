@@ -35,6 +35,9 @@ interface TrackingOrder {
   phone: string;
   region: string;
   district?: string;
+  // Phase 22N-Fix3 — optional neighborhood / village / shiakha. NULL
+  // for legacy orders that were created before the column existed.
+  neighborhood?: string | null;
   address: string;
   products: string;
   quantity: number;
@@ -1333,7 +1336,7 @@ function generateInvoiceHTML(order: TrackingOrder): string {
         <p class="section-title">بيانات العميل</p>
         <p class="name">${order.customer}</p>
         <p>${order.phone}</p>
-        <p>${order.region}${order.district ? ' - ' + order.district : ''} — ${order.address}</p>
+        <p>${order.region}${order.district ? ' - ' + order.district : ''}${order.neighborhood ? ' - ' + order.neighborhood : ''} — ${order.address}</p>
       </div>
       <div class="tracking-box">
         <p>رابط تتبع الشحنة:</p>
@@ -1997,6 +2000,8 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
                   <p className="text-xs text-[hsl(var(--muted-foreground))]">منطقة الشحن</p>
                   <p className="text-sm font-semibold text-[hsl(var(--foreground))]">
                     {order.region}
+                    {order.district ? ` — ${order.district}` : ''}
+                    {order.neighborhood ? ` — ${order.neighborhood}` : ''}
                   </p>
                 </div>
               </div>

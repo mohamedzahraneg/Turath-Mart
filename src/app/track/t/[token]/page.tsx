@@ -54,6 +54,13 @@ interface TrackingOrder {
   phone: string;
   region: string;
   district?: string;
+  // Phase 22N-Fix3 — optional neighborhood / village / shiakha.
+  // Mirror of the field on the admin-facing tracking page. The public
+  // token-tracking RPC currently DOES NOT expose this field (mirrors
+  // the privacy model that already redacts `district`); declared here
+  // so the render stays consistent across both tracking pages and so
+  // a future RPC update can surface it without a type change.
+  neighborhood?: string | null;
   address: string;
   products: string;
   quantity: number;
@@ -1252,7 +1259,7 @@ function generateInvoiceHTML(order: TrackingOrder, token: string): string {
         <p class="section-title">بيانات العميل</p>
         <p class="name">${order.customer}</p>
         <p>${order.phone}</p>
-        <p>${order.region}${order.district ? ' - ' + order.district : ''} — ${order.address}</p>
+        <p>${order.region}${order.district ? ' - ' + order.district : ''}${order.neighborhood ? ' - ' + order.neighborhood : ''} — ${order.address}</p>
       </div>
       <div class="tracking-box">
         <p>رابط تتبع الشحنة:</p>
@@ -1973,6 +1980,7 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
                   <p className="text-sm font-semibold text-[hsl(var(--foreground))]">
                     {order.region}
                     {order.district ? ` — ${order.district}` : ''}
+                    {order.neighborhood ? ` — ${order.neighborhood}` : ''}
                   </p>
                   {order.address && (
                     <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 leading-relaxed">

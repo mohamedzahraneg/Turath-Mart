@@ -46,6 +46,9 @@ interface Order {
   phone2?: string;
   region: string;
   district?: string;
+  // Phase 22N-Fix3 — optional neighborhood / village / shiakha.
+  // NULL for orders created before the column existed.
+  neighborhood?: string | null;
   address: string;
   products: string;
   quantity: number;
@@ -156,7 +159,7 @@ function exportToPDF(orders: Order[]) {
       <td>${o.orderNum}</td>
       <td>${o.customer}</td>
       <td>${o.phone}</td>
-      <td>${o.region}${o.district ? ' - ' + o.district : ''}</td>
+      <td>${o.region}${o.district ? ' - ' + o.district : ''}${o.neighborhood ? ' - ' + o.neighborhood : ''}</td>
       <td>${o.products}</td>
       <td>${o.quantity}</td>
       <td>${o.total.toLocaleString('en-US')} ج.م</td>
@@ -260,7 +263,11 @@ export default function OrdersTableSection() {
       const { data, error } = await supabase
         .from('turath_masr_orders')
         .select(
-          'id, order_num, created_by, created_by_device, customer, phone, phone2, region, district, address, products, quantity, subtotal, shipping_fee, extra_shipping_fee, express_shipping, total, status, date, time, day, notes, delegate_name, created_at'
+          // Phase 22N-Fix3 — added `neighborhood` to the explicit select
+          // list so the new column flows through the OrdersTable +
+          // OrderDetailModal renders. Legacy rows missing the column
+          // simply come back as `null`.
+          'id, order_num, created_by, created_by_device, customer, phone, phone2, region, district, neighborhood, address, products, quantity, subtotal, shipping_fee, extra_shipping_fee, express_shipping, total, status, date, time, day, notes, delegate_name, created_at'
         )
         .order('created_at', { ascending: false });
 
@@ -280,6 +287,7 @@ export default function OrdersTableSection() {
           phone2: row.phone2 || undefined,
           region: row.region,
           district: row.district || undefined,
+          neighborhood: row.neighborhood ?? null,
           address: row.address,
           products: row.products,
           quantity: row.quantity,
@@ -951,6 +959,7 @@ export default function OrdersTableSection() {
                           {order.district && (
                             <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
                               {order.district}
+                              {order.neighborhood ? ` — ${order.neighborhood}` : ''}
                             </p>
                           )}
                         </div>
