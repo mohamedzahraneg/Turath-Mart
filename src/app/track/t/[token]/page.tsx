@@ -50,6 +50,7 @@ import {
 interface TrackingOrder {
   orderNum: string;
   customer: string;
+  /** Phase 22H: comes pre-masked from the RPC, e.g. `0101****678`. */
   phone: string;
   region: string;
   district?: string;
@@ -59,9 +60,15 @@ interface TrackingOrder {
   total: number;
   subtotal?: number;
   shippingFee?: number;
+  // Phase 22H — additional totals exposed by the widened token RPC.
+  extraShippingFee?: number;
+  freeShipping?: boolean;
   status: string;
   date: string;
   time: string;
+  // Phase 22H — ISO timestamp from `turath_masr_orders.created_at`.
+  // Used for the "تم إنشاء الطلب يوم …" line shown next to orderNum.
+  createdAt?: string;
   notes?: string;
   warranty?: string;
   delegate?: string;
@@ -72,6 +79,10 @@ interface TrackingOrder {
   lines?: {
     productType: string;
     label: string;
+    // Phase 22H: `image` and `note` are stripped server-side from the
+    // public token RPC. Kept on the type for backward-compat with the
+    // invoice/warranty PDF builder which still consumes the same shape
+    // when populated from staff-side flows.
     image?: string | null;
     emoji?: string;
     color?: string | null;
@@ -95,6 +106,51 @@ interface StatusStep {
 }
 
 const STATUS_FLOW = ['new', 'preparing', 'warehouse', 'shipping', 'delivered'];
+
+// Phase 22H: format an ISO timestamp into the Arabic creation-line shown
+// next to the order number. Example output:
+//   "يوم السبت، 9 مايو 2026، الساعة 03:45:22 مساءً"
+// Uses the user's local timezone — same convention as the existing
+// `order.date` / `order.time` strings further down the page. Returns
+// an empty string for invalid/missing input so the JSX can `&&` it out.
+const AR_DAY_NAMES = [
+  'الأحد',
+  'الاثنين',
+  'الثلاثاء',
+  'الأربعاء',
+  'الخميس',
+  'الجمعة',
+  'السبت',
+] as const;
+const AR_MONTH_NAMES = [
+  'يناير',
+  'فبراير',
+  'مارس',
+  'أبريل',
+  'مايو',
+  'يونيو',
+  'يوليو',
+  'أغسطس',
+  'سبتمبر',
+  'أكتوبر',
+  'نوفمبر',
+  'ديسمبر',
+] as const;
+
+function formatCreationTimestamp(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const day = AR_DAY_NAMES[d.getDay()];
+  const date = `${d.getDate()} ${AR_MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
+  const h24 = d.getHours();
+  const period = h24 >= 12 ? 'مساءً' : 'صباحاً';
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  const hh = String(h12).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `يوم ${day}، ${date}، الساعة ${hh}:${mm}:${ss} ${period}`;
+}
 
 const STATUS_CONFIG: Record<
   string,
@@ -1314,10 +1370,13 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
           // return only the redacted columns. The /api/track endpoint
           // is now the single source of truth.
 
-          // Fetch the redacted order DTO from the public tracking API.
-          // This calls the SECURITY DEFINER RPC `get_tracking_info` which
-          // returns ONLY non-PII columns (no phone, address, total, notes,
-          // delegate, audit internals).
+          // Fetch the order DTO from the token-keyed tracking API.
+          // Phase 22H: this RPC was widened — the token URL is unguessable
+          // so a holder of the link is treated as the customer. The DTO
+          // now carries customer name, masked phone, address, lines,
+          // totals, and free_shipping. Internal fields (phone2, notes,
+          // audit columns, delegate identity, tracking_token itself,
+          // lines.image, lines.note) remain stripped server-side.
           {
             try {
               const res = await fetch(`/api/track-token/${encodeURIComponent(token)}`, {
@@ -1325,21 +1384,41 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
               });
               if (res.ok) {
                 const data = await res.json();
+                const dtoLines = Array.isArray(data.lines)
+                  ? (data.lines as Array<Record<string, unknown>>).map((l) => ({
+                      productType: String(l.productType ?? ''),
+                      label: String(l.label ?? ''),
+                      emoji: typeof l.emoji === 'string' ? l.emoji : undefined,
+                      color: (l.color as string | null) ?? null,
+                      quantity: Number(l.quantity ?? 0),
+                      unitPrice: Number(l.unitPrice ?? 0),
+                      includeFlashlight: Boolean(l.includeFlashlight),
+                      flashlightPrice:
+                        l.flashlightPrice == null ? undefined : Number(l.flashlightPrice),
+                      total: Number(l.total ?? 0),
+                    }))
+                  : undefined;
                 found = {
                   orderNum: data.orderNum,
-                  // PII fields intentionally left empty — the public DTO
-                  // never contains them. The UI must render gracefully
-                  // when these are missing.
-                  customer: '',
-                  phone: '',
+                  customer: data.customer ?? '',
+                  phone: data.phone ?? '',
                   region: data.region ?? '',
-                  address: '',
+                  district: data.district ?? undefined,
+                  address: data.address ?? '',
                   products: data.products ?? '',
                   quantity: data.quantity ?? 0,
-                  total: 0,
+                  total: Number(data.total ?? 0),
+                  subtotal: data.subtotal == null ? undefined : Number(data.subtotal),
+                  shippingFee: data.shippingFee == null ? undefined : Number(data.shippingFee),
+                  extraShippingFee:
+                    data.extraShippingFee == null ? undefined : Number(data.extraShippingFee),
+                  freeShipping:
+                    typeof data.freeShipping === 'boolean' ? data.freeShipping : undefined,
+                  lines: dtoLines,
                   status: data.status,
                   date: data.date ?? '',
                   time: '',
+                  createdAt: data.createdAt ?? undefined,
                   warranty: data.warranty || undefined,
                 } as TrackingOrder;
                 if (Array.isArray(data.statusTimeline) && data.statusTimeline.length > 0) {
@@ -1661,9 +1740,21 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
           >
             <p className="text-amber-300 text-xs mb-1">رقم الطلب</p>
             <p className="font-mono font-bold text-xl tracking-wide text-white">{order.orderNum}</p>
-            <p className="text-amber-200/70 text-xs mt-1">
-              {order.date} — {order.time}
-            </p>
+            {order.date && order.time && (
+              <p className="text-amber-200/70 text-xs mt-1">
+                {order.date} — {order.time}
+              </p>
+            )}
+            {/* Phase 22H — explicit creation timestamp with day name +
+                seconds. Required by the Phase 22H follow-up so the
+                customer can confirm the exact moment the order was
+                placed. Renders only on the token page, never on the
+                redacted /track/[orderId] page. */}
+            {order.createdAt && (
+              <p className="text-amber-200/80 text-xs mt-1.5 leading-relaxed">
+                تم إنشاء الطلب {formatCreationTimestamp(order.createdAt)}
+              </p>
+            )}
           </div>
         </div>
       </div>
@@ -1798,9 +1889,11 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
             <h2 className="font-bold text-sm text-[hsl(var(--foreground))]">تفاصيل الطلب</h2>
           </div>
           <div className="space-y-2.5">
-            {/* Customer name + full address are PII and intentionally NOT
-                shown on the public tracking page. Only the high-level
-                region (governorate) is exposed via the redacted RPC. */}
+            {/* Phase 22H — token URL is unguessable, so identity + address
+                are surfaced for the holder. Phone arrives pre-masked from
+                the RPC (e.g. `0101****678`); the un-masked value never
+                leaves the database. The redacted /track/[orderId] page
+                continues to receive empty strings here. */}
             {order.customer && (
               <div className="flex items-start gap-2">
                 <User
@@ -1815,6 +1908,23 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
                 </div>
               </div>
             )}
+            {order.phone && (
+              <div className="flex items-start gap-2">
+                <Phone
+                  size={13}
+                  className="text-[hsl(var(--muted-foreground))] mt-0.5 flex-shrink-0"
+                />
+                <div>
+                  <p className="text-xs text-[hsl(var(--muted-foreground))]">رقم الهاتف</p>
+                  <p
+                    className="text-sm font-semibold text-[hsl(var(--foreground))] font-mono"
+                    dir="ltr"
+                  >
+                    {order.phone}
+                  </p>
+                </div>
+              </div>
+            )}
             {order.region && (
               <div className="flex items-start gap-2">
                 <MapPin
@@ -1825,7 +1935,13 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
                   <p className="text-xs text-[hsl(var(--muted-foreground))]">منطقة الشحن</p>
                   <p className="text-sm font-semibold text-[hsl(var(--foreground))]">
                     {order.region}
+                    {order.district ? ` — ${order.district}` : ''}
                   </p>
+                  {order.address && (
+                    <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 leading-relaxed">
+                      {order.address}
+                    </p>
+                  )}
                 </div>
               </div>
             )}
@@ -1893,11 +2009,60 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
                 )}
               </div>
             </div>
-            <div className="flex items-center justify-between pt-2 border-t border-[hsl(var(--border))]">
-              <span className="text-sm text-[hsl(var(--muted-foreground))]">إجمالي الطلب</span>
-              <span className="font-bold text-[hsl(211,67%,28%)] text-base">
-                {order.total.toLocaleString('en-US')} ج.م
-              </span>
+            {/* Phase 22H — itemised totals. Subtotal / shipping fee /
+                extra shipping fee / final total are all rendered when
+                the corresponding field arrives populated from the RPC.
+                When the order is flagged free_shipping=true, the
+                shipping line shows "الشحن مجاني" instead of an amount,
+                regardless of whether shipping_fee was 0 or a stored
+                positive number. */}
+            <div className="pt-2 border-t border-[hsl(var(--border))] space-y-1.5">
+              {order.subtotal != null && (
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-[hsl(var(--muted-foreground))]">
+                    إجمالي المنتجات
+                  </span>
+                  <span className="text-sm font-mono text-[hsl(var(--foreground))]">
+                    {order.subtotal.toLocaleString('en-US')} ج.م
+                  </span>
+                </div>
+              )}
+              {order.freeShipping ? (
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-[hsl(var(--muted-foreground))]">مصاريف الشحن</span>
+                  <span className="text-sm font-bold text-green-600">الشحن مجاني</span>
+                </div>
+              ) : (
+                order.shippingFee != null &&
+                order.shippingFee > 0 && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-[hsl(var(--muted-foreground))]">
+                      مصاريف الشحن
+                    </span>
+                    <span className="text-sm font-mono text-[hsl(var(--foreground))]">
+                      {order.shippingFee.toLocaleString('en-US')} ج.م
+                    </span>
+                  </div>
+                )
+              )}
+              {!order.freeShipping &&
+                order.extraShippingFee != null &&
+                order.extraShippingFee > 0 && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-[hsl(var(--muted-foreground))]">شحن إضافي</span>
+                    <span className="text-sm font-mono text-[hsl(var(--foreground))]">
+                      {order.extraShippingFee.toLocaleString('en-US')} ج.م
+                    </span>
+                  </div>
+                )}
+              <div className="flex items-center justify-between pt-1.5 border-t border-[hsl(var(--border))]/60">
+                <span className="text-sm text-[hsl(var(--muted-foreground))]">
+                  الإجمالي النهائي
+                </span>
+                <span className="font-bold text-[hsl(211,67%,28%)] text-base font-mono">
+                  {order.total.toLocaleString('en-US')} ج.م
+                </span>
+              </div>
             </div>
           </div>
         </div>

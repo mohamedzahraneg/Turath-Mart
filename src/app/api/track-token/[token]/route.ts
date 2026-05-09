@@ -13,14 +13,20 @@
 // Implementation:
 //   - Validates the [token] param as a strict v4-shaped UUID before any
 //     DB call (zero round-trip on garbage input).
-//   - Calls the SECURITY DEFINER RPC `public.get_tracking_info_by_token`
-//     which returns ONLY whitelisted, non-PII columns (no phone, no
-//     address, no financials, no notes, no audit-log internals,
-//     no tracking_token in the response — leaking it back would defeat
-//     the unguessable-link property).
+//   - Calls the SECURITY DEFINER RPC `public.get_tracking_info_by_token`.
+//     The RPC enforces the privacy boundary: phone is masked server-side,
+//     and internal columns (phone2, notes, ip, audit fields, delegate_name,
+//     assigned_to, tracking_token, lines.image, lines.note) are stripped
+//     before the response leaves the database.
 //   - Also calls `public.get_tracking_timeline_by_token` for the status
 //     timeline (no `changed_by`, no `note`).
-//   - Uses the public anon key — no service-role key needed.
+//   - Uses the public anon key — no service-role key needed (the RPC is
+//     the security boundary).
+//
+// Phase 22H: the RPC was widened to return customer-facing order details
+// (customer name, masked phone, address, lines, totals, free_shipping)
+// because the token URL is unguessable. /api/track/[orderId] stays
+// redacted — its key is enumerable.
 //
 // Cache: identical to /api/track/[orderId] — 30s CDN, 60s SWR.
 //
@@ -38,12 +44,43 @@ export const runtime = 'nodejs';
 // at build time, but DO emit Cache-Control headers below for CDN caching.
 export const dynamic = 'force-dynamic';
 
+// Phase 22H: a per-order line item as returned by the widened RPC.
+// `image` and `note` are stripped server-side (image was 70-200 KB
+// base64; note may carry delegate-only annotations).
+interface TrackingLineDTO {
+  productType: string | null;
+  label: string | null;
+  emoji: string | null;
+  color: string | null;
+  quantity: number | null;
+  unitPrice: number | null;
+  total: number | null;
+  includeFlashlight: boolean | null;
+  flashlightPrice: number | null;
+}
+
 interface TrackingDTO {
   orderNum: string;
   status: string;
+  // Phase 22H — customer identity + delivery details.
+  customer: string | null;
+  /** Masked server-side, e.g. `0101****678`. The full phone never leaves the DB. */
+  phone: string | null;
   region: string | null;
+  district: string | null;
+  address: string | null;
+  // Existing free-text product summary kept as a fallback when `lines` is null.
   products: string | null;
   quantity: number | null;
+  // Phase 22H — itemised lines (image/note already stripped by the RPC).
+  lines: TrackingLineDTO[] | null;
+  // Phase 22H — money fields. delivered-only invariant lives elsewhere
+  // in the system (Phase 22E reports). Here we just pass through.
+  subtotal: number | null;
+  shippingFee: number | null;
+  extraShippingFee: number | null;
+  freeShipping: boolean | null;
+  total: number | null;
   warranty: string | null;
   date: string | null;
   createdAt: string | null;
@@ -109,12 +146,48 @@ export async function GET(_request: Request, context: { params: Promise<{ token:
     // Non-fatal — return order data without timeline rather than 500.
   }
 
+  // Phase 22H: normalise the line-items array. The RPC strips `image`
+  // and `note` server-side, but lines may legitimately be null (older
+  // orders pre-Phase-13). We preserve null so the UI can fall back to
+  // the free-text `products` summary, and we coerce numerics defensively
+  // since Postgres numeric → JSON returns strings under PostgREST.
+  const rpcLines: unknown = row.lines;
+  let lines: TrackingLineDTO[] | null = null;
+  if (Array.isArray(rpcLines)) {
+    lines = (rpcLines as Record<string, unknown>[]).map((l) => ({
+      productType: typeof l.productType === 'string' ? l.productType : null,
+      label: typeof l.label === 'string' ? l.label : null,
+      emoji: typeof l.emoji === 'string' ? l.emoji : null,
+      color: typeof l.color === 'string' ? l.color : null,
+      quantity: l.quantity == null ? null : Number(l.quantity),
+      unitPrice: l.unitPrice == null ? null : Number(l.unitPrice),
+      total: l.total == null ? null : Number(l.total),
+      includeFlashlight:
+        typeof l.includeFlashlight === 'boolean'
+          ? l.includeFlashlight
+          : l.includeFlashlight === 'true',
+      flashlightPrice: l.flashlightPrice == null ? null : Number(l.flashlightPrice),
+    }));
+  }
+
+  const toNum = (v: unknown): number | null => (v == null ? null : Number(v));
+
   const dto: TrackingDTO = {
     orderNum: row.order_num,
     status: row.status,
+    customer: typeof row.customer === 'string' ? row.customer : null,
+    phone: typeof row.phone_masked === 'string' ? row.phone_masked : null,
     region: row.region ?? null,
+    district: row.district ?? null,
+    address: row.address ?? null,
     products: row.products ?? null,
     quantity: row.quantity ?? null,
+    lines,
+    subtotal: toNum(row.subtotal),
+    shippingFee: toNum(row.shipping_fee),
+    extraShippingFee: toNum(row.extra_shipping_fee),
+    freeShipping: typeof row.free_shipping === 'boolean' ? row.free_shipping : null,
+    total: toNum(row.total),
     warranty: row.warranty ?? null,
     date: row.date ?? null,
     createdAt: row.created_at ?? null,
