@@ -334,6 +334,12 @@ interface Region {
 import { useAuth } from '@/contexts/AuthContext';
 import { isAdminRole } from '@/lib/constants/roles';
 import { normalizeArabic } from '@/lib/utils/arabic';
+// Phase 22N — settings page presents the same flat array as a true
+// hierarchy. The transformer is applied READ-ONLY for display; edits
+// continue to mutate the flat array by index so the on-disk row shape
+// is unchanged.
+import { findManualParents } from '@/lib/shipping/manualHierarchyRules';
+import { resolveShippingFee } from '@/lib/shipping/resolveShippingFee';
 
 function DistrictsTab() {
   const { currentRoleId } = useAuth();
@@ -541,7 +547,9 @@ function DistrictsTab() {
   const updateDistrict = (
     regionId: string,
     idx: number,
-    patch: Partial<{ name: string; enabled: boolean }>
+    // Phase 22N — widened to accept `fee` (number | null). `null` means
+    // "inherit from parent / governorate"; explicit `0` is a real value.
+    patch: Partial<{ name: string; enabled: boolean; fee: number | null }>
   ) => {
     setRegions((prev) =>
       prev.map((r) => {
@@ -736,19 +744,66 @@ function DistrictsTab() {
                     const normFilter = normalizeArabic(rawFilter);
                     const chip = districtChip[region.id] ?? 'all';
                     const pageSize = districtPageSize[region.id] ?? DEFAULT_PAGE_SIZE;
+                    // Phase 22N — derive the effective parent of every
+                    // district. Three sources, in priority:
+                    //   1. explicit `district.parent` (CAPMAS-imported
+                    //      entries already carry this).
+                    //   2. unambiguous match in the curated manual
+                    //      rules (`findManualParents`). Only attaches
+                    //      when EXACTLY one parent claims the name —
+                    //      ambiguous matches stay top-level so the
+                    //      admin disambiguates.
+                    //   3. otherwise top-level (no parent).
+                    const effectiveParentByIdx = new Map<number, string | null>();
+                    region.districts.forEach((d, i) => {
+                      if (d.parent && d.parent.trim()) {
+                        effectiveParentByIdx.set(i, d.parent.trim());
+                        return;
+                      }
+                      const candidates = findManualParents(region.name, d.name);
+                      if (candidates.length === 1) {
+                        effectiveParentByIdx.set(i, candidates[0].parent);
+                      } else {
+                        effectiveParentByIdx.set(i, null);
+                      }
+                    });
                     const filtered = region.districts
-                      .map((d, idx) => ({ d, idx }))
-                      .filter(({ d }) => {
+                      .map((d, idx) => ({
+                        d,
+                        idx,
+                        effectiveParent: effectiveParentByIdx.get(idx) ?? null,
+                      }))
+                      .filter(({ d, effectiveParent }) => {
                         if (chip === 'manual' && d.source !== 'manual_supplement') return false;
                         if (chip === 'official' && d.source !== 'official') return false;
                         if (chip === 'needs-review' && !d.needsReview) return false;
                         if (chip === 'disabled' && d.enabled !== false) return false;
                         if (!normFilter) return true;
+                        // Match name OR parent (explicit or rule-derived)
+                        // so a search for "أكتوبر" surfaces every
+                        // entry under 6 أكتوبر as well as the parent
+                        // entry itself.
                         return (
                           normalizeArabic(d.name).includes(normFilter) ||
-                          normalizeArabic(d.parent ?? '').includes(normFilter)
+                          normalizeArabic(d.parent ?? '').includes(normFilter) ||
+                          normalizeArabic(effectiveParent ?? '').includes(normFilter)
                         );
                       });
+                    // Phase 22N — sort filtered tiles by their effective
+                    // parent, then top-level entries first within each
+                    // group, then by name. Result: children appear
+                    // directly underneath their parent in the grid.
+                    filtered.sort((a, b) => {
+                      const ap = a.effectiveParent ?? a.d.name;
+                      const bp = b.effectiveParent ?? b.d.name;
+                      if (ap !== bp) {
+                        return normalizeArabic(ap).localeCompare(normalizeArabic(bp));
+                      }
+                      const aTop = a.effectiveParent === null ? 0 : 1;
+                      const bTop = b.effectiveParent === null ? 0 : 1;
+                      if (aTop !== bTop) return aTop - bTop;
+                      return normalizeArabic(a.d.name).localeCompare(normalizeArabic(b.d.name));
+                    });
                     // Phase 22M-Fix1 — counts (ignoring chip / search) so
                     // the chip labels can show how many entries each
                     // category has — useful at a glance.
@@ -825,17 +880,40 @@ function DistrictsTab() {
                             : `${filtered.length} نتيجة من ${region.districts.length}`}
                         </p>
                         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                          {visible.map(({ d: district, idx }) => {
+                          {visible.map(({ d: district, idx, effectiveParent }) => {
                             const dName = district.name;
                             const dEnabled = district.enabled !== false;
                             const isManual = district.source === 'manual_supplement';
                             const isOfficial = district.source === 'official';
                             const needsReview = !!district.needsReview;
-                            const parent = district.parent;
+                            const parent = district.parent ?? effectiveParent ?? undefined;
+                            // Phase 22N — child rows are indented + tinted
+                            // so the hierarchy visually pops out without
+                            // restructuring the grid. Top-level rows
+                            // keep their existing look.
+                            const isChild = effectiveParent !== null;
+                            // Read both `fee` and `shippingFee` for
+                            // backward compat. `null` means "inherit".
+                            const districtFee =
+                              typeof district.fee === 'number'
+                                ? district.fee
+                                : typeof district.shippingFee === 'number'
+                                  ? district.shippingFee
+                                  : null;
+                            // Inheritance hint text under the fee
+                            // input: tells the admin which value
+                            // applies if they leave it empty.
+                            const feeInheritLabel = isChild
+                              ? 'يستخدم سعر شحن المنطقة'
+                              : 'يستخدم سعر شحن المحافظة';
                             return (
                               <div
                                 key={`${region.id}-${idx}`}
-                                className={`relative group flex flex-col gap-1 border-2 rounded-xl px-3 py-2 transition-all ${dEnabled ? 'border-gray-100 bg-white' : 'border-red-100 bg-red-50/30 opacity-60'}`}
+                                className={`relative group flex flex-col gap-1 border-2 rounded-xl px-3 py-2 transition-all ${
+                                  dEnabled
+                                    ? 'border-gray-100 bg-white'
+                                    : 'border-red-100 bg-red-50/30 opacity-60'
+                                } ${isChild ? 'pr-6 sm:mr-4 sm:bg-gray-50/50 sm:border-gray-100' : ''}`}
                               >
                                 <div className="flex items-center gap-2">
                                   {isAdmin && (
@@ -870,6 +948,48 @@ function DistrictsTab() {
                                     </button>
                                   )}
                                 </div>
+                                {/* Phase 22N — per-district shipping
+                                    fee. Empty / null means "inherit
+                                    from parent / governorate"; explicit
+                                    `0` is a real value (free shipping
+                                    at this level). */}
+                                {isAdmin && (
+                                  <div className="flex items-center gap-2 text-[11px]">
+                                    <label className="text-gray-400 font-bold whitespace-nowrap">
+                                      {isChild ? 'سعر خاص:' : 'سعر شحن المنطقة:'}
+                                    </label>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      step={1}
+                                      value={districtFee === null ? '' : districtFee}
+                                      onChange={(e) => {
+                                        const raw = e.target.value;
+                                        if (raw === '') {
+                                          // Empty → inherit. Persist as
+                                          // `null` so the renderer can
+                                          // distinguish "not set" from
+                                          // explicit `0`.
+                                          updateDistrict(region.id, idx, { fee: null });
+                                          return;
+                                        }
+                                        const num = Number(raw);
+                                        if (!Number.isFinite(num) || num < 0) return;
+                                        updateDistrict(region.id, idx, { fee: num });
+                                      }}
+                                      placeholder={feeInheritLabel}
+                                      className="flex-1 min-w-0 px-2 py-1 bg-white border border-gray-200 rounded-md text-[11px] font-medium focus:outline-none focus:border-primary/50 placeholder:text-gray-300"
+                                    />
+                                    <span className="text-gray-400 text-[10px]">ج.م</span>
+                                  </div>
+                                )}
+                                {!isAdmin &&
+                                  (typeof district.fee === 'number' ||
+                                    typeof district.shippingFee === 'number') && (
+                                    <div className="text-[11px] text-gray-500 font-bold">
+                                      سعر خاص: {district.fee ?? district.shippingFee} ج.م
+                                    </div>
+                                  )}
                                 {/* Phase 22M — metadata strip. Visible
                                     only when the district carries
                                     parent / source / needsReview info,

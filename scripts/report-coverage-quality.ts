@@ -81,6 +81,9 @@ function inspect(govs: ShippingGovernorate[]): {
   disabledUnderEnabledGov: Issue[];
   manualWithoutParent: Issue[];
   officialNeedsReview: Issue[];
+  // Phase 22N — additional categories
+  childrenWithoutParent: Issue[];
+  feeOverrides: Issue[];
   totals: {
     governorates: number;
     districts: number;
@@ -88,6 +91,7 @@ function inspect(govs: ShippingGovernorate[]): {
     disabled: number;
     manual: number;
     needsReview: number;
+    feeOverridesCount: number;
   };
 } {
   const longNames: Issue[] = [];
@@ -96,6 +100,8 @@ function inspect(govs: ShippingGovernorate[]): {
   const disabledUnderEnabledGov: Issue[] = [];
   const manualWithoutParent: Issue[] = [];
   const officialNeedsReview: Issue[] = [];
+  const childrenWithoutParent: Issue[] = [];
+  const feeOverrides: Issue[] = [];
   const totals = {
     governorates: 0,
     districts: 0,
@@ -103,6 +109,7 @@ function inspect(govs: ShippingGovernorate[]): {
     disabled: 0,
     manual: 0,
     needsReview: 0,
+    feeOverridesCount: 0,
   };
 
   for (const gov of govs) {
@@ -190,6 +197,47 @@ function inspect(govs: ShippingGovernorate[]): {
           reason: 'official entry flagged needsReview',
         });
       }
+      // Phase 22N — children of a non-existent parent. The parent
+      // pointer references a name that isn't a top-level area in
+      // this governorate. The hierarchy transformer would create a
+      // placeholder for these, but admins should review them.
+      if (d.parent) {
+        const parentNorm = normalizeArabic(d.parent);
+        const parentExists = gov.districts.some(
+          (other) =>
+            other !== d &&
+            !other.parent && // top-level only
+            normalizeArabic(other.name) === parentNorm
+        );
+        if (!parentExists) {
+          childrenWithoutParent.push({
+            governorate: gov.name,
+            area: name,
+            parent: d.parent,
+            enabled: !!d.enabled,
+            source: d.source,
+            reason: `parent "${d.parent}" not found as a top-level area`,
+          });
+        }
+      }
+      // Phase 22N — fee overrides at district level (either field).
+      const feeNumber =
+        typeof d.fee === 'number'
+          ? d.fee
+          : typeof d.shippingFee === 'number'
+            ? d.shippingFee
+            : null;
+      if (feeNumber !== null) {
+        totals.feeOverridesCount += 1;
+        feeOverrides.push({
+          governorate: gov.name,
+          area: name,
+          parent: d.parent,
+          enabled: !!d.enabled,
+          source: d.source,
+          reason: `district-level fee = ${feeNumber} EGP`,
+        });
+      }
     }
   }
 
@@ -200,6 +248,8 @@ function inspect(govs: ShippingGovernorate[]): {
     disabledUnderEnabledGov,
     manualWithoutParent,
     officialNeedsReview,
+    childrenWithoutParent,
+    feeOverrides,
     totals,
   };
 }
@@ -230,7 +280,7 @@ async function main(): Promise<void> {
   const r = inspect(govs);
 
   // eslint-disable-next-line no-console
-  console.log('# Phase 22M-Fix1 — coverage-quality report');
+  console.log('# Phase 22N — coverage-quality report');
   // eslint-disable-next-line no-console
   console.log(`source = ${process.argv.includes('--from') ? 'file' : 'committed seed'}`);
   // eslint-disable-next-line no-console
@@ -247,16 +297,17 @@ async function main(): Promise<void> {
   console.log(`manual_supplement entries = ${r.totals.manual}`);
   // eslint-disable-next-line no-console
   console.log(`needsReview entries = ${r.totals.needsReview}`);
+  // eslint-disable-next-line no-console
+  console.log(`fee overrides = ${r.totals.feeOverridesCount}`);
 
   printSection('Long names (>24 chars)', r.longNames);
   printSection('No-space Arabic names (CAPMAS concatenation)', r.noSpaceNames);
   printSection('Duplicate normalised names within same governorate', r.duplicates);
+  printSection('Children with parent pointer to non-existent area', r.childrenWithoutParent);
+  printSection('Fee overrides (district-level)', r.feeOverrides);
   printSection('Manual supplements without parent', r.manualWithoutParent);
   printSection('Official entries flagged needsReview', r.officialNeedsReview);
-  printSection(
-    'Disabled districts under enabled governorate (sample)',
-    r.disabledUnderEnabledGov
-  );
+  printSection('Disabled districts under enabled governorate (sample)', r.disabledUnderEnabledGov);
 }
 
 main().catch((err) => {
