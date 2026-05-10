@@ -41,7 +41,12 @@ interface TrackingDTO {
   date: string | null;
   createdAt: string | null;
   updatedAt: string | null;
-  statusTimeline: Array<{ status: string; changedAt: string }>;
+  // Phase 22P — `returnReason` is the customer-safe extract of the
+  // structured `note` payload. Populated only for status='returned'
+  // rows by the `get_tracking_timeline` RPC; null/undefined for
+  // other events and for legacy plain-text notes. Free-form admin
+  // notes remain redacted server-side.
+  statusTimeline: Array<{ status: string; changedAt: string; returnReason?: string | null }>;
 }
 
 function buildAnonClient() {
@@ -106,10 +111,15 @@ export async function GET(_request: Request, context: { params: Promise<{ orderI
     createdAt: row.created_at ?? null,
     updatedAt: row.updated_at ?? null,
     statusTimeline: Array.isArray(timelineRows)
-      ? timelineRows.map((t: { new_status: string; changed_at: string }) => ({
-          status: t.new_status,
-          changedAt: t.changed_at,
-        }))
+      ? timelineRows.map(
+          (t: { new_status: string; changed_at: string; return_reason?: string | null }) => ({
+            status: t.new_status,
+            changedAt: t.changed_at,
+            // Phase 22P — passes through the RPC's `return_reason`
+            // (NULL until the Phase 22P migration is applied).
+            returnReason: t.return_reason ?? null,
+          })
+        )
       : [],
   };
 

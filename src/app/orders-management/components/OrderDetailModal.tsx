@@ -28,6 +28,9 @@ import { createClient } from '@/lib/supabase/client';
 import { STATUS_LABELS } from './AuditLogModal';
 import { useAuth } from '@/contexts/AuthContext';
 import { canUseAdminOnlyFinancialFields, canEditOrders } from '@/lib/constants/roles';
+// Phase 22P — split structured `{ reason, note }` payloads in the
+// status-history + audit timeline render paths below.
+import { parseAuditNote } from '@/lib/orders/auditNote';
 import { UserStamp } from '@/components/UserStamp';
 
 interface OrderLine {
@@ -884,11 +887,32 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                               <span>بواسطة:</span>
                               <UserStamp name={h.changedBy} role={h.changedByRole} size="sm" />
                             </div>
-                            {h.note && (
-                              <p className="text-xs text-[hsl(var(--foreground))] mt-1.5 bg-[hsl(var(--muted))]/50 rounded-lg px-2 py-1 italic">
-                                "{h.note}"
-                              </p>
-                            )}
+                            {/* Phase 22P — split structured note. */}
+                            {(() => {
+                              const parsed = parseAuditNote(h.note);
+                              if (!parsed.reason && !parsed.note && !parsed.raw) return null;
+                              return (
+                                <div className="text-xs text-[hsl(var(--foreground))] mt-1.5 bg-[hsl(var(--muted))]/50 rounded-lg px-2 py-1 space-y-0.5">
+                                  {parsed.reason && (
+                                    <p className="leading-snug">
+                                      <span className="font-bold text-red-700">سبب الإرجاع:</span>{' '}
+                                      <span className="italic">{parsed.reason}</span>
+                                    </p>
+                                  )}
+                                  {parsed.note && (
+                                    <p className="leading-snug">
+                                      <span className="font-bold">ملاحظة:</span>{' '}
+                                      <span className="italic">{parsed.note}</span>
+                                    </p>
+                                  )}
+                                  {parsed.raw && (
+                                    <p className="italic leading-snug">
+                                      &ldquo;{parsed.raw}&rdquo;
+                                    </p>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </div>
                         </div>
                       );
@@ -1268,9 +1292,32 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                                     ? 'مندوب'
                                     : log.changedByRole}
                             </p>
-                            {log.note && (
-                              <p className="text-xs mt-1 italic opacity-80">"{log.note}"</p>
-                            )}
+                            {/* Phase 22P — split structured note. */}
+                            {(() => {
+                              const parsed = parseAuditNote(log.note);
+                              if (!parsed.reason && !parsed.note && !parsed.raw) return null;
+                              return (
+                                <div className="text-xs mt-1 space-y-0.5 opacity-80">
+                                  {parsed.reason && (
+                                    <p className="leading-snug">
+                                      <span className="font-bold">سبب الإرجاع:</span>{' '}
+                                      <span className="italic">{parsed.reason}</span>
+                                    </p>
+                                  )}
+                                  {parsed.note && (
+                                    <p className="leading-snug">
+                                      <span className="font-bold">ملاحظة:</span>{' '}
+                                      <span className="italic">{parsed.note}</span>
+                                    </p>
+                                  )}
+                                  {parsed.raw && (
+                                    <p className="italic leading-snug">
+                                      &ldquo;{parsed.raw}&rdquo;
+                                    </p>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </div>
                           <div className="text-left flex-shrink-0">
                             <p className="text-[10px] font-mono opacity-70">{dateStr}</p>
