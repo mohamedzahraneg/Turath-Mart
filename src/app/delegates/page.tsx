@@ -256,6 +256,15 @@ interface ExpenseRow {
   voided_by?: string | null;
   voided_by_name?: string | null;
   updated_at?: string | null;
+  // Phase 23G — review-decision metadata captured when an admin
+  // approves or rejects a pending expense. Optional in the type
+  // because pre-migration the columns don't exist; the loader
+  // tolerates a 42703 fall-through and treats every row's review
+  // metadata as null so the existing approve/void flows still work.
+  review_reason?: string | null;
+  reviewed_at?: string | null;
+  reviewed_by?: string | null;
+  reviewed_by_name?: string | null;
 }
 
 interface DelegateAggregate {
@@ -318,6 +327,15 @@ function isExpenseVoided(e: { status?: string | null }): boolean {
 }
 function isExpenseApprovedActive(e: { status?: string | null }): boolean {
   return e.status === 'approved';
+}
+// Phase 23G — predicate matchers for the new approval-workflow
+// statuses. `pending` and `rejected` were always part of the CHECK
+// constraint set but had no UI / aggregator routes until this phase.
+function isExpensePending(e: { status?: string | null }): boolean {
+  return e.status === 'pending';
+}
+function isExpenseRejected(e: { status?: string | null }): boolean {
+  return e.status === 'rejected';
 }
 function isCustodyVoided(c: { status?: string | null }): boolean {
   return c.status === 'voided';
@@ -489,7 +507,10 @@ export default function DelegatesPage() {
   } | null>(null);
   const [expenseMutation, setExpenseMutation] = useState<{
     row: ExpenseRow;
-    kind: 'edit' | 'void';
+    // Phase 23G — `approve` runs through a confirm dialog with an
+    // optional note; `reject` requires a reason in the same shared
+    // VoidMovementDialog component, parameterised for rejection.
+    kind: 'edit' | 'void' | 'approve' | 'reject';
   } | null>(null);
   const [custodyMutation, setCustodyMutation] = useState<{
     row: CustodyRow;
@@ -591,10 +612,11 @@ export default function DelegatesPage() {
             // numbers stay consistent. Older rows still exist in the
             // DB; a future "تقرير حساب المندوب" view can fetch them.
             // Phase 23E — adds the void metadata columns.
+            // Phase 23G — adds the review metadata columns.
             supabase
               .from('turath_masr_delegate_expenses')
               .select(
-                'id, delegate_profile_id, delegate_name, order_id, expense_type, amount, status, approved_by, approved_by_name, note, expense_at, created_at, void_reason, voided_at, voided_by, voided_by_name, updated_at'
+                'id, delegate_profile_id, delegate_name, order_id, expense_type, amount, status, approved_by, approved_by_name, note, expense_at, created_at, void_reason, voided_at, voided_by, voided_by_name, updated_at, review_reason, reviewed_at, reviewed_by, reviewed_by_name'
               )
               .gte('expense_at', since)
               .order('expense_at', { ascending: false })
@@ -1486,6 +1508,9 @@ export default function DelegatesPage() {
           onVoidExpense={(row) => setExpenseMutation({ row, kind: 'void' })}
           onEditCustody={(row) => setCustodyMutation({ row, kind: 'edit' })}
           onVoidCustody={(row) => setCustodyMutation({ row, kind: 'void' })}
+          /* Phase 23G — approve / reject pending expense launchers. */
+          onApproveExpense={(row) => setExpenseMutation({ row, kind: 'approve' })}
+          onRejectExpense={(row) => setExpenseMutation({ row, kind: 'reject' })}
         />
       )}
 
@@ -1756,6 +1781,96 @@ export default function DelegatesPage() {
         />
       )}
 
+      {/* Phase 23G — approve pending expense. Optional reason
+          captured in a lightweight confirm dialog. Status flips to
+          'approved' and stamps reviewed_*; existing approved_* are
+          ALSO refreshed so the legacy "who acknowledged" surface
+          stays accurate after the decision. */}
+      {expenseMutation && expenseMutation.kind === 'approve' && (
+        <ApproveExpenseDialog
+          row={expenseMutation.row}
+          onCancel={() => setExpenseMutation(null)}
+          onConfirm={async (note) => {
+            const supabase = createClient();
+            const reviewerId = user?.id ?? null;
+            const reviewerName = profileFullName ?? null;
+            const { error } = await supabase
+              .from('turath_masr_delegate_expenses')
+              .update({
+                status: 'approved',
+                review_reason: note ?? null,
+                reviewed_at: new Date().toISOString(),
+                reviewed_by: reviewerId,
+                reviewed_by_name: reviewerName,
+                approved_by: reviewerId,
+                approved_by_name: reviewerName,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', expenseMutation.row.id);
+            if (error) {
+              console.error('[delegates] approve expense failed', error);
+              setToast({
+                kind: 'error',
+                message:
+                  error.code === '42501'
+                    ? 'لا تملك صلاحية اعتماد المصاريف. تواصل مع المدير.'
+                    : error.code === '42703'
+                      ? 'حقول الاعتماد غير متاحة بعد. لم يتم تطبيق ترحيل القاعدة.'
+                      : `تعذر اعتماد المصروف: ${error.message}`,
+              });
+              return;
+            }
+            setExpenseMutation(null);
+            setReloadTick((n) => n + 1);
+            setToast({ kind: 'success', message: 'تم اعتماد المصروف.' });
+          }}
+        />
+      )}
+
+      {/* Phase 23G — reject pending expense. Reason required (>=3
+          chars), captured via the same shared VoidMovementDialog
+          parameterised for rejection. Review fields stamped; the
+          row stays in the table but does NOT enter the financial
+          totals (`expenses_total` already filters on
+          status='approved'). */}
+      {expenseMutation && expenseMutation.kind === 'reject' && (
+        <VoidMovementDialog
+          kind="expense_reject"
+          rowSummary={`مصروف بمبلغ ${fmtMoney(Number(expenseMutation.row.amount ?? 0))} — ${expenseTypeLabel(expenseMutation.row.expense_type)}`}
+          onCancel={() => setExpenseMutation(null)}
+          onConfirm={async (reason) => {
+            const supabase = createClient();
+            const { error } = await supabase
+              .from('turath_masr_delegate_expenses')
+              .update({
+                status: 'rejected',
+                review_reason: reason,
+                reviewed_at: new Date().toISOString(),
+                reviewed_by: user?.id ?? null,
+                reviewed_by_name: profileFullName ?? null,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', expenseMutation.row.id);
+            if (error) {
+              console.error('[delegates] reject expense failed', error);
+              setToast({
+                kind: 'error',
+                message:
+                  error.code === '42501'
+                    ? 'لا تملك صلاحية رفض المصاريف. تواصل مع المدير.'
+                    : error.code === '42703'
+                      ? 'حقول المراجعة غير متاحة بعد. لم يتم تطبيق ترحيل القاعدة.'
+                      : `تعذر رفض المصروف: ${error.message}`,
+              });
+              return;
+            }
+            setExpenseMutation(null);
+            setReloadTick((n) => n + 1);
+            setToast({ kind: 'success', message: 'تم رفض المصروف.' });
+          }}
+        />
+      )}
+
       {/* Phase 23E — custody edit / void modals. The void path
           surfaces an extra confirmation when the row already has a
           terminal status (returned/settled/lost) — matches the
@@ -1922,6 +2037,11 @@ interface DrawerProps {
   onVoidExpense?: (row: ExpenseRow) => void;
   onEditCustody?: (row: CustodyRow) => void;
   onVoidCustody?: (row: CustodyRow) => void;
+  // Phase 23G — approve / reject hooks for pending expenses. Same
+  // forwarding pattern as the rest of the drawer hooks; the actual
+  // mutation lives at the page level.
+  onApproveExpense?: (row: ExpenseRow) => void;
+  onRejectExpense?: (row: ExpenseRow) => void;
 }
 
 function DelegateDrawer({
@@ -1945,6 +2065,8 @@ function DelegateDrawer({
   onVoidExpense,
   onEditCustody,
   onVoidCustody,
+  onApproveExpense,
+  onRejectExpense,
 }: DrawerProps) {
   const a = aggregate;
 
@@ -2088,6 +2210,8 @@ function DelegateDrawer({
               onAdd={onAddExpense}
               onEdit={onEditExpense}
               onVoid={onVoidExpense}
+              onApprove={onApproveExpense}
+              onReject={onRejectExpense}
             />
           )}
           {activeTab === 'statement' && (
@@ -4044,24 +4168,110 @@ interface ExpensesTabProps {
   // Phase 23E — admin-only edit / void launchers per row.
   onEdit?: (row: ExpenseRow) => void;
   onVoid?: (row: ExpenseRow) => void;
+  // Phase 23G — admin-only approve / reject launchers (only show
+  // on rows whose status='pending').
+  onApprove?: (row: ExpenseRow) => void;
+  onReject?: (row: ExpenseRow) => void;
 }
 
-function ExpensesTab({ a, canManage = false, onAdd, onEdit, onVoid }: ExpensesTabProps) {
+type ExpenseStatusFilter = 'all' | 'pending' | 'approved' | 'rejected' | 'voided';
+
+function ExpensesTab({
+  a,
+  canManage = false,
+  onAdd,
+  onEdit,
+  onVoid,
+  onApprove,
+  onReject,
+}: ExpensesTabProps) {
+  // Phase 23G — local filter pill state. Defaults to 'all' so the
+  // tab opens with the full timeline; the 5 buckets give the admin
+  // a quick triage view of what needs attention.
+  const [statusFilter, setStatusFilter] = useState<ExpenseStatusFilter>('all');
+
+  // Per-bucket counts driven off the unfiltered `a.expenses` so
+  // the pill labels reflect the dataset before filtering.
+  const counts = {
+    all: a.expenses.length,
+    pending: a.expenses.filter(isExpensePending).length,
+    approved: a.expenses.filter(isExpenseApprovedActive).length,
+    rejected: a.expenses.filter(isExpenseRejected).length,
+    voided: a.expenses.filter(isExpenseVoided).length,
+  };
+
+  // Pending sum — surfaces in the new "مصاريف قيد المراجعة" header
+  // card so the admin can see how much money is queued for review.
+  const pendingTotal = a.expenses
+    .filter(isExpensePending)
+    .reduce((s, e) => s + Number(e.amount ?? 0), 0);
+  const rejectedTotal = a.expenses
+    .filter(isExpenseRejected)
+    .reduce((s, e) => s + Number(e.amount ?? 0), 0);
+
+  const visibleExpenses =
+    statusFilter === 'all' ? a.expenses : a.expenses.filter((e) => e.status === statusFilter);
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+      {/* Phase 23G — summary card grid widened to surface pending +
+          rejected totals so the admin can triage without scrolling. */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div className="rounded-2xl border border-[hsl(var(--border))] bg-white p-4">
           <p className="text-[11px] font-bold text-[hsl(var(--muted-foreground))] mb-1">
             إجمالي المصاريف المعتمدة
           </p>
           <p className="text-lg font-bold text-orange-700">{fmtMoney(a.approvedExpensesTotal)}</p>
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1">
+            {counts.approved} مصروف
+          </p>
+        </div>
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+          <p className="text-[11px] font-bold text-amber-800 mb-1">قيد المراجعة</p>
+          <p className="text-lg font-bold text-amber-900">{fmtMoney(pendingTotal)}</p>
+          <p className="text-[10px] text-amber-700 mt-1">{counts.pending} مصروف</p>
+        </div>
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
+          <p className="text-[11px] font-bold text-red-800 mb-1">مرفوض</p>
+          <p className="text-lg font-bold text-red-900">{fmtMoney(rejectedTotal)}</p>
+          <p className="text-[10px] text-red-700 mt-1">{counts.rejected} مصروف</p>
         </div>
         <div className="rounded-2xl border border-[hsl(var(--border))] bg-white p-4">
           <p className="text-[11px] font-bold text-[hsl(var(--muted-foreground))] mb-1">
             عدد المصاريف
           </p>
           <p className="text-lg font-bold">{a.expenses.length}</p>
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1">(تشمل الملغاة)</p>
         </div>
+      </div>
+
+      {/* Phase 23G — status filter pills. Pre-counts come from the
+          unfiltered set so labels reflect the dataset cardinality. */}
+      <div className="flex items-center gap-1 bg-[hsl(var(--muted))]/40 rounded-xl p-1 w-fit flex-wrap">
+        {(
+          [
+            { key: 'all', label: 'الكل' },
+            { key: 'pending', label: 'قيد المراجعة' },
+            { key: 'approved', label: 'معتمد' },
+            { key: 'rejected', label: 'مرفوض' },
+            { key: 'voided', label: 'ملغي' },
+          ] as ReadonlyArray<{ key: ExpenseStatusFilter; label: string }>
+        ).map((opt) => (
+          <button
+            key={opt.key}
+            type="button"
+            onClick={() => setStatusFilter(opt.key)}
+            className={`px-3 py-1 text-xs font-semibold rounded-lg transition-colors ${
+              statusFilter === opt.key
+                ? 'bg-white text-[hsl(var(--foreground))] shadow-sm'
+                : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'
+            }`}
+          >
+            {opt.label}
+            <span className="ml-1 text-[10px] text-[hsl(var(--muted-foreground))]">
+              ({counts[opt.key]})
+            </span>
+          </button>
+        ))}
       </div>
 
       <div className="flex items-center justify-between">
@@ -4106,87 +4316,159 @@ function ExpensesTab({ a, canManage = false, onAdd, onEdit, onVoid }: ExpensesTa
               </tr>
             </thead>
             <tbody className="divide-y divide-[hsl(var(--border))]">
-              {a.expenses.map((e) => {
-                const voided = isExpenseVoided(e);
-                const tone =
-                  EXPENSE_STATUS_TONE[e.status as keyof typeof EXPENSE_STATUS_TONE] ||
-                  // Phase 23E — `voided` falls outside the existing
-                  // EXPENSE_STATUS_TONE map (which knows about
-                  // approved/pending/rejected). Use red.
-                  (e.status === 'voided'
-                    ? 'bg-red-50 text-red-700 border-red-200'
-                    : 'bg-[hsl(var(--muted))]/40 text-[hsl(var(--muted-foreground))] border-[hsl(var(--border))]');
-                return (
-                  <tr
-                    key={e.id}
-                    className={`hover:bg-[hsl(var(--muted))]/30 ${voided ? 'opacity-60' : ''}`}
+              {visibleExpenses.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={canManage ? 7 : 6}
+                    className="table-cell text-xs text-center text-[hsl(var(--muted-foreground))] py-6"
                   >
-                    <td className="table-cell text-xs">{formatDateAr(e.expense_at)}</td>
-                    <td className="table-cell text-xs">{expenseTypeLabel(e.expense_type)}</td>
-                    <td className="table-cell font-mono text-xs">
-                      {e.order_id ? (
-                        e.order_id
-                      ) : (
-                        <span className="text-[hsl(var(--muted-foreground))]">—</span>
-                      )}
-                    </td>
-                    <td
-                      className={`table-cell font-mono text-xs font-bold ${
-                        voided
-                          ? 'text-[hsl(var(--muted-foreground))] line-through'
-                          : 'text-orange-700'
-                      }`}
+                    لا توجد مصاريف بهذه الحالة في الفترة الحالية.
+                  </td>
+                </tr>
+              ) : (
+                visibleExpenses.map((e) => {
+                  const voided = isExpenseVoided(e);
+                  const pending = isExpensePending(e);
+                  const rejected = isExpenseRejected(e);
+                  // Phase 23G — terminal-but-not-active states all
+                  // get the muted treatment. Pending stays bright
+                  // because it needs the admin's attention.
+                  const muted = voided || rejected;
+                  const tone =
+                    EXPENSE_STATUS_TONE[e.status as keyof typeof EXPENSE_STATUS_TONE] ||
+                    (e.status === 'voided'
+                      ? 'bg-red-50 text-red-700 border-red-200'
+                      : 'bg-[hsl(var(--muted))]/40 text-[hsl(var(--muted-foreground))] border-[hsl(var(--border))]');
+                  return (
+                    <tr
+                      key={e.id}
+                      className={`hover:bg-[hsl(var(--muted))]/30 ${muted ? 'opacity-60' : ''}`}
                     >
-                      {fmtMoney(Number(e.amount))}
-                    </td>
-                    <td className="table-cell">
-                      <span
-                        className={`inline-block text-[10px] font-semibold px-2 py-0.5 rounded-full border ${tone}`}
-                      >
-                        {voided ? 'ملغي' : expenseStatusLabel(e.status)}
-                      </span>
-                    </td>
-                    <td className="table-cell text-xs text-[hsl(var(--muted-foreground))]">
-                      {voided && e.void_reason ? (
-                        <span>
-                          {e.note ? `${e.note} — ` : ''}
-                          <span className="text-red-700">سبب الإلغاء: {e.void_reason}</span>
-                        </span>
-                      ) : (
-                        e.note || '—'
-                      )}
-                    </td>
-                    {canManage && (
-                      <td className="table-cell">
-                        {voided ? (
-                          <span className="text-[hsl(var(--muted-foreground))] text-xs">—</span>
+                      <td className="table-cell text-xs">{formatDateAr(e.expense_at)}</td>
+                      <td className="table-cell text-xs">{expenseTypeLabel(e.expense_type)}</td>
+                      <td className="table-cell font-mono text-xs">
+                        {e.order_id ? (
+                          e.order_id
                         ) : (
-                          <div className="flex flex-wrap items-center gap-2">
-                            {onEdit && (
-                              <button
-                                type="button"
-                                onClick={() => onEdit(e)}
-                                className="inline-flex items-center gap-1 text-[11px] font-semibold text-[hsl(var(--primary))] hover:underline"
-                              >
-                                <Pencil size={11} /> تعديل
-                              </button>
-                            )}
-                            {onVoid && (
-                              <button
-                                type="button"
-                                onClick={() => onVoid(e)}
-                                className="inline-flex items-center gap-1 text-[11px] font-semibold text-red-700 hover:underline"
-                              >
-                                <X size={11} /> إلغاء
-                              </button>
-                            )}
-                          </div>
+                          <span className="text-[hsl(var(--muted-foreground))]">—</span>
                         )}
                       </td>
-                    )}
-                  </tr>
-                );
-              })}
+                      <td
+                        className={`table-cell font-mono text-xs font-bold ${
+                          muted
+                            ? 'text-[hsl(var(--muted-foreground))] line-through'
+                            : pending
+                              ? 'text-amber-700'
+                              : 'text-orange-700'
+                        }`}
+                      >
+                        {fmtMoney(Number(e.amount))}
+                      </td>
+                      <td className="table-cell">
+                        <span
+                          className={`inline-block text-[10px] font-semibold px-2 py-0.5 rounded-full border ${tone}`}
+                        >
+                          {voided ? 'ملغي' : expenseStatusLabel(e.status)}
+                        </span>
+                      </td>
+                      <td className="table-cell text-xs text-[hsl(var(--muted-foreground))]">
+                        {/* Phase 23G — surface the void/review reason
+                            inline so admins triaging the timeline can
+                            see the decision context without opening
+                            another modal. */}
+                        {voided && e.void_reason ? (
+                          <span>
+                            {e.note ? `${e.note} — ` : ''}
+                            <span className="text-red-700">سبب الإلغاء: {e.void_reason}</span>
+                          </span>
+                        ) : rejected && e.review_reason ? (
+                          <span>
+                            {e.note ? `${e.note} — ` : ''}
+                            <span className="text-red-700">سبب الرفض: {e.review_reason}</span>
+                          </span>
+                        ) : e.status === 'approved' && e.review_reason ? (
+                          <span>
+                            {e.note ? `${e.note} — ` : ''}
+                            <span className="text-emerald-700">
+                              ملاحظة الاعتماد: {e.review_reason}
+                            </span>
+                          </span>
+                        ) : (
+                          e.note || '—'
+                        )}
+                      </td>
+                      {canManage && (
+                        <td className="table-cell">
+                          {voided ? (
+                            <span className="text-[hsl(var(--muted-foreground))] text-xs">—</span>
+                          ) : pending ? (
+                            // Phase 23G — pending row gets approve /
+                            // reject only. Edit + void are still
+                            // available indirectly via approve-then-
+                            // edit / reject flows, keeping the
+                            // primary action surface tight.
+                            <div className="flex flex-wrap items-center gap-2">
+                              {onApprove && (
+                                <button
+                                  type="button"
+                                  onClick={() => onApprove(e)}
+                                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 hover:underline"
+                                >
+                                  <CheckCircle size={11} /> اعتماد
+                                </button>
+                              )}
+                              {onReject && (
+                                <button
+                                  type="button"
+                                  onClick={() => onReject(e)}
+                                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-red-700 hover:underline"
+                                >
+                                  <X size={11} /> رفض
+                                </button>
+                              )}
+                              {onEdit && (
+                                <button
+                                  type="button"
+                                  onClick={() => onEdit(e)}
+                                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-[hsl(var(--primary))] hover:underline"
+                                >
+                                  <Pencil size={11} /> تعديل
+                                </button>
+                              )}
+                            </div>
+                          ) : rejected ? (
+                            // Rejected rows are read-only at this
+                            // surface — they document the decision.
+                            <span className="text-[hsl(var(--muted-foreground))] text-xs">—</span>
+                          ) : (
+                            // Approved rows keep edit + void as before.
+                            <div className="flex flex-wrap items-center gap-2">
+                              {onEdit && (
+                                <button
+                                  type="button"
+                                  onClick={() => onEdit(e)}
+                                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-[hsl(var(--primary))] hover:underline"
+                                >
+                                  <Pencil size={11} /> تعديل
+                                </button>
+                              )}
+                              {onVoid && (
+                                <button
+                                  type="button"
+                                  onClick={() => onVoid(e)}
+                                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-red-700 hover:underline"
+                                >
+                                  <X size={11} /> إلغاء
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>
@@ -4459,6 +4741,14 @@ function AddExpenseModal({
   const [largeAcknowledged, setLargeAcknowledged] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  // Phase 23G — admin can choose between an immediate-approved
+  // expense (default — fast path for cases where the receipt is in
+  // hand) and a pending expense queued for review. The CHECK
+  // constraint already accepts both tokens; the new
+  // approve/reject UI handles the rest of the lifecycle. Rejection
+  // can only happen via the review dialog later — never as an
+  // initial state from this modal.
+  const [initialStatus, setInitialStatus] = useState<'approved' | 'pending'>('approved');
 
   const parsedAmount = Number(amount);
   const isLarge = Number.isFinite(parsedAmount) && parsedAmount > 100_000;
@@ -4492,13 +4782,19 @@ function AddExpenseModal({
     setSubmitting(true);
     try {
       const supabase = createClient();
+      // Phase 23G — when the dispatcher chose `pending`, we still
+      // populate `approved_by` / `approved_by_name` because they
+      // historically captured "who recorded the row at this status"
+      // and existing readers depend on a non-null value. The new
+      // `reviewed_*` pair stays NULL until an admin makes a
+      // decision via the approve/reject flow.
       const { error: insertError } = await supabase.from('turath_masr_delegate_expenses').insert({
         delegate_profile_id: delegate.profileId,
         delegate_name: delegate.name,
         order_id: orderId.trim() || null,
         expense_type: expenseType,
         amount: parsedAmount,
-        status: 'approved',
+        status: initialStatus,
         approved_by: approvedBy.id,
         approved_by_name: approvedBy.name,
         note: note.trim() || null,
@@ -4519,7 +4815,9 @@ function AddExpenseModal({
         setSubmitting(false);
         return;
       }
-      onSaved('تم تسجيل المصروف بنجاح.');
+      onSaved(
+        initialStatus === 'pending' ? 'تم تسجيل المصروف كمعلق للمراجعة.' : 'تم تسجيل المصروف بنجاح.'
+      );
     } catch (e) {
       const msg = `حدث خطأ غير متوقع: ${e instanceof Error ? e.message : String(e)}`;
       console.error('[delegates] add expense unexpected error', e);
@@ -4608,7 +4906,22 @@ function AddExpenseModal({
               <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
                 الحالة
               </label>
-              <input type="text" value="معتمد" disabled className="input-field w-full opacity-60" />
+              {/* Phase 23G — admin can choose to record the row as
+                  immediately approved (default) or pending review.
+                  Rejection only happens later via the review dialog. */}
+              <select
+                className="input-field w-full"
+                value={initialStatus}
+                onChange={(e) => setInitialStatus(e.target.value as 'approved' | 'pending')}
+              >
+                <option value="approved">معتمد</option>
+                <option value="pending">قيد المراجعة</option>
+              </select>
+              {initialStatus === 'pending' && (
+                <p className="text-[10px] text-amber-700 mt-1">
+                  المصروف لن يدخل في الحسابات إلا بعد الاعتماد.
+                </p>
+              )}
             </div>
           </div>
 
@@ -4885,7 +5198,7 @@ function AccountStatementTab({
           supabase
             .from('turath_masr_delegate_expenses')
             .select(
-              'id, delegate_profile_id, delegate_name, order_id, expense_type, amount, status, approved_by, approved_by_name, note, expense_at, created_at, void_reason, voided_at, voided_by, voided_by_name, updated_at'
+              'id, delegate_profile_id, delegate_name, order_id, expense_type, amount, status, approved_by, approved_by_name, note, expense_at, created_at, void_reason, voided_at, voided_by, voided_by_name, updated_at, review_reason, reviewed_at, reviewed_by, reviewed_by_name'
             )
             .eq('delegate_profile_id', a.delegate.profileId!)
             .gte('expense_at', fromTs)
@@ -4994,6 +5307,8 @@ function AccountStatementTab({
         expense_at: e.expense_at,
         // Phase 23E — same shape as settlements above.
         void_reason: e.void_reason ?? null,
+        // Phase 23G — rejection / approve note.
+        review_reason: e.review_reason ?? null,
       })),
     [sourceSlices.expenses]
   );
@@ -5564,6 +5879,81 @@ function AccountStatementTab({
   );
 }
 
+// ─── Phase 23G — Approve expense dialog ───────────────────────────────────
+//
+// Lightweight confirm step for approving a pending expense. Reason
+// is optional (admins may approve without an explanation, the row
+// simply moves into the approved bucket). Reuses the same look as
+// the void dialog so the dispatcher's mental model stays consistent.
+interface ApproveExpenseDialogProps {
+  row: ExpenseRow;
+  onCancel: () => void;
+  onConfirm: (note: string | null) => Promise<void> | void;
+}
+
+function ApproveExpenseDialog({ row, onCancel, onConfirm }: ApproveExpenseDialogProps) {
+  const [note, setNote] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleConfirm = async () => {
+    setSubmitting(true);
+    try {
+      const trimmed = note.trim();
+      await onConfirm(trimmed.length > 0 ? trimmed : null);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" dir="rtl">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onCancel} />
+      <div className="relative bg-white rounded-3xl shadow-modal w-full max-w-md flex flex-col fade-in">
+        <div className="p-5 border-b border-[hsl(var(--border))]">
+          <h3 className="text-base font-bold text-[hsl(var(--foreground))]">اعتماد المصروف</h3>
+          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
+            مصروف بمبلغ {fmtMoney(Number(row.amount ?? 0))} — {expenseTypeLabel(row.expense_type)}
+          </p>
+        </div>
+        <div className="p-5 space-y-3">
+          <p className="text-sm text-[hsl(var(--foreground))]">
+            سيتم اعتماد المصروف وإدخاله في إجمالي المصاريف المعتمدة وحساب المتبقي بعد المصاريف.
+          </p>
+          <div>
+            <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+              ملاحظة الاعتماد (اختياري)
+            </label>
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value.slice(0, 500))}
+              placeholder="مثال: تم التحقق من الفاتورة وإيصال البنزين."
+              rows={3}
+              className="input-field w-full resize-none"
+            />
+            <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1">
+              {note.length} / 500 حرف
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center justify-between gap-3 p-4 border-t border-[hsl(var(--border))]">
+          <button type="button" className="btn-secondary" onClick={onCancel} disabled={submitting}>
+            إلغاء
+          </button>
+          <button
+            type="button"
+            onClick={handleConfirm}
+            disabled={submitting}
+            className="px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50"
+          >
+            <CheckCircle size={14} />
+            {submitting ? 'جارٍ الاعتماد...' : 'تأكيد الاعتماد'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Phase 23E — Shared "void with reason" dialog ─────────────────────────
 //
 // Reused by all three movement types (settlement / expense / custody).
@@ -5572,7 +5962,10 @@ function AccountStatementTab({
 // dispatcher tries to void a custody row that already has a terminal
 // status). Reason is required (>= 3 chars) and capped at 500.
 interface VoidMovementDialogProps {
-  kind: 'settlement' | 'expense' | 'custody';
+  // Phase 23G — `expense_reject` parameterises the same dialog
+  // shape for the rejection flow. Reason validation, button styling
+  // and submit shape match the void path; only the copy differs.
+  kind: 'settlement' | 'expense' | 'custody' | 'expense_reject';
   rowSummary: string;
   extraWarning?: string;
   onCancel: () => void;
@@ -5594,6 +5987,7 @@ function VoidMovementDialog({
     settlement: 'إلغاء توريد',
     expense: 'إلغاء مصروف',
     custody: 'إلغاء أمانة',
+    expense_reject: 'رفض مصروف',
   };
   const descriptionByKind: Record<typeof kind, string> = {
     settlement:
@@ -5602,13 +5996,31 @@ function VoidMovementDialog({
       'سيتم إلغاء المصروف. لن يدخل في حساب المصاريف المعتمدة، ويظهر في كشف الحساب كحركة ملغاة. لا يتم حذفه فعليًا.',
     custody:
       'سيتم إلغاء الأمانة. لن تدخل في الأمانات المفتوحة، وتظهر في كشف الحساب كحركة ملغاة. لا يتم حذفها فعليًا.',
+    expense_reject:
+      'سيتم رفض المصروف. لن يدخل في حساب المصاريف المعتمدة، ويظهر كمصروف مرفوض في كشف الحساب. لا يتم حذفه فعليًا.',
+  };
+  const reasonLabelByKind: Record<typeof kind, string> = {
+    settlement: 'سبب الإلغاء *',
+    expense: 'سبب الإلغاء *',
+    custody: 'سبب الإلغاء *',
+    expense_reject: 'سبب الرفض *',
+  };
+  const buttonLabelByKind: Record<typeof kind, { idle: string; submitting: string }> = {
+    settlement: { idle: 'تأكيد الإلغاء', submitting: 'جارٍ الإلغاء...' },
+    expense: { idle: 'تأكيد الإلغاء', submitting: 'جارٍ الإلغاء...' },
+    custody: { idle: 'تأكيد الإلغاء', submitting: 'جارٍ الإلغاء...' },
+    expense_reject: { idle: 'تأكيد الرفض', submitting: 'جارٍ الرفض...' },
   };
 
   const handleConfirm = async () => {
     setError('');
     const trimmed = reason.trim();
     if (trimmed.length < 3) {
-      setError('سبب الإلغاء مطلوب (3 حروف على الأقل).');
+      setError(
+        kind === 'expense_reject'
+          ? 'سبب الرفض مطلوب (3 حروف على الأقل).'
+          : 'سبب الإلغاء مطلوب (3 حروف على الأقل).'
+      );
       return;
     }
     setSubmitting(true);
@@ -5639,12 +6051,16 @@ function VoidMovementDialog({
           )}
           <div>
             <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
-              سبب الإلغاء *
+              {reasonLabelByKind[kind]}
             </label>
             <textarea
               value={reason}
               onChange={(e) => setReason(e.target.value.slice(0, 500))}
-              placeholder="مثال: تم تسجيل التوريد بمبلغ خطأ. سيتم إعادة التسجيل بالمبلغ الصحيح."
+              placeholder={
+                kind === 'expense_reject'
+                  ? 'مثال: المصروف غير مرتبط بطلب فعلي. مرفوض حاليًا.'
+                  : 'مثال: تم تسجيل التوريد بمبلغ خطأ. سيتم إعادة التسجيل بالمبلغ الصحيح.'
+              }
               rows={3}
               className="input-field w-full resize-none"
               autoFocus
@@ -5671,7 +6087,7 @@ function VoidMovementDialog({
             className="px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 text-white bg-red-600 hover:bg-red-700 disabled:opacity-50"
           >
             <X size={14} />
-            {submitting ? 'جارٍ الإلغاء...' : 'تأكيد الإلغاء'}
+            {submitting ? buttonLabelByKind[kind].submitting : buttonLabelByKind[kind].idle}
           </button>
         </div>
       </div>
