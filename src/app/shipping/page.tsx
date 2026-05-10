@@ -28,11 +28,30 @@ import {
   ShoppingBag,
   FileText,
   ChevronLeft,
+  // Phase 23M — change-request UI iconography.
+  IdCard,
+  AlertCircle,
+  AlertTriangle,
 } from 'lucide-react';
 import OrderDetailModal from '../orders-management/components/OrderDetailModal';
 import StatusUpdateModal from '../orders-management/components/StatusUpdateModal';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
+// Phase 23M — pure helpers for the delegate profile change-request flow.
+import {
+  CHANGE_REQUEST_LABELS_AR,
+  SENSITIVE_FIELDS,
+  TRANSPORT_TYPE_TOKENS,
+  buildChangePayload,
+  changeRequestErrorMessage,
+  diffChangeRequest,
+  profileToSnapshot,
+  validateChangeRequest,
+  type ChangeRequestField,
+  type ChangeRequestForm,
+  type DelegateProfileSnapshot,
+} from '@/lib/delegates/changeRequest';
+import { transportLabel } from '@/lib/delegates/transportTypes';
 
 interface Order {
   id: string;
@@ -494,6 +513,20 @@ export default function ShippingPage() {
   const [currentUserName, setCurrentUserName] = useState<string>('');
   const [isDelegate, setIsDelegate] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  // Phase 23M — delegate profile snapshot + latest pending request.
+  // Fetched once for r4 users on mount; the request modal reads off
+  // these states and re-fetches after a successful submit / cancel.
+  const auth = useAuth();
+  const [delegateSnapshot, setDelegateSnapshot] = useState<DelegateProfileSnapshot | null>(null);
+  const [pendingChangeRequest, setPendingChangeRequest] = useState<{
+    id: string;
+    status: string;
+    requested_changes: Record<string, unknown>;
+    created_at: string;
+    admin_note: string | null;
+  } | null>(null);
+  const [changeRequestModalOpen, setChangeRequestModalOpen] = useState(false);
+  const [changeRequestRefreshTick, setChangeRequestRefreshTick] = useState(0);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -514,6 +547,64 @@ export default function ShippingPage() {
   useEffect(() => {
     fetchOrders();
   }, []);
+
+  // Phase 23M — load the delegate's profile snapshot + their latest
+  // pending request. Both queries are defensive: pre-migration the
+  // change-requests table doesn't exist (42P01) and the catch arm
+  // falls through to a null pending request so the form can be
+  // opened. The profile snapshot uses the `profiles_own_select`
+  // policy that's been on prod since launch — delegate can SELECT
+  // their own row.
+  useEffect(() => {
+    if (!isDelegate || !auth.user?.id) return;
+    let cancelled = false;
+    const supabase = createClient();
+    (async () => {
+      // Snapshot — narrow column list, never `select('*')`.
+      const { data: prof } = await supabase
+        .from('profiles')
+        .select(
+          'phone, transport_type, national_id, vehicle_license_number, vehicle_license_starts_at, vehicle_license_expires_at, driving_license_number, driving_license_starts_at, driving_license_expires_at'
+        )
+        .eq('id', auth.user.id)
+        .maybeSingle();
+      if (cancelled) return;
+      if (prof) {
+        setDelegateSnapshot(profileToSnapshot(prof as Record<string, unknown>));
+      } else {
+        setDelegateSnapshot(profileToSnapshot({}));
+      }
+
+      // Pending request — silently no-op on missing table / RLS deny.
+      try {
+        const { data: req, error } = await supabase
+          .from('turath_masr_delegate_change_requests')
+          .select('id, status, requested_changes, created_at, admin_note')
+          .eq('delegate_profile_id', auth.user.id)
+          .eq('status', 'pending')
+          .order('created_at', { ascending: false })
+          .limit(1);
+        if (cancelled) return;
+        if (!error && req && req.length > 0) {
+          const r = req[0] as {
+            id: string;
+            status: string;
+            requested_changes: Record<string, unknown>;
+            created_at: string;
+            admin_note: string | null;
+          };
+          setPendingChangeRequest(r);
+        } else {
+          setPendingChangeRequest(null);
+        }
+      } catch {
+        setPendingChangeRequest(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isDelegate, auth.user?.id, changeRequestRefreshTick]);
 
   const fetchOrders = async () => {
     try {
@@ -670,17 +761,60 @@ export default function ShippingPage() {
             </p>
           </div>
           {isDelegate && (
-            <div className="flex items-center gap-2 px-4 py-2 bg-[hsl(211,67%,28%)]/10 rounded-xl">
-              <div className="w-8 h-8 rounded-full bg-[hsl(211,67%,28%)] flex items-center justify-center text-white font-bold text-sm">
-                {currentUserName.charAt(0)}
-              </div>
-              <div>
-                <p className="text-sm font-bold text-[hsl(211,67%,28%)]">{currentUserName}</p>
-                <p className="text-[10px] text-[hsl(211,67%,28%)]/70">مندوب شحن</p>
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Phase 23M — delegate change-request launcher. Visible
+                  only when r4 is signed in. The button is disabled
+                  while a pending request exists; the pending status
+                  surfaces in the inline banner just below the
+                  header. */}
+              <button
+                type="button"
+                onClick={() => setChangeRequestModalOpen(true)}
+                className="flex items-center gap-2 px-3 py-2 bg-white hover:bg-[hsl(var(--muted))]/40 text-[hsl(211,67%,28%)] border border-[hsl(211,67%,28%)]/30 rounded-xl text-xs font-semibold transition-colors"
+              >
+                <IdCard size={14} />
+                طلب تعديل بياناتي
+              </button>
+              <div className="flex items-center gap-2 px-4 py-2 bg-[hsl(211,67%,28%)]/10 rounded-xl">
+                <div className="w-8 h-8 rounded-full bg-[hsl(211,67%,28%)] flex items-center justify-center text-white font-bold text-sm">
+                  {currentUserName.charAt(0)}
+                </div>
+                <div>
+                  <p className="text-sm font-bold text-[hsl(211,67%,28%)]">{currentUserName}</p>
+                  <p className="text-[10px] text-[hsl(211,67%,28%)]/70">مندوب شحن</p>
+                </div>
               </div>
             </div>
           )}
         </div>
+
+        {/* Phase 23M — pending-request banner. Shown only to the
+            delegate when they already have an outstanding request, so
+            they understand why the submit form is locked. The banner
+            also surfaces a cancel button so they can withdraw the
+            request without an admin. */}
+        {isDelegate && pendingChangeRequest && (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-3">
+            <AlertCircle size={16} className="text-amber-700 mt-0.5 flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-bold text-amber-800">طلب تعديل بياناتك قيد المراجعة</p>
+              <p className="text-xs text-amber-700 mt-0.5">
+                تم الإرسال:{' '}
+                {new Date(pendingChangeRequest.created_at).toLocaleString('ar-EG', {
+                  dateStyle: 'medium',
+                  timeStyle: 'short',
+                })}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setChangeRequestModalOpen(true)}
+              className="px-3 py-1 text-xs font-semibold text-amber-800 hover:text-amber-900 border border-amber-300 rounded-lg bg-white"
+            >
+              عرض
+            </button>
+          </div>
+        )}
 
         {/* KPIs - Delegate-specific or Admin */}
         <div
@@ -1141,6 +1275,415 @@ export default function ShippingPage() {
           onClose={() => setChatOrder(null)}
         />
       )}
+
+      {/* Phase 23M — delegate profile change-request modal. Only mounts
+          for r4 + when delegateSnapshot has finished loading. */}
+      {isDelegate && changeRequestModalOpen && delegateSnapshot && (
+        <DelegateChangeRequestModal
+          snapshot={delegateSnapshot}
+          pendingRequest={pendingChangeRequest}
+          onClose={() => setChangeRequestModalOpen(false)}
+          onChanged={() => {
+            setChangeRequestModalOpen(false);
+            setChangeRequestRefreshTick((n) => n + 1);
+          }}
+        />
+      )}
     </AppLayout>
+  );
+}
+
+// ─── Phase 23M — Delegate Profile Change Request Modal ───────────────────
+//
+// Mounted from the shipping page for r4 (مندوب) only. Renders the
+// editable fields (phone / transport / vehicle licence / driving
+// licence / national_id), pre-fills current values from the
+// `profiles` snapshot the parent already loaded, validates client-
+// side, and submits via the `submit_delegate_change_request` RPC
+// (SECURITY DEFINER). Cancellation goes through
+// `cancel_delegate_change_request`. No direct `profiles` writes.
+//
+// The form is locked when there's already a pending request — the
+// delegate must cancel it to file a new one. The pending state and
+// the change diff are surfaced inline so the delegate sees exactly
+// what's been submitted.
+
+interface DelegateChangeRequestModalProps {
+  snapshot: DelegateProfileSnapshot;
+  pendingRequest: {
+    id: string;
+    status: string;
+    requested_changes: Record<string, unknown>;
+    created_at: string;
+    admin_note: string | null;
+  } | null;
+  onClose: () => void;
+  onChanged: () => void;
+}
+
+function DelegateChangeRequestModal({
+  snapshot,
+  pendingRequest,
+  onClose,
+  onChanged,
+}: DelegateChangeRequestModalProps) {
+  // Pre-fill the form with the current profile values so the delegate
+  // can edit the field directly. Reset every time the modal mounts so
+  // a previous unsaved edit doesn't leak across opens.
+  const [form, setForm] = useState<ChangeRequestForm>(() => ({ ...snapshot }));
+  const [note, setNote] = useState<string>('');
+  const [submitting, setSubmitting] = useState(false);
+  const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  const hasPending = !!pendingRequest;
+
+  // Diff between snapshot and form — drives the "no changes" guard.
+  const diff = useMemo(() => diffChangeRequest(snapshot, form), [snapshot, form]);
+  const hasChanges = diff.length > 0;
+
+  const update = (field: ChangeRequestField, value: string) => {
+    setForm((prev) => ({ ...prev, [field]: value }));
+    if (errorBanner) setErrorBanner(null);
+    if (fieldErrors[field]) {
+      const next = { ...fieldErrors };
+      delete next[field];
+      setFieldErrors(next);
+    }
+  };
+
+  const handleSubmit = async () => {
+    if (submitting || hasPending) return;
+    if (!hasChanges) {
+      setErrorBanner('لم تقم بتغيير أي حقل.');
+      return;
+    }
+    const errors = validateChangeRequest(form);
+    if (errors.length > 0) {
+      const map: Record<string, string> = {};
+      for (const e of errors) {
+        map[e.field] = e.message;
+      }
+      setFieldErrors(map);
+      setErrorBanner(errors[0].message);
+      return;
+    }
+    const payload = buildChangePayload(snapshot, form);
+    if (Object.keys(payload).length === 0) {
+      setErrorBanner('لم تقم بتغيير أي حقل.');
+      return;
+    }
+
+    setSubmitting(true);
+    setErrorBanner(null);
+    try {
+      const supabase = createClient();
+      const { error } = await supabase.rpc('submit_delegate_change_request', {
+        p_requested_changes: payload,
+        p_note: note.trim() || null,
+      });
+      if (error) {
+        const code = (error as { message?: string }).message || '';
+        setErrorBanner(changeRequestErrorMessage(code));
+        setSubmitting(false);
+        return;
+      }
+      onChanged();
+    } catch {
+      setErrorBanner('تعذر الاتصال. حاول مرة أخرى.');
+      setSubmitting(false);
+    }
+  };
+
+  const handleCancel = async () => {
+    if (!pendingRequest || submitting) return;
+    if (!window.confirm('هل تريد إلغاء طلب التعديل الحالي؟')) return;
+    setSubmitting(true);
+    setErrorBanner(null);
+    try {
+      const supabase = createClient();
+      const { error } = await supabase.rpc('cancel_delegate_change_request', {
+        p_request_id: pendingRequest.id,
+      });
+      if (error) {
+        setErrorBanner(changeRequestErrorMessage((error as { message?: string }).message || ''));
+        setSubmitting(false);
+        return;
+      }
+      onChanged();
+    } catch {
+      setErrorBanner('تعذر الاتصال. حاول مرة أخرى.');
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center sm:items-center p-0 sm:p-4"
+      dir="rtl"
+    >
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden />
+      <div className="relative bg-white w-full sm:max-w-2xl sm:rounded-2xl flex flex-col shadow-2xl max-h-[95vh] overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center gap-3 px-5 py-4 bg-[hsl(211,67%,28%)] sm:rounded-t-2xl flex-shrink-0">
+          <IdCard size={18} className="text-white" />
+          <div className="flex-1">
+            <h2 className="text-white font-bold text-base">طلب تعديل بياناتي</h2>
+            <p className="text-white/70 text-xs">التعديل يُطبَّق على بياناتك بعد موافقة الإدارة.</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 hover:bg-white/20 rounded-lg transition-colors"
+            aria-label="إغلاق"
+          >
+            <X size={18} className="text-white" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {hasPending && (
+            <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
+              <p className="font-semibold mb-1 flex items-center gap-1">
+                <AlertCircle size={14} /> يوجد طلب قيد المراجعة
+              </p>
+              <p>
+                لا يمكنك تقديم طلب جديد قبل أن تتم مراجعة الطلب الحالي. يمكنك إلغاءه أدناه إذا أردت
+                تعديل قيم أخرى.
+              </p>
+            </div>
+          )}
+          {errorBanner && (
+            <div className="rounded-xl bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700 flex items-start gap-2">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+              <p>{errorBanner}</p>
+            </div>
+          )}
+
+          {/* Fields grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <ChangeReqField
+              field="phone"
+              label={CHANGE_REQUEST_LABELS_AR.phone}
+              value={form.phone ?? ''}
+              onChange={(v) => update('phone', v)}
+              placeholder="01XXXXXXXXX"
+              dir="ltr"
+              fieldError={fieldErrors.phone}
+              disabled={hasPending || submitting}
+            />
+            <ChangeReqField
+              field="transport_type"
+              label={CHANGE_REQUEST_LABELS_AR.transport_type}
+              value={form.transport_type ?? ''}
+              onChange={(v) => update('transport_type', v)}
+              fieldError={fieldErrors.transport_type}
+              disabled={hasPending || submitting}
+              renderSelect={(v, onChange) => (
+                <select
+                  value={v}
+                  onChange={(e) => onChange(e.target.value)}
+                  className="input-field"
+                  disabled={hasPending || submitting}
+                >
+                  <option value="">— غير محدد —</option>
+                  {TRANSPORT_TYPE_TOKENS.map((token) => (
+                    <option key={token} value={token}>
+                      {transportLabel(token)}
+                    </option>
+                  ))}
+                </select>
+              )}
+            />
+            <ChangeReqField
+              field="vehicle_license_number"
+              label={CHANGE_REQUEST_LABELS_AR.vehicle_license_number}
+              value={form.vehicle_license_number ?? ''}
+              onChange={(v) => update('vehicle_license_number', v)}
+              fieldError={fieldErrors.vehicle_license_number}
+              disabled={hasPending || submitting}
+            />
+            <div /> {/* spacer for grid alignment */}
+            <ChangeReqField
+              field="vehicle_license_starts_at"
+              label={CHANGE_REQUEST_LABELS_AR.vehicle_license_starts_at}
+              type="date"
+              value={form.vehicle_license_starts_at ?? ''}
+              onChange={(v) => update('vehicle_license_starts_at', v)}
+              fieldError={fieldErrors.vehicle_license_starts_at}
+              disabled={hasPending || submitting}
+            />
+            <ChangeReqField
+              field="vehicle_license_expires_at"
+              label={CHANGE_REQUEST_LABELS_AR.vehicle_license_expires_at}
+              type="date"
+              value={form.vehicle_license_expires_at ?? ''}
+              onChange={(v) => update('vehicle_license_expires_at', v)}
+              fieldError={fieldErrors.vehicle_license_expires_at || fieldErrors.cross_vehicle}
+              disabled={hasPending || submitting}
+            />
+            <ChangeReqField
+              field="driving_license_number"
+              label={CHANGE_REQUEST_LABELS_AR.driving_license_number}
+              value={form.driving_license_number ?? ''}
+              onChange={(v) => update('driving_license_number', v)}
+              fieldError={fieldErrors.driving_license_number}
+              disabled={hasPending || submitting}
+            />
+            <div /> {/* spacer */}
+            <ChangeReqField
+              field="driving_license_starts_at"
+              label={CHANGE_REQUEST_LABELS_AR.driving_license_starts_at}
+              type="date"
+              value={form.driving_license_starts_at ?? ''}
+              onChange={(v) => update('driving_license_starts_at', v)}
+              fieldError={fieldErrors.driving_license_starts_at}
+              disabled={hasPending || submitting}
+            />
+            <ChangeReqField
+              field="driving_license_expires_at"
+              label={CHANGE_REQUEST_LABELS_AR.driving_license_expires_at}
+              type="date"
+              value={form.driving_license_expires_at ?? ''}
+              onChange={(v) => update('driving_license_expires_at', v)}
+              fieldError={fieldErrors.driving_license_expires_at || fieldErrors.cross_driving}
+              disabled={hasPending || submitting}
+            />
+          </div>
+
+          {/* Sensitive field — separated visually with a warning */}
+          <div className="rounded-2xl border border-red-200 bg-red-50/40 p-3">
+            <p className="text-[11px] font-semibold text-red-700 flex items-center gap-1 mb-2">
+              <AlertCircle size={12} /> الحقل التالي يتطلب مراجعة دقيقة من الإدارة
+            </p>
+            <ChangeReqField
+              field="national_id"
+              label={CHANGE_REQUEST_LABELS_AR.national_id}
+              value={form.national_id ?? ''}
+              onChange={(v) => update('national_id', v)}
+              placeholder="14 رقم"
+              dir="ltr"
+              fieldError={fieldErrors.national_id}
+              disabled={hasPending || submitting}
+            />
+          </div>
+
+          {/* Note */}
+          <div>
+            <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+              ملاحظة للإدارة (اختياري)
+            </label>
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value.slice(0, 1000))}
+              maxLength={1000}
+              rows={2}
+              className="input-field resize-none"
+              placeholder="اكتب أي توضيح للإدارة..."
+              disabled={hasPending || submitting}
+            />
+            <p className="mt-1 text-[10px] text-gray-400 text-left">{note.length}/1000</p>
+          </div>
+
+          {/* Pending request summary (if any) */}
+          {hasPending && pendingRequest && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50/50 p-3 space-y-2">
+              <p className="text-xs font-bold text-amber-800">الطلب المرسل قيد المراجعة</p>
+              <ul className="space-y-1">
+                {Object.entries(pendingRequest.requested_changes || {}).map(([field, value]) => (
+                  <li key={field} className="text-xs text-amber-900 flex justify-between gap-3">
+                    <span className="font-semibold">
+                      {CHANGE_REQUEST_LABELS_AR[field as ChangeRequestField] || field}
+                    </span>
+                    <span className="font-mono truncate" dir="ltr">
+                      {String(value)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex flex-wrap items-center justify-end gap-2 px-5 py-3 border-t border-[hsl(var(--border))] bg-[hsl(var(--muted))]/20 flex-shrink-0">
+          {hasPending ? (
+            <button
+              type="button"
+              onClick={handleCancel}
+              disabled={submitting}
+              className="px-4 py-2 text-xs font-semibold text-red-700 bg-white border border-red-200 hover:bg-red-50 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {submitting ? '…' : 'إلغاء الطلب الحالي'}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={submitting || !hasChanges}
+              className="flex items-center gap-2 px-4 py-2 text-xs font-bold text-white bg-[hsl(211,67%,28%)] hover:bg-[hsl(211,67%,22%)] rounded-xl disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed"
+            >
+              <Send size={12} />
+              {submitting ? 'جارٍ الإرسال…' : 'إرسال طلب التعديل'}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 text-xs font-semibold text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] bg-white border border-[hsl(var(--border))] rounded-xl"
+          >
+            إغلاق
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChangeReqField({
+  field,
+  label,
+  value,
+  onChange,
+  fieldError,
+  type = 'text',
+  placeholder,
+  dir,
+  disabled,
+  renderSelect,
+}: {
+  field: ChangeRequestField;
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  fieldError?: string;
+  type?: 'text' | 'date';
+  placeholder?: string;
+  dir?: 'ltr' | 'rtl';
+  disabled?: boolean;
+  renderSelect?: (v: string, onChange: (v: string) => void) => React.ReactNode;
+}) {
+  const sensitive = SENSITIVE_FIELDS.includes(field);
+  return (
+    <div>
+      <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 flex items-center gap-1">
+        {sensitive && <AlertCircle size={10} className="text-red-600" />}
+        {label}
+      </label>
+      {renderSelect ? (
+        renderSelect(value, onChange)
+      ) : (
+        <input
+          type={type}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          dir={dir}
+          disabled={disabled}
+          className="input-field"
+        />
+      )}
+      {fieldError && <p className="mt-1 text-[10px] text-red-700">{fieldError}</p>}
+    </div>
   );
 }
