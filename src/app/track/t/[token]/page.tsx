@@ -18,7 +18,8 @@
 // =============================================================================
 
 'use client';
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { createClient } from '@/lib/supabase/client';
 import Image from 'next/image';
 import {
   Package,
@@ -763,26 +764,111 @@ function DeliveryRatingPanel({ token, delegate }: DeliveryRatingPanelProps) {
   );
 }
 
+// ─── Phase 23K — order-scoped chat ─────────────────────────────────────────
+//
+// The legacy "write-only" panel asked the customer to retype their phone
+// on every submit and never showed any history (Phase 14 explicitly had
+// no public read path). Phase 23K introduces two SECURITY DEFINER RPCs
+// keyed off the tracking token:
+//
+//   • get_order_chat_by_token(token, chat_type, limit) — reads at most
+//     200 most-recent rows scoped to THIS order, never exposes the
+//     customer phone or other order's messages.
+//   • submit_order_chat_by_token(token, message, chat_type) — writes a
+//     row, hard-pinning sender='customer' and deriving phone+order_id
+//     from the token; same rate / duplicate / length guards as
+//     Phase 14A's `submit_customer_chat`.
+//
+// Both are GRANTed to anon (the browser uses the public anon key here),
+// so this panel can call them directly without a Next.js API route in
+// between. Realtime via postgres_changes is intentionally NOT used: the
+// chat table's existing RLS doesn't grant SELECT to anon, so a
+// subscription would receive zero events. We poll instead — every 10s
+// while the panel is open, cancelled on close.
+
 interface ChatPanelProps {
   type: 'delegate' | 'support';
+  /** Tracking token of the order this panel is bound to. The token is
+   *  the access proof — the customer never re-enters their phone. */
+  token: string;
   order: TrackingOrder;
   onClose: () => void;
 }
 
-function ChatPanel({ type, order, onClose }: ChatPanelProps) {
-  const [phone, setPhone] = useState('');
+interface ChatMessageRow {
+  id: string;
+  sender: string;
+  message: string;
+  chat_type: string;
+  created_at: string;
+}
+
+function formatChatTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString('ar-EG', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
+
+function ChatPanel({ type, token, order, onClose }: ChatPanelProps) {
+  const [messages, setMessages] = useState<ChatMessageRow[]>([]);
   const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState<SubmitStatus>({ kind: 'idle' });
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+  // We only auto-scroll on real fetches (not on the optimistic append
+  // we already issued ourselves) so the user can scroll up to read
+  // history without being yanked back to the bottom every 10s.
+  const lastFetchAtRef = useRef<number>(0);
+
+  const fetchMessages = useCallback(async () => {
+    try {
+      const supabase = createClient();
+      const { data, error } = await supabase.rpc('get_order_chat_by_token', {
+        p_tracking_token: token,
+        p_chat_type: type,
+        p_limit: 200,
+      });
+      if (!error && Array.isArray(data)) {
+        const rows = data as ChatMessageRow[];
+        // Replace state only if the row count or last id differs — saves
+        // a render when nothing changed on the 10s tick.
+        setMessages((prev) => {
+          if (
+            prev.length === rows.length &&
+            prev[prev.length - 1]?.id === rows[rows.length - 1]?.id
+          ) {
+            return prev;
+          }
+          lastFetchAtRef.current = Date.now();
+          return rows;
+        });
+      }
+    } catch {
+      // swallow — keep showing whatever we had
+    } finally {
+      setLoading(false);
+    }
+  }, [token, type]);
+
+  useEffect(() => {
+    fetchMessages();
+    const id = window.setInterval(fetchMessages, 10000);
+    return () => window.clearInterval(id);
+  }, [fetchMessages]);
+
+  // Scroll to bottom on (a) initial load, (b) a real new message.
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ block: 'end' });
+  }, [messages.length]);
 
   const sendMessage = async () => {
     if (submitting) return;
-    const phoneT = phone.trim();
     const msgT = input.trim();
-    if (!PHONE_RE.test(phoneT)) {
-      setStatus({ kind: 'error', text: 'يرجى إدخال رقم هاتف صحيح (5-32 رقم).' });
-      return;
-    }
     if (msgT.length === 0) {
       setStatus({ kind: 'error', text: 'يرجى كتابة رسالة.' });
       return;
@@ -795,29 +881,35 @@ function ChatPanel({ type, order, onClose }: ChatPanelProps) {
     setSubmitting(true);
     setStatus({ kind: 'idle' });
     try {
-      const res = await fetch('/api/customer/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          customer_phone: phoneT,
-          message: msgT,
-          chat_type: type,
-          order_id: order.orderNum || null,
-        }),
+      const supabase = createClient();
+      const { error } = await supabase.rpc('submit_order_chat_by_token', {
+        p_tracking_token: token,
+        p_message: msgT,
+        p_chat_type: type,
       });
-      const data = (await res.json().catch(() => ({}))) as { error?: string };
-      if (res.ok) {
-        setStatus({
-          kind: 'success',
-          text: 'تم استلام رسالتك. سيتواصل معك فريق الدعم قريبًا عبر الواتساب.',
-        });
-        setInput('');
-      } else {
-        const code = typeof data?.error === 'string' ? data.error : '';
+      if (error) {
+        // Phase 14A error contract — the new RPC raises the same set.
+        const code = (error as { code?: string }).code || '';
+        const msg = (error as { message?: string }).message || '';
+        let kind = 'internal_error';
+        if (msg === 'duplicate_submission') kind = 'duplicate_submission';
+        else if (msg === 'rate_limited') kind = 'rate_limited';
+        else if (
+          code === '22023' ||
+          /^(invalid_phone|empty_message|message_too_long|invalid_token)$/.test(msg)
+        ) {
+          kind = 'invalid_input';
+        }
         setStatus({
           kind: 'error',
-          text: CHAT_ERR_MAP[code] || 'تعذر الإرسال. حاول مرة أخرى.',
+          text: CHAT_ERR_MAP[kind] || 'تعذر الإرسال. حاول مرة أخرى.',
         });
+      } else {
+        setInput('');
+        setStatus({ kind: 'idle' });
+        // Refetch immediately so the new row shows without waiting for
+        // the next poll tick.
+        await fetchMessages();
       }
     } catch {
       setStatus({ kind: 'error', text: 'تعذر الاتصال. تحقق من الإنترنت وحاول مجددًا.' });
@@ -838,7 +930,10 @@ function ChatPanel({ type, order, onClose }: ChatPanelProps) {
       dir="rtl"
     >
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative bg-white w-full sm:max-w-md sm:rounded-2xl flex flex-col shadow-2xl max-h-[90vh]">
+      <div
+        className="relative bg-white w-full sm:max-w-md sm:rounded-2xl flex flex-col shadow-2xl"
+        style={{ height: '90vh', maxHeight: '700px' }}
+      >
         <div
           className={`flex items-center gap-3 px-4 py-3 ${accent} sm:rounded-t-2xl flex-shrink-0`}
         >
@@ -847,7 +942,7 @@ function ChatPanel({ type, order, onClose }: ChatPanelProps) {
           </div>
           <div className="flex-1">
             <p className="text-white font-bold text-sm">{title}</p>
-            <p className="text-white/70 text-xs">{order.orderNum}</p>
+            <p className="text-white/70 text-xs">طلب {order.orderNum}</p>
           </div>
           <button
             onClick={onClose}
@@ -858,64 +953,88 @@ function ChatPanel({ type, order, onClose }: ChatPanelProps) {
           </button>
         </div>
 
-        <div className="p-4 space-y-4 overflow-y-auto">
-          <p className="text-xs text-gray-600 leading-relaxed">
-            اكتب رقم هاتفك الذي استلمت عليه تأكيد الطلب ورسالتك. سيتواصل معك فريق الدعم عبر الواتساب
-            في أقرب وقت.
-          </p>
-
-          <div>
-            <label className="block text-xs font-semibold text-gray-700 mb-1.5">رقم الهاتف *</label>
-            <input
-              type="tel"
-              dir="ltr"
-              inputMode="tel"
-              autoComplete="tel"
-              className={`w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 ${focusRing}`}
-              placeholder="مثال: 01012345678"
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              maxLength={32}
-              disabled={submitting}
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-gray-700 mb-1.5">الرسالة *</label>
-            <textarea
-              className={`w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 ${focusRing} resize-none`}
-              placeholder="اكتب رسالتك..."
-              rows={4}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              maxLength={1000}
-              disabled={submitting}
-            />
-            <p className="mt-1 text-[10px] text-gray-400 text-left">{input.length}/1000</p>
-          </div>
-
-          {status.kind === 'success' && (
-            <div className="rounded-xl bg-green-50 border border-green-200 px-3 py-2 flex items-start gap-2">
-              <CheckCircle size={14} className="text-green-600 flex-shrink-0 mt-0.5" />
-              <p className="text-xs text-green-700 leading-relaxed">{status.text}</p>
+        {/* Messages list — scrollable, takes the remaining height */}
+        <div className="flex-1 overflow-y-auto bg-gray-50 px-3 py-3 space-y-2">
+          {loading ? (
+            <p className="text-xs text-center text-gray-400 py-8">جارٍ التحميل…</p>
+          ) : messages.length === 0 ? (
+            <div className="text-center text-gray-400 py-8 px-4">
+              <MessageCircle size={28} className="mx-auto mb-2 opacity-40" />
+              <p className="text-xs leading-relaxed">
+                لا توجد رسائل بعد. اكتب أول رسالة أدناه — سيتواصل معك فريقنا قريبًا.
+              </p>
             </div>
+          ) : (
+            messages.map((m) => {
+              const isCustomer = m.sender === 'customer';
+              return (
+                <div
+                  key={m.id}
+                  className={`max-w-[80%] rounded-2xl px-3 py-2 shadow-sm ${
+                    isCustomer
+                      ? `${accent} text-white ml-auto rounded-bl-md`
+                      : 'bg-white border border-gray-200 text-gray-800 mr-auto rounded-br-md'
+                  }`}
+                >
+                  <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">
+                    {m.message}
+                  </p>
+                  <p
+                    className={`text-[10px] mt-1 ${isCustomer ? 'text-white/70' : 'text-gray-400'}`}
+                  >
+                    {formatChatTime(m.created_at)}
+                  </p>
+                </div>
+              );
+            })
           )}
-          {status.kind === 'error' && (
+          <div ref={bottomRef} />
+        </div>
+
+        {/* Error banner (rate / duplicate / network). Success path
+            updates the message list directly, no banner needed. */}
+        {status.kind === 'error' && status.text && (
+          <div className="px-3 pt-2 flex-shrink-0">
             <div className="rounded-xl bg-red-50 border border-red-200 px-3 py-2 flex items-start gap-2">
               <AlertCircle size={14} className="text-red-600 flex-shrink-0 mt-0.5" />
               <p className="text-xs text-red-700 leading-relaxed">{status.text}</p>
             </div>
-          )}
+          </div>
+        )}
 
-          <button
-            type="button"
-            onClick={sendMessage}
-            disabled={submitting || !input.trim() || !phone.trim()}
-            className={`w-full flex items-center justify-center gap-2 ${accent} ${accentHover} text-white rounded-xl py-3 text-sm font-bold transition-colors disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed`}
-          >
-            <Send size={14} />
-            {submitting ? 'جارٍ الإرسال...' : 'إرسال'}
-          </button>
+        {/* Composer */}
+        <div className="border-t border-gray-200 px-3 py-3 flex-shrink-0 bg-white sm:rounded-b-2xl">
+          <div className="flex items-end gap-2">
+            <textarea
+              className={`flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 ${focusRing} resize-none`}
+              placeholder="اكتب رسالتك..."
+              rows={2}
+              value={input}
+              onChange={(e) => {
+                setInput(e.target.value);
+                if (status.kind === 'error') setStatus({ kind: 'idle' });
+              }}
+              maxLength={1000}
+              disabled={submitting}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  void sendMessage();
+                }
+              }}
+            />
+            <button
+              type="button"
+              onClick={sendMessage}
+              disabled={submitting || !input.trim()}
+              className={`flex items-center justify-center gap-1 ${accent} ${accentHover} text-white rounded-xl px-4 py-2.5 text-sm font-bold transition-colors disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed flex-shrink-0`}
+              aria-label="إرسال"
+            >
+              <Send size={14} />
+              {submitting ? '…' : 'إرسال'}
+            </button>
+          </div>
+          <p className="mt-1 text-[10px] text-gray-400 text-left">{input.length}/1000</p>
         </div>
       </div>
     </div>
@@ -2533,7 +2652,12 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
 
       {/* Chat Panels */}
       {activeChat && order && (
-        <ChatPanel type={activeChat} order={order} onClose={() => setActiveChat(null)} />
+        <ChatPanel
+          type={activeChat}
+          token={token}
+          order={order}
+          onClose={() => setActiveChat(null)}
+        />
       )}
       {showComplaint && order && (
         <ComplaintModal order={order} onClose={() => setShowComplaint(false)} />
