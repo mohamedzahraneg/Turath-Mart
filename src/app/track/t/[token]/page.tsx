@@ -1634,6 +1634,14 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
                     typeof data.delegateName === 'string' && data.delegateName
                       ? data.delegateName
                       : undefined,
+                  // Phase 23A-Fix1 — delegate phone joined server-side
+                  // by `get_tracking_info_by_token` from
+                  // `profiles.phone`. Null on legacy rows (only
+                  // `delegate_name` text) and pre-migration RPCs.
+                  delegatePhone:
+                    typeof data.delegatePhone === 'string' && data.delegatePhone
+                      ? data.delegatePhone
+                      : undefined,
                 } as TrackingOrder;
                 if (Array.isArray(data.statusTimeline) && data.statusTimeline.length > 0) {
                   const days = [
@@ -2162,6 +2170,30 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
               الاسم:{' '}
               <span className="font-semibold text-[hsl(var(--foreground))]">{order.delegate}</span>
             </p>
+            {/* Phase 23A-Fix1 — delegate phone exposed by the
+                widened `get_tracking_info_by_token` RPC (joined
+                from profiles.phone via orders.assigned_to). When
+                absent — legacy text-only delegate rows or pre-
+                migration RPCs — fall back to the previous
+                "رقم الهاتف غير مسجل" line. National ID, licence
+                numbers, and any other admin-only profile field
+                stay redacted server-side and never reach this DTO. */}
+            {order.delegatePhone ? (
+              <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">
+                الهاتف:{' '}
+                <a
+                  href={`tel:${order.delegatePhone}`}
+                  className="font-mono font-semibold text-[hsl(var(--primary))] hover:underline"
+                  dir="ltr"
+                >
+                  {order.delegatePhone}
+                </a>
+              </p>
+            ) : (
+              <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1 flex items-center gap-1">
+                <Phone size={11} /> رقم الهاتف غير مسجل
+              </p>
+            )}
           </div>
         )}
 
