@@ -55,6 +55,10 @@ import {
 import AppLayout from '@/components/AppLayout';
 import { createClient } from '@/lib/supabase/client';
 import { isValidEgyptianMobile } from '@/lib/validators/phone';
+// Phase 23H — reuse the existing order-scoped audit log helper so
+// reassignments land in the same per-order timeline that the
+// /orders-management AuditLogModal already reads from.
+import { addAuditLog } from '@/app/orders-management/components/AuditLogModal';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useAuth } from '@/contexts/AuthContext';
 // Phase 23A-Fix1 — transport-type tokens + Arabic labels, plus the
@@ -474,6 +478,13 @@ export default function DelegatesPage() {
     nextActive: boolean;
   } | null>(null);
   const [toggleSubmitting, setToggleSubmitting] = useState(false);
+  // Phase 23H — reassign-and-deactivate dialog target. Set when an
+  // admin clicks "تعطيل" on a delegate with active orders; the
+  // modal shows the active-orders list + replacement-delegate
+  // picker. The simpler ToggleActiveDialog continues to handle the
+  // no-active-orders + activate paths.
+  const [reassignTargetKey, setReassignTargetKey] = useState<string | null>(null);
+  const [reassignSubmitting, setReassignSubmitting] = useState(false);
   const [toast, setToast] = useState<{
     kind: 'success' | 'error';
     message: string;
@@ -1006,6 +1017,12 @@ export default function DelegatesPage() {
   const toggling = toggleTarget
     ? aggregates.find((a) => a.delegate.key === toggleTarget.key) || null
     : null;
+  // Phase 23H — resolve the reassign-target aggregate so the new
+  // dialog can render the source delegate's active orders + pick a
+  // replacement from the same `aggregates` array (no extra fetch).
+  const reassignTarget = reassignTargetKey
+    ? aggregates.find((a) => a.delegate.key === reassignTargetKey) || null
+    : null;
   // Phase 23B — settlement modal target row.
   const settlementTarget = settlementTargetKey
     ? aggregates.find((a) => a.delegate.key === settlementTargetKey) || null
@@ -1440,12 +1457,26 @@ export default function DelegatesPage() {
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() =>
-                                    setToggleTarget({
-                                      key: a.delegate.key,
-                                      nextActive: isInactive,
-                                    })
-                                  }
+                                  onClick={() => {
+                                    // Phase 23H — route to the
+                                    // reassign-and-deactivate dialog
+                                    // when the dispatcher is about
+                                    // to disable a delegate that
+                                    // still has in-flight orders.
+                                    // The activate path (isInactive
+                                    // → next=active) and the
+                                    // no-active-orders deactivate
+                                    // path stay on the simpler
+                                    // ToggleActiveDialog.
+                                    if (!isInactive && a.inFlight > 0) {
+                                      setReassignTargetKey(a.delegate.key);
+                                    } else {
+                                      setToggleTarget({
+                                        key: a.delegate.key,
+                                        nextActive: isInactive,
+                                      });
+                                    }
+                                  }}
                                   className={`inline-flex items-center gap-1 text-xs font-semibold hover:underline ${
                                     isInactive ? 'text-emerald-700' : 'text-red-700'
                                   }`}
@@ -1578,6 +1609,141 @@ export default function DelegatesPage() {
               kind: 'success',
               message: toggleTarget.nextActive ? 'تم تفعيل المندوب.' : 'تم تعطيل المندوب.',
             });
+          }}
+        />
+      )}
+
+      {/* Phase 23H — reassign-and-deactivate dialog. Opens only
+          when an admin clicks "تعطيل" on a profile-backed,
+          currently-active delegate that has in-flight orders. */}
+      {reassignTarget && reassignTarget.delegate.profileId && (
+        <ReassignAndDeactivateDialog
+          source={reassignTarget}
+          replacements={aggregates.filter(
+            (a) =>
+              a.delegate.profileId &&
+              a.delegate.profileId !== reassignTarget.delegate.profileId &&
+              a.delegate.delegateIsActive !== false
+          )}
+          submitting={reassignSubmitting}
+          onCancel={() => {
+            // Phase 23H — close + clear submitting in one step. The
+            // submitting flag stays sticky long enough for in-flight
+            // mutations to finish; cancel after success/failure
+            // resets it via setReassignSubmitting(false) above.
+            setReassignSubmitting(false);
+            setReassignTargetKey(null);
+          }}
+          onConfirm={async ({ replacement, deactivateWithoutMove }) => {
+            const sourceDelegate = reassignTarget.delegate;
+            if (!sourceDelegate.profileId) return;
+            const sourceProfileId = sourceDelegate.profileId;
+            const sourceName = sourceDelegate.name;
+
+            setReassignSubmitting(true);
+            const supabase = createClient();
+
+            // Snapshot of in-flight orders we plan to move (cached
+            // locally so we can write per-order audit rows after the
+            // bulk update succeeds).
+            const movingOrders = reassignTarget.ordersForDelegate.filter((o) =>
+              IN_FLIGHT_STATUSES.has(o.status)
+            );
+            const replacementName = replacement?.delegate.name ?? null;
+            const replacementProfileId = replacement?.delegate.profileId ?? null;
+
+            try {
+              // Phase 23H — Step 1: bulk-reassign in-flight orders.
+              // Two narrow UPDATEs:
+              //   (a) primary match by `assigned_to = source.profileId`
+              //   (b) legacy match by `delegate_name = source.name`
+              //       AND `assigned_to IS NULL` (Phase 22B leftover
+              //       rows that never got the FK backfill)
+              // Both filtered by `status IN (preparing, warehouse,
+              // shipping)` so completed orders are never touched.
+              if (!deactivateWithoutMove && replacementProfileId && replacementName) {
+                const inflight = Array.from(IN_FLIGHT_STATUSES);
+
+                const { error: primaryErr } = await supabase
+                  .from('turath_masr_orders')
+                  .update({
+                    assigned_to: replacementProfileId,
+                    delegate_name: replacementName,
+                  })
+                  .eq('assigned_to', sourceProfileId)
+                  .in('status', inflight);
+                if (primaryErr) throw primaryErr;
+
+                const { error: legacyErr } = await supabase
+                  .from('turath_masr_orders')
+                  .update({
+                    assigned_to: replacementProfileId,
+                    delegate_name: replacementName,
+                  })
+                  .is('assigned_to', null)
+                  .eq('delegate_name', sourceName)
+                  .in('status', inflight);
+                if (legacyErr) throw legacyErr;
+
+                // Phase 23H — Step 2: per-order audit log via the
+                // existing helper. We log AFTER the bulk update so a
+                // failure there short-circuits before we leave audit
+                // breadcrumbs for unmoved rows. Audit failures are
+                // non-fatal (helper already swallows network errors).
+                const summary = {
+                  action: 'delegate_reassignment_on_deactivate',
+                  from_delegate: sourceName,
+                  to_delegate: replacementName,
+                  orders_count: movingOrders.length,
+                  order_nums: movingOrders.map((o) => o.order_num),
+                  reason: 'تعطيل المندوب',
+                };
+                const auditNote = JSON.stringify(summary);
+                await Promise.all(
+                  movingOrders.map((o) =>
+                    addAuditLog({
+                      orderId: o.id,
+                      orderNum: o.order_num,
+                      action: 'delegate_reassigned',
+                      fieldChanged: 'assigned_to',
+                      oldValue: sourceName,
+                      newValue: replacementName ?? '',
+                      changedBy: profileFullName || user?.email || '—',
+                      changedByRole: 'r1',
+                      note: auditNote,
+                    })
+                  )
+                );
+              }
+
+              // Phase 23H — Step 3: deactivate the source delegate.
+              // If the orders update failed, we threw above and never
+              // reach this branch (delegate stays active — safe).
+              const { error: deactErr } = await supabase
+                .from('profiles')
+                .update({ delegate_is_active: false })
+                .eq('id', sourceProfileId);
+              if (deactErr) throw deactErr;
+
+              setReassignSubmitting(false);
+              setReassignTargetKey(null);
+              setReloadTick((n) => n + 1);
+              setToast({
+                kind: 'success',
+                message: deactivateWithoutMove
+                  ? 'تم تعطيل المندوب بدون نقل الطلبات.'
+                  : `تم نقل ${movingOrders.length} طلب وتعطيل المندوب بنجاح.`,
+              });
+            } catch (e) {
+              setReassignSubmitting(false);
+              const supabaseErr = e as { code?: string; message?: string };
+              console.error('[delegates] reassign+deactivate failed', e);
+              const msg =
+                supabaseErr.code === '42501'
+                  ? 'لا تملك صلاحية تعديل الطلبات أو حالة المندوب. تواصل مع المدير.'
+                  : `حدث خطأ أثناء نقل الطلبات. لم يتم تعطيل المندوب. ${supabaseErr.message ?? ''}`;
+              setToast({ kind: 'error', message: msg });
+            }
           }}
         />
       )}
@@ -3339,6 +3505,246 @@ function ToggleActiveDialog({
             <Power size={14} />
             {submitting ? 'جارٍ التحديث...' : isDeactivating ? 'تعطيل المندوب' : 'تفعيل المندوب'}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Phase 23H — Reassign + deactivate dialog ─────────────────────────────
+//
+// Replaces the simple `ToggleActiveDialog` for the specific case of
+// "deactivate a delegate that still has in-flight orders". Shows:
+//   • the source delegate
+//   • the active orders list (in-flight only — preparing /
+//     warehouse / shipping)
+//   • a replacement-delegate picker filtered to active delegates
+//     other than the source
+//   • two action paths — "نقل الطلبات ثم تعطيل المندوب" (default)
+//     and "تعطيل بدون نقل الطلبات" (destructive secondary)
+//
+// All mutation logic lives in the parent — this component is a
+// stateless render layer that captures the admin's choice and
+// hands it back via `onConfirm`.
+interface ReassignAndDeactivateDialogProps {
+  source: DelegateAggregate;
+  /** Aggregates of all active delegates EXCEPT the source. The
+   *  parent pre-filters; the picker assumes the list is safe. */
+  replacements: DelegateAggregate[];
+  submitting: boolean;
+  onCancel: () => void;
+  onConfirm: (args: {
+    replacement: DelegateAggregate | null;
+    deactivateWithoutMove: boolean;
+  }) => void;
+}
+
+function ReassignAndDeactivateDialog({
+  source,
+  replacements,
+  submitting,
+  onCancel,
+  onConfirm,
+}: ReassignAndDeactivateDialogProps) {
+  const [replacementKey, setReplacementKey] = useState<string>('');
+  // Phase 23H — secondary destructive path. Default OFF; admin
+  // must explicitly tick it before the disable-without-move
+  // button activates.
+  const [allowDeactivateWithoutMove, setAllowDeactivateWithoutMove] = useState(false);
+  const [confirmText, setConfirmText] = useState('');
+  const [error, setError] = useState('');
+
+  const inflightOrders = source.ordersForDelegate.filter((o) => IN_FLIGHT_STATUSES.has(o.status));
+  const replacement = replacements.find((a) => a.delegate.key === replacementKey) || null;
+  const confirmTextRequired = 'تعطيل بدون نقل';
+
+  const handlePrimary = () => {
+    setError('');
+    if (!replacement || !replacement.delegate.profileId) {
+      setError('برجاء اختيار مندوب بديل قبل تعطيل المندوب.');
+      return;
+    }
+    onConfirm({ replacement, deactivateWithoutMove: false });
+  };
+
+  const handleDestructive = () => {
+    setError('');
+    if (confirmText.trim() !== confirmTextRequired) {
+      setError(`اكتب "${confirmTextRequired}" بالظبط للتأكيد.`);
+      return;
+    }
+    onConfirm({ replacement: null, deactivateWithoutMove: true });
+  };
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" dir="rtl">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onCancel} />
+      <div className="relative bg-white rounded-3xl shadow-modal w-full max-w-3xl max-h-[90vh] flex flex-col fade-in">
+        {/* Header */}
+        <div className="flex-shrink-0 p-5 border-b border-[hsl(var(--border))]">
+          <h3 className="text-base font-bold text-[hsl(var(--foreground))]">
+            تعطيل المندوب وإعادة توزيع الطلبات
+          </h3>
+          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
+            {source.delegate.name}
+            {source.delegate.phone ? ` — ${source.delegate.phone}` : ''}
+          </p>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-4 scrollbar-thin">
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800 flex items-start gap-2">
+            <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+            <div>
+              المندوب لديه <span className="font-bold">{inflightOrders.length}</span> طلب قيد
+              التنفيذ. اختر مندوب بديل لنقل الطلبات إليه ثم تعطيل هذا المندوب. الحسابات المالية لن
+              تتأثر ولن تتغير حالات الطلبات.
+            </div>
+          </div>
+
+          {/* Active orders list */}
+          <div>
+            <h4 className="text-sm font-bold mb-2">الطلبات النشطة</h4>
+            {inflightOrders.length === 0 ? (
+              <p className="text-xs text-[hsl(var(--muted-foreground))]">لا توجد طلبات نشطة.</p>
+            ) : (
+              <div className="overflow-x-auto scrollbar-thin border border-[hsl(var(--border))] rounded-xl">
+                <table className="w-full min-w-[680px] text-xs">
+                  <thead>
+                    <tr>
+                      {['رقم الطلب', 'العميل', 'المنطقة', 'الحالة', 'الإجمالي', 'موعد التسليم'].map(
+                        (h) => (
+                          <th key={h} className="table-header text-right">
+                            {h}
+                          </th>
+                        )
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[hsl(var(--border))]">
+                    {inflightOrders.map((o) => (
+                      <tr key={o.id} className="hover:bg-[hsl(var(--muted))]/30">
+                        <td className="table-cell font-mono">{o.order_num}</td>
+                        <td className="table-cell">{o.customer || '—'}</td>
+                        <td className="table-cell">
+                          {[o.region, o.district, o.neighborhood].filter(Boolean).join(' — ') ||
+                            '—'}
+                        </td>
+                        <td className="table-cell">{STATUS_LABELS[o.status] || o.status}</td>
+                        <td className="table-cell font-mono">{fmtMoney(o.total)}</td>
+                        <td className="table-cell">
+                          {formatScheduleAr(
+                            o.scheduled_delivery_date,
+                            o.scheduled_delivery_from,
+                            o.scheduled_delivery_to
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Replacement picker */}
+          <div>
+            <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+              اختر مندوب بديل *
+            </label>
+            <select
+              className="input-field w-full"
+              value={replacementKey}
+              onChange={(e) => setReplacementKey(e.target.value)}
+              disabled={submitting}
+            >
+              <option value="">— اختر —</option>
+              {replacements.map((a) => (
+                <option key={a.delegate.key} value={a.delegate.key}>
+                  {a.delegate.name}
+                  {a.delegate.phone ? ` — ${a.delegate.phone}` : ''}
+                  {a.inFlight > 0 ? ` — ${a.inFlight} طلب نشط` : ''}
+                </option>
+              ))}
+            </select>
+            {replacements.length === 0 && (
+              <p className="text-[11px] text-amber-700 mt-1">
+                لا يوجد مناديب نشطين آخرين. يمكنك تعطيل المندوب بدون نقل من القسم أدناه فقط لو كانت
+                العملية ضرورية.
+              </p>
+            )}
+          </div>
+
+          {/* Destructive secondary path */}
+          <details className="border border-red-200 rounded-xl bg-red-50/30">
+            <summary className="cursor-pointer p-3 text-xs font-semibold text-red-700 flex items-center gap-2">
+              <AlertTriangle size={12} /> تعطيل بدون نقل الطلبات (إجراء حذِر)
+            </summary>
+            <div className="p-3 pt-0 space-y-2">
+              <p className="text-[11px] text-red-800">
+                سيتم تعطيل المندوب وستظل الطلبات الحالية مرتبطة به. لن يستطيع المندوب المعطّل العمل
+                عليها وقد تحتاج لإعادة توزيعها لاحقًا يدويًا.
+              </p>
+              <label className="flex items-start gap-2 text-xs text-red-800">
+                <input
+                  type="checkbox"
+                  checked={allowDeactivateWithoutMove}
+                  onChange={(e) => setAllowDeactivateWithoutMove(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>
+                  أؤكد أنني أرغب في تعطيل المندوب بدون نقل الطلبات. اكتب "
+                  <span className="font-bold">{confirmTextRequired}</span>" أدناه للمتابعة.
+                </span>
+              </label>
+              {allowDeactivateWithoutMove && (
+                <input
+                  type="text"
+                  value={confirmText}
+                  onChange={(e) => setConfirmText(e.target.value)}
+                  placeholder={confirmTextRequired}
+                  className="input-field w-full"
+                  dir="rtl"
+                />
+              )}
+            </div>
+          </details>
+
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-700 flex items-start gap-2">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex-shrink-0 flex flex-wrap items-center justify-between gap-3 p-4 border-t border-[hsl(var(--border))] bg-white rounded-b-3xl">
+          <button type="button" className="btn-secondary" onClick={onCancel} disabled={submitting}>
+            إلغاء
+          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            {allowDeactivateWithoutMove && (
+              <button
+                type="button"
+                onClick={handleDestructive}
+                disabled={submitting}
+                className="px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 text-white bg-red-700 hover:bg-red-800 disabled:opacity-50"
+              >
+                <Power size={14} />
+                {submitting ? 'جارٍ التعطيل...' : 'تعطيل بدون نقل'}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={handlePrimary}
+              disabled={submitting || !replacement}
+              className="px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50"
+            >
+              <CheckCircle size={14} />
+              {submitting ? 'جارٍ النقل والتعطيل...' : 'نقل الطلبات ثم تعطيل المندوب'}
+            </button>
+          </div>
         </div>
       </div>
     </div>
