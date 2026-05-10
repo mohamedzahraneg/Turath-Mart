@@ -46,6 +46,8 @@ import {
   Pencil,
   Power,
   Banknote,
+  Briefcase,
+  Receipt,
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import { createClient } from '@/lib/supabase/client';
@@ -70,6 +72,26 @@ import {
   settlementMethodLabel,
   type SettlementMethod,
 } from '@/lib/delegates/settlementMethods';
+// Phase 23C — custody (الأمانات) and expenses (المصاريف) helpers.
+import {
+  CUSTODY_TYPE_TOKENS,
+  CUSTODY_TYPE_LABELS_AR,
+  custodyTypeLabel,
+  type CustodyType,
+  CUSTODY_STATUS_TOKENS,
+  CUSTODY_STATUS_LABELS_AR,
+  CUSTODY_STATUS_TONE,
+  custodyStatusLabel,
+  type CustodyStatus,
+} from '@/lib/delegates/custodyTypes';
+import {
+  EXPENSE_TYPE_TOKENS,
+  EXPENSE_TYPE_LABELS_AR,
+  expenseTypeLabel,
+  type ExpenseType,
+  EXPENSE_STATUS_TONE,
+  expenseStatusLabel,
+} from '@/lib/delegates/expenseTypes';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 interface DelegateRow {
@@ -149,6 +171,45 @@ interface SettlementRow {
   created_at: string;
 }
 
+// Phase 23C — custody (الأمانات / العهد) row. Mirrors the columns
+// staged in `20260510220000_delegate_custody_and_expenses.sql`.
+interface CustodyRow {
+  id: string;
+  delegate_profile_id: string | null;
+  delegate_name: string | null;
+  custody_type: string;
+  description: string;
+  quantity: number | null;
+  estimated_value: number | null;
+  status: string;
+  handed_by: string | null;
+  handed_by_name: string | null;
+  received_by: string | null;
+  received_by_name: string | null;
+  handed_at: string;
+  returned_at: string | null;
+  note: string | null;
+  created_at: string;
+}
+
+// Phase 23C — expense (مصروف) row. Same migration; `expense_at`
+// is the real-world date (back-datable), `created_at` is the
+// immutable record-creation timestamp.
+interface ExpenseRow {
+  id: string;
+  delegate_profile_id: string | null;
+  delegate_name: string | null;
+  order_id: string | null;
+  expense_type: string;
+  amount: number;
+  status: string;
+  approved_by: string | null;
+  approved_by_name: string | null;
+  note: string | null;
+  expense_at: string;
+  created_at: string;
+}
+
 interface DelegateAggregate {
   delegate: DelegateRow;
   inFlight: number;
@@ -166,6 +227,21 @@ interface DelegateAggregate {
   totalSettled: number;
   remainingDue: number;
   lastSettledAt: string | null;
+  // Phase 23C — custody + expenses aggregates.
+  //   activeCustodyValue   = sum(estimated_value) where status='with_delegate'
+  //   activeCustodyCount   = count where status='with_delegate'
+  //   activeCashCustody    = sum(estimated_value) where status='with_delegate'
+  //                          AND custody_type='cash'  (shown separately)
+  //   approvedExpensesTotal= sum(amount) where status='approved'
+  //   adjustedRemaining    = totalCollected - totalSettled - approvedExpensesTotal
+  //                          (custody value NEVER subtracted automatically)
+  custody: CustodyRow[];
+  activeCustodyValue: number;
+  activeCustodyCount: number;
+  activeCashCustody: number;
+  expenses: ExpenseRow[];
+  approvedExpensesTotal: number;
+  adjustedRemaining: number;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -239,6 +315,10 @@ export default function DelegatesPage() {
   // (`settlements_admin_insert`). Reads are also admin-only on the
   // RLS side; we still gate the UI button to keep it consistent.
   const canRegisterSettlement = perms.isAdmin;
+  // Phase 23C — custody + expenses writes are admin-only by RLS
+  // (`custody_admin_*` / `expenses_admin_*`). Same UI gate.
+  const canManageCustody = perms.isAdmin;
+  const canManageExpenses = perms.isAdmin;
 
   const [profiles, setProfiles] = useState<DelegateRow[]>([]);
   const [orders, setOrders] = useState<OrderRow[]>([]);
@@ -246,13 +326,29 @@ export default function DelegatesPage() {
   // Phase 23B — settlements feed both the per-delegate aggregate
   // and the global "إجمالي التوريدات" KPI card.
   const [settlements, setSettlements] = useState<SettlementRow[]>([]);
+  // Phase 23C — custody + expenses feed the new tabs and KPIs. Same
+  // defensive shape: pre-migration the relations don't exist and
+  // both fall back to empty arrays.
+  const [custody, setCustody] = useState<CustodyRow[]>([]);
+  const [expenses, setExpenses] = useState<ExpenseRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   // Phase 23B — promoted `collections` + `settlements` from placeholder
   // tabs to first-class tab ids so the drawer can render real content.
+  // Phase 23C — same for `custody` + `expenses`. The placeholder set
+  // is now empty; the union still includes `placeholder` for type
+  // compatibility with old serialised state, but no tab routes there.
   const [activeTab, setActiveTab] = useState<
-    'summary' | 'orders' | 'collections' | 'settlements' | 'ratings' | 'activity' | 'placeholder'
+    | 'summary'
+    | 'orders'
+    | 'collections'
+    | 'settlements'
+    | 'custody'
+    | 'expenses'
+    | 'ratings'
+    | 'activity'
+    | 'placeholder'
   >('summary');
   const [placeholderTab, setPlaceholderTab] = useState<string>('');
   // Phase 23A-Fix1 — wizard state + refetch trigger after successful
@@ -282,72 +378,121 @@ export default function DelegatesPage() {
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
   // Phase 23B — register-settlement modal target (`null` when closed).
   const [settlementTargetKey, setSettlementTargetKey] = useState<string | null>(null);
+  // Phase 23C — add-custody and add-expense modal targets. The
+  // status-change confirmation dialog stores the custody row id +
+  // the next desired status; null when closed.
+  const [custodyTargetKey, setCustodyTargetKey] = useState<string | null>(null);
+  const [expenseTargetKey, setExpenseTargetKey] = useState<string | null>(null);
+  const [custodyStatusTarget, setCustodyStatusTarget] = useState<{
+    row: CustodyRow;
+    nextStatus: 'returned' | 'settled' | 'lost';
+  } | null>(null);
+  const [custodyStatusSubmitting, setCustodyStatusSubmitting] = useState(false);
 
-  // Fetch profiles + orders + ratings + settlements in parallel.
-  // Each query is narrowed and date-bounded.
+  // Fetch profiles + orders + ratings + settlements + custody +
+  // expenses in parallel. Each query is narrowed and (where it
+  // makes sense) date-bounded.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const supabase = createClient();
       const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
       try {
-        const [profilesRes, ordersRes, ratingsRes, settlementsRes] = await Promise.all([
-          // Phase 23A-Fix1 — request the new operational columns.
-          // Pre-migration the columns don't exist yet; the SELECT
-          // will surface a 42703 error which the catch arm below
-          // swallows so the page still renders the legacy fields.
-          supabase
-            .from('profiles')
-            .select(
-              'id, full_name, email, role_id, role_name, phone, national_id, transport_type, vehicle_license_number, vehicle_license_starts_at, vehicle_license_expires_at, driving_license_number, driving_license_starts_at, driving_license_expires_at, delegate_is_active'
-            )
-            .in('role_id', ['r3', 'r4']),
-          supabase
-            .from('turath_masr_orders')
-            .select(
-              'id, order_num, customer, region, district, neighborhood, total, shipping_fee, status, date, delegate_name, assigned_to, scheduled_delivery_date, scheduled_delivery_from, scheduled_delivery_to, created_at'
-            )
-            .gte('created_at', since)
-            .order('created_at', { ascending: false }),
-          // Ratings table may not exist yet (migration staged). The
-          // try/catch guard below tolerates the 42P01 missing-table
-          // error and falls back to an empty list so the page still
-          // renders.
-          supabase
-            .from('turath_masr_delegate_ratings')
-            .select('id, order_id, delegate_name, assigned_to, rating, comment, created_at')
-            .order('created_at', { ascending: false })
-            .limit(500)
-            .then(
-              (r: { data: RatingRow[] | null; error: unknown }) => r,
-              (err: unknown) => ({
-                data: null as RatingRow[] | null,
-                error: err,
-              })
-            ),
-          // Phase 23B — settlements. Same defensive shape as the
-          // ratings fetch: pre-migration the relation does not exist
-          // and we fall through to an empty array. Post-migration
-          // an admin (RLS gates SELECT on `is_admin()`) gets the
-          // full timeline; non-admins get an empty array silently.
-          // Cap at 1000 rows to bound the page; aggregate matching
-          // is per-delegate and fits well inside that ceiling at
-          // current scale.
-          supabase
-            .from('turath_masr_delegate_settlements')
-            .select(
-              'id, delegate_profile_id, delegate_name, amount, method, received_by, received_by_name, note, settled_at, created_at'
-            )
-            .order('settled_at', { ascending: false })
-            .limit(1000)
-            .then(
-              (r: { data: SettlementRow[] | null; error: unknown }) => r,
-              (err: unknown) => ({
-                data: null as SettlementRow[] | null,
-                error: err,
-              })
-            ),
-        ]);
+        const [profilesRes, ordersRes, ratingsRes, settlementsRes, custodyRes, expensesRes] =
+          await Promise.all([
+            // Phase 23A-Fix1 — request the new operational columns.
+            // Pre-migration the columns don't exist yet; the SELECT
+            // will surface a 42703 error which the catch arm below
+            // swallows so the page still renders the legacy fields.
+            supabase
+              .from('profiles')
+              .select(
+                'id, full_name, email, role_id, role_name, phone, national_id, transport_type, vehicle_license_number, vehicle_license_starts_at, vehicle_license_expires_at, driving_license_number, driving_license_starts_at, driving_license_expires_at, delegate_is_active'
+              )
+              .in('role_id', ['r3', 'r4']),
+            supabase
+              .from('turath_masr_orders')
+              .select(
+                'id, order_num, customer, region, district, neighborhood, total, shipping_fee, status, date, delegate_name, assigned_to, scheduled_delivery_date, scheduled_delivery_from, scheduled_delivery_to, created_at'
+              )
+              .gte('created_at', since)
+              .order('created_at', { ascending: false }),
+            // Ratings table may not exist yet (migration staged). The
+            // try/catch guard below tolerates the 42P01 missing-table
+            // error and falls back to an empty list so the page still
+            // renders.
+            supabase
+              .from('turath_masr_delegate_ratings')
+              .select('id, order_id, delegate_name, assigned_to, rating, comment, created_at')
+              .order('created_at', { ascending: false })
+              .limit(500)
+              .then(
+                (r: { data: RatingRow[] | null; error: unknown }) => r,
+                (err: unknown) => ({
+                  data: null as RatingRow[] | null,
+                  error: err,
+                })
+              ),
+            // Phase 23B — settlements. Same defensive shape as the
+            // ratings fetch: pre-migration the relation does not exist
+            // and we fall through to an empty array. Post-migration
+            // an admin (RLS gates SELECT on `is_admin()`) gets the
+            // full timeline; non-admins get an empty array silently.
+            // Cap at 1000 rows to bound the page; aggregate matching
+            // is per-delegate and fits well inside that ceiling at
+            // current scale.
+            supabase
+              .from('turath_masr_delegate_settlements')
+              .select(
+                'id, delegate_profile_id, delegate_name, amount, method, received_by, received_by_name, note, settled_at, created_at'
+              )
+              .order('settled_at', { ascending: false })
+              .limit(1000)
+              .then(
+                (r: { data: SettlementRow[] | null; error: unknown }) => r,
+                (err: unknown) => ({
+                  data: null as SettlementRow[] | null,
+                  error: err,
+                })
+              ),
+            // Phase 23C — custody. NOT date-limited because we want
+            // the "active custody value" KPI to include rows handed
+            // over months ago that are still `with_delegate`. Cap at
+            // 1000 rows for safety; far above any realistic scale.
+            supabase
+              .from('turath_masr_delegate_custody')
+              .select(
+                'id, delegate_profile_id, delegate_name, custody_type, description, quantity, estimated_value, status, handed_by, handed_by_name, received_by, received_by_name, handed_at, returned_at, note, created_at'
+              )
+              .order('handed_at', { ascending: false })
+              .limit(1000)
+              .then(
+                (r: { data: CustodyRow[] | null; error: unknown }) => r,
+                (err: unknown) => ({
+                  data: null as CustodyRow[] | null,
+                  error: err,
+                })
+              ),
+            // Phase 23C — expenses. Date-bounded to the same 90-day
+            // window as orders/ratings/settlements so the page
+            // numbers stay consistent. Older rows still exist in the
+            // DB; a future "تقرير حساب المندوب" view can fetch them.
+            supabase
+              .from('turath_masr_delegate_expenses')
+              .select(
+                'id, delegate_profile_id, delegate_name, order_id, expense_type, amount, status, approved_by, approved_by_name, note, expense_at, created_at'
+              )
+              .gte('expense_at', since)
+              .order('expense_at', { ascending: false })
+              .limit(1000)
+              .then(
+                (r: { data: ExpenseRow[] | null; error: unknown }) => r,
+                (err: unknown) => ({
+                  data: null as ExpenseRow[] | null,
+                  error: err,
+                })
+              ),
+          ]);
         if (cancelled) return;
 
         if (profilesRes.error) {
@@ -460,6 +605,25 @@ export default function DelegatesPage() {
         }
         setSettlements(settlementsData);
 
+        // Phase 23C — same defensive pattern for custody + expenses.
+        const custodyData =
+          custodyRes && 'error' in custodyRes && custodyRes.error
+            ? []
+            : ((custodyRes as { data: CustodyRow[] | null }).data ?? []);
+        if (custodyRes && 'error' in custodyRes && custodyRes.error) {
+          console.warn('[delegates] custody fetch unavailable', custodyRes.error);
+        }
+        setCustody(custodyData);
+
+        const expensesData =
+          expensesRes && 'error' in expensesRes && expensesRes.error
+            ? []
+            : ((expensesRes as { data: ExpenseRow[] | null }).data ?? []);
+        if (expensesRes && 'error' in expensesRes && expensesRes.error) {
+          console.warn('[delegates] expenses fetch unavailable', expensesRes.error);
+        }
+        setExpenses(expensesData);
+
         setLoading(false);
       } catch (e) {
         if (cancelled) return;
@@ -539,6 +703,41 @@ export default function DelegatesPage() {
       const remainingDue = totalCollected - totalSettled;
       const lastSettledAt = settlementsForDelegate[0]?.settled_at ?? null;
 
+      // Phase 23C — per-delegate custody + expenses aggregation.
+      // Same name-fallback rule as the other slices.
+      const custodyForDelegate = custody.filter((c) => {
+        if (d.profileId && c.delegate_profile_id === d.profileId) return true;
+        if ((c.delegate_name || '').trim() === d.name.trim()) return true;
+        return false;
+      });
+      let activeCustodyValue = 0;
+      let activeCustodyCount = 0;
+      let activeCashCustody = 0;
+      for (const c of custodyForDelegate) {
+        if (c.status === 'with_delegate') {
+          activeCustodyValue += Number(c.estimated_value ?? 0);
+          activeCustodyCount += 1;
+          if (c.custody_type === 'cash') {
+            activeCashCustody += Number(c.estimated_value ?? 0);
+          }
+        }
+      }
+
+      const expensesForDelegate = expenses.filter((e) => {
+        if (d.profileId && e.delegate_profile_id === d.profileId) return true;
+        if ((e.delegate_name || '').trim() === d.name.trim()) return true;
+        return false;
+      });
+      const approvedExpensesTotal = expensesForDelegate
+        .filter((e) => e.status === 'approved')
+        .reduce((sum, e) => sum + Number(e.amount ?? 0), 0);
+
+      // Adjusted remaining: collected − settled − approved expenses.
+      // Custody value is NOT subtracted (matches Phase 23C spec —
+      // physical custody is shown separately, cash custody is
+      // surfaced but never auto-deducted).
+      const adjustedRemaining = totalCollected - totalSettled - approvedExpensesTotal;
+
       return {
         delegate: d,
         inFlight,
@@ -553,9 +752,16 @@ export default function DelegatesPage() {
         totalSettled,
         remainingDue,
         lastSettledAt,
+        custody: custodyForDelegate,
+        activeCustodyValue,
+        activeCustodyCount,
+        activeCashCustody,
+        expenses: expensesForDelegate,
+        approvedExpensesTotal,
+        adjustedRemaining,
       };
     });
-  }, [profiles, orders, ratings, settlements]);
+  }, [profiles, orders, ratings, settlements, custody, expenses]);
 
   const kpis = useMemo(() => {
     const today = new Date();
@@ -594,6 +800,24 @@ export default function DelegatesPage() {
     }
     const remainingTotal = totalCollected - totalSettled;
 
+    // Phase 23C — custody + expenses global KPIs.
+    let totalActiveCustodyValue = 0;
+    let totalActiveCustodyCount = 0;
+    for (const c of custody) {
+      if (c.status === 'with_delegate') {
+        totalActiveCustodyValue += Number(c.estimated_value ?? 0);
+        totalActiveCustodyCount += 1;
+      }
+    }
+    let totalApprovedExpenses = 0;
+    for (const e of expenses) {
+      if (e.status === 'approved') {
+        totalApprovedExpenses += Number(e.amount ?? 0);
+      }
+    }
+    // Adjusted remaining matches the per-delegate formula.
+    const adjustedRemainingTotal = totalCollected - totalSettled - totalApprovedExpenses;
+
     return {
       totalDelegates: profiles.length,
       activeDelegates: aggregates.filter((a) => a.inFlight > 0 || a.delivered > 0).length,
@@ -605,8 +829,13 @@ export default function DelegatesPage() {
       totalSettled,
       remainingTotal,
       lastSettledAt,
+      // Phase 23C
+      totalActiveCustodyValue,
+      totalActiveCustodyCount,
+      totalApprovedExpenses,
+      adjustedRemainingTotal,
     };
-  }, [orders, profiles, ratings, aggregates, settlements]);
+  }, [orders, profiles, ratings, aggregates, settlements, custody, expenses]);
 
   const selected = aggregates.find((a) => a.delegate.key === selectedKey) || null;
 
@@ -631,6 +860,13 @@ export default function DelegatesPage() {
   const settlementTarget = settlementTargetKey
     ? aggregates.find((a) => a.delegate.key === settlementTargetKey) || null
     : null;
+  // Phase 23C — custody / expense modal targets.
+  const custodyTarget = custodyTargetKey
+    ? aggregates.find((a) => a.delegate.key === custodyTargetKey) || null
+    : null;
+  const expenseTarget = expenseTargetKey
+    ? aggregates.find((a) => a.delegate.key === expenseTargetKey) || null
+    : null;
 
   return (
     <AppLayout currentPath="/delegates">
@@ -640,14 +876,15 @@ export default function DelegatesPage() {
           <div>
             <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">إدارة المناديب</h1>
             <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">
-              نظرة عامة على المناديب، طلباتهم، تقييماتهم وتوريداتهم. الأمانات والمصاريف ستُضاف في
-              مرحلة لاحقة.
+              نظرة عامة على المناديب، طلباتهم، تقييماتهم، توريداتهم، الأمانات والمصاريف.
             </p>
             {/* Phase 23B — explicit window label so the dispatcher
                 knows the totals are scoped to the last 90 days; full-
-                history reports come later. */}
+                history reports come later. Phase 23C — custody is NOT
+                date-bounded (active custody includes older items). */}
             <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1">
-              الإحصائيات محسوبة من طلبات وتوريدات آخر 90 يوم.
+              التحصيلات والتوريدات والمصاريف من آخر 90 يوم. الأمانات تشمل كل العهد المفتوحة بدون حد
+              زمني.
             </p>
           </div>
           <button
@@ -718,6 +955,28 @@ export default function DelegatesPage() {
           />
         </div>
 
+        {/* Phase 23C — custody + expenses KPI row. "المتبقي بعد المصاريف"
+            uses the adjusted formula (collected - settled - approved
+            expenses). Custody value is shown separately and is NOT
+            subtracted from the monetary remaining. */}
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <KpiCard
+            icon={<Briefcase size={18} className="text-blue-600" />}
+            label="إجمالي الأمانات الحالية"
+            value={`${fmtMoney(kpis.totalActiveCustodyValue)} (${kpis.totalActiveCustodyCount})`}
+          />
+          <KpiCard
+            icon={<Receipt size={18} className="text-orange-600" />}
+            label="إجمالي المصاريف المعتمدة"
+            value={fmtMoney(kpis.totalApprovedExpenses)}
+          />
+          <KpiCard
+            icon={<Wallet size={18} className="text-amber-700" />}
+            label="المتبقي بعد المصاريف"
+            value={fmtMoney(kpis.adjustedRemainingTotal)}
+          />
+        </div>
+
         {/* Delegates table */}
         <div className="card-section overflow-hidden">
           <div className="px-5 py-3 border-b border-[hsl(var(--border))] bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -773,7 +1032,7 @@ export default function DelegatesPage() {
             </div>
           ) : (
             <div className="overflow-x-auto scrollbar-thin">
-              <table className="w-full min-w-[1200px]">
+              <table className="w-full min-w-[1450px]">
                 <thead>
                   <tr>
                     {[
@@ -793,6 +1052,12 @@ export default function DelegatesPage() {
                       'إجمالي التحصيل',
                       'إجمالي المورد',
                       'المتبقي عليه',
+                      // Phase 23C — keep two extra compact columns so
+                      // the table doesn't become unusably wide. Detail
+                      // breakdowns live in the drawer.
+                      'المصاريف',
+                      'الأمانات',
+                      'المتبقي بعد المصاريف',
                       'آخر توريد',
                       'التقييم',
                       'إجراء',
@@ -901,6 +1166,40 @@ export default function DelegatesPage() {
                             ? `${fmtMoney(Math.abs(a.remainingDue))} (زائد)`
                             : fmtMoney(a.remainingDue)}
                         </td>
+                        {/* Phase 23C — expenses + custody summary cells.
+                            Custody renders both EGP value and item count
+                            so a dispatcher can spot e.g. "0 ج / 3 عهد"
+                            for non-monetary custody. Adjusted remaining
+                            uses red when the delegate still owes money,
+                            green for surplus credit. */}
+                        <td className="table-cell font-mono text-xs">
+                          {fmtMoney(a.approvedExpensesTotal)}
+                        </td>
+                        <td className="table-cell font-mono text-xs">
+                          {a.activeCustodyCount > 0 ? (
+                            <span>
+                              {fmtMoney(a.activeCustodyValue)}
+                              <span className="text-[10px] text-[hsl(var(--muted-foreground))] ml-1">
+                                ({a.activeCustodyCount} عهدة)
+                              </span>
+                            </span>
+                          ) : (
+                            <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                          )}
+                        </td>
+                        <td
+                          className={`table-cell font-mono ${
+                            a.adjustedRemaining > 0
+                              ? 'text-red-700'
+                              : a.adjustedRemaining < 0
+                                ? 'text-emerald-700'
+                                : ''
+                          }`}
+                        >
+                          {a.adjustedRemaining < 0
+                            ? `${fmtMoney(Math.abs(a.adjustedRemaining))} (زائد)`
+                            : fmtMoney(a.adjustedRemaining)}
+                        </td>
                         <td className="table-cell text-xs">
                           {a.lastSettledAt ? (
                             formatDateAr(a.lastSettledAt)
@@ -943,6 +1242,29 @@ export default function DelegatesPage() {
                                 title="تسجيل توريد"
                               >
                                 <Banknote size={11} /> توريد
+                              </button>
+                            )}
+                            {/* Phase 23C — quick "أمانة" + "مصروف"
+                                row actions. Same gating as توريد —
+                                admin-only, profile-backed only. */}
+                            {canManageCustody && a.delegate.hasProfile && (
+                              <button
+                                type="button"
+                                onClick={() => setCustodyTargetKey(a.delegate.key)}
+                                className="inline-flex items-center gap-1 text-xs font-semibold text-blue-700 hover:underline"
+                                title="إضافة أمانة"
+                              >
+                                <Briefcase size={11} /> أمانة
+                              </button>
+                            )}
+                            {canManageExpenses && a.delegate.hasProfile && (
+                              <button
+                                type="button"
+                                onClick={() => setExpenseTargetKey(a.delegate.key)}
+                                className="inline-flex items-center gap-1 text-xs font-semibold text-orange-700 hover:underline"
+                                title="إضافة مصروف"
+                              >
+                                <Receipt size={11} /> مصروف
                               </button>
                             )}
                             {/* Phase 23A-Fix2 — admin-only edit and
@@ -1004,6 +1326,16 @@ export default function DelegatesPage() {
              and for legacy delegate_name-only rows (no profile id). */
           canRegisterSettlement={canRegisterSettlement && selected.delegate.hasProfile}
           onRegisterSettlement={() => setSettlementTargetKey(selected.delegate.key)}
+          /* Phase 23C — drawer-level CTAs for custody + expenses.
+             Same admin-only + profile-backed gating. The status-
+             change action on individual custody rows is driven
+             through `onChangeCustodyStatus` so the parent owns the
+             confirm dialog state. */
+          canManageCustody={canManageCustody && selected.delegate.hasProfile}
+          canManageExpenses={canManageExpenses && selected.delegate.hasProfile}
+          onAddCustody={() => setCustodyTargetKey(selected.delegate.key)}
+          onAddExpense={() => setExpenseTargetKey(selected.delegate.key)}
+          onChangeCustodyStatus={(row, nextStatus) => setCustodyStatusTarget({ row, nextStatus })}
         />
       )}
 
@@ -1094,6 +1426,85 @@ export default function DelegatesPage() {
         />
       )}
 
+      {/* Phase 23C — add custody / add expense modals + status
+          confirm dialog. Same RLS-mirrors-UI gating pattern as the
+          settlement modal above. */}
+      {custodyTarget && custodyTarget.delegate.profileId && (
+        <AddCustodyModal
+          delegate={custodyTarget.delegate}
+          handedBy={{ id: user?.id ?? null, name: profileFullName ?? null }}
+          onClose={() => setCustodyTargetKey(null)}
+          onSaved={(message) => {
+            setCustodyTargetKey(null);
+            setReloadTick((n) => n + 1);
+            setToast({ kind: 'success', message });
+          }}
+          onError={(message) => setToast({ kind: 'error', message })}
+        />
+      )}
+
+      {expenseTarget && expenseTarget.delegate.profileId && (
+        <AddExpenseModal
+          delegate={expenseTarget.delegate}
+          approvedBy={{ id: user?.id ?? null, name: profileFullName ?? null }}
+          onClose={() => setExpenseTargetKey(null)}
+          onSaved={(message) => {
+            setExpenseTargetKey(null);
+            setReloadTick((n) => n + 1);
+            setToast({ kind: 'success', message });
+          }}
+          onError={(message) => setToast({ kind: 'error', message })}
+        />
+      )}
+
+      {custodyStatusTarget && (
+        <CustodyStatusDialog
+          row={custodyStatusTarget.row}
+          nextStatus={custodyStatusTarget.nextStatus}
+          submitting={custodyStatusSubmitting}
+          onCancel={() => setCustodyStatusTarget(null)}
+          onConfirm={async () => {
+            setCustodyStatusSubmitting(true);
+            const supabase = createClient();
+            // Phase 23C — promotes the custody row out of
+            // `with_delegate`. We capture the dispatcher's id +
+            // name as the receiver and stamp `returned_at = now()`
+            // for all three terminal states so the timeline is
+            // queryable by date regardless of how it ended.
+            const { error } = await supabase
+              .from('turath_masr_delegate_custody')
+              .update({
+                status: custodyStatusTarget.nextStatus,
+                received_by: user?.id ?? null,
+                received_by_name: profileFullName ?? null,
+                returned_at: new Date().toISOString(),
+              })
+              .eq('id', custodyStatusTarget.row.id);
+            setCustodyStatusSubmitting(false);
+            if (error) {
+              console.error('[delegates] custody status update failed', error);
+              const msg =
+                error.code === '42501'
+                  ? 'لا تملك صلاحية تعديل حالة الأمانة. تواصل مع المدير.'
+                  : `تعذر تحديث حالة الأمانة: ${error.message}`;
+              setToast({ kind: 'error', message: msg });
+              return;
+            }
+            setCustodyStatusTarget(null);
+            setReloadTick((n) => n + 1);
+            const successByStatus: Record<'returned' | 'settled' | 'lost', string> = {
+              returned: 'تم استلام الأمانة.',
+              settled: 'تمت تسوية الأمانة.',
+              lost: 'تم تسجيل الأمانة كمفقودة.',
+            };
+            setToast({
+              kind: 'success',
+              message: successByStatus[custodyStatusTarget.nextStatus],
+            });
+          }}
+        />
+      )}
+
       {/* Phase 23A-Fix2 — toast. Auto-dismisses after 4s; manual
           close button kept for keyboard accessibility. */}
       {toast && (
@@ -1163,6 +1574,8 @@ type DrawerTab =
   | 'orders'
   | 'collections'
   | 'settlements'
+  | 'custody'
+  | 'expenses'
   | 'ratings'
   | 'activity'
   | 'placeholder';
@@ -1177,6 +1590,14 @@ interface DrawerProps {
   // directly from the settlements tab.
   canRegisterSettlement?: boolean;
   onRegisterSettlement?: () => void;
+  // Phase 23C — custody + expenses CTAs and the per-row custody
+  // status-change handler. The parent component owns the confirm
+  // dialog state so the drawer can stay stateless.
+  canManageCustody?: boolean;
+  canManageExpenses?: boolean;
+  onAddCustody?: () => void;
+  onAddExpense?: () => void;
+  onChangeCustodyStatus?: (row: CustodyRow, next: 'returned' | 'settled' | 'lost') => void;
 }
 
 function DelegateDrawer({
@@ -1187,6 +1608,11 @@ function DelegateDrawer({
   onClose,
   canRegisterSettlement = false,
   onRegisterSettlement,
+  canManageCustody = false,
+  canManageExpenses = false,
+  onAddCustody,
+  onAddExpense,
+  onChangeCustodyStatus,
 }: DrawerProps) {
   const a = aggregate;
 
@@ -1202,8 +1628,9 @@ function DelegateDrawer({
     // rather than the قريبًا placeholder.
     { id: 'collections', label: 'التحصيلات' },
     { id: 'settlements', label: 'التوريدات' },
-    { id: 'placeholder', label: 'الأمانات', placeholder: 'custody' },
-    { id: 'placeholder', label: 'المصاريف', placeholder: 'expenses' },
+    // Phase 23C — same for الأمانات + المصاريف.
+    { id: 'custody', label: 'الأمانات' },
+    { id: 'expenses', label: 'المصاريف' },
     { id: 'ratings', label: 'التقييمات والشكاوى' },
     { id: 'activity', label: 'النشاط' },
   ];
@@ -1304,6 +1731,17 @@ function DelegateDrawer({
               canRegister={canRegisterSettlement}
               onRegister={onRegisterSettlement}
             />
+          )}
+          {activeTab === 'custody' && (
+            <CustodyTab
+              a={a}
+              canManage={canManageCustody}
+              onAdd={onAddCustody}
+              onChangeStatus={onChangeCustodyStatus}
+            />
+          )}
+          {activeTab === 'expenses' && (
+            <ExpensesTab a={a} canManage={canManageExpenses} onAdd={onAddExpense} />
           )}
           {activeTab === 'ratings' && <RatingsTab a={a} />}
           {activeTab === 'activity' && <ActivityTab a={a} />}
@@ -1628,20 +2066,12 @@ function ActivityTab({ a }: { a: DelegateAggregate }) {
 }
 
 function PlaceholderTab({ kind }: { kind: string }) {
-  // Phase 23B — `collections` and `settlements` are no longer
-  // placeholders; only custody + expenses remain in this map.
-  const labels: Record<string, { title: string; sub: string; phase: string }> = {
-    custody: {
-      title: 'الأمانات',
-      sub: 'سيُضاف عرض البضائع/الأمانات مع المندوب.',
-      phase: 'Phase 23C',
-    },
-    expenses: {
-      title: 'المصاريف',
-      sub: 'سيُضاف تسجيل مصاريف الشحن المرتبطة بكل مندوب أو طلب.',
-      phase: 'Phase 23C',
-    },
-  };
+  // Phase 23C — all four formerly-placeholder tabs (collections,
+  // settlements, custody, expenses) are now functional. The map is
+  // intentionally empty so any stale `placeholderTab` state from
+  // older sessions falls back to the generic "قريبًا" card. Future
+  // phases that introduce new placeholders should re-populate it.
+  const labels: Record<string, { title: string; sub: string; phase: string }> = {};
   const cfg = labels[kind] || { title: 'قريبًا', sub: '', phase: '' };
   return (
     <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
@@ -2930,6 +3360,846 @@ function RegisterSettlementModal({
           >
             <Banknote size={14} />
             {submitting ? 'جارٍ التسجيل...' : 'تسجيل التوريد'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Phase 23C — Custody tab ──────────────────────────────────────────────
+//
+// Per-delegate custody (الأمانات / العهد) timeline. Header summary
+// counts the four lifecycle states (with_delegate / returned /
+// settled / lost) and surfaces the EGP value of items still
+// "with_delegate". Admin-only action buttons:
+//   • per-row: استلام / تسوية / مفقود (each fires the parent's
+//     status-change confirm dialog)
+//   • header: إضافة أمانة (opens the AddCustodyModal)
+//
+// Strictly read-side aggregation; the parent owns mutations.
+interface CustodyTabProps {
+  a: DelegateAggregate;
+  canManage?: boolean;
+  onAdd?: () => void;
+  onChangeStatus?: (row: CustodyRow, next: 'returned' | 'settled' | 'lost') => void;
+}
+
+function CustodyTab({ a, canManage = false, onAdd, onChangeStatus }: CustodyTabProps) {
+  // Pre-bucket the lifecycle counts for the header summary so the
+  // render loop below can stay dumb.
+  const buckets = { with_delegate: 0, returned: 0, settled: 0, lost: 0 };
+  for (const c of a.custody) {
+    if (c.status in buckets) {
+      buckets[c.status as keyof typeof buckets] += 1;
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Summary block */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+          <p className="text-[11px] font-bold text-amber-800 mb-1">قيمة الأمانات الحالية</p>
+          <p className="text-lg font-bold text-amber-900">{fmtMoney(a.activeCustodyValue)}</p>
+          <p className="text-[10px] text-amber-700 mt-1">
+            عدد العهد المفتوحة: {a.activeCustodyCount}
+          </p>
+          {a.activeCashCustody > 0 && (
+            <p className="text-[10px] text-amber-700 mt-0.5">
+              منها أمانات مالية: {fmtMoney(a.activeCashCustody)}
+            </p>
+          )}
+        </div>
+        <div className="rounded-2xl border border-[hsl(var(--border))] bg-white p-4">
+          <p className="text-[11px] font-bold text-[hsl(var(--muted-foreground))] mb-1">
+            تم الاستلام
+          </p>
+          <p className="text-lg font-bold text-emerald-700">{buckets.returned}</p>
+        </div>
+        <div className="rounded-2xl border border-[hsl(var(--border))] bg-white p-4">
+          <p className="text-[11px] font-bold text-[hsl(var(--muted-foreground))] mb-1">
+            تمت التسوية
+          </p>
+          <p className="text-lg font-bold text-blue-700">{buckets.settled}</p>
+        </div>
+        <div className="rounded-2xl border border-[hsl(var(--border))] bg-white p-4">
+          <p className="text-[11px] font-bold text-[hsl(var(--muted-foreground))] mb-1">مفقود</p>
+          <p className="text-lg font-bold text-red-700">{buckets.lost}</p>
+        </div>
+      </div>
+
+      {/* Admin CTA */}
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-[hsl(var(--muted-foreground))]">
+          {a.custody.length === 0
+            ? 'لا توجد أمانات مسجلة بعد.'
+            : `${a.custody.length} أمانة مسجلة.`}
+        </p>
+        {canManage && onAdd && (
+          <button
+            type="button"
+            onClick={onAdd}
+            className="inline-flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl"
+          >
+            <Plus size={12} /> إضافة أمانة
+          </button>
+        )}
+      </div>
+
+      {/* Timeline */}
+      {a.custody.length === 0 ? (
+        <p className="text-sm text-[hsl(var(--muted-foreground))]">
+          لم يتم تسجيل أي أمانة لهذا المندوب بعد.
+        </p>
+      ) : (
+        <div className="overflow-x-auto scrollbar-thin">
+          <table className="w-full min-w-[820px] text-sm">
+            <thead>
+              <tr>
+                {[
+                  'التاريخ',
+                  'النوع',
+                  'الوصف',
+                  'الكمية',
+                  'القيمة',
+                  'الحالة',
+                  'ملاحظة',
+                  ...(canManage ? ['إجراء'] : []),
+                ].map((h) => (
+                  <th key={h} className="table-header text-right">
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[hsl(var(--border))]">
+              {a.custody.map((c) => {
+                const isActive = c.status === 'with_delegate';
+                const tone =
+                  CUSTODY_STATUS_TONE[c.status as CustodyStatus] ||
+                  'bg-[hsl(var(--muted))]/40 text-[hsl(var(--muted-foreground))] border-[hsl(var(--border))]';
+                return (
+                  <tr key={c.id} className="hover:bg-[hsl(var(--muted))]/30">
+                    <td className="table-cell text-xs">{formatDateAr(c.handed_at)}</td>
+                    <td className="table-cell text-xs">{custodyTypeLabel(c.custody_type)}</td>
+                    <td className="table-cell text-xs">{c.description || '—'}</td>
+                    <td className="table-cell font-mono text-xs">
+                      {c.quantity != null ? Number(c.quantity).toLocaleString('en-US') : '—'}
+                    </td>
+                    <td className="table-cell font-mono text-xs">
+                      {Number(c.estimated_value ?? 0) > 0
+                        ? fmtMoney(Number(c.estimated_value))
+                        : '—'}
+                    </td>
+                    <td className="table-cell">
+                      <span
+                        className={`inline-block text-[10px] font-semibold px-2 py-0.5 rounded-full border ${tone}`}
+                      >
+                        {custodyStatusLabel(c.status)}
+                      </span>
+                    </td>
+                    <td className="table-cell text-xs text-[hsl(var(--muted-foreground))]">
+                      {c.note || '—'}
+                    </td>
+                    {canManage && (
+                      <td className="table-cell">
+                        {/* Active row → three terminal-state actions.
+                            Closed rows render a dash so the column
+                            stays aligned. */}
+                        {isActive && onChangeStatus ? (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => onChangeStatus(c, 'returned')}
+                              className="text-[11px] font-semibold text-emerald-700 hover:underline"
+                            >
+                              استلام
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onChangeStatus(c, 'settled')}
+                              className="text-[11px] font-semibold text-blue-700 hover:underline"
+                            >
+                              تسوية
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onChangeStatus(c, 'lost')}
+                              className="text-[11px] font-semibold text-red-700 hover:underline"
+                            >
+                              مفقود
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-[hsl(var(--muted-foreground))] text-xs">—</span>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Phase 23C — Expenses tab ────────────────────────────────────────────
+//
+// Per-delegate expenses (المصاريف) timeline. Header summary surfaces
+// the approved-only total + count (matches the page-level KPI), and
+// admin-only "إضافة مصروف" CTA opens the modal.
+interface ExpensesTabProps {
+  a: DelegateAggregate;
+  canManage?: boolean;
+  onAdd?: () => void;
+}
+
+function ExpensesTab({ a, canManage = false, onAdd }: ExpensesTabProps) {
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="rounded-2xl border border-[hsl(var(--border))] bg-white p-4">
+          <p className="text-[11px] font-bold text-[hsl(var(--muted-foreground))] mb-1">
+            إجمالي المصاريف المعتمدة
+          </p>
+          <p className="text-lg font-bold text-orange-700">{fmtMoney(a.approvedExpensesTotal)}</p>
+        </div>
+        <div className="rounded-2xl border border-[hsl(var(--border))] bg-white p-4">
+          <p className="text-[11px] font-bold text-[hsl(var(--muted-foreground))] mb-1">
+            عدد المصاريف
+          </p>
+          <p className="text-lg font-bold">{a.expenses.length}</p>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-[hsl(var(--muted-foreground))]">
+          {a.expenses.length === 0
+            ? 'لا توجد مصاريف مسجلة بعد (آخر 90 يوم).'
+            : `${a.expenses.length} مصروف مسجل (آخر 90 يوم).`}
+        </p>
+        {canManage && onAdd && (
+          <button
+            type="button"
+            onClick={onAdd}
+            className="inline-flex items-center gap-1 px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold rounded-xl"
+          >
+            <Plus size={12} /> إضافة مصروف
+          </button>
+        )}
+      </div>
+
+      {a.expenses.length === 0 ? (
+        <p className="text-sm text-[hsl(var(--muted-foreground))]">
+          لم يتم تسجيل أي مصروف لهذا المندوب في آخر 90 يوم.
+        </p>
+      ) : (
+        <div className="overflow-x-auto scrollbar-thin">
+          <table className="w-full min-w-[720px] text-sm">
+            <thead>
+              <tr>
+                {['التاريخ', 'النوع', 'الطلب', 'المبلغ', 'الحالة', 'ملاحظة'].map((h) => (
+                  <th key={h} className="table-header text-right">
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[hsl(var(--border))]">
+              {a.expenses.map((e) => {
+                const tone =
+                  EXPENSE_STATUS_TONE[e.status as keyof typeof EXPENSE_STATUS_TONE] ||
+                  'bg-[hsl(var(--muted))]/40 text-[hsl(var(--muted-foreground))] border-[hsl(var(--border))]';
+                return (
+                  <tr key={e.id} className="hover:bg-[hsl(var(--muted))]/30">
+                    <td className="table-cell text-xs">{formatDateAr(e.expense_at)}</td>
+                    <td className="table-cell text-xs">{expenseTypeLabel(e.expense_type)}</td>
+                    <td className="table-cell font-mono text-xs">
+                      {e.order_id ? (
+                        e.order_id
+                      ) : (
+                        <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                      )}
+                    </td>
+                    <td className="table-cell font-mono text-xs font-bold text-orange-700">
+                      {fmtMoney(Number(e.amount))}
+                    </td>
+                    <td className="table-cell">
+                      <span
+                        className={`inline-block text-[10px] font-semibold px-2 py-0.5 rounded-full border ${tone}`}
+                      >
+                        {expenseStatusLabel(e.status)}
+                      </span>
+                    </td>
+                    <td className="table-cell text-xs text-[hsl(var(--muted-foreground))]">
+                      {e.note || '—'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Phase 23C — Add custody modal ────────────────────────────────────────
+//
+// Admin-only form that inserts ONE row into
+// `turath_masr_delegate_custody`. Validates client-side:
+//   • description required
+//   • quantity > 0
+//   • estimated_value >= 0
+//   • handed_at not in the future (60s grace for clock drift)
+//   • type ∈ CUSTODY_TYPE_TOKENS (enforced by the <select> options)
+// Captures dispatcher id + name as `handed_by` / `handed_by_name`.
+interface AddCustodyModalProps {
+  delegate: DelegateRow;
+  handedBy: { id: string | null; name: string | null };
+  onClose: () => void;
+  onSaved: (message: string) => void;
+  onError: (message: string) => void;
+}
+
+function AddCustodyModal({ delegate, handedBy, onClose, onSaved, onError }: AddCustodyModalProps) {
+  const nowLocal = (() => {
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  })();
+
+  const [custodyType, setCustodyType] = useState<CustodyType>('other');
+  const [description, setDescription] = useState('');
+  const [quantity, setQuantity] = useState('1');
+  const [estimatedValue, setEstimatedValue] = useState('0');
+  const [handedAt, setHandedAt] = useState(nowLocal);
+  const [note, setNote] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  const parsedQty = Number(quantity);
+  const parsedValue = Number(estimatedValue);
+
+  const validate = (): string => {
+    if (!description.trim()) return 'الوصف مطلوب';
+    if (!Number.isFinite(parsedQty) || parsedQty <= 0) return 'الكمية يجب أن تكون أكبر من صفر';
+    if (!Number.isFinite(parsedValue) || parsedValue < 0)
+      return 'القيمة التقديرية لا يمكن أن تكون سالبة';
+    if (handedAt) {
+      const ts = new Date(handedAt).getTime();
+      if (Number.isNaN(ts)) return 'تاريخ التسليم غير صالح';
+      if (ts - Date.now() > 60_000) return 'لا يمكن تسجيل أمانة في تاريخ مستقبلي';
+    }
+    return '';
+  };
+
+  const handleSubmit = async () => {
+    setError('');
+    const err = validate();
+    if (err) {
+      setError(err);
+      return;
+    }
+    if (!delegate.profileId) {
+      setError('سجل قديم بدون ملف. لا يمكن تسجيل أمانة من هنا.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const supabase = createClient();
+      const { error: insertError } = await supabase.from('turath_masr_delegate_custody').insert({
+        delegate_profile_id: delegate.profileId,
+        delegate_name: delegate.name,
+        custody_type: custodyType,
+        description: description.trim(),
+        quantity: parsedQty,
+        estimated_value: parsedValue,
+        status: 'with_delegate',
+        handed_by: handedBy.id,
+        handed_by_name: handedBy.name,
+        handed_at: new Date(handedAt).toISOString(),
+        note: note.trim() || null,
+      });
+      if (insertError) {
+        console.error('[delegates] add custody failed', insertError);
+        let msg = `تعذر تسجيل الأمانة: ${insertError.message}`;
+        if (insertError.code === '42501') {
+          msg = 'لا تملك صلاحية تسجيل أمانات. تواصل مع المدير.';
+        } else if (insertError.code === '42P01') {
+          msg = 'جدول الأمانات غير متاح بعد. لم يتم تطبيق ترحيل القاعدة.';
+        } else if (insertError.code === '23514') {
+          msg = 'البيانات المُدخَلة لا تطابق القيود (نوع/حالة/قيم).';
+        }
+        setError(msg);
+        onError(msg);
+        setSubmitting(false);
+        return;
+      }
+      onSaved('تم تسجيل الأمانة بنجاح.');
+    } catch (e) {
+      const msg = `حدث خطأ غير متوقع: ${e instanceof Error ? e.message : String(e)}`;
+      console.error('[delegates] add custody unexpected error', e);
+      setError(msg);
+      onError(msg);
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" dir="rtl">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-3xl shadow-modal w-full max-w-lg max-h-[90vh] flex flex-col fade-in">
+        <div className="flex-shrink-0 flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
+          <div>
+            <h3 className="text-base font-bold text-[hsl(var(--foreground))]">إضافة أمانة</h3>
+            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">{delegate.name}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))]"
+            aria-label="إغلاق"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4 scrollbar-thin">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+                نوع الأمانة *
+              </label>
+              <select
+                className="input-field w-full"
+                value={custodyType}
+                onChange={(e) => setCustodyType(e.target.value as CustodyType)}
+              >
+                {CUSTODY_TYPE_TOKENS.map((t) => (
+                  <option key={t} value={t}>
+                    {CUSTODY_TYPE_LABELS_AR[t]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Field
+              label="الوصف *"
+              value={description}
+              onChange={setDescription}
+              placeholder="مثال: iPhone 11 Pro / كاش 5 آلاف"
+            />
+            <Field
+              label="الكمية"
+              value={quantity}
+              onChange={(v) => setQuantity(v.replace(/[^\d.]/g, '').slice(0, 10))}
+              dir="ltr"
+            />
+            <Field
+              label="القيمة التقديرية (ج.م)"
+              value={estimatedValue}
+              onChange={(v) => {
+                const cleaned = v.replace(/[^\d.]/g, '');
+                const parts = cleaned.split('.');
+                const normalized =
+                  parts.length > 1 ? `${parts[0]}.${parts.slice(1).join('').slice(0, 2)}` : cleaned;
+                setEstimatedValue(normalized);
+              }}
+              dir="ltr"
+            />
+            <Field
+              label="تاريخ التسليم"
+              type="datetime-local"
+              value={handedAt}
+              onChange={setHandedAt}
+              dir="ltr"
+            />
+            <div>
+              <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+                سُلِّمت بواسطة
+              </label>
+              <input
+                type="text"
+                value={handedBy.name || '—'}
+                disabled
+                className="input-field w-full opacity-60"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+              ملاحظة (اختياري)
+            </label>
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value.slice(0, 500))}
+              placeholder="مثال: الجهاز للعميل في طلب 12345"
+              rows={3}
+              className="input-field w-full resize-none"
+            />
+            <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1">
+              {note.length} / 500 حرف
+            </p>
+          </div>
+
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-700 flex items-start gap-2">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+        </div>
+
+        <div className="flex-shrink-0 flex items-center justify-between gap-3 p-4 border-t border-[hsl(var(--border))] bg-white rounded-b-3xl">
+          <button type="button" className="btn-secondary" onClick={onClose} disabled={submitting}>
+            إلغاء
+          </button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={submitting}
+            className="px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50"
+          >
+            <Briefcase size={14} />
+            {submitting ? 'جارٍ التسجيل...' : 'تسجيل الأمانة'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Phase 23C — Add expense modal ────────────────────────────────────────
+//
+// Admin-only form that inserts ONE row into
+// `turath_masr_delegate_expenses` with status='approved'. Validates:
+//   • amount > 0
+//   • amount ≤ 100,000 ج.م without an explicit confirmation
+//     (sanity guard — most expense rows are < 1k ج)
+//   • expense_at not in the future
+//   • order_id optional (free-text — orders.id is text)
+interface AddExpenseModalProps {
+  delegate: DelegateRow;
+  approvedBy: { id: string | null; name: string | null };
+  onClose: () => void;
+  onSaved: (message: string) => void;
+  onError: (message: string) => void;
+}
+
+function AddExpenseModal({
+  delegate,
+  approvedBy,
+  onClose,
+  onSaved,
+  onError,
+}: AddExpenseModalProps) {
+  const nowLocal = (() => {
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  })();
+
+  const [expenseType, setExpenseType] = useState<ExpenseType>('fuel');
+  const [amount, setAmount] = useState('');
+  const [orderId, setOrderId] = useState('');
+  const [expenseAt, setExpenseAt] = useState(nowLocal);
+  const [note, setNote] = useState('');
+  const [largeAcknowledged, setLargeAcknowledged] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  const parsedAmount = Number(amount);
+  const isLarge = Number.isFinite(parsedAmount) && parsedAmount > 100_000;
+
+  const validate = (): string => {
+    if (!amount.trim()) return 'المبلغ مطلوب';
+    if (!Number.isFinite(parsedAmount)) return 'المبلغ غير صالح';
+    if (parsedAmount <= 0) return 'المبلغ يجب أن يكون أكبر من صفر';
+    if (isLarge && !largeAcknowledged) {
+      return 'المبلغ كبير. يرجى تأكيد الرغبة في تسجيله.';
+    }
+    if (expenseAt) {
+      const ts = new Date(expenseAt).getTime();
+      if (Number.isNaN(ts)) return 'تاريخ المصروف غير صالح';
+      if (ts - Date.now() > 60_000) return 'لا يمكن تسجيل مصروف في تاريخ مستقبلي';
+    }
+    return '';
+  };
+
+  const handleSubmit = async () => {
+    setError('');
+    const err = validate();
+    if (err) {
+      setError(err);
+      return;
+    }
+    if (!delegate.profileId) {
+      setError('سجل قديم بدون ملف. لا يمكن تسجيل مصروف من هنا.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const supabase = createClient();
+      const { error: insertError } = await supabase.from('turath_masr_delegate_expenses').insert({
+        delegate_profile_id: delegate.profileId,
+        delegate_name: delegate.name,
+        order_id: orderId.trim() || null,
+        expense_type: expenseType,
+        amount: parsedAmount,
+        status: 'approved',
+        approved_by: approvedBy.id,
+        approved_by_name: approvedBy.name,
+        note: note.trim() || null,
+        expense_at: new Date(expenseAt).toISOString(),
+      });
+      if (insertError) {
+        console.error('[delegates] add expense failed', insertError);
+        let msg = `تعذر تسجيل المصروف: ${insertError.message}`;
+        if (insertError.code === '42501') {
+          msg = 'لا تملك صلاحية تسجيل مصاريف. تواصل مع المدير.';
+        } else if (insertError.code === '42P01') {
+          msg = 'جدول المصاريف غير متاح بعد. لم يتم تطبيق ترحيل القاعدة.';
+        } else if (insertError.code === '23514') {
+          msg = 'البيانات المُدخَلة لا تطابق القيود.';
+        }
+        setError(msg);
+        onError(msg);
+        setSubmitting(false);
+        return;
+      }
+      onSaved('تم تسجيل المصروف بنجاح.');
+    } catch (e) {
+      const msg = `حدث خطأ غير متوقع: ${e instanceof Error ? e.message : String(e)}`;
+      console.error('[delegates] add expense unexpected error', e);
+      setError(msg);
+      onError(msg);
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" dir="rtl">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-3xl shadow-modal w-full max-w-lg max-h-[90vh] flex flex-col fade-in">
+        <div className="flex-shrink-0 flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
+          <div>
+            <h3 className="text-base font-bold text-[hsl(var(--foreground))]">إضافة مصروف</h3>
+            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">{delegate.name}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))]"
+            aria-label="إغلاق"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4 scrollbar-thin">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+                نوع المصروف *
+              </label>
+              <select
+                className="input-field w-full"
+                value={expenseType}
+                onChange={(e) => setExpenseType(e.target.value as ExpenseType)}
+              >
+                {EXPENSE_TYPE_TOKENS.map((t) => (
+                  <option key={t} value={t}>
+                    {EXPENSE_TYPE_LABELS_AR[t]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Field
+              label="المبلغ * (ج.م)"
+              value={amount}
+              onChange={(v) => {
+                const cleaned = v.replace(/[^\d.]/g, '');
+                const parts = cleaned.split('.');
+                const normalized =
+                  parts.length > 1 ? `${parts[0]}.${parts.slice(1).join('').slice(0, 2)}` : cleaned;
+                setAmount(normalized);
+              }}
+              placeholder="0"
+              dir="ltr"
+            />
+            <Field
+              label="رقم الطلب (اختياري)"
+              value={orderId}
+              onChange={(v) => setOrderId(v.slice(0, 64))}
+              placeholder="مثال: ORD-12345"
+              dir="ltr"
+            />
+            <Field
+              label="تاريخ المصروف"
+              type="datetime-local"
+              value={expenseAt}
+              onChange={setExpenseAt}
+              dir="ltr"
+            />
+            <div>
+              <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+                اعتمد بواسطة
+              </label>
+              <input
+                type="text"
+                value={approvedBy.name || '—'}
+                disabled
+                className="input-field w-full opacity-60"
+              />
+            </div>
+            <div>
+              <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+                الحالة
+              </label>
+              <input type="text" value="معتمد" disabled className="input-field w-full opacity-60" />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+              ملاحظة (اختياري)
+            </label>
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value.slice(0, 500))}
+              placeholder="مثال: بنزين توصيل طلب القاهرة"
+              rows={3}
+              className="input-field w-full resize-none"
+            />
+            <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1">
+              {note.length} / 500 حرف
+            </p>
+          </div>
+
+          {/* Sanity confirmation for unusually large expense rows. */}
+          {isLarge && (
+            <label className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800">
+              <input
+                type="checkbox"
+                checked={largeAcknowledged}
+                onChange={(e) => setLargeAcknowledged(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span>المبلغ {fmtMoney(parsedAmount)} كبير لمصروف. أؤكد أن المبلغ صحيح.</span>
+            </label>
+          )}
+
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-700 flex items-start gap-2">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+        </div>
+
+        <div className="flex-shrink-0 flex items-center justify-between gap-3 p-4 border-t border-[hsl(var(--border))] bg-white rounded-b-3xl">
+          <button type="button" className="btn-secondary" onClick={onClose} disabled={submitting}>
+            إلغاء
+          </button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={submitting}
+            className="px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 text-white bg-orange-600 hover:bg-orange-700 disabled:opacity-50"
+          >
+            <Receipt size={14} />
+            {submitting ? 'جارٍ التسجيل...' : 'تسجيل المصروف'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Phase 23C — Custody status confirm dialog ────────────────────────────
+//
+// Lightweight confirm step between an admin clicking
+// استلام / تسوية / مفقود on a custody row and the actual UPDATE.
+// The parent owns the supabase call so the dialog stays stateless.
+interface CustodyStatusDialogProps {
+  row: CustodyRow;
+  nextStatus: 'returned' | 'settled' | 'lost';
+  submitting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+function CustodyStatusDialog({
+  row,
+  nextStatus,
+  submitting,
+  onCancel,
+  onConfirm,
+}: CustodyStatusDialogProps) {
+  const headlineByStatus: Record<typeof nextStatus, string> = {
+    returned: 'استلام الأمانة',
+    settled: 'تسوية الأمانة',
+    lost: 'تسجيل الأمانة كمفقودة',
+  };
+  const bodyByStatus: Record<typeof nextStatus, string> = {
+    returned: 'سيتم وضع علامة "تم الاستلام" على هذه الأمانة وتثبيت تاريخ الاستلام.',
+    settled: 'سيتم تسوية الأمانة وتثبيت تاريخ التسوية.',
+    lost: 'سيتم تسجيل الأمانة كمفقودة. هذا الإجراء يحتاج موافقة مسؤول.',
+  };
+  const buttonToneByStatus: Record<typeof nextStatus, string> = {
+    returned: 'bg-emerald-600 hover:bg-emerald-700',
+    settled: 'bg-blue-600 hover:bg-blue-700',
+    lost: 'bg-red-600 hover:bg-red-700',
+  };
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" dir="rtl">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onCancel} />
+      <div className="relative bg-white rounded-3xl shadow-modal w-full max-w-md flex flex-col fade-in">
+        <div className="p-5 border-b border-[hsl(var(--border))]">
+          <h3 className="text-base font-bold text-[hsl(var(--foreground))]">
+            {headlineByStatus[nextStatus]}
+          </h3>
+          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
+            {custodyTypeLabel(row.custody_type)} — {row.description}
+          </p>
+        </div>
+        <div className="p-5 space-y-3">
+          <p className="text-sm text-[hsl(var(--foreground))]">{bodyByStatus[nextStatus]}</p>
+          <div className="bg-[hsl(var(--muted))]/40 border border-[hsl(var(--border))] rounded-xl p-3 text-xs space-y-1">
+            <p>
+              المندوب: <span className="font-semibold">{row.delegate_name || '—'}</span>
+            </p>
+            <p>
+              الكمية:{' '}
+              <span className="font-mono">
+                {row.quantity != null ? Number(row.quantity).toLocaleString('en-US') : '—'}
+              </span>
+            </p>
+            <p>
+              القيمة التقديرية:{' '}
+              <span className="font-mono">{fmtMoney(Number(row.estimated_value ?? 0))}</span>
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center justify-between gap-3 p-4 border-t border-[hsl(var(--border))]">
+          <button type="button" className="btn-secondary" onClick={onCancel} disabled={submitting}>
+            إلغاء
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={submitting}
+            className={`px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 text-white ${buttonToneByStatus[nextStatus]} disabled:opacity-50`}
+          >
+            <CheckCircle size={14} />
+            {submitting ? 'جارٍ التحديث...' : headlineByStatus[nextStatus]}
           </button>
         </div>
       </div>
