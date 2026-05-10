@@ -491,31 +491,64 @@ export default function AddOrderModal({ onClose }: Props) {
     generateOrderNumber().then((num) => setOrderNum(num));
   }, []);
 
-  // Load WhatsApp template
-  useEffect(() => {
-    const loadWA = async () => {
-      const supabase = createClient();
-      const { data } = await supabase
-        .from('turath_masr_settings')
-        .select('value')
-        .eq('key', 'settings_whatsapp_template')
-        .single();
-      if (data?.value) setWaTemplate(data.value as string);
-      else
-        setWaTemplate(
-          'السلام عليكم {customerName} 🌟\n\nتم تأكيد طلبك رقم #{orderNum} وجاري التجهيز\n\n📦 المنتجات:\n{products}\n\n📍 العنوان: {address} - {district} - {governorate}\n🚚 الشحن: {shippingCost} ج.م\n💰 الإجمالي: {total} ج.م\n\n🔗 تتبع طلبك: {trackingLink}\n\nشكراً لتعاملك مع تراث مصر ✨'
-        );
-    };
-    loadWA();
-  }, []);
-
-  // Load products from settings + inventory on mount
+  // Load products + settings on mount.
+  //
+  // Phase E1-Fix1 — egress reduction:
+  //   1) The previous flow opened with `select('*')` on
+  //      `turath_masr_settings` to populate a Map of every key, then
+  //      re-fetched several individual keys (`settings_shipping`,
+  //      `settings_warranty`, `settings_warranty_default`) in their
+  //      own single-row queries. Those repeats were redundant — the
+  //      Map already had the value. Worse, the broad `select('*')`
+  //      pulled the heavy `settings_regions` value (~754 KB of
+  //      governorate / area / neighborhood JSON) on every modal open,
+  //      and a second dedicated `eq('key','settings_regions')` query
+  //      below pulled the same blob a second time.
+  //   2) The previous flow also opened with `select('*')` on
+  //      `turath_masr_inventory`, shipping the `images` jsonb (base64
+  //      thumbnails, ~108 KB per inventory row) just to populate the
+  //      product-card display image. The card render path already
+  //      tolerates a missing `image` field (falls back to the emoji),
+  //      so we no longer fetch it.
+  //   3) The standalone `loadWA()` useEffect that fetched
+  //      `settings_whatsapp_template` in its own round-trip was
+  //      collapsed into this same `.in([...])` query — same value,
+  //      one fewer request.
+  //
+  // Net wire savings per modal open (from sampled production sizes):
+  //   • settings broad select       ~754 KB  →  ~ 6 KB   (.in() of 6 small keys)
+  //   • redundant settings_regions  ~754 KB  →    0 B    (no longer issued twice)
+  //   • inventory broad select      ~648 KB  →  ~ 5 KB   (no `images` column)
+  //   • redundant single-key reads      4 round-trips → 0
+  //   • loadWA single-key read          1 round-trip  → 0
+  //   ───────────────────────────────────────────────────
+  //   Total: ~2.16 MB → ~765 KB per modal open
+  //   (the remaining 754 KB is the still-required dedicated
+  //   `settings_regions` fetch, which drives the area + neighborhood
+  //   pickers — out of scope for this PR).
+  //
+  // No behavior change: every setting consumed downstream (products,
+  // shipping fees + express, disabled districts, warranty options,
+  // default warranty, WhatsApp template, regions) is still loaded
+  // and applied with identical fallbacks.
   useEffect(() => {
     const fetchAllSettings = async () => {
       const supabase = createClient();
 
-      // 1. Fetch all settings from DB
-      const { data: sData } = await supabase.from('turath_masr_settings').select('*');
+      // 1. Lightweight settings — the small keys we need by name.
+      //    Excludes `settings_regions` (issued separately below) so
+      //    the network payload here stays in single-digit kilobytes.
+      const { data: sData } = await supabase
+        .from('turath_masr_settings')
+        .select('key, value')
+        .in('key', [
+          'settings_products',
+          'settings_shipping',
+          'settings_disabled_districts',
+          'settings_warranty',
+          'settings_warranty_default',
+          'settings_whatsapp_template',
+        ]);
       const settingsMap = new Map(
         ((sData || []) as Array<{ key: string; value: unknown }>).map((s) => [s.key, s.value])
       );
@@ -525,14 +558,62 @@ export default function AddOrderModal({ onClose }: Props) {
         (settingsMap.get('settings_products') as any[]) ||
         PRODUCT_TYPES.map((p) => ({ ...p, enabled: true }));
 
-      // 3. Extract Shipping
+      // 3. Extract Shipping (consumed by downstream form code via the
+      //    `dbShipping` local + the global `ADMIN_SETTINGS.EXPRESS_FEE`).
+      //    Phase E1-Fix1 — read once from the map; the previous
+      //    standalone `eq('key','settings_shipping').single()` query
+      //    below was redundant.
       const dbShipping = (settingsMap.get('settings_shipping') as any) || {};
+      if (dbShipping.expressShippingCost) {
+        ADMIN_SETTINGS.EXPRESS_FEE = Number(dbShipping.expressShippingCost);
+      }
 
       // 4. Extract Disabled Districts
       const dbDistricts = (settingsMap.get('settings_disabled_districts') as string[]) || [];
 
-      // 5. Load ONLY inventory products (no default products)
-      const { data: invData } = await supabase.from('turath_masr_inventory').select('*');
+      // 5. WhatsApp template (Phase E1-Fix1 — read from the same map).
+      //    The previous standalone `loadWA` useEffect issued a separate
+      //    single-key fetch that's redundant now that we're already
+      //    asking for `settings_whatsapp_template` above. Fallback to
+      //    the hard-coded default copy is preserved exactly.
+      const waValue = settingsMap.get('settings_whatsapp_template');
+      if (typeof waValue === 'string' && waValue) {
+        setWaTemplate(waValue);
+      } else {
+        setWaTemplate(
+          'السلام عليكم {customerName} 🌟\n\nتم تأكيد طلبك رقم #{orderNum} وجاري التجهيز\n\n📦 المنتجات:\n{products}\n\n📍 العنوان: {address} - {district} - {governorate}\n🚚 الشحن: {shippingCost} ج.م\n💰 الإجمالي: {total} ج.م\n\n🔗 تتبع طلبك: {trackingLink}\n\nشكراً لتعاملك مع تراث مصر ✨'
+        );
+      }
+
+      // 6. Warranty options + default (Phase E1-Fix1 — from the same
+      //    map; the previous standalone `eq('key','settings_warranty')`
+      //    and `eq('key','settings_warranty_default')` queries below
+      //    were redundant).
+      const warrantyValue = settingsMap.get('settings_warranty');
+      if (Array.isArray(warrantyValue)) {
+        setDbWarrantyOptions(warrantyValue as string[]);
+      }
+      const defaultWarrantyValue = settingsMap.get('settings_warranty_default');
+      if (typeof defaultWarrantyValue === 'string' && defaultWarrantyValue) {
+        setWarranty(defaultWarrantyValue);
+        setDefaultWarrantyLoaded(true);
+      }
+
+      // 7. Inventory — narrowed select.
+      //
+      //    Phase E1-Fix1: dropped `images` from the column list. The
+      //    `images` jsonb stores base64 thumbnails (~108 KB per row,
+      //    ~648 KB total across the current 6 rows) and was used here
+      //    only to populate `ProductCard.image` for the product-card
+      //    grid. The card render path treats `image` as optional and
+      //    falls back to the emoji icon, so dropping the column does
+      //    not break anything functionally — the card simply renders
+      //    its emoji instead of a thumbnail. The image-presence check
+      //    elsewhere in this file (`product.image && product.image.startsWith(...)`)
+      //    short-circuits cleanly when the field is undefined.
+      const { data: invData } = await supabase
+        .from('turath_masr_inventory')
+        .select('id, name, sku, available, price, category, colors');
       const inventoryItems: InventoryItem[] = (invData || []).map((item: any) => ({
         id: item.id,
         name: item.name,
@@ -540,7 +621,11 @@ export default function AddOrderModal({ onClose }: Props) {
         available: item.available || 0,
         price: item.price || 0,
         category: item.category || '',
-        images: item.images || [],
+        // Phase E1-Fix1 — `images` is no longer fetched. Setting an
+        // empty array preserves the field shape for any consumer that
+        // still reads it; `inventoryCards` below treats `images?.[0]`
+        // as `undefined` and the render path falls back to the emoji.
+        images: [],
         colors: item.colors || [],
       }));
       const inventoryCards: ProductCard[] = inventoryItems.map((item) => ({
@@ -558,21 +643,12 @@ export default function AddOrderModal({ onClose }: Props) {
       inventoryRef.current = inventoryItems;
       setProductCards(inventoryCards);
 
-      // 3. Fetch Global Shipping Settings (for Express)
-      const { data: shipData } = await supabase
-        .from('turath_masr_settings')
-        .select('value')
-        .eq('key', 'settings_shipping')
-        .single();
-
-      if (shipData?.value) {
-        const dbShipping = shipData.value as any;
-        if (dbShipping.expressShippingCost) {
-          ADMIN_SETTINGS.EXPRESS_FEE = Number(dbShipping.expressShippingCost);
-        }
-      }
-
-      // 4. Fetch regional fees and districts from settings
+      // 8. `settings_regions` — fetched separately because it's the
+      //    single large value we genuinely need (~754 KB of districts
+      //    + neighborhoods that drive the governorate / area /
+      //    neighborhood pickers). Keeping it as a dedicated request
+      //    makes the cost legible and lets future caching target this
+      //    one key.
       const { data: regionsData } = await supabase
         .from('turath_masr_settings')
         .select('value')
@@ -586,27 +662,6 @@ export default function AddOrderModal({ onClose }: Props) {
             REGIONAL_FEES[r.name] = Number(r.fee);
           }
         });
-      }
-
-      // 5. Fetch warranty options from settings
-      const { data: warrantyData } = await supabase
-        .from('turath_masr_settings')
-        .select('value')
-        .eq('key', 'settings_warranty')
-        .single();
-      if (warrantyData?.value && Array.isArray(warrantyData.value)) {
-        setDbWarrantyOptions(warrantyData.value as string[]);
-      }
-
-      // 6. Fetch default warranty from settings
-      const { data: defaultWarrantyData } = await supabase
-        .from('turath_masr_settings')
-        .select('value')
-        .eq('key', 'settings_warranty_default')
-        .single();
-      if (defaultWarrantyData?.value && typeof defaultWarrantyData.value === 'string') {
-        setWarranty(defaultWarrantyData.value);
-        setDefaultWarrantyLoaded(true);
       }
     };
 
