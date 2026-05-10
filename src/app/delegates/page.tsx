@@ -43,10 +43,13 @@ import {
   ChevronRight,
   Lock,
   ShieldCheck,
+  Pencil,
+  Power,
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import { createClient } from '@/lib/supabase/client';
 import { isValidEgyptianMobile } from '@/lib/validators/phone';
+import { usePermissions } from '@/hooks/usePermissions';
 // Phase 23A-Fix1 — transport-type tokens + Arabic labels, plus the
 // licence-status helper that drives the "متبقي N يوم" badges in the
 // delegates table and detail drawer.
@@ -190,6 +193,14 @@ const IN_FLIGHT_STATUSES = new Set(['preparing', 'warehouse', 'shipping']);
 
 // ─── Page component ────────────────────────────────────────────────────────
 export default function DelegatesPage() {
+  const perms = usePermissions();
+  // Phase 23A-Fix2 — only admins (r1) can edit profile fields or
+  // toggle `delegate_is_active`. The underlying RLS policy on
+  // `public.profiles` (`profiles_admin_update`) is gated on
+  // `is_admin()`, so any non-admin caller would get a 42501 from
+  // PostgREST. Hiding the buttons keeps the UI honest.
+  const canEditDelegate = perms.isAdmin;
+
   const [profiles, setProfiles] = useState<DelegateRow[]>([]);
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [ratings, setRatings] = useState<RatingRow[]>([]);
@@ -205,6 +216,26 @@ export default function DelegatesPage() {
   // can subscribe to `reloadTick` for refetches.
   const [wizardOpen, setWizardOpen] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
+  // Phase 23A-Fix2 — edit-delegate modal state. `editKey` is the
+  // delegate.key whose row is currently being edited; `null` when
+  // the modal is closed.
+  const [editKey, setEditKey] = useState<string | null>(null);
+  // Toggle-active confirmation dialog. Stores the key of the row
+  // we're about to toggle plus the next desired state.
+  const [toggleTarget, setToggleTarget] = useState<{
+    key: string;
+    nextActive: boolean;
+  } | null>(null);
+  const [toggleSubmitting, setToggleSubmitting] = useState(false);
+  const [toast, setToast] = useState<{
+    kind: 'success' | 'error';
+    message: string;
+  } | null>(null);
+  // Phase 23A-Fix2 — quick filter by active state. Default 'all'
+  // matches the previous behaviour. Legacy `delegate_name`-only
+  // rows have a null active flag; we treat them as active for
+  // filter purposes (they were never explicitly deactivated).
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
 
   // Fetch profiles + orders + ratings in parallel. Each query is
   // narrowed and date-bounded.
@@ -357,9 +388,18 @@ export default function DelegatesPage() {
       cancelled = true;
     };
     // Phase 23A-Fix1 — re-run the loader when the wizard bumps
-    // `reloadTick`. Declared above the loader so React's hook
+    // `reloadTick`. Phase 23A-Fix2 — also re-runs after edit /
+    // toggle saves. Declared above the loader so React's hook
     // ordering guarantees still hold.
   }, [reloadTick]);
+
+  // Phase 23A-Fix2 — auto-clear the toast after a few seconds so
+  // dispatchers don't have to dismiss it manually after every action.
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   // Per-delegate aggregation. Cheap O(N*M) walk; the page only
   // renders <100 delegates and <1000 orders in practice.
@@ -448,6 +488,24 @@ export default function DelegatesPage() {
 
   const selected = aggregates.find((a) => a.delegate.key === selectedKey) || null;
 
+  // Phase 23A-Fix2 — apply the active/inactive filter at render
+  // time. Legacy delegate_name-only rows have `delegateIsActive`
+  // null and are bucketed as "active" (never explicitly disabled).
+  const visibleAggregates = useMemo(() => {
+    if (statusFilter === 'all') return aggregates;
+    return aggregates.filter((a) => {
+      const isInactive = a.delegate.delegateIsActive === false;
+      return statusFilter === 'inactive' ? isInactive : !isInactive;
+    });
+  }, [aggregates, statusFilter]);
+
+  // Phase 23A-Fix2 — resolve the edit/toggle target rows from their
+  // keys so child components can prefill cleanly without prop-drilling.
+  const editing = aggregates.find((a) => a.delegate.key === editKey) || null;
+  const toggling = toggleTarget
+    ? aggregates.find((a) => a.delegate.key === toggleTarget.key) || null
+    : null;
+
   return (
     <AppLayout currentPath="/delegates">
       <div className="space-y-6 fade-in">
@@ -519,8 +577,44 @@ export default function DelegatesPage() {
 
         {/* Delegates table */}
         <div className="card-section overflow-hidden">
-          <div className="px-5 py-3 border-b border-[hsl(var(--border))] bg-white">
+          <div className="px-5 py-3 border-b border-[hsl(var(--border))] bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <h2 className="text-base font-bold text-[hsl(var(--foreground))]">قائمة المناديب</h2>
+            {/* Phase 23A-Fix2 — quick filter for active / inactive
+                delegates. Counts are computed off `aggregates` so the
+                tab labels reflect the dataset before filtering. */}
+            <div className="flex items-center gap-1 bg-[hsl(var(--muted))]/40 rounded-xl p-1 self-end sm:self-auto">
+              {(
+                [
+                  { key: 'all', label: 'الكل', count: aggregates.length },
+                  {
+                    key: 'active',
+                    label: 'نشط',
+                    count: aggregates.filter((a) => a.delegate.delegateIsActive !== false).length,
+                  },
+                  {
+                    key: 'inactive',
+                    label: 'غير نشط',
+                    count: aggregates.filter((a) => a.delegate.delegateIsActive === false).length,
+                  },
+                ] as const
+              ).map((opt) => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => setStatusFilter(opt.key)}
+                  className={`px-3 py-1 text-xs font-semibold rounded-lg transition-colors ${
+                    statusFilter === opt.key
+                      ? 'bg-white text-[hsl(var(--foreground))] shadow-sm'
+                      : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'
+                  }`}
+                >
+                  {opt.label}
+                  <span className="ml-1 text-[10px] text-[hsl(var(--muted-foreground))]">
+                    ({opt.count})
+                  </span>
+                </button>
+              ))}
+            </div>
           </div>
           {loading ? (
             <div className="p-10 text-center text-sm text-[hsl(var(--muted-foreground))]">
@@ -530,9 +624,13 @@ export default function DelegatesPage() {
             <div className="p-10 text-center text-sm text-[hsl(var(--muted-foreground))]">
               لا يوجد مناديب مسجلين بعد.
             </div>
+          ) : visibleAggregates.length === 0 ? (
+            <div className="p-10 text-center text-sm text-[hsl(var(--muted-foreground))]">
+              لا يوجد مناديب يطابقون الفلتر الحالي.
+            </div>
           ) : (
             <div className="overflow-x-auto scrollbar-thin">
-              <table className="w-full min-w-[900px]">
+              <table className="w-full min-w-[1000px]">
                 <thead>
                   <tr>
                     {[
@@ -541,6 +639,7 @@ export default function DelegatesPage() {
                       'الهاتف',
                       'وسيلة المواصلات',
                       'حالة الرخص',
+                      'الحالة',
                       'الطلبات الآن',
                       'تم التسليم',
                       'إجمالي التحصيل',
@@ -554,7 +653,7 @@ export default function DelegatesPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[hsl(var(--border))]">
-                  {aggregates.map((a) => {
+                  {visibleAggregates.map((a) => {
                     // Phase 23A-Fix1 — pre-compute the licence
                     // status so the table cell can pick the
                     // worse of the two and surface a single
@@ -569,8 +668,18 @@ export default function DelegatesPage() {
                           const order = ['expired', 'today', 'warning', 'valid'];
                           return order.indexOf(a2.status) - order.indexOf(b2.status);
                         })[0] ?? null;
+                    // Phase 23A-Fix2 — soft-deactivated delegates
+                    // stay clickable but visually muted. Legacy
+                    // delegate_name-only rows have a null active
+                    // flag and read as active.
+                    const isInactive = a.delegate.delegateIsActive === false;
                     return (
-                      <tr key={a.delegate.key} className="hover:bg-[hsl(var(--muted))]/30">
+                      <tr
+                        key={a.delegate.key}
+                        className={`hover:bg-[hsl(var(--muted))]/30 ${
+                          isInactive ? 'bg-[hsl(var(--muted))]/30 opacity-70' : ''
+                        }`}
+                      >
                         <td className="table-cell">
                           <div className="font-semibold">{a.delegate.name}</div>
                           <div className="text-[10px] text-[hsl(var(--muted-foreground))]">
@@ -609,6 +718,17 @@ export default function DelegatesPage() {
                             <span className="text-xs text-[hsl(var(--muted-foreground))]">—</span>
                           )}
                         </td>
+                        <td className="table-cell">
+                          <span
+                            className={`inline-block text-[10px] font-semibold px-2 py-0.5 rounded-full border ${
+                              isInactive
+                                ? 'bg-red-50 text-red-700 border-red-200'
+                                : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            }`}
+                          >
+                            {isInactive ? 'غير نشط' : 'نشط'}
+                          </span>
+                        </td>
                         <td className="table-cell font-mono">{a.inFlight}</td>
                         <td className="table-cell font-mono text-emerald-700">{a.delivered}</td>
                         <td className="table-cell font-mono">{fmtMoney(a.totalCollected)}</td>
@@ -624,16 +744,50 @@ export default function DelegatesPage() {
                           )}
                         </td>
                         <td className="table-cell">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSelectedKey(a.delegate.key);
-                              setActiveTab('summary');
-                            }}
-                            className="text-xs font-semibold text-[hsl(var(--primary))] hover:underline"
-                          >
-                            عرض التفاصيل
-                          </button>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedKey(a.delegate.key);
+                                setActiveTab('summary');
+                              }}
+                              className="text-xs font-semibold text-[hsl(var(--primary))] hover:underline"
+                            >
+                              عرض التفاصيل
+                            </button>
+                            {/* Phase 23A-Fix2 — admin-only edit and
+                                activate/deactivate row actions.
+                                Hidden for legacy `delegate_name`-only
+                                rows because they have no profile to
+                                update. */}
+                            {canEditDelegate && a.delegate.hasProfile && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditKey(a.delegate.key)}
+                                  className="inline-flex items-center gap-1 text-xs font-semibold text-[hsl(var(--primary))] hover:underline"
+                                  title="تعديل البيانات"
+                                >
+                                  <Pencil size={11} /> تعديل
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setToggleTarget({
+                                      key: a.delegate.key,
+                                      nextActive: isInactive,
+                                    })
+                                  }
+                                  className={`inline-flex items-center gap-1 text-xs font-semibold hover:underline ${
+                                    isInactive ? 'text-emerald-700' : 'text-red-700'
+                                  }`}
+                                  title={isInactive ? 'تفعيل' : 'تعطيل'}
+                                >
+                                  <Power size={11} /> {isInactive ? 'تفعيل' : 'تعطيل'}
+                                </button>
+                              </>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );
@@ -664,8 +818,100 @@ export default function DelegatesPage() {
           onCreated={() => {
             setWizardOpen(false);
             setReloadTick((n) => n + 1);
+            setToast({ kind: 'success', message: 'تم إنشاء المندوب بنجاح.' });
           }}
         />
+      )}
+
+      {/* Phase 23A-Fix2 — edit modal. Only opens for rows with a
+          real profile (`hasProfile === true`); legacy delegate_name-
+          only rows have no edit affordance. The modal updates only
+          the explicit field set under `narrowedFields` below — we
+          never write to `email` or any auth-managed column from
+          this modal. */}
+      {editing && editing.delegate.hasProfile && editing.delegate.profileId && (
+        <EditDelegateModal
+          delegate={editing.delegate}
+          onClose={() => setEditKey(null)}
+          onSaved={(message) => {
+            setEditKey(null);
+            setReloadTick((n) => n + 1);
+            setToast({ kind: 'success', message });
+          }}
+          onError={(message) => setToast({ kind: 'error', message })}
+        />
+      )}
+
+      {/* Phase 23A-Fix2 — toggle confirm dialog. Surfaces a warning
+          when the deactivation target still has in-flight orders so
+          the dispatcher knows their pipeline isn't auto-rebalanced
+          (Phase 23A-Fix2 explicitly does NOT auto-unassign). */}
+      {toggling && toggleTarget && (
+        <ToggleActiveDialog
+          delegate={toggling.delegate}
+          inFlight={toggling.inFlight}
+          nextActive={toggleTarget.nextActive}
+          submitting={toggleSubmitting}
+          onCancel={() => setToggleTarget(null)}
+          onConfirm={async () => {
+            if (!toggling.delegate.profileId) return;
+            setToggleSubmitting(true);
+            const supabase = createClient();
+            const { error } = await supabase
+              .from('profiles')
+              .update({ delegate_is_active: toggleTarget.nextActive })
+              .eq('id', toggling.delegate.profileId);
+            setToggleSubmitting(false);
+            if (error) {
+              console.error('[delegates] toggle active failed', error);
+              setToast({
+                kind: 'error',
+                message: `تعذر تحديث حالة المندوب: ${error.message}`,
+              });
+              return;
+            }
+            setToggleTarget(null);
+            setReloadTick((n) => n + 1);
+            setToast({
+              kind: 'success',
+              message: toggleTarget.nextActive ? 'تم تفعيل المندوب.' : 'تم تعطيل المندوب.',
+            });
+          }}
+        />
+      )}
+
+      {/* Phase 23A-Fix2 — toast. Auto-dismisses after 4s; manual
+          close button kept for keyboard accessibility. */}
+      {toast && (
+        <div
+          className="fixed bottom-6 right-6 z-[80] max-w-sm fade-in"
+          role="status"
+          aria-live="polite"
+          dir="rtl"
+        >
+          <div
+            className={`flex items-start gap-2 px-4 py-3 rounded-xl shadow-modal border ${
+              toast.kind === 'success'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                : 'bg-red-50 border-red-200 text-red-800'
+            }`}
+          >
+            {toast.kind === 'success' ? (
+              <CheckCircle size={16} className="mt-0.5 flex-shrink-0" />
+            ) : (
+              <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" />
+            )}
+            <p className="text-sm flex-1">{toast.message}</p>
+            <button
+              type="button"
+              onClick={() => setToast(null)}
+              className="text-current opacity-60 hover:opacity-100"
+              aria-label="إغلاق"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
       )}
     </AppLayout>
   );
@@ -739,14 +985,44 @@ function DelegateDrawer({
       <div className="relative bg-white w-full max-w-3xl h-full overflow-hidden flex flex-col shadow-2xl">
         {/* Header */}
         <div className="flex-shrink-0 flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
-          <div>
-            <h3 className="text-lg font-bold text-[hsl(var(--foreground))]">{a.delegate.name}</h3>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="text-lg font-bold text-[hsl(var(--foreground))]">{a.delegate.name}</h3>
+              {/* Phase 23A-Fix2 — active/inactive badge in the
+                  drawer header. Hidden for legacy rows since they
+                  have no profile to enable/disable. */}
+              {a.delegate.hasProfile && (
+                <span
+                  className={`inline-block text-[10px] font-semibold px-2 py-0.5 rounded-full border ${
+                    a.delegate.delegateIsActive === false
+                      ? 'bg-red-50 text-red-700 border-red-200'
+                      : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  }`}
+                >
+                  {a.delegate.delegateIsActive === false ? 'غير نشط' : 'نشط'}
+                </span>
+              )}
+            </div>
             <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
               {a.delegate.roleName || a.delegate.roleId || 'مندوب'}
               {a.delegate.email ? ` — ${a.delegate.email}` : ''}
             </p>
+            {/* Phase 23A-Fix2 — render the actual phone if present
+                rather than the placeholder text so dispatchers can
+                tap-to-call directly from the drawer header. */}
             <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1 flex items-center gap-1">
-              <PhoneIcon size={11} /> رقم الهاتف غير مسجل
+              <PhoneIcon size={11} />
+              {a.delegate.phone ? (
+                <a
+                  href={`tel:${a.delegate.phone}`}
+                  className="text-[hsl(var(--primary))] hover:underline"
+                  dir="ltr"
+                >
+                  {a.delegate.phone}
+                </a>
+              ) : (
+                <span>رقم الهاتف غير مسجل</span>
+              )}
             </p>
           </div>
           <button
@@ -1556,6 +1832,382 @@ function Field({ label, value, onChange, placeholder, type = 'text', dir = 'rtl'
         dir={dir}
         className="input-field w-full"
       />
+    </div>
+  );
+}
+
+// ─── Phase 23A-Fix2 — Edit delegate modal ─────────────────────────────────
+//
+// Drawer-style modal that pre-fills every operational profile field
+// from the row the dispatcher clicked, validates with the same rules
+// as the add wizard, and persists via a NARROW `update` against the
+// `profiles` row (no `select('*')`, never touches `email`/auth).
+//
+// The IMPORTANT contract (Phase 23A-Fix2 ground rules):
+//   • Email and password are NEVER updated from this modal — those
+//     are auth concerns and live behind a future Supabase-Auth-only
+//     flow. The role badge stays read-only.
+//   • The narrow update list mirrors the user spec — any column
+//     outside of it is left untouched.
+//   • Validation reuses the exact rules from `AddDelegateWizard`:
+//     EG-mobile phone, 14-digit national ID, license-end > start.
+//   • Optional licence numbers/dates can be cleared by leaving the
+//     field empty; the update sends `null` in that case.
+//   • RLS reality (`profiles_admin_update` is `is_admin()`-only)
+//     means a non-admin caller will hit a 42501. The page already
+//     gates the trigger button on `isAdmin`, but we surface any
+//     unexpected RLS error here clearly.
+interface EditDelegateModalProps {
+  delegate: DelegateRow;
+  onClose: () => void;
+  onSaved: (message: string) => void;
+  onError: (message: string) => void;
+}
+
+function EditDelegateModal({ delegate, onClose, onSaved, onError }: EditDelegateModalProps) {
+  // Prefill every field from the source row. State is local — we
+  // only push to the DB on Save.
+  const [name, setName] = useState(delegate.name);
+  const [phone, setPhone] = useState(delegate.phone ?? '');
+  const [nationalId, setNationalId] = useState(delegate.nationalId ?? '');
+  const [transportType, setTransportType] = useState<TransportType | ''>(
+    (delegate.transportType as TransportType | null) ?? ''
+  );
+  const [vehicleLicenseNumber, setVehicleLicenseNumber] = useState(
+    delegate.vehicleLicenseNumber ?? ''
+  );
+  const [vehicleStarts, setVehicleStarts] = useState(delegate.vehicleLicenseStartsAt ?? '');
+  const [vehicleExpires, setVehicleExpires] = useState(delegate.vehicleLicenseExpiresAt ?? '');
+  const [drivingLicenseNumber, setDrivingLicenseNumber] = useState(
+    delegate.drivingLicenseNumber ?? ''
+  );
+  const [drivingStarts, setDrivingStarts] = useState(delegate.drivingLicenseStartsAt ?? '');
+  const [drivingExpires, setDrivingExpires] = useState(delegate.drivingLicenseExpiresAt ?? '');
+  const [delegateActive, setDelegateActive] = useState<boolean>(
+    // null is treated as active — matches the drawer's badge logic
+    delegate.delegateIsActive !== false
+  );
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string>('');
+
+  const validate = (): string => {
+    if (!name.trim()) return 'الاسم مطلوب';
+    if (!phone.trim()) return 'رقم الهاتف مطلوب';
+    if (!isValidEgyptianMobile(phone.trim())) {
+      return 'رقم الهاتف غير صالح. يجب أن يكون رقم موبايل مصري (010 / 011 / 012 / 015).';
+    }
+    if (!nationalId.trim()) return 'الرقم القومي مطلوب';
+    if (!/^\d{14}$/.test(nationalId.trim())) {
+      return 'الرقم القومي يجب أن يكون 14 رقم';
+    }
+    if (!transportType) return 'يجب اختيار وسيلة المواصلات';
+    if (vehicleStarts && vehicleExpires && vehicleExpires <= vehicleStarts) {
+      return 'تاريخ نهاية رخصة المركبة يجب أن يكون بعد البداية';
+    }
+    if (drivingStarts && drivingExpires && drivingExpires <= drivingStarts) {
+      return 'تاريخ نهاية رخصة القيادة يجب أن يكون بعد البداية';
+    }
+    return '';
+  };
+
+  const handleSave = async () => {
+    setError('');
+    const err = validate();
+    if (err) {
+      setError(err);
+      return;
+    }
+    if (!delegate.profileId) {
+      setError('سجل قديم بدون ملف. لا يمكن التعديل من هنا.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const supabase = createClient();
+      // Phase 23A-Fix2 — narrow update. Any column outside this set
+      // is intentionally left untouched. Never write to `email`,
+      // `role_id`, or any auth-managed field from this modal.
+      const narrowedFields = {
+        full_name: name.trim(),
+        phone: phone.trim(),
+        national_id: nationalId.trim(),
+        transport_type: transportType,
+        vehicle_license_number: vehicleLicenseNumber.trim() || null,
+        vehicle_license_starts_at: vehicleStarts || null,
+        vehicle_license_expires_at: vehicleExpires || null,
+        driving_license_number: drivingLicenseNumber.trim() || null,
+        driving_license_starts_at: drivingStarts || null,
+        driving_license_expires_at: drivingExpires || null,
+        delegate_is_active: delegateActive,
+      };
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update(narrowedFields)
+        .eq('id', delegate.profileId);
+      if (updateError) {
+        console.error('[delegates] edit save failed', updateError);
+        // RLS rejections surface as 42501 / "permission denied".
+        // Translate to Arabic for the dispatcher.
+        const msg =
+          updateError.code === '42501'
+            ? 'لا تملك صلاحية تعديل بيانات المناديب. تواصل مع المدير.'
+            : `تعذر حفظ التعديلات: ${updateError.message}`;
+        setError(msg);
+        onError(msg);
+        setSubmitting(false);
+        return;
+      }
+      onSaved('تم حفظ تعديلات المندوب.');
+    } catch (e) {
+      const msg = `حدث خطأ غير متوقع: ${e instanceof Error ? e.message : String(e)}`;
+      console.error('[delegates] edit unexpected error', e);
+      setError(msg);
+      onError(msg);
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" dir="rtl">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-3xl shadow-modal w-full max-w-2xl max-h-[90vh] flex flex-col fade-in">
+        {/* Header */}
+        <div className="flex-shrink-0 flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
+          <div>
+            <h3 className="text-base font-bold text-[hsl(var(--foreground))]">
+              تعديل بيانات المندوب
+            </h3>
+            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
+              {delegate.email || delegate.name}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))]"
+            aria-label="إغلاق"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-4 scrollbar-thin">
+          {/* Phase 23A-Fix2 — explicit "no auth changes here" hint
+              so the dispatcher knows where to go for password resets. */}
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs text-blue-800 flex items-start gap-2">
+            <ShieldCheck size={14} className="mt-0.5 flex-shrink-0" />
+            <div>
+              يتم تعديل البيانات التشغيلية فقط. البريد الإلكتروني وكلمة المرور لا يتم تعديلهم من
+              هنا.
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <Field label="الاسم *" value={name} onChange={setName} placeholder="الاسم الكامل" />
+            <Field
+              label="رقم الهاتف *"
+              value={phone}
+              onChange={(v) => setPhone(v.replace(/\D/g, '').slice(0, 11))}
+              placeholder="01012345678"
+              dir="ltr"
+            />
+            <Field
+              label="الرقم القومي *"
+              value={nationalId}
+              onChange={(v) => setNationalId(v.replace(/\D/g, '').slice(0, 14))}
+              placeholder="14 رقم"
+              dir="ltr"
+            />
+            <div>
+              <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+                وسيلة المواصلات *
+              </label>
+              <select
+                className="input-field w-full"
+                value={transportType}
+                onChange={(e) => setTransportType(e.target.value as TransportType)}
+              >
+                <option value="">— اختر —</option>
+                {TRANSPORT_TYPE_TOKENS.map((t) => (
+                  <option key={t} value={t}>
+                    {TRANSPORT_TYPE_LABELS_AR[t]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+                الدور
+              </label>
+              <input
+                type="text"
+                value={delegate.roleName || delegate.roleId || 'مندوب شحن'}
+                disabled
+                className="input-field w-full opacity-60"
+              />
+            </div>
+            <div>
+              <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+                حالة المندوب
+              </label>
+              <select
+                className="input-field w-full"
+                value={delegateActive ? 'active' : 'inactive'}
+                onChange={(e) => setDelegateActive(e.target.value === 'active')}
+              >
+                <option value="active">نشط</option>
+                <option value="inactive">غير نشط</option>
+              </select>
+            </div>
+          </div>
+
+          <fieldset className="border border-[hsl(var(--border))] rounded-xl p-3">
+            <legend className="text-xs font-bold px-2">رخصة المركبة (اختياري)</legend>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-2">
+              <Field
+                label="رقم الرخصة"
+                value={vehicleLicenseNumber}
+                onChange={setVehicleLicenseNumber}
+              />
+              <Field
+                label="بداية الرخصة"
+                type="date"
+                value={vehicleStarts}
+                onChange={setVehicleStarts}
+              />
+              <Field
+                label="نهاية الرخصة"
+                type="date"
+                value={vehicleExpires}
+                onChange={setVehicleExpires}
+              />
+            </div>
+          </fieldset>
+
+          <fieldset className="border border-[hsl(var(--border))] rounded-xl p-3">
+            <legend className="text-xs font-bold px-2">رخصة القيادة (اختياري)</legend>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-2">
+              <Field
+                label="رقم الرخصة"
+                value={drivingLicenseNumber}
+                onChange={setDrivingLicenseNumber}
+              />
+              <Field
+                label="بداية الرخصة"
+                type="date"
+                value={drivingStarts}
+                onChange={setDrivingStarts}
+              />
+              <Field
+                label="نهاية الرخصة"
+                type="date"
+                value={drivingExpires}
+                onChange={setDrivingExpires}
+              />
+            </div>
+          </fieldset>
+
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-700 flex items-start gap-2">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex-shrink-0 flex items-center justify-between gap-3 p-4 border-t border-[hsl(var(--border))] bg-white rounded-b-3xl">
+          <button type="button" className="btn-secondary" onClick={onClose}>
+            إلغاء
+          </button>
+          <button
+            type="button"
+            className="btn-primary flex items-center gap-1"
+            onClick={handleSave}
+            disabled={submitting}
+          >
+            <CheckCircle size={14} />
+            {submitting ? 'جارٍ الحفظ...' : 'حفظ التعديلات'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Phase 23A-Fix2 — Activate / deactivate confirm dialog ───────────────
+//
+// Lightweight confirm step that sits between the row button and the
+// `profiles.delegate_is_active` flip. Surfaces the in-flight orders
+// count so the dispatcher knows whether deactivating now will leave
+// orders mid-route. We deliberately do NOT auto-reassign — that's a
+// separate phase. The action is reversible (just re-activate).
+interface ToggleActiveDialogProps {
+  delegate: DelegateRow;
+  inFlight: number;
+  nextActive: boolean;
+  submitting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+function ToggleActiveDialog({
+  delegate,
+  inFlight,
+  nextActive,
+  submitting,
+  onCancel,
+  onConfirm,
+}: ToggleActiveDialogProps) {
+  const isDeactivating = !nextActive;
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" dir="rtl">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onCancel} />
+      <div className="relative bg-white rounded-3xl shadow-modal w-full max-w-md flex flex-col fade-in">
+        <div className="p-5 border-b border-[hsl(var(--border))]">
+          <h3 className="text-base font-bold text-[hsl(var(--foreground))]">
+            {isDeactivating ? 'تعطيل المندوب' : 'تفعيل المندوب'}
+          </h3>
+          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">{delegate.name}</p>
+        </div>
+        <div className="p-5 space-y-3">
+          <p className="text-sm text-[hsl(var(--foreground))]">
+            {isDeactivating
+              ? 'سيتم تعطيل المندوب. يمكن إعادة تفعيله في أي وقت من نفس الزر.'
+              : 'سيتم تفعيل المندوب وإظهاره في القوائم النشطة.'}
+          </p>
+          {/* Phase 23A-Fix2 — only show the in-flight warning on
+              deactivation, and only if there are actually orders
+              currently in-flight. This phase never auto-unassigns
+              orders so the dispatcher sees the impact upfront. */}
+          {isDeactivating && inFlight > 0 && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800 flex items-start gap-2">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+              <div>
+                هذا المندوب لديه <span className="font-bold">{inFlight}</span> طلب قيد التنفيذ. هل
+                تريد تعطيله؟ لن يتم إلغاء تعيين هذه الطلبات تلقائيًا.
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="flex items-center justify-between gap-3 p-4 border-t border-[hsl(var(--border))]">
+          <button type="button" className="btn-secondary" onClick={onCancel} disabled={submitting}>
+            إلغاء
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={submitting}
+            className={`px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 text-white ${
+              isDeactivating ? 'bg-red-600 hover:bg-red-700' : 'bg-emerald-600 hover:bg-emerald-700'
+            }`}
+          >
+            <Power size={14} />
+            {submitting ? 'جارٍ التحديث...' : isDeactivating ? 'تعطيل المندوب' : 'تفعيل المندوب'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
