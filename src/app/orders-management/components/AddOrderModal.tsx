@@ -399,6 +399,116 @@ function lineTotal(line: OrderLine): number {
   return base + flash;
 }
 
+/**
+ * Phase E1-Fix1.1 — render an inventory product thumbnail with an
+ * emoji fallback. The `src` is expected to point at the
+ * `/api/inventory/[id]/thumbnail` route, which serves raw image
+ * bytes for `data:` URLs and 302-redirects for http(s):// or
+ * relative URLs, and returns 404 when the row has no stored image.
+ *
+ * Why a wrapper component
+ *   The three render sites in this file all need the same fallback:
+ *   if the image fails to load, swap to the product emoji glyph in
+ *   the same screen space. Centralising the logic here keeps the
+ *   render sites readable and ensures the swap is consistent.
+ *
+ * Why `unoptimized`
+ *   The thumbnail route is RLS-gated: it uses the SSR Supabase
+ *   client with the request's cookies, so an authenticated browser
+ *   can read the images while an anonymous one is rejected. Next.js's
+ *   built-in `/_next/image` optimiser fetches the underlying URL
+ *   server-to-server WITHOUT forwarding cookies, so the optimiser
+ *   would always see RLS rejection and the image would never load
+ *   for any user. Setting `unoptimized` makes the browser fetch the
+ *   URL directly (cookies attached) and the route's
+ *   `Cache-Control: public, max-age=86400, immutable` header keeps
+ *   repeat renders near-zero-egress.
+ *
+ * Why a span fallback with matching positioning
+ *   When `fill` is set, the underlying `<Image>` is absolutely
+ *   positioned to fill the parent. The emoji fallback uses
+ *   `absolute inset-0 flex items-center justify-center` so the
+ *   emoji occupies the same screen space — no layout shift when
+ *   the swap happens. For the non-fill (fixed width/height) modes,
+ *   the emoji span sizes itself via inline style.
+ */
+function InventoryThumbnail({
+  src,
+  alt,
+  emoji,
+  fill,
+  width,
+  height,
+  sizes,
+  className,
+  emojiClassName,
+}: {
+  src: string | undefined;
+  alt: string;
+  emoji: string;
+  fill?: boolean;
+  width?: number;
+  height?: number;
+  sizes?: string;
+  className?: string;
+  emojiClassName?: string;
+}) {
+  const [errored, setErrored] = useState(false);
+  const isLoadableUrl =
+    typeof src === 'string' &&
+    src.length > 0 &&
+    (src.startsWith('data:') ||
+      src.startsWith('http://') ||
+      src.startsWith('https://') ||
+      src.startsWith('/'));
+
+  if (!isLoadableUrl || errored) {
+    if (fill) {
+      return (
+        <span
+          className={`absolute inset-0 flex items-center justify-center ${emojiClassName ?? ''}`}
+        >
+          {emoji}
+        </span>
+      );
+    }
+    return (
+      <span
+        className={`inline-flex items-center justify-center ${emojiClassName ?? ''}`}
+        style={{ width, height }}
+      >
+        {emoji}
+      </span>
+    );
+  }
+
+  if (fill) {
+    return (
+      <Image
+        src={src as string}
+        alt={alt}
+        fill
+        sizes={sizes}
+        className={className}
+        unoptimized
+        onError={() => setErrored(true)}
+      />
+    );
+  }
+
+  return (
+    <Image
+      src={src as string}
+      alt={alt}
+      width={width || 32}
+      height={height || 32}
+      className={className}
+      unoptimized
+      onError={() => setErrored(true)}
+    />
+  );
+}
+
 export default function AddOrderModal({ onClose }: Props) {
   const { user, currentRoleId, currentRole, profileFullName } = useAuth();
   const IS_ADMIN = canUseAdminOnlyFinancialFields(currentRoleId);
@@ -621,10 +731,14 @@ export default function AddOrderModal({ onClose }: Props) {
         available: item.available || 0,
         price: item.price || 0,
         category: item.category || '',
-        // Phase E1-Fix1 — `images` is no longer fetched. Setting an
-        // empty array preserves the field shape for any consumer that
-        // still reads it; `inventoryCards` below treats `images?.[0]`
-        // as `undefined` and the render path falls back to the emoji.
+        // Phase E1-Fix1 — `images` is no longer fetched in the list
+        // query (the heavy column shipped ~108 KB per row of base64
+        // through `select('*')` and was the single largest egress
+        // source on every modal open). Phase E1-Fix1.1 — thumbnails
+        // are now lazily resolved via the `/api/inventory/[id]/thumbnail`
+        // endpoint, populated on the `inventoryCards.image` field
+        // below. Keeping the empty-array shape here so any future
+        // consumer that still reads `images` doesn't NPE.
         images: [],
         colors: item.colors || [],
       }));
@@ -634,7 +748,14 @@ export default function AddOrderModal({ onClose }: Props) {
         basePrice: item.price,
         emoji: '📦',
         hasColor: (item.colors?.length || 0) > 0,
-        image: item.images?.[0],
+        // Phase E1-Fix1.1 — thumbnail URL points at the lightweight
+        // image endpoint that decodes the base64 stored on the
+        // inventory row server-side and serves the raw bytes (saves
+        // ~33 % over the previous base64-in-JSON path) with a 24 h
+        // immutable cache. The `InventoryThumbnail` helper at the top
+        // of this file handles the 404 → emoji fallback for rows
+        // with no stored image.
+        image: `/api/inventory/${item.id}/thumbnail`,
         isInventory: true,
         colors: item.colors,
         available: item.available,
@@ -1675,10 +1796,26 @@ export default function AddOrderModal({ onClose }: Props) {
       ip: '—',
       lines: lines.map((l) => {
         const card = productCards.find((p) => p.value === l.productType);
+        // Phase E1-Fix1.1 — `card.image` is now the
+        // `/api/inventory/[id]/thumbnail` URL, not a base64 data
+        // URL. Persisting that URL into `lines.image` would break
+        // the customer-facing tracking page (`/track/t/<token>`),
+        // which fetches images without an authenticated session
+        // and would receive 404 from the RLS-gated thumbnail
+        // route. Storing `null` here matches Phase E1-Fix1's
+        // baseline behaviour (the admin Add Order modal stopped
+        // capturing inventory base64 into `lines.image` then) and
+        // is recovered visually for admin views in a future phase
+        // by looking up the thumbnail from `lines[i].productType`
+        // (the inventory id) at render time. Any pre-existing
+        // non-API URL on `card.image` (legacy / external) is still
+        // preserved.
+        const cardImage =
+          card?.image && !card.image.startsWith('/api/inventory/') ? card.image : null;
         return {
           productType: l.productType,
           label: card?.label || l.productType,
-          image: card?.image || null,
+          image: cardImage,
           emoji: card?.emoji || '📦',
           color: l.color || null,
           quantity: l.quantity,
@@ -2498,17 +2635,30 @@ export default function AddOrderModal({ onClose }: Props) {
                             }}
                             className={`w-full aspect-square rounded-2xl border-2 flex flex-col items-center justify-center gap-1 transition-all relative overflow-hidden ${product.isInventory && (inventoryRef.current.find((i) => i.id === product.value)?.available || 0) <= 0 ? 'border-red-200 bg-red-50 opacity-50 cursor-not-allowed' : count > 0 ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/5 shadow-md' : 'border-[hsl(var(--border))] hover:border-[hsl(var(--primary))]/50 hover:shadow-sm bg-white'}`}
                           >
-                            {hasRealImage ? (
-                              <Image
-                                src={product.image as string}
-                                alt={product.label}
-                                fill
-                                sizes="(max-width: 768px) 33vw, 150px"
-                                className="object-cover"
-                              />
-                            ) : (
-                              <span className="text-3xl">{product.emoji}</span>
-                            )}
+                            {/* Phase E1-Fix1.1 — InventoryThumbnail
+                                lazy-loads the product image from
+                                /api/inventory/[id]/thumbnail and
+                                falls back to the emoji on 404 /
+                                network failure. The helper
+                                preserves the same fill / sizes /
+                                object-cover behaviour the previous
+                                inline <Image> had. */}
+                            <InventoryThumbnail
+                              src={product.image}
+                              alt={product.label}
+                              emoji={product.emoji}
+                              fill
+                              sizes="(max-width: 768px) 33vw, 150px"
+                              className="object-cover"
+                              emojiClassName="text-3xl"
+                            />
+                            {/* Phase E1-Fix1.1 — kept the
+                                emoji-on-load-failure render path
+                                inside InventoryThumbnail so the
+                                surrounding card layout (label
+                                overlay below, count / availability
+                                pills above) doesn't shift between
+                                load and fallback states. */}
                             {count > 0 && (
                               <div className="absolute top-1 left-1 w-5 h-5 bg-[hsl(var(--primary))] rounded-full flex items-center justify-center z-10">
                                 <span className="text-white text-[10px] font-bold">{count}</span>
@@ -2592,17 +2742,22 @@ export default function AddOrderModal({ onClose }: Props) {
                           {/* Line header */}
                           <div className="flex items-center justify-between mb-3">
                             <div className="flex items-center gap-2">
-                              {hasRealImage ? (
-                                <Image
-                                  src={productCard!.image as string}
-                                  alt={productCard?.label || ''}
-                                  width={32}
-                                  height={32}
-                                  className="w-8 h-8 rounded-lg object-cover"
-                                />
-                              ) : (
-                                <span className="text-xl">{productCard?.emoji || '📦'}</span>
-                              )}
+                              {/* Phase E1-Fix1.1 — same
+                                  InventoryThumbnail helper as the
+                                  product-card grid above; here we
+                                  render at the fixed 32×32 inline
+                                  size. Falls back to the emoji on
+                                  load failure so the line header
+                                  always shows a glyph. */}
+                              <InventoryThumbnail
+                                src={productCard?.image}
+                                alt={productCard?.label || ''}
+                                emoji={productCard?.emoji || '📦'}
+                                width={32}
+                                height={32}
+                                className="w-8 h-8 rounded-lg object-cover"
+                                emojiClassName="text-xl w-8 h-8"
+                              />
                               <span className="text-xs font-bold text-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10 px-2 py-1 rounded-lg">
                                 {productCard?.label} #{index + 1}
                               </span>
@@ -3120,19 +3275,22 @@ export default function AddOrderModal({ onClose }: Props) {
                             className="px-4 py-3 flex items-center justify-between text-sm"
                           >
                             <div className="flex items-center gap-3">
-                              {card?.image ? (
-                                <Image
-                                  src={card.image}
-                                  alt={card?.label || ''}
-                                  width={48}
-                                  height={48}
-                                  className="w-12 h-12 rounded-xl object-cover border border-[hsl(var(--border))] shadow-sm"
-                                />
-                              ) : (
-                                <span className="text-2xl w-12 h-12 flex items-center justify-center bg-[hsl(var(--muted))]/50 rounded-xl">
-                                  {card?.emoji || '📦'}
-                                </span>
-                              )}
+                              {/* Phase E1-Fix1.1 — review-summary
+                                  thumbnail. Same helper as the two
+                                  sites above. Renders at 48×48 with
+                                  rounded-xl border, falls back to
+                                  the emoji centred in a muted-bg
+                                  square (matching the previous
+                                  fallback styling). */}
+                              <InventoryThumbnail
+                                src={card?.image}
+                                alt={card?.label || ''}
+                                emoji={card?.emoji || '📦'}
+                                width={48}
+                                height={48}
+                                className="w-12 h-12 rounded-xl object-cover border border-[hsl(var(--border))] shadow-sm"
+                                emojiClassName="text-2xl w-12 h-12 bg-[hsl(var(--muted))]/50 rounded-xl"
+                              />
                               <div>
                                 <p className="font-semibold text-xs">
                                   {card?.label || line.productType}
