@@ -61,6 +61,10 @@ import {
   BarChart3,
   Search,
   ArrowUpDown,
+  // Phase 23M — icons for the change-request admin queue + review modal.
+  Inbox,
+  CheckCheck,
+  XOctagon,
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import { createClient } from '@/lib/supabase/client';
@@ -182,6 +186,16 @@ import {
   type ReportRatingInput,
   type SortDirection,
 } from '@/lib/delegates/aggregateReports';
+// Phase 23M — pure helpers for the delegate profile change-request flow.
+import {
+  CHANGE_REQUEST_LABELS_AR,
+  CHANGE_REQUEST_STATUS_LABEL_AR,
+  CHANGE_REQUEST_STATUS_TONE,
+  SENSITIVE_FIELDS,
+  changeRequestErrorMessage,
+  type ChangeRequestField,
+  type ChangeRequestStatus,
+} from '@/lib/delegates/changeRequest';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 interface DelegateRow {
@@ -579,6 +593,8 @@ export default function DelegatesPage() {
   const [wizardOpen, setWizardOpen] = useState(false);
   // Phase 23L — controls the "تقارير المناديب" aggregate-report modal.
   const [reportOpen, setReportOpen] = useState(false);
+  // Phase 23M — controls the change-requests queue modal.
+  const [changeRequestsOpen, setChangeRequestsOpen] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
   // Phase 23A-Fix2 — edit-delegate modal state. `editKey` is the
   // delegate.key whose row is currently being edited; `null` when
@@ -1326,6 +1342,17 @@ export default function DelegatesPage() {
             >
               <BarChart3 size={16} /> تقارير المناديب
             </button>
+            {/* Phase 23M — change-requests inbox. Visible to anyone with
+                view_delegates (admin + r3 read-only). Admin actions
+                (approve / reject) inside the modal are gated again on
+                isAdmin so r3 sees the queue but can't act on it. */}
+            <button
+              type="button"
+              onClick={() => setChangeRequestsOpen(true)}
+              className="flex items-center gap-2 px-4 py-2.5 bg-[hsl(var(--muted))]/60 hover:bg-[hsl(var(--muted))] text-[hsl(var(--foreground))] border border-[hsl(var(--border))] rounded-xl text-sm font-semibold transition-colors"
+            >
+              <Inbox size={16} /> طلبات تعديل المناديب
+            </button>
             {/* Phase 23F — only admins can add a delegate. The
                 shipping supervisor (r3) lands on the page with read-
                 only access and never sees this button. RLS would
@@ -1973,6 +2000,16 @@ export default function DelegatesPage() {
           canExportCsv={canExportDelegateStatement}
           issuerName={profileFullName || user?.email || 'لا يوجد'}
           onClose={() => setReportOpen(false)}
+        />
+      )}
+
+      {/* Phase 23M — delegate change-requests queue. Admin can
+          approve / reject; r3 sees the queue read-only. */}
+      {changeRequestsOpen && (
+        <DelegateChangeRequestsAdminModal
+          canActOnRequests={canManageDelegates}
+          onClose={() => setChangeRequestsOpen(false)}
+          onChanged={() => setReloadTick((n) => n + 1)}
         />
       )}
 
@@ -8896,4 +8933,538 @@ function ReportTh({
       </button>
     </th>
   );
+}
+
+// ─── Phase 23M — Admin Change-Requests Queue ─────────────────────────────
+//
+// Admin-facing inbox: lists pending change requests at the top + the
+// full history below (latest 100). For each pending row the admin can
+// expand the diff (current → requested) and approve / reject via the
+// SECURITY DEFINER RPCs. r3 (shipping supervisor) sees the same queue
+// but the action buttons are hidden — read-only by design.
+//
+// Performance posture
+//   • Narrow `.select(...)` — never `*`.
+//   • Bounded `.limit(100)` for the history list; pending list is
+//     intrinsically small.
+//   • One refetch after every approve / reject / cancel; no Realtime
+//     subscription (the queue is a low-traffic surface).
+
+interface ChangeRequestRow {
+  id: string;
+  delegate_profile_id: string | null;
+  delegate_name: string | null;
+  requested_by: string | null;
+  requested_by_name: string | null;
+  status: string;
+  requested_changes: Record<string, unknown> | null;
+  current_snapshot: Record<string, unknown> | null;
+  admin_note: string | null;
+  reviewed_by_name: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+}
+
+interface DelegateChangeRequestsAdminModalProps {
+  canActOnRequests: boolean;
+  onClose: () => void;
+  onChanged: () => void;
+}
+
+function DelegateChangeRequestsAdminModal({
+  canActOnRequests,
+  onClose,
+  onChanged,
+}: DelegateChangeRequestsAdminModalProps) {
+  const [rows, setRows] = useState<ChangeRequestRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setErrorBanner(null);
+    (async () => {
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from('turath_masr_delegate_change_requests')
+        .select(
+          'id, delegate_profile_id, delegate_name, requested_by, requested_by_name, status, requested_changes, current_snapshot, admin_note, reviewed_by_name, reviewed_at, created_at'
+        )
+        .order('created_at', { ascending: false })
+        .limit(100);
+      if (cancelled) return;
+      if (error) {
+        const code = (error as { code?: string }).code || '';
+        // 42P01 = table missing pre-migration. Show a friendly notice
+        // rather than a raw error.
+        if (code === '42P01') {
+          setErrorBanner('ميزة طلبات التعديل غير مفعّلة بعد. الترحيل قيد الإعتماد.');
+        } else if (code === '42501') {
+          setErrorBanner('لا تملك صلاحية الاطلاع على الطلبات.');
+        } else {
+          setErrorBanner('تعذر تحميل الطلبات. حاول لاحقًا.');
+        }
+        setRows([]);
+      } else {
+        setRows((data as ChangeRequestRow[]) || []);
+      }
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshTick]);
+
+  const pending = useMemo(() => rows.filter((r) => r.status === 'pending'), [rows]);
+  const history = useMemo(() => rows.filter((r) => r.status !== 'pending'), [rows]);
+  const selected = selectedId ? rows.find((r) => r.id === selectedId) || null : null;
+
+  const refresh = () => {
+    setRefreshTick((n) => n + 1);
+    onChanged();
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-stretch justify-center p-0 sm:p-4" dir="rtl">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden />
+      <div className="relative bg-white w-full sm:max-w-5xl sm:rounded-2xl flex flex-col shadow-2xl max-h-[100vh] sm:max-h-[95vh] overflow-hidden">
+        <div className="flex items-center gap-3 px-5 py-4 bg-[hsl(var(--primary))] sm:rounded-t-2xl flex-shrink-0">
+          <Inbox size={20} className="text-white" />
+          <div className="flex-1">
+            <h2 className="text-white font-bold text-base">طلبات تعديل المناديب</h2>
+            <p className="text-white/70 text-xs">
+              مراجعة الطلبات الواردة من المناديب على بياناتهم الشخصية.
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 hover:bg-white/20 rounded-lg transition-colors"
+            aria-label="إغلاق"
+          >
+            <X size={18} className="text-white" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
+          {!canActOnRequests && (
+            <div className="rounded-xl bg-blue-50 border border-blue-200 px-3 py-2 text-xs text-blue-800 flex items-start gap-2">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+              <p>عرض للقراءة فقط — لا تملك صلاحية الموافقة أو الرفض.</p>
+            </div>
+          )}
+          {errorBanner && (
+            <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800 flex items-start gap-2">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+              <p>{errorBanner}</p>
+            </div>
+          )}
+          {loading ? (
+            <div className="text-center text-sm text-[hsl(var(--muted-foreground))] py-12">
+              جارٍ التحميل…
+            </div>
+          ) : (
+            <>
+              <section>
+                <h3 className="text-sm font-bold mb-3 flex items-center gap-2">
+                  <span>الطلبات المعلّقة</span>
+                  <span className="text-xs text-[hsl(var(--muted-foreground))]">
+                    ({pending.length})
+                  </span>
+                </h3>
+                {pending.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted))]/20 text-center text-xs text-[hsl(var(--muted-foreground))] py-6">
+                    لا توجد طلبات معلّقة.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {pending.map((r) => (
+                      <ChangeRequestRowCard key={r.id} row={r} onOpen={() => setSelectedId(r.id)} />
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              <section>
+                <h3 className="text-sm font-bold mb-3 flex items-center gap-2">
+                  <span>سجل الطلبات</span>
+                  <span className="text-xs text-[hsl(var(--muted-foreground))]">
+                    ({history.length})
+                  </span>
+                </h3>
+                {history.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted))]/20 text-center text-xs text-[hsl(var(--muted-foreground))] py-6">
+                    لا توجد طلبات سابقة.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {history.map((r) => (
+                      <ChangeRequestRowCard key={r.id} row={r} onOpen={() => setSelectedId(r.id)} />
+                    ))}
+                  </div>
+                )}
+              </section>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Review modal */}
+      {selected && (
+        <ChangeRequestReviewModal
+          row={selected}
+          canActOnRequests={canActOnRequests}
+          onClose={() => setSelectedId(null)}
+          onChanged={() => {
+            setSelectedId(null);
+            refresh();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ChangeRequestRowCard({ row, onOpen }: { row: ChangeRequestRow; onOpen: () => void }) {
+  const statusKey = (row.status as ChangeRequestStatus) || 'pending';
+  const statusLabel = CHANGE_REQUEST_STATUS_LABEL_AR[statusKey] || row.status;
+  const statusTone = CHANGE_REQUEST_STATUS_TONE[statusKey] || '';
+  const changedFields = Object.keys(row.requested_changes || {});
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="w-full text-right rounded-2xl border border-[hsl(var(--border))] bg-white hover:bg-[hsl(var(--muted))]/20 transition-colors p-3"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="font-bold text-sm text-[hsl(var(--foreground))]">
+            {row.delegate_name || '—'}
+          </span>
+          <span
+            className={`inline-flex items-center gap-1 rounded-full border text-[10px] font-semibold px-2 py-0.5 ${statusTone}`}
+          >
+            {statusLabel}
+          </span>
+        </div>
+        <span className="text-[11px] text-[hsl(var(--muted-foreground))]">
+          {new Date(row.created_at).toLocaleString('ar-EG', {
+            dateStyle: 'medium',
+            timeStyle: 'short',
+          })}
+        </span>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-1">
+        {changedFields.length === 0 ? (
+          <span className="text-[11px] text-[hsl(var(--muted-foreground))]">— لا توجد حقول —</span>
+        ) : (
+          changedFields.map((f) => {
+            const sensitive = SENSITIVE_FIELDS.includes(f as ChangeRequestField);
+            return (
+              <span
+                key={f}
+                className={`inline-flex items-center gap-1 rounded-full border text-[10px] px-2 py-0.5 ${
+                  sensitive
+                    ? 'bg-red-50 text-red-700 border-red-200'
+                    : 'bg-[hsl(var(--muted))]/40 text-[hsl(var(--muted-foreground))] border-[hsl(var(--border))]'
+                }`}
+              >
+                {sensitive && <AlertTriangle size={9} />}
+                {CHANGE_REQUEST_LABELS_AR[f as ChangeRequestField] || f}
+              </span>
+            );
+          })
+        )}
+      </div>
+      {row.admin_note && (
+        <p className="mt-2 text-[11px] text-[hsl(var(--muted-foreground))]">
+          ملاحظة: {row.admin_note}
+        </p>
+      )}
+    </button>
+  );
+}
+
+function ChangeRequestReviewModal({
+  row,
+  canActOnRequests,
+  onClose,
+  onChanged,
+}: {
+  row: ChangeRequestRow;
+  canActOnRequests: boolean;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [adminNote, setAdminNote] = useState('');
+  const [rejectReason, setRejectReason] = useState('');
+  const [mode, setMode] = useState<'view' | 'reject'>('view');
+  const [submitting, setSubmitting] = useState(false);
+  const [errorBanner, setErrorBanner] = useState<string | null>(null);
+
+  const requestedChanges = row.requested_changes || {};
+  const currentSnapshot = row.current_snapshot || {};
+  const isPending = row.status === 'pending';
+  const fields = Object.keys(requestedChanges);
+
+  const sensitiveTouched = fields.some((f) => SENSITIVE_FIELDS.includes(f as ChangeRequestField));
+
+  const approve = async () => {
+    if (!canActOnRequests || submitting) return;
+    setSubmitting(true);
+    setErrorBanner(null);
+    try {
+      const supabase = createClient();
+      const { error } = await supabase.rpc('approve_delegate_change_request', {
+        p_request_id: row.id,
+        p_admin_note: adminNote.trim() || null,
+      });
+      if (error) {
+        setErrorBanner(changeRequestErrorMessage((error as { message?: string }).message || ''));
+        setSubmitting(false);
+        return;
+      }
+      onChanged();
+    } catch {
+      setErrorBanner('تعذر إكمال العملية. حاول مرة أخرى.');
+      setSubmitting(false);
+    }
+  };
+
+  const reject = async () => {
+    if (!canActOnRequests || submitting) return;
+    const reason = rejectReason.trim();
+    if (!reason) {
+      setErrorBanner('يجب كتابة سبب الرفض.');
+      return;
+    }
+    setSubmitting(true);
+    setErrorBanner(null);
+    try {
+      const supabase = createClient();
+      const { error } = await supabase.rpc('reject_delegate_change_request', {
+        p_request_id: row.id,
+        p_reason: reason,
+      });
+      if (error) {
+        setErrorBanner(changeRequestErrorMessage((error as { message?: string }).message || ''));
+        setSubmitting(false);
+        return;
+      }
+      onChanged();
+    } catch {
+      setErrorBanner('تعذر إكمال العملية. حاول مرة أخرى.');
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-stretch justify-center p-0 sm:p-4" dir="rtl">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} aria-hidden />
+      <div className="relative bg-white w-full sm:max-w-2xl sm:rounded-2xl flex flex-col shadow-2xl max-h-[95vh] overflow-hidden">
+        <div className="flex items-center gap-3 px-5 py-4 bg-[hsl(var(--primary))] sm:rounded-t-2xl flex-shrink-0">
+          <FileText size={18} className="text-white" />
+          <div className="flex-1">
+            <h3 className="text-white font-bold text-base">{row.delegate_name || 'مندوب'}</h3>
+            <p className="text-white/70 text-xs">
+              {new Date(row.created_at).toLocaleString('ar-EG', {
+                dateStyle: 'medium',
+                timeStyle: 'short',
+              })}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 hover:bg-white/20 rounded-lg transition-colors"
+            aria-label="إغلاق"
+          >
+            <X size={18} className="text-white" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {sensitiveTouched && (
+            <div className="rounded-xl bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-800 flex items-start gap-2">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+              <p>
+                هذا الطلب يتضمن تعديل على حقول حساسة (الرقم القومي). يُرجى التحقق من المستند الأصلي
+                قبل الاعتماد.
+              </p>
+            </div>
+          )}
+          {errorBanner && (
+            <div className="rounded-xl bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">
+              {errorBanner}
+            </div>
+          )}
+
+          <div className="rounded-2xl border border-[hsl(var(--border))] overflow-hidden">
+            <table className="w-full text-xs">
+              <thead className="bg-[hsl(var(--muted))]/30 text-[hsl(var(--muted-foreground))]">
+                <tr>
+                  <th className="px-3 py-2 text-right font-semibold">الحقل</th>
+                  <th className="px-3 py-2 text-right font-semibold">القيمة الحالية</th>
+                  <th className="px-3 py-2 text-right font-semibold">القيمة المطلوبة</th>
+                </tr>
+              </thead>
+              <tbody>
+                {fields.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={3}
+                      className="text-center text-[hsl(var(--muted-foreground))] py-6"
+                    >
+                      لا توجد تغييرات.
+                    </td>
+                  </tr>
+                ) : (
+                  fields.map((field) => {
+                    const label = CHANGE_REQUEST_LABELS_AR[field as ChangeRequestField] || field;
+                    const current = renderValue(currentSnapshot[field]);
+                    const requested = renderValue(requestedChanges[field]);
+                    const sensitive = SENSITIVE_FIELDS.includes(field as ChangeRequestField);
+                    return (
+                      <tr
+                        key={field}
+                        className={`border-t border-[hsl(var(--border))] ${sensitive ? 'bg-red-50/30' : ''}`}
+                      >
+                        <td className="px-3 py-2 font-semibold text-[hsl(var(--foreground))]">
+                          {sensitive && (
+                            <AlertTriangle size={10} className="inline ml-1 text-red-600" />
+                          )}
+                          {label}
+                        </td>
+                        <td
+                          className="px-3 py-2 font-mono text-xs text-[hsl(var(--muted-foreground))]"
+                          dir="ltr"
+                        >
+                          {current}
+                        </td>
+                        <td className="px-3 py-2 font-mono text-xs text-emerald-700" dir="ltr">
+                          {requested}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {row.admin_note && (
+            <div className="rounded-xl bg-[hsl(var(--muted))]/20 border border-[hsl(var(--border))] px-3 py-2 text-xs">
+              <p className="font-semibold mb-1">ملاحظة الإدارة السابقة</p>
+              <p>{row.admin_note}</p>
+            </div>
+          )}
+          {row.reviewed_by_name && (
+            <p className="text-[11px] text-[hsl(var(--muted-foreground))]">
+              تمت المراجعة بواسطة {row.reviewed_by_name}
+              {row.reviewed_at &&
+                ` — ${new Date(row.reviewed_at).toLocaleString('ar-EG', {
+                  dateStyle: 'medium',
+                  timeStyle: 'short',
+                })}`}
+            </p>
+          )}
+
+          {isPending && canActOnRequests && mode === 'view' && (
+            <div className="space-y-2">
+              <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] block">
+                ملاحظة الاعتماد (اختيارية)
+              </label>
+              <textarea
+                value={adminNote}
+                onChange={(e) => setAdminNote(e.target.value.slice(0, 1000))}
+                rows={2}
+                className="input-field resize-none text-xs"
+                placeholder="ملاحظة تظهر للمندوب بعد الاعتماد..."
+                maxLength={1000}
+              />
+            </div>
+          )}
+          {isPending && canActOnRequests && mode === 'reject' && (
+            <div className="space-y-2">
+              <label className="text-[11px] font-semibold text-red-700 block">
+                سبب الرفض (إلزامي)
+              </label>
+              <textarea
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value.slice(0, 1000))}
+                rows={3}
+                className="input-field resize-none text-xs border-red-200 focus:ring-red-300"
+                placeholder="اشرح للمندوب سبب رفض الطلب..."
+                maxLength={1000}
+                autoFocus
+              />
+              <p className="text-[10px] text-gray-400 text-left">{rejectReason.length}/1000</p>
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center justify-end gap-2 px-5 py-3 border-t border-[hsl(var(--border))] bg-[hsl(var(--muted))]/20 flex-shrink-0">
+          {isPending && canActOnRequests ? (
+            mode === 'view' ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setMode('reject')}
+                  disabled={submitting}
+                  className="flex items-center gap-2 px-4 py-2 text-xs font-semibold text-red-700 bg-white border border-red-200 hover:bg-red-50 rounded-xl disabled:opacity-50"
+                >
+                  <XOctagon size={14} /> رفض الطلب
+                </button>
+                <button
+                  type="button"
+                  onClick={approve}
+                  disabled={submitting}
+                  className="flex items-center gap-2 px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <CheckCheck size={14} /> {submitting ? 'جارٍ الاعتماد…' : 'اعتماد التعديل'}
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMode('view');
+                    setErrorBanner(null);
+                  }}
+                  disabled={submitting}
+                  className="px-4 py-2 text-xs font-semibold text-[hsl(var(--muted-foreground))] bg-white border border-[hsl(var(--border))] rounded-xl"
+                >
+                  رجوع
+                </button>
+                <button
+                  type="button"
+                  onClick={reject}
+                  disabled={submitting || !rejectReason.trim()}
+                  className="flex items-center gap-2 px-4 py-2 text-xs font-bold text-white bg-red-600 hover:bg-red-700 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <XOctagon size={14} /> {submitting ? 'جارٍ الرفض…' : 'تأكيد الرفض'}
+                </button>
+              </>
+            )
+          ) : (
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-xs font-semibold text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] bg-white border border-[hsl(var(--border))] rounded-xl"
+            >
+              إغلاق
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function renderValue(v: unknown): string {
+  if (v == null) return '—';
+  if (typeof v === 'string') return v;
+  return String(v);
 }
