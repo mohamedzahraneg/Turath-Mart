@@ -127,6 +127,18 @@ import {
   type DelegateAlertLevel,
   type DelegateAlertSummary,
 } from '@/lib/delegates/licenseAlert';
+// Phase 23J — per-document expiry helpers. Mirror the licence-alert
+// shape so the documents tab + KPI cards + filter pills share the
+// same render conventions for "valid / expiring_soon / expired /
+// missing_expiry".
+import {
+  documentExpiryStatus,
+  summariseDocumentExpiry,
+  DOCUMENT_EXPIRY_TONE,
+  DOCUMENT_EXPIRY_LABEL_AR,
+  type DelegateDocumentExpirySummary,
+  type DocumentExpiryKind,
+} from '@/lib/delegates/documentExpiry';
 // Phase 23D — pure helpers for the account-statement tab + CSV.
 import {
   RANGE_PRESET_LABELS,
@@ -363,6 +375,11 @@ interface DelegateAggregate {
   //                         filter / KPI / row-badge level.
   documents: DocumentRow[];
   alert: DelegateAlertSummary;
+  // Phase 23J — per-document expiry rollup over the delegate's
+  // ACTIVE documents. The page uses these counts for the new
+  // document-level KPIs / filter pills; per-card badges use
+  // `documentExpiryStatus(doc.expires_at)` directly.
+  documentExpiry: DelegateDocumentExpirySummary;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -569,8 +586,19 @@ export default function DelegatesPage() {
   // Phase 23I — license-alert filter. Independent from the
   // active/inactive filter so dispatchers can combine "نشط +
   // مستندات ناقصة" naturally.
+  // Phase 23J — extended with three new tokens for document-level
+  // expiry filtering. The original 5 (valid / expiring / expired /
+  // missing_docs / all) drive the licence-alert pills, the new
+  // three drive the document-expiry pills.
   const [alertFilter, setAlertFilter] = useState<
-    'all' | 'valid' | 'expiring' | 'expired' | 'missing_docs'
+    | 'all'
+    | 'valid'
+    | 'expiring'
+    | 'expired'
+    | 'missing_docs'
+    | 'doc_expired'
+    | 'doc_expiring_soon'
+    | 'doc_missing_expiry'
   >('all');
   // Phase 23B — register-settlement modal target (`null` when closed).
   const [settlementTargetKey, setSettlementTargetKey] = useState<string | null>(null);
@@ -1022,10 +1050,11 @@ export default function DelegatesPage() {
         if (d.profileId && doc.delegate_profile_id === d.profileId) return true;
         return false;
       });
+      const activeDocumentsForDelegate = documentsForDelegate.filter(
+        (doc) => doc.status === 'active'
+      );
       const activeDocumentTypes = new Set<string>(
-        documentsForDelegate
-          .filter((doc) => doc.status === 'active')
-          .map((doc) => doc.document_type)
+        activeDocumentsForDelegate.map((doc) => doc.document_type)
       );
       const alert = computeDelegateAlert({
         vehicleLicenseExpiresAt: d.vehicleLicenseExpiresAt,
@@ -1033,6 +1062,10 @@ export default function DelegatesPage() {
         activeDocumentTypes,
         hasProfile: d.hasProfile,
       });
+      // Phase 23J — per-document expiry rollup. Count only ACTIVE
+      // rows; archived documents represent past state and don't
+      // need to be flagged for renewal.
+      const documentExpiry = summariseDocumentExpiry(activeDocumentsForDelegate);
 
       return {
         delegate: d,
@@ -1057,6 +1090,7 @@ export default function DelegatesPage() {
         adjustedRemaining,
         documents: documentsForDelegate,
         alert,
+        documentExpiry,
       };
     });
   }, [profiles, orders, ratings, settlements, custody, expenses, documents]);
@@ -1154,7 +1188,20 @@ export default function DelegatesPage() {
       });
     }
     if (alertFilter !== 'all') {
-      out = out.filter((a) => a.alert.level === alertFilter);
+      // Phase 23J — split the filter on its prefix: licence-side
+      // tokens (valid / expiring / expired / missing_docs) compare
+      // against `a.alert.level`; document-side tokens (doc_*)
+      // compare against the per-delegate `documentExpiry` summary
+      // counts.
+      if (alertFilter === 'doc_expired') {
+        out = out.filter((a) => a.documentExpiry.expired > 0);
+      } else if (alertFilter === 'doc_expiring_soon') {
+        out = out.filter((a) => a.documentExpiry.expiringSoon > 0);
+      } else if (alertFilter === 'doc_missing_expiry') {
+        out = out.filter((a) => a.documentExpiry.missingExpiry > 0);
+      } else {
+        out = out.filter((a) => a.alert.level === alertFilter);
+      }
     }
     return out;
   }, [aggregates, statusFilter, alertFilter]);
@@ -1162,9 +1209,41 @@ export default function DelegatesPage() {
   // Phase 23I — global license-alert KPI counts derived off the
   // unfiltered aggregate set so the KPI cards reflect the dataset
   // before any filter is applied.
+  // Phase 23J — also rolls up per-delegate document-expiry counts
+  // into three new totals (`doc_expired_delegates`,
+  // `doc_expiring_soon_delegates`, `doc_missing_expiry_delegates`)
+  // — each one counts delegates with at least one matching active
+  // document. The aggregate-level total of expired/expiring docs
+  // across the dataset is also surfaced for the KPI label sub-text.
   const alertCounts = useMemo(() => {
-    const c = { expired: 0, expiring: 0, missing_docs: 0, valid: 0, unknown: 0 };
-    for (const a of aggregates) c[a.alert.level] += 1;
+    const c = {
+      expired: 0,
+      expiring: 0,
+      missing_docs: 0,
+      valid: 0,
+      unknown: 0,
+      // Phase 23J — counts of delegates with at least one matching
+      // active document. Distinct from the licence-side counts above
+      // because a delegate can have multiple expired documents but
+      // we only want to count them once on the page-level KPI.
+      doc_expired_delegates: 0,
+      doc_expiring_soon_delegates: 0,
+      doc_missing_expiry_delegates: 0,
+      // Aggregate-level totals (sum of per-document statuses). Drive
+      // the KPI sub-label "X مستند منتهي على Y مندوب".
+      doc_expired_total: 0,
+      doc_expiring_soon_total: 0,
+      doc_missing_expiry_total: 0,
+    };
+    for (const a of aggregates) {
+      c[a.alert.level] += 1;
+      if (a.documentExpiry.expired > 0) c.doc_expired_delegates += 1;
+      if (a.documentExpiry.expiringSoon > 0) c.doc_expiring_soon_delegates += 1;
+      if (a.documentExpiry.missingExpiry > 0) c.doc_missing_expiry_delegates += 1;
+      c.doc_expired_total += a.documentExpiry.expired;
+      c.doc_expiring_soon_total += a.documentExpiry.expiringSoon;
+      c.doc_missing_expiry_total += a.documentExpiry.missingExpiry;
+    }
     return c;
   }, [aggregates]);
 
@@ -1307,7 +1386,9 @@ export default function DelegatesPage() {
           />
         </div>
 
-        {/* Phase 23I — license / document alert KPI row. */}
+        {/* Phase 23I — license / document alert KPI row.
+            Phase 23J — relabelled to clarify "licence-side" alerts;
+            adds a second 3-card row with document-expiry KPIs. */}
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           <KpiCard
             icon={<FileWarning size={18} className="text-red-600" />}
@@ -1316,13 +1397,48 @@ export default function DelegatesPage() {
           />
           <KpiCard
             icon={<CalendarClock size={18} className="text-amber-600" />}
-            label="تنتهي خلال 30 يوم"
+            label="رخص تنتهي قريبًا"
             value={alertCounts.expiring}
           />
           <KpiCard
             icon={<FileText size={18} className="text-blue-600" />}
             label="مستندات ناقصة"
             value={alertCounts.missing_docs}
+          />
+        </div>
+
+        {/* Phase 23J — per-document expiry KPI row. The first
+            number is the count of DELEGATES with at least one
+            matching active document; the sub-label surfaces the
+            total count of matching documents across the dataset
+            so dispatchers can see scale at a glance. */}
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <KpiCard
+            icon={<FileWarning size={18} className="text-red-600" />}
+            label="مستندات منتهية"
+            value={
+              alertCounts.doc_expired_total > 0
+                ? `${alertCounts.doc_expired_total} على ${alertCounts.doc_expired_delegates} مندوب`
+                : '0'
+            }
+          />
+          <KpiCard
+            icon={<CalendarClock size={18} className="text-amber-600" />}
+            label="مستندات تنتهي قريبًا"
+            value={
+              alertCounts.doc_expiring_soon_total > 0
+                ? `${alertCounts.doc_expiring_soon_total} على ${alertCounts.doc_expiring_soon_delegates} مندوب`
+                : '0'
+            }
+          />
+          <KpiCard
+            icon={<FileText size={18} className="text-[hsl(var(--muted-foreground))]" />}
+            label="بدون تاريخ انتهاء"
+            value={
+              alertCounts.doc_missing_expiry_total > 0
+                ? `${alertCounts.doc_missing_expiry_total} على ${alertCounts.doc_missing_expiry_delegates} مندوب`
+                : '0'
+            }
           />
         </div>
 
@@ -1370,18 +1486,40 @@ export default function DelegatesPage() {
             </div>
 
             {/* Phase 23I — license alert filter pills. Row two so the
-                two filter dimensions stay visually distinct. */}
+                two filter dimensions stay visually distinct.
+                Phase 23J — labels of two existing pills sharpened so
+                the new document-side pills (مستندات منتهية / مستندات
+                تنتهي قريبًا / بدون تاريخ انتهاء) read distinctly. */}
             <div className="flex flex-wrap items-center gap-1 bg-[hsl(var(--muted))]/40 rounded-xl p-1 self-start">
               {(
                 [
                   { key: 'all', label: 'الكل', count: aggregates.length },
                   { key: 'valid', label: 'رخص سارية', count: alertCounts.valid },
-                  { key: 'expiring', label: 'تنتهي قريبًا', count: alertCounts.expiring },
+                  {
+                    key: 'expiring',
+                    label: 'رخص تنتهي قريبًا',
+                    count: alertCounts.expiring,
+                  },
                   { key: 'expired', label: 'رخص منتهية', count: alertCounts.expired },
                   {
                     key: 'missing_docs',
                     label: 'مستندات ناقصة',
                     count: alertCounts.missing_docs,
+                  },
+                  {
+                    key: 'doc_expired',
+                    label: 'مستندات منتهية',
+                    count: alertCounts.doc_expired_delegates,
+                  },
+                  {
+                    key: 'doc_expiring_soon',
+                    label: 'مستندات تنتهي قريبًا',
+                    count: alertCounts.doc_expiring_soon_delegates,
+                  },
+                  {
+                    key: 'doc_missing_expiry',
+                    label: 'بدون تاريخ انتهاء',
+                    count: alertCounts.doc_missing_expiry_delegates,
                   },
                 ] as const
               ).map((opt) => (
@@ -7379,6 +7517,53 @@ function DocumentsTab({ a, canManage = false, issuer, onChanged }: DocumentsTabP
         </div>
       )}
 
+      {/* Phase 23J — per-document expiry alert banners. Each banner
+          renders independently so the dispatcher can see which class
+          of issue they're dealing with at a glance. We only emit a
+          banner when the bucket is non-zero — quiet by default. */}
+      {a.documentExpiry.expired > 0 && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-3 flex items-start gap-2">
+          <FileWarning size={16} className="text-red-600 mt-0.5 flex-shrink-0" />
+          <div>
+            <p className="text-sm font-bold text-red-800">
+              يوجد {a.documentExpiry.expired} مستند منتهي
+            </p>
+            <p className="text-[11px] text-red-700 mt-0.5">
+              يرجى رفع نسخة محدّثة قبل استخدام المستند رسميًا.
+            </p>
+          </div>
+        </div>
+      )}
+      {a.documentExpiry.expiringSoon > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-start gap-2">
+          <CalendarClock size={16} className="text-amber-600 mt-0.5 flex-shrink-0" />
+          <div>
+            <p className="text-sm font-bold text-amber-800">
+              يوجد {a.documentExpiry.expiringSoon} مستند سينتهي خلال 30 يوم
+            </p>
+            <p className="text-[11px] text-amber-700 mt-0.5">
+              ابدأ في تجهيز التجديد الآن لتفادي الانقطاع.
+            </p>
+          </div>
+        </div>
+      )}
+      {a.documentExpiry.missingExpiry > 0 && (
+        <div className="bg-[hsl(var(--muted))]/30 border border-[hsl(var(--border))] rounded-xl p-3 flex items-start gap-2">
+          <FileText
+            size={16}
+            className="text-[hsl(var(--muted-foreground))] mt-0.5 flex-shrink-0"
+          />
+          <div>
+            <p className="text-sm font-bold">
+              {a.documentExpiry.missingExpiry} مستند بدون تاريخ انتهاء
+            </p>
+            <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-0.5">
+              يمكن إضافة تاريخ الانتهاء عند رفع نسخة جديدة من المستند.
+            </p>
+          </div>
+        </div>
+      )}
+
       <div>
         <h4 className="text-sm font-bold mb-2">المستندات المطلوبة</h4>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -7450,9 +7635,32 @@ function DocumentSlotCard({
   const [busy, setBusy] = useState<'upload' | 'preview' | 'archive' | null>(null);
   const [error, setError] = useState('');
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+  // Phase 23J — optional expiry-date draft. Defaults to the
+  // currently-active document's expiry (when present) so a quick
+  // "replace with newer scan" path keeps the date if dispatchers
+  // forget to re-set it. Empty string is treated as "no expiry".
+  const [expiryDraft, setExpiryDraft] = useState<string>(
+    typeof latest?.expires_at === 'string' && /^\d{4}-\d{2}-\d{2}/.test(latest.expires_at)
+      ? latest.expires_at.slice(0, 10)
+      : ''
+  );
 
   const label = documentTypeLabel(documentType);
   const present = latest != null;
+  // Phase 23J — recommended-expiry hint per spec. Driving + vehicle
+  // licences carry a real expiry; national-ID images technically
+  // never "expire" but the user can still set one if needed.
+  const expiryRecommended =
+    documentType === 'driving_license' || documentType === 'vehicle_license';
+  // Per-card expiry status — drives the badge inline next to the
+  // metadata, the alert banners at the tab level, and the page-
+  // level KPIs. Only meaningful when an active row exists.
+  const expiryStatus = present ? documentExpiryStatus(latest.expires_at) : null;
+  const expiryDraftInPast = (() => {
+    if (!expiryDraft) return false;
+    const d = documentExpiryStatus(expiryDraft);
+    return d.status === 'expired';
+  })();
 
   const handlePickFile = () => {
     if (!canManage) return;
@@ -7494,6 +7702,9 @@ function DocumentSlotCard({
           .eq('id', latest.id);
         if (archiveErr) throw archiveErr;
       }
+      // Phase 23J — persist the optional expiry date alongside the
+      // metadata. Stored as a `date` column server-side; the input
+      // type is `date` so the value is already `yyyy-mm-dd`.
       const { error: insertErr } = await supabase.from('turath_masr_delegate_documents').insert({
         delegate_profile_id: delegate.profileId,
         delegate_name: delegate.name,
@@ -7505,6 +7716,7 @@ function DocumentSlotCard({
         uploaded_by: issuer.id,
         uploaded_by_name: issuer.name,
         uploaded_at: new Date(ts).toISOString(),
+        expires_at: expiryDraft || null,
         status: 'active',
       });
       if (insertErr) throw insertErr;
@@ -7591,6 +7803,23 @@ function DocumentSlotCard({
               <span className="text-[hsl(var(--muted-foreground))]">غير مرفوع</span>
             )}
           </p>
+          {/* Phase 23J — expiry badge + raw date when an active row
+              exists. Renders one of: ساري / ينتهي قريبًا / منتهي /
+              بدون تاريخ انتهاء with the matching tone. */}
+          {present && expiryStatus && (
+            <div className="mt-1 flex flex-wrap items-center gap-1">
+              <span
+                className={`inline-block text-[10px] font-semibold px-2 py-0.5 rounded-full border ${expiryStatus.toneClass}`}
+              >
+                {expiryStatus.label}
+              </span>
+              {latest.expires_at && (
+                <span className="text-[10px] text-[hsl(var(--muted-foreground))] font-mono">
+                  · ينتهي: {latest.expires_at.slice(0, 10)}
+                </span>
+              )}
+            </div>
+          )}
         </div>
         {present ? (
           <FileImage size={20} className="text-emerald-600 flex-shrink-0" />
@@ -7598,6 +7827,35 @@ function DocumentSlotCard({
           <FileWarning size={20} className="text-[hsl(var(--muted-foreground))] flex-shrink-0" />
         )}
       </div>
+
+      {/* Phase 23J — optional expiry-date input. Visible only to
+          admins (matches the upload control). For driving + vehicle
+          licences, surface a "(يُفضّل)" hint. Past-date entries are
+          allowed (back-fill scenarios) but flagged as expired. */}
+      {canManage && (
+        <div className="mt-2">
+          <label className="text-[10px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+            تاريخ انتهاء المستند
+            {expiryRecommended ? (
+              <span className="ml-1 text-[hsl(var(--primary))]">(يُفضّل)</span>
+            ) : (
+              <span className="ml-1 text-[hsl(var(--muted-foreground))]">(اختياري)</span>
+            )}
+          </label>
+          <input
+            type="date"
+            value={expiryDraft}
+            onChange={(e) => setExpiryDraft(e.target.value)}
+            className="input-field w-full text-xs"
+            dir="ltr"
+          />
+          {expiryDraftInPast && (
+            <p className="text-[10px] text-amber-700 mt-1">
+              التاريخ في الماضي — سيُسجّل المستند كمنتهي عند الرفع.
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-2 mt-2">
         {present && (
@@ -7667,6 +7925,18 @@ function DocumentArchiveLine({ doc, canManage }: DocumentArchiveLineProps) {
           <>
             <span className="text-[hsl(var(--muted-foreground))]">·</span>
             <span className="text-[hsl(var(--muted-foreground))] font-mono">{doc.file_name}</span>
+          </>
+        )}
+        {/* Phase 23J — surface the historical expiry date on archived
+            rows too so dispatchers can audit when the doc became
+            invalid. We DON'T render the live status badge here
+            because archived rows aren't the current state. */}
+        {doc.expires_at && (
+          <>
+            <span className="text-[hsl(var(--muted-foreground))]">·</span>
+            <span className="text-[hsl(var(--muted-foreground))] font-mono">
+              ينتهي: {doc.expires_at.slice(0, 10)}
+            </span>
           </>
         )}
       </div>
