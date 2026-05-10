@@ -46,6 +46,9 @@ import {
   FileText,
   Award,
 } from 'lucide-react';
+// Phase 22Q — Arabic-locale formatters for the customer-facing
+// delivery schedule card.
+import { formatScheduleDateShortAr, formatTime12hAr } from '@/lib/orders/scheduleFormat';
 
 interface TrackingOrder {
   orderNum: string;
@@ -83,6 +86,17 @@ interface TrackingOrder {
   delegateRating?: number;
   eta?: string;
   deliveryNotes?: string;
+  // Phase 22Q — customer-facing delivery schedule. Populated only
+  // when an admin has saved a window via StatusUpdateModal AND the
+  // companion migration has been applied. The reason is the
+  // (optional) reschedule reason; first-time scheduling has it as
+  // null.
+  scheduledDelivery?: {
+    date: string;
+    from: string;
+    to: string;
+    reason: string | null;
+  } | null;
   lines?: {
     productType: string;
     label: string;
@@ -1464,6 +1478,15 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
                   time: '',
                   createdAt: data.createdAt ?? undefined,
                   warranty: data.warranty || undefined,
+                  // Phase 22Q — pass through the customer-facing
+                  // schedule + delegate name. Both are null until the
+                  // companion migration is applied; the render path
+                  // below is defensive against null on every leaf.
+                  scheduledDelivery: data.scheduledDelivery ?? null,
+                  delegate:
+                    typeof data.delegateName === 'string' && data.delegateName
+                      ? data.delegateName
+                      : undefined,
                 } as TrackingOrder;
                 if (Array.isArray(data.statusTimeline) && data.statusTimeline.length > 0) {
                   const days = [
@@ -1948,6 +1971,52 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
           </div>
           <StatusTimeline history={history} currentStatus={order.status} />
         </div>
+
+        {/* Phase 22Q — Delivery schedule card. Shown when an admin
+            has set a window via StatusUpdateModal AND the companion
+            tracking RPC migration has been applied. */}
+        {order.scheduledDelivery && (
+          <div className="bg-emerald-50 border border-emerald-200 rounded-2xl shadow-sm p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <Clock size={16} className="text-emerald-700" />
+              <h2 className="font-bold text-sm text-emerald-800">موعد التسليم المتوقع</h2>
+            </div>
+            <p className="text-base font-bold text-[hsl(var(--foreground))]">
+              {formatScheduleDateShortAr(order.scheduledDelivery.date)}
+            </p>
+            <p className="text-sm text-[hsl(var(--foreground))] mt-0.5">
+              من الساعة{' '}
+              <span className="font-semibold">{formatTime12hAr(order.scheduledDelivery.from)}</span>{' '}
+              إلى الساعة{' '}
+              <span className="font-semibold">{formatTime12hAr(order.scheduledDelivery.to)}</span>
+            </p>
+            {order.scheduledDelivery.reason && (
+              <div className="mt-3 bg-orange-50 border border-orange-200 rounded-xl p-2.5">
+                <p className="text-xs font-bold text-orange-800 mb-0.5">تم ترحيل موعد التسليم</p>
+                <p className="text-xs text-orange-700">
+                  السبب: <span className="italic">{order.scheduledDelivery.reason}</span>
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Phase 22Q — Delegate card. Name only — phone is not
+            available from the current `profiles` schema (no `phone`
+            column). When delegate is missing the section is hidden,
+            no placeholder card is rendered. */}
+        {order.delegate && (
+          <div className="bg-white rounded-2xl border border-[hsl(var(--border))] shadow-sm p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <Truck size={16} className="text-[hsl(211,67%,28%)]" />
+              <h2 className="font-bold text-sm text-[hsl(var(--foreground))]">مندوب الشحن</h2>
+            </div>
+            <p className="text-sm text-[hsl(var(--muted-foreground))]">
+              الاسم:{' '}
+              <span className="font-semibold text-[hsl(var(--foreground))]">{order.delegate}</span>
+            </p>
+          </div>
+        )}
 
         {/* Order Details */}
         <div className="bg-white rounded-2xl border border-[hsl(var(--border))] shadow-sm p-4">

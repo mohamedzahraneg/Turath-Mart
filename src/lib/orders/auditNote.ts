@@ -43,13 +43,48 @@
 //   from the JSON envelope as `return_reason` for use on the
 //   public tracking timeline; the free-form `note` continues to
 //   stay admin-only.
+//
+// Phase 22Q extension
+//   The optional `schedule` field carries the delivery window the
+//   admin set on this status-update event:
+//     `{ date, from, to, reason? }`
+//   It travels through the same `note` column so the audit log
+//   timeline shows the full schedule change inline, even if the
+//   `turath_masr_orders.scheduled_delivery_*` columns are later
+//   overwritten by another reschedule. The customer-facing tracking
+//   page reads the LATEST schedule from the orders columns, not
+//   from the audit log — the audit log is the historical record,
+//   not the live answer.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Phase 22Q — structured delivery-schedule fragment carried inside an
+ * audit note. Mirrors the columns added to `turath_masr_orders` by
+ * `20260510150000_orders_add_scheduled_delivery.sql`.
+ */
+export interface ScheduleAuditFragment {
+  /** Local calendar date in `YYYY-MM-DD` form. */
+  date: string;
+  /** Lower bound of the delivery window, `HH:MM` 24-hour. */
+  from: string;
+  /** Upper bound of the delivery window, `HH:MM` 24-hour. */
+  to: string;
+  /**
+   * Reason the admin typed when MOVING an existing schedule. Required
+   * by the StatusUpdateModal validation when date/from/to changes;
+   * absent on first-time scheduling. Mirrored to
+   * `turath_masr_orders.scheduled_delivery_reason`.
+   */
+  reason?: string;
+}
 
 export interface ParsedAuditNote {
   /** The structured "reason" field (cancellation / return reason). */
   reason?: string;
   /** The structured free-form note. */
   note?: string;
+  /** Phase 22Q — structured delivery-schedule snapshot. */
+  schedule?: ScheduleAuditFragment;
   /** Plain-text fallback for legacy rows that were never JSON-encoded. */
   raw?: string;
 }
@@ -85,10 +120,33 @@ export function parseAuditNote(raw: string | null | undefined): ParsedAuditNote 
         const obj = parsed as Record<string, unknown>;
         const reasonRaw = typeof obj.reason === 'string' ? obj.reason.trim() : '';
         const noteRaw = typeof obj.note === 'string' ? obj.note.trim() : '';
-        if (reasonRaw || noteRaw) {
+        // Phase 22Q — schedule fragment. Only accepted when ALL three
+        // required pieces (date, from, to) are non-empty strings. The
+        // optional `reason` is dropped when not a non-empty string so
+        // the consumer can rely on `parsed.schedule.reason` being
+        // truthy whenever it exists.
+        let scheduleParsed: ScheduleAuditFragment | undefined;
+        const scheduleRaw = obj.schedule;
+        if (scheduleRaw && typeof scheduleRaw === 'object' && !Array.isArray(scheduleRaw)) {
+          const s = scheduleRaw as Record<string, unknown>;
+          const dateStr = typeof s.date === 'string' ? s.date.trim() : '';
+          const fromStr = typeof s.from === 'string' ? s.from.trim() : '';
+          const toStr = typeof s.to === 'string' ? s.to.trim() : '';
+          const reasonStr = typeof s.reason === 'string' ? s.reason.trim() : '';
+          if (dateStr && fromStr && toStr) {
+            scheduleParsed = {
+              date: dateStr,
+              from: fromStr,
+              to: toStr,
+              ...(reasonStr ? { reason: reasonStr } : {}),
+            };
+          }
+        }
+        if (reasonRaw || noteRaw || scheduleParsed) {
           return {
             ...(reasonRaw ? { reason: reasonRaw } : {}),
             ...(noteRaw ? { note: noteRaw } : {}),
+            ...(scheduleParsed ? { schedule: scheduleParsed } : {}),
           };
         }
         // JSON object but no useful keys — fall through to raw.
@@ -103,25 +161,48 @@ export function parseAuditNote(raw: string | null | undefined): ParsedAuditNote 
 
 /**
  * Build the `note` column value from a status-update form's
- * `reason` / `note` inputs, ready to write to
+ * `reason` / `note` / `schedule` inputs, ready to write to
  * `turath_masr_audit_logs.note`.
  *
  * Returns:
- *   - `null` when both inputs are empty (or whitespace-only). Caller
- *     can pass this straight through to the audit-log writer; the
- *     existing `addAuditLog` helper writes `null` when `note` is
- *     falsy.
- *   - JSON string (`{"reason":"...","note":"..."}`) when at least
- *     one of the two inputs is non-empty. Keys with empty values
- *     are omitted so the parser's "no useful keys" branch doesn't
- *     have to deal with `{ reason: "" }`.
+ *   - `null` when all inputs are empty / undefined. Caller can pass
+ *     this straight through to the audit-log writer; `addAuditLog`
+ *     writes `null` when `note` is falsy.
+ *   - JSON string when at least one input is populated. Keys with
+ *     empty / missing values are omitted so the parser's "no useful
+ *     keys" branch doesn't have to deal with `{ reason: "" }`.
+ *
+ * Phase 22Q — `schedule` is included on the same envelope so the
+ * audit row records the schedule snapshot at the moment of the
+ * status update. The latest schedule also lives on
+ * `turath_masr_orders.scheduled_delivery_*` for live reads; the
+ * audit copy is the historical record only.
  */
-export function buildAuditNote(input: { reason?: string; note?: string }): string | null {
+export function buildAuditNote(input: {
+  reason?: string;
+  note?: string;
+  schedule?: ScheduleAuditFragment;
+}): string | null {
   const reason = (input.reason ?? '').trim();
   const note = (input.note ?? '').trim();
-  if (!reason && !note) return null;
+  const sched = input.schedule;
+  // Only include a schedule fragment when all three required
+  // components are present — matches the parser's acceptance rules
+  // and avoids writing partial schedules that can't be rendered.
+  let scheduleFragment: ScheduleAuditFragment | undefined;
+  if (sched && sched.date && sched.from && sched.to) {
+    const reasonStr = (sched.reason ?? '').trim();
+    scheduleFragment = {
+      date: sched.date,
+      from: sched.from,
+      to: sched.to,
+      ...(reasonStr ? { reason: reasonStr } : {}),
+    };
+  }
+  if (!reason && !note && !scheduleFragment) return null;
   return JSON.stringify({
     ...(reason ? { reason } : {}),
     ...(note ? { note } : {}),
+    ...(scheduleFragment ? { schedule: scheduleFragment } : {}),
   });
 }

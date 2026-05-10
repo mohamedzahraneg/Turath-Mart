@@ -8,6 +8,9 @@ import { UserStamp } from '@/components/UserStamp';
 // from free-form admin notes. Legacy plain-text rows fall through
 // to a single italic quote (same look as pre-Phase-22P).
 import { parseAuditNote } from '@/lib/orders/auditNote';
+// Phase 22Q — Arabic-locale formatters for the delivery schedule
+// fragment that may live inside the audit note JSON.
+import { formatScheduleDateAr, formatTime12hAr } from '@/lib/orders/scheduleFormat';
 
 export interface AuditEntry {
   id: string;
@@ -297,7 +300,9 @@ export default function AuditLogModal({ orderId, orderNum, onClose }: Props) {
                             (`parsed.raw`). */}
                         {(() => {
                           const parsed = parseAuditNote(log.note);
-                          if (!parsed.reason && !parsed.note && !parsed.raw) return null;
+                          if (!parsed.reason && !parsed.note && !parsed.schedule && !parsed.raw) {
+                            return null;
+                          }
                           return (
                             <div className="text-xs mt-1.5 space-y-0.5">
                               {parsed.reason && (
@@ -305,6 +310,25 @@ export default function AuditLogModal({ orderId, orderNum, onClose }: Props) {
                                   <span className="font-bold opacity-80">سبب الإرجاع:</span>{' '}
                                   <span className="italic opacity-80">{parsed.reason}</span>
                                 </p>
+                              )}
+                              {/* Phase 22Q — schedule snapshot. */}
+                              {parsed.schedule && (
+                                <div className="leading-snug opacity-90">
+                                  <p>
+                                    <span className="font-bold">موعد التسليم:</span>{' '}
+                                    {formatScheduleDateAr(parsed.schedule.date)}
+                                  </p>
+                                  <p>
+                                    من الساعة {formatTime12hAr(parsed.schedule.from)} إلى الساعة{' '}
+                                    {formatTime12hAr(parsed.schedule.to)}
+                                  </p>
+                                  {parsed.schedule.reason && (
+                                    <p>
+                                      <span className="font-bold">سبب الترحيل:</span>{' '}
+                                      <span className="italic">{parsed.schedule.reason}</span>
+                                    </p>
+                                  )}
+                                </div>
                               )}
                               {parsed.note && (
                                 <p className="leading-snug">

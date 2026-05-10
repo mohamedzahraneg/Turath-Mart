@@ -30,7 +30,10 @@ import { useAuth } from '@/contexts/AuthContext';
 import { canUseAdminOnlyFinancialFields, canEditOrders } from '@/lib/constants/roles';
 // Phase 22P — split structured `{ reason, note }` payloads in the
 // status-history + audit timeline render paths below.
+// Phase 22Q — also surfaces the optional `schedule` fragment.
 import { parseAuditNote } from '@/lib/orders/auditNote';
+// Phase 22Q — Arabic-locale formatters for the delivery schedule.
+import { formatScheduleDateAr, formatTime12hAr } from '@/lib/orders/scheduleFormat';
 import { UserStamp } from '@/components/UserStamp';
 
 interface OrderLine {
@@ -83,6 +86,17 @@ interface Order {
   ip: string;
   warranty?: string;
   delegate?: string;
+  // Phase 22Q — delivery schedule snapshot. NULL until an admin sets
+  // a schedule from StatusUpdateModal. The four customer-facing
+  // pieces are surfaced on the order detail card and on the public
+  // tracking page; the audit metadata (`scheduledDeliveryUpdatedAt`,
+  // `_UpdatedBy`) is admin-internal.
+  scheduledDeliveryDate?: string | null;
+  scheduledDeliveryFrom?: string | null;
+  scheduledDeliveryTo?: string | null;
+  scheduledDeliveryReason?: string | null;
+  scheduledDeliveryUpdatedAt?: string | null;
+  scheduledDeliveryUpdatedBy?: string | null;
   lines?: OrderLine[];
 }
 
@@ -232,6 +246,18 @@ export default function OrderDetailModal({ order, onClose }: Props) {
             ip: data.ip_address || '',
             warranty: data.warranty || undefined,
             delegate: data.delegate || undefined,
+            // Phase 22Q — delivery schedule. The columns may not
+            // exist yet (migration staged but not applied); a
+            // `select('*')` simply omits them in that case so the
+            // optional fields land as undefined and the render path
+            // skips the schedule card. After the migration is
+            // applied they flow through automatically.
+            scheduledDeliveryDate: data.scheduled_delivery_date ?? null,
+            scheduledDeliveryFrom: data.scheduled_delivery_from ?? null,
+            scheduledDeliveryTo: data.scheduled_delivery_to ?? null,
+            scheduledDeliveryReason: data.scheduled_delivery_reason ?? null,
+            scheduledDeliveryUpdatedAt: data.scheduled_delivery_updated_at ?? null,
+            scheduledDeliveryUpdatedBy: data.scheduled_delivery_updated_by ?? null,
             lines: data.lines || [],
           };
           setLiveOrder(mappedOrder);
@@ -537,6 +563,50 @@ export default function OrderDetailModal({ order, onClose }: Props) {
           {/* Details Tab */}
           {activeTab === 'tab-details' && (
             <div className="space-y-5 fade-in">
+              {/* Phase 22Q — current delivery schedule. Shown only
+                  when an admin has actually set a date (the row in
+                  Supabase has `scheduled_delivery_date IS NOT NULL`);
+                  otherwise the section stays hidden so existing
+                  orders without a schedule don't render an awkward
+                  empty card. The data flows through the
+                  `select('*')` reader at line ~200 and the row
+                  mapper above. */}
+              {liveOrder.scheduledDeliveryDate && (
+                <div className="card-section p-4 bg-emerald-50/30 border border-emerald-200">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Clock size={15} className="text-emerald-700" />
+                    <h4 className="text-sm font-bold text-emerald-800">موعد التسليم المتوقع</h4>
+                  </div>
+                  <p className="text-sm font-semibold text-[hsl(var(--foreground))]">
+                    {formatScheduleDateAr(liveOrder.scheduledDeliveryDate)}
+                  </p>
+                  {liveOrder.scheduledDeliveryFrom && liveOrder.scheduledDeliveryTo && (
+                    <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">
+                      من الساعة{' '}
+                      <span className="font-semibold text-[hsl(var(--foreground))]">
+                        {formatTime12hAr(liveOrder.scheduledDeliveryFrom)}
+                      </span>{' '}
+                      إلى الساعة{' '}
+                      <span className="font-semibold text-[hsl(var(--foreground))]">
+                        {formatTime12hAr(liveOrder.scheduledDeliveryTo)}
+                      </span>
+                    </p>
+                  )}
+                  {liveOrder.scheduledDeliveryReason && (
+                    <p className="text-xs text-orange-700 mt-2">
+                      <span className="font-bold">سبب الترحيل:</span>{' '}
+                      <span className="italic">{liveOrder.scheduledDeliveryReason}</span>
+                    </p>
+                  )}
+                  {liveOrder.scheduledDeliveryUpdatedBy && (
+                    <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-2">
+                      آخر تعديل بواسطة:{' '}
+                      <span className="font-semibold">{liveOrder.scheduledDeliveryUpdatedBy}</span>
+                    </p>
+                  )}
+                </div>
+              )}
+
               <div className="card-section p-4">
                 <div className="flex items-center gap-2 mb-3">
                   <User size={15} className="text-[hsl(var(--primary))]" />
@@ -887,10 +957,17 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                               <span>بواسطة:</span>
                               <UserStamp name={h.changedBy} role={h.changedByRole} size="sm" />
                             </div>
-                            {/* Phase 22P — split structured note. */}
+                            {/* Phase 22P / 22Q — split structured note. */}
                             {(() => {
                               const parsed = parseAuditNote(h.note);
-                              if (!parsed.reason && !parsed.note && !parsed.raw) return null;
+                              if (
+                                !parsed.reason &&
+                                !parsed.note &&
+                                !parsed.schedule &&
+                                !parsed.raw
+                              ) {
+                                return null;
+                              }
                               return (
                                 <div className="text-xs text-[hsl(var(--foreground))] mt-1.5 bg-[hsl(var(--muted))]/50 rounded-lg px-2 py-1 space-y-0.5">
                                   {parsed.reason && (
@@ -898,6 +975,29 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                                       <span className="font-bold text-red-700">سبب الإرجاع:</span>{' '}
                                       <span className="italic">{parsed.reason}</span>
                                     </p>
+                                  )}
+                                  {/* Phase 22Q — schedule snapshot. */}
+                                  {parsed.schedule && (
+                                    <div className="leading-snug">
+                                      <p>
+                                        <span className="font-bold text-emerald-700">
+                                          موعد التسليم:
+                                        </span>{' '}
+                                        {formatScheduleDateAr(parsed.schedule.date)}
+                                      </p>
+                                      <p>
+                                        من الساعة {formatTime12hAr(parsed.schedule.from)} إلى الساعة{' '}
+                                        {formatTime12hAr(parsed.schedule.to)}
+                                      </p>
+                                      {parsed.schedule.reason && (
+                                        <p>
+                                          <span className="font-bold text-orange-700">
+                                            سبب الترحيل:
+                                          </span>{' '}
+                                          <span className="italic">{parsed.schedule.reason}</span>
+                                        </p>
+                                      )}
+                                    </div>
                                   )}
                                   {parsed.note && (
                                     <p className="leading-snug">
@@ -1292,10 +1392,17 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                                     ? 'مندوب'
                                     : log.changedByRole}
                             </p>
-                            {/* Phase 22P — split structured note. */}
+                            {/* Phase 22P / 22Q — split structured note. */}
                             {(() => {
                               const parsed = parseAuditNote(log.note);
-                              if (!parsed.reason && !parsed.note && !parsed.raw) return null;
+                              if (
+                                !parsed.reason &&
+                                !parsed.note &&
+                                !parsed.schedule &&
+                                !parsed.raw
+                              ) {
+                                return null;
+                              }
                               return (
                                 <div className="text-xs mt-1 space-y-0.5 opacity-80">
                                   {parsed.reason && (
@@ -1303,6 +1410,25 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                                       <span className="font-bold">سبب الإرجاع:</span>{' '}
                                       <span className="italic">{parsed.reason}</span>
                                     </p>
+                                  )}
+                                  {/* Phase 22Q — schedule snapshot. */}
+                                  {parsed.schedule && (
+                                    <div className="leading-snug">
+                                      <p>
+                                        <span className="font-bold">موعد التسليم:</span>{' '}
+                                        {formatScheduleDateAr(parsed.schedule.date)}
+                                      </p>
+                                      <p>
+                                        من الساعة {formatTime12hAr(parsed.schedule.from)} إلى الساعة{' '}
+                                        {formatTime12hAr(parsed.schedule.to)}
+                                      </p>
+                                      {parsed.schedule.reason && (
+                                        <p>
+                                          <span className="font-bold">سبب الترحيل:</span>{' '}
+                                          <span className="italic">{parsed.schedule.reason}</span>
+                                        </p>
+                                      )}
+                                    </div>
                                   )}
                                   {parsed.note && (
                                     <p className="leading-snug">
