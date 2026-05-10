@@ -45,11 +45,13 @@ import {
   ShieldCheck,
   Pencil,
   Power,
+  Banknote,
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import { createClient } from '@/lib/supabase/client';
 import { isValidEgyptianMobile } from '@/lib/validators/phone';
 import { usePermissions } from '@/hooks/usePermissions';
+import { useAuth } from '@/contexts/AuthContext';
 // Phase 23A-Fix1 — transport-type tokens + Arabic labels, plus the
 // licence-status helper that drives the "متبقي N يوم" badges in the
 // delegates table and detail drawer.
@@ -60,6 +62,14 @@ import {
   type TransportType,
 } from '@/lib/delegates/transportTypes';
 import { licenseStatus } from '@/lib/delegates/licenseStatus';
+// Phase 23B — settlement method tokens + Arabic labels for the new
+// "تسجيل توريد" modal and the per-delegate settlements table.
+import {
+  SETTLEMENT_METHOD_TOKENS,
+  SETTLEMENT_METHOD_LABELS_AR,
+  settlementMethodLabel,
+  type SettlementMethod,
+} from '@/lib/delegates/settlementMethods';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 interface DelegateRow {
@@ -122,6 +132,23 @@ interface RatingRow {
   created_at: string;
 }
 
+// Phase 23B — settlement (توريد) row. Mirrors the columns staged in
+// `20260510210000_delegate_settlements.sql` 1:1. Pre-migration the
+// table doesn't exist; the page swallows the 42P01 and falls back
+// to an empty array so KPIs render zeros.
+interface SettlementRow {
+  id: string;
+  delegate_profile_id: string | null;
+  delegate_name: string | null;
+  amount: number;
+  method: string;
+  received_by: string | null;
+  received_by_name: string | null;
+  note: string | null;
+  settled_at: string;
+  created_at: string;
+}
+
 interface DelegateAggregate {
   delegate: DelegateRow;
   inFlight: number;
@@ -132,6 +159,13 @@ interface DelegateAggregate {
   ratings: RatingRow[];
   averageRating: number | null;
   ordersForDelegate: OrderRow[];
+  // Phase 23B — settlement aggregates. `settlements` is the per-
+  // delegate timeline (newest first). The three numbers feed the
+  // table cells and drawer summary directly.
+  settlements: SettlementRow[];
+  totalSettled: number;
+  remainingDue: number;
+  lastSettledAt: string | null;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -194,21 +228,31 @@ const IN_FLIGHT_STATUSES = new Set(['preparing', 'warehouse', 'shipping']);
 // ─── Page component ────────────────────────────────────────────────────────
 export default function DelegatesPage() {
   const perms = usePermissions();
+  const { user, profileFullName } = useAuth();
   // Phase 23A-Fix2 — only admins (r1) can edit profile fields or
   // toggle `delegate_is_active`. The underlying RLS policy on
   // `public.profiles` (`profiles_admin_update`) is gated on
   // `is_admin()`, so any non-admin caller would get a 42501 from
   // PostgREST. Hiding the buttons keeps the UI honest.
   const canEditDelegate = perms.isAdmin;
+  // Phase 23B — settlement writes are admin-only by RLS
+  // (`settlements_admin_insert`). Reads are also admin-only on the
+  // RLS side; we still gate the UI button to keep it consistent.
+  const canRegisterSettlement = perms.isAdmin;
 
   const [profiles, setProfiles] = useState<DelegateRow[]>([]);
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [ratings, setRatings] = useState<RatingRow[]>([]);
+  // Phase 23B — settlements feed both the per-delegate aggregate
+  // and the global "إجمالي التوريدات" KPI card.
+  const [settlements, setSettlements] = useState<SettlementRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  // Phase 23B — promoted `collections` + `settlements` from placeholder
+  // tabs to first-class tab ids so the drawer can render real content.
   const [activeTab, setActiveTab] = useState<
-    'summary' | 'orders' | 'ratings' | 'activity' | 'placeholder'
+    'summary' | 'orders' | 'collections' | 'settlements' | 'ratings' | 'activity' | 'placeholder'
   >('summary');
   const [placeholderTab, setPlaceholderTab] = useState<string>('');
   // Phase 23A-Fix1 — wizard state + refetch trigger after successful
@@ -236,16 +280,18 @@ export default function DelegatesPage() {
   // rows have a null active flag; we treat them as active for
   // filter purposes (they were never explicitly deactivated).
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  // Phase 23B — register-settlement modal target (`null` when closed).
+  const [settlementTargetKey, setSettlementTargetKey] = useState<string | null>(null);
 
-  // Fetch profiles + orders + ratings in parallel. Each query is
-  // narrowed and date-bounded.
+  // Fetch profiles + orders + ratings + settlements in parallel.
+  // Each query is narrowed and date-bounded.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const supabase = createClient();
       const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
       try {
-        const [profilesRes, ordersRes, ratingsRes] = await Promise.all([
+        const [profilesRes, ordersRes, ratingsRes, settlementsRes] = await Promise.all([
           // Phase 23A-Fix1 — request the new operational columns.
           // Pre-migration the columns don't exist yet; the SELECT
           // will surface a 42703 error which the catch arm below
@@ -276,6 +322,28 @@ export default function DelegatesPage() {
               (r: { data: RatingRow[] | null; error: unknown }) => r,
               (err: unknown) => ({
                 data: null as RatingRow[] | null,
+                error: err,
+              })
+            ),
+          // Phase 23B — settlements. Same defensive shape as the
+          // ratings fetch: pre-migration the relation does not exist
+          // and we fall through to an empty array. Post-migration
+          // an admin (RLS gates SELECT on `is_admin()`) gets the
+          // full timeline; non-admins get an empty array silently.
+          // Cap at 1000 rows to bound the page; aggregate matching
+          // is per-delegate and fits well inside that ceiling at
+          // current scale.
+          supabase
+            .from('turath_masr_delegate_settlements')
+            .select(
+              'id, delegate_profile_id, delegate_name, amount, method, received_by, received_by_name, note, settled_at, created_at'
+            )
+            .order('settled_at', { ascending: false })
+            .limit(1000)
+            .then(
+              (r: { data: SettlementRow[] | null; error: unknown }) => r,
+              (err: unknown) => ({
+                data: null as SettlementRow[] | null,
                 error: err,
               })
             ),
@@ -376,6 +444,22 @@ export default function DelegatesPage() {
             : ((ratingsRes as { data: RatingRow[] | null }).data ?? []);
         setRatings(ratingsData);
 
+        // Phase 23B — same defensive pattern for settlements. Pre-
+        // migration the relation is missing (42P01); a non-admin
+        // hits a 42501 RLS deny. Either way, render with an empty
+        // list so the page degrades gracefully and KPI cards show
+        // 0 ج.م rather than a hard error.
+        const settlementsData =
+          settlementsRes && 'error' in settlementsRes && settlementsRes.error
+            ? []
+            : ((settlementsRes as { data: SettlementRow[] | null }).data ?? []);
+        if (settlementsRes && 'error' in settlementsRes && settlementsRes.error) {
+          // Don't surface the user — many viewers legitimately
+          // can't read settlements (RLS by design). Just log.
+          console.warn('[delegates] settlements fetch unavailable', settlementsRes.error);
+        }
+        setSettlements(settlementsData);
+
         setLoading(false);
       } catch (e) {
         if (cancelled) return;
@@ -438,6 +522,23 @@ export default function DelegatesPage() {
           ? ratingsForDelegate.reduce((s, r) => s + r.rating, 0) / ratingsForDelegate.length
           : null;
 
+      // Phase 23B — per-delegate settlement aggregation. Same
+      // matching rules as orders/ratings: profile-id first, with a
+      // delegate_name fallback so legacy rows still bucket
+      // correctly. Settlements are pre-sorted by `settled_at`
+      // descending from the fetch.
+      const settlementsForDelegate = settlements.filter((s) => {
+        if (d.profileId && s.delegate_profile_id === d.profileId) return true;
+        if ((s.delegate_name || '').trim() === d.name.trim()) return true;
+        return false;
+      });
+      const totalSettled = settlementsForDelegate.reduce(
+        (sum, s) => sum + Number(s.amount ?? 0),
+        0
+      );
+      const remainingDue = totalCollected - totalSettled;
+      const lastSettledAt = settlementsForDelegate[0]?.settled_at ?? null;
+
       return {
         delegate: d,
         inFlight,
@@ -448,9 +549,13 @@ export default function DelegatesPage() {
         ratings: ratingsForDelegate,
         averageRating,
         ordersForDelegate,
+        settlements: settlementsForDelegate,
+        totalSettled,
+        remainingDue,
+        lastSettledAt,
       };
     });
-  }, [profiles, orders, ratings]);
+  }, [profiles, orders, ratings, settlements]);
 
   const kpis = useMemo(() => {
     const today = new Date();
@@ -475,6 +580,20 @@ export default function DelegatesPage() {
         ? allRatings.reduce((s, r) => s + r.rating, 0) / allRatings.length
         : null;
 
+    // Phase 23B — global settlement KPIs. We sum across the
+    // settlements list directly rather than the per-delegate
+    // `aggregates` so legacy / orphan rows whose delegate doesn't
+    // resolve cleanly still count into "إجمالي التوريدات".
+    let totalSettled = 0;
+    let lastSettledAt: string | null = null;
+    for (const s of settlements) {
+      totalSettled += Number(s.amount ?? 0);
+      if (!lastSettledAt || (s.settled_at && s.settled_at > lastSettledAt)) {
+        lastSettledAt = s.settled_at;
+      }
+    }
+    const remainingTotal = totalCollected - totalSettled;
+
     return {
       totalDelegates: profiles.length,
       activeDelegates: aggregates.filter((a) => a.inFlight > 0 || a.delivered > 0).length,
@@ -483,8 +602,11 @@ export default function DelegatesPage() {
       totalReturned,
       totalCollected,
       averageRating: avg,
+      totalSettled,
+      remainingTotal,
+      lastSettledAt,
     };
-  }, [orders, profiles, ratings, aggregates]);
+  }, [orders, profiles, ratings, aggregates, settlements]);
 
   const selected = aggregates.find((a) => a.delegate.key === selectedKey) || null;
 
@@ -505,6 +627,10 @@ export default function DelegatesPage() {
   const toggling = toggleTarget
     ? aggregates.find((a) => a.delegate.key === toggleTarget.key) || null
     : null;
+  // Phase 23B — settlement modal target row.
+  const settlementTarget = settlementTargetKey
+    ? aggregates.find((a) => a.delegate.key === settlementTargetKey) || null
+    : null;
 
   return (
     <AppLayout currentPath="/delegates">
@@ -514,8 +640,14 @@ export default function DelegatesPage() {
           <div>
             <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">إدارة المناديب</h1>
             <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">
-              نظرة عامة على المناديب وأوردراتهم وتقييماتهم. التحصيلات والتوريدات والأمانات ستُضاف في
+              نظرة عامة على المناديب، طلباتهم، تقييماتهم وتوريداتهم. الأمانات والمصاريف ستُضاف في
               مرحلة لاحقة.
+            </p>
+            {/* Phase 23B — explicit window label so the dispatcher
+                knows the totals are scoped to the last 90 days; full-
+                history reports come later. */}
+            <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1">
+              الإحصائيات محسوبة من طلبات وتوريدات آخر 90 يوم.
             </p>
           </div>
           <button
@@ -555,8 +687,26 @@ export default function DelegatesPage() {
           />
         </div>
 
-        {/* Average rating + placeholder cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {/* Phase 23B — settlement KPIs. Distinct row so the eye groups
+            financial flow separately from delegate operational metrics.
+            "آخر توريد" shows the relative date of the most recent
+            settlement across all delegates. */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <KpiCard
+            icon={<Banknote size={18} className="text-emerald-600" />}
+            label="إجمالي التوريدات"
+            value={fmtMoney(kpis.totalSettled)}
+          />
+          <KpiCard
+            icon={<Wallet size={18} className="text-amber-600" />}
+            label="المتبقي على المناديب"
+            value={fmtMoney(kpis.remainingTotal)}
+          />
+          <KpiCard
+            icon={<Clock size={18} className="text-[hsl(var(--muted-foreground))]" />}
+            label="آخر توريد"
+            value={kpis.lastSettledAt ? formatDateAr(kpis.lastSettledAt) : 'لا يوجد بعد'}
+          />
           <KpiCard
             icon={<Star size={18} className="text-amber-500" />}
             label="متوسط تقييم المناديب"
@@ -565,13 +715,6 @@ export default function DelegatesPage() {
                 ? `${kpis.averageRating.toFixed(1)} / 5`
                 : 'لا توجد تقييمات بعد'
             }
-          />
-          <KpiCard icon={<Wallet size={18} />} label="المستحق توريده" value="قريبًا" placeholder />
-          <KpiCard
-            icon={<AlertTriangle size={18} />}
-            label="الأمانات مع المناديب"
-            value="قريبًا"
-            placeholder
           />
         </div>
 
@@ -630,7 +773,7 @@ export default function DelegatesPage() {
             </div>
           ) : (
             <div className="overflow-x-auto scrollbar-thin">
-              <table className="w-full min-w-[1000px]">
+              <table className="w-full min-w-[1200px]">
                 <thead>
                   <tr>
                     {[
@@ -642,7 +785,15 @@ export default function DelegatesPage() {
                       'الحالة',
                       'الطلبات الآن',
                       'تم التسليم',
+                      // Phase 23B — collected (delivered total) +
+                      // settled (handover total) + remaining due +
+                      // last settlement date so a dispatcher can see
+                      // the financial state at a glance without
+                      // opening the drawer.
                       'إجمالي التحصيل',
+                      'إجمالي المورد',
+                      'المتبقي عليه',
+                      'آخر توريد',
                       'التقييم',
                       'إجراء',
                     ].map((h) => (
@@ -732,6 +883,31 @@ export default function DelegatesPage() {
                         <td className="table-cell font-mono">{a.inFlight}</td>
                         <td className="table-cell font-mono text-emerald-700">{a.delivered}</td>
                         <td className="table-cell font-mono">{fmtMoney(a.totalCollected)}</td>
+                        {/* Phase 23B — settled / remaining / last
+                            settlement. Remaining is rendered amber
+                            when positive (delegate still owes), green
+                            when negative (overpaid — surplus credit). */}
+                        <td className="table-cell font-mono">{fmtMoney(a.totalSettled)}</td>
+                        <td
+                          className={`table-cell font-mono ${
+                            a.remainingDue > 0
+                              ? 'text-amber-700'
+                              : a.remainingDue < 0
+                                ? 'text-emerald-700'
+                                : ''
+                          }`}
+                        >
+                          {a.remainingDue < 0
+                            ? `${fmtMoney(Math.abs(a.remainingDue))} (زائد)`
+                            : fmtMoney(a.remainingDue)}
+                        </td>
+                        <td className="table-cell text-xs">
+                          {a.lastSettledAt ? (
+                            formatDateAr(a.lastSettledAt)
+                          ) : (
+                            <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                          )}
+                        </td>
                         <td className="table-cell">
                           {a.averageRating != null ? (
                             <span className="inline-flex items-center gap-1 text-amber-600 font-semibold">
@@ -755,6 +931,20 @@ export default function DelegatesPage() {
                             >
                               عرض التفاصيل
                             </button>
+                            {/* Phase 23B — quick "تسجيل توريد" row
+                                action. Hidden for legacy delegate_name-
+                                only rows (no profile id to anchor the
+                                FK to) and for non-admin viewers. */}
+                            {canRegisterSettlement && a.delegate.hasProfile && (
+                              <button
+                                type="button"
+                                onClick={() => setSettlementTargetKey(a.delegate.key)}
+                                className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:underline"
+                                title="تسجيل توريد"
+                              >
+                                <Banknote size={11} /> توريد
+                              </button>
+                            )}
                             {/* Phase 23A-Fix2 — admin-only edit and
                                 activate/deactivate row actions.
                                 Hidden for legacy `delegate_name`-only
@@ -809,6 +999,11 @@ export default function DelegatesPage() {
             setPlaceholderTab(ph || '');
           }}
           onClose={() => setSelectedKey(null)}
+          /* Phase 23B — admin-only "تسجيل توريد" trigger from inside
+             the drawer's settlements tab. Hides for non-admin viewers
+             and for legacy delegate_name-only rows (no profile id). */
+          canRegisterSettlement={canRegisterSettlement && selected.delegate.hasProfile}
+          onRegisterSettlement={() => setSettlementTargetKey(selected.delegate.key)}
         />
       )}
 
@@ -880,6 +1075,25 @@ export default function DelegatesPage() {
         />
       )}
 
+      {/* Phase 23B — register settlement modal. Admin-only at the
+          UI gate; the underlying RLS also rejects non-admin INSERTs.
+          Hidden for legacy delegate_name-only rows because the
+          settlements FK requires a real `profiles.id`. */}
+      {settlementTarget && settlementTarget.delegate.profileId && (
+        <RegisterSettlementModal
+          delegate={settlementTarget.delegate}
+          remainingDue={settlementTarget.remainingDue}
+          receivedBy={{ id: user?.id ?? null, name: profileFullName ?? null }}
+          onClose={() => setSettlementTargetKey(null)}
+          onSaved={(message) => {
+            setSettlementTargetKey(null);
+            setReloadTick((n) => n + 1);
+            setToast({ kind: 'success', message });
+          }}
+          onError={(message) => setToast({ kind: 'error', message })}
+        />
+      )}
+
       {/* Phase 23A-Fix2 — toast. Auto-dismisses after 4s; manual
           close button kept for keyboard accessibility. */}
       {toast && (
@@ -944,15 +1158,25 @@ function KpiCard({ icon, label, value, placeholder }: KpiCardProps) {
   );
 }
 
+type DrawerTab =
+  | 'summary'
+  | 'orders'
+  | 'collections'
+  | 'settlements'
+  | 'ratings'
+  | 'activity'
+  | 'placeholder';
+
 interface DrawerProps {
   aggregate: DelegateAggregate;
-  activeTab: 'summary' | 'orders' | 'ratings' | 'activity' | 'placeholder';
+  activeTab: DrawerTab;
   placeholderTab: string;
-  onTabChange: (
-    tab: 'summary' | 'orders' | 'ratings' | 'activity' | 'placeholder',
-    placeholderTab?: string
-  ) => void;
+  onTabChange: (tab: DrawerTab, placeholderTab?: string) => void;
   onClose: () => void;
+  // Phase 23B — drawer can launch the register-settlement modal
+  // directly from the settlements tab.
+  canRegisterSettlement?: boolean;
+  onRegisterSettlement?: () => void;
 }
 
 function DelegateDrawer({
@@ -961,18 +1185,23 @@ function DelegateDrawer({
   placeholderTab,
   onTabChange,
   onClose,
+  canRegisterSettlement = false,
+  onRegisterSettlement,
 }: DrawerProps) {
   const a = aggregate;
 
   const tabs: Array<{
-    id: 'summary' | 'orders' | 'ratings' | 'activity' | 'placeholder';
+    id: DrawerTab;
     label: string;
     placeholder?: string;
   }> = [
     { id: 'summary', label: 'الملخص' },
     { id: 'orders', label: 'الطلبات' },
-    { id: 'placeholder', label: 'التحصيلات', placeholder: 'collections' },
-    { id: 'placeholder', label: 'التوريدات', placeholder: 'settlements' },
+    // Phase 23B — these two are now first-class tab ids and
+    // render real content (delivered orders + settlement timeline)
+    // rather than the قريبًا placeholder.
+    { id: 'collections', label: 'التحصيلات' },
+    { id: 'settlements', label: 'التوريدات' },
     { id: 'placeholder', label: 'الأمانات', placeholder: 'custody' },
     { id: 'placeholder', label: 'المصاريف', placeholder: 'expenses' },
     { id: 'ratings', label: 'التقييمات والشكاوى' },
@@ -1068,6 +1297,14 @@ function DelegateDrawer({
         <div className="flex-1 overflow-y-auto p-5 scrollbar-thin">
           {activeTab === 'summary' && <SummaryTab a={a} />}
           {activeTab === 'orders' && <OrdersTab a={a} />}
+          {activeTab === 'collections' && <CollectionsTab a={a} />}
+          {activeTab === 'settlements' && (
+            <SettlementsTab
+              a={a}
+              canRegister={canRegisterSettlement}
+              onRegister={onRegisterSettlement}
+            />
+          )}
           {activeTab === 'ratings' && <RatingsTab a={a} />}
           {activeTab === 'activity' && <ActivityTab a={a} />}
           {activeTab === 'placeholder' && <PlaceholderTab kind={placeholderTab} />}
@@ -1391,17 +1628,9 @@ function ActivityTab({ a }: { a: DelegateAggregate }) {
 }
 
 function PlaceholderTab({ kind }: { kind: string }) {
+  // Phase 23B — `collections` and `settlements` are no longer
+  // placeholders; only custody + expenses remain in this map.
   const labels: Record<string, { title: string; sub: string; phase: string }> = {
-    collections: {
-      title: 'التحصيلات',
-      sub: 'سيُضاف عرض موسّع للتحصيلات والمتبقي على المندوب.',
-      phase: 'Phase 23B',
-    },
-    settlements: {
-      title: 'التوريدات',
-      sub: 'سيُضاف جدول التوريدات/التسويات مع المندوب.',
-      phase: 'Phase 23B',
-    },
     custody: {
       title: 'الأمانات',
       sub: 'سيُضاف عرض البضائع/الأمانات مع المندوب.',
@@ -2205,6 +2434,502 @@ function ToggleActiveDialog({
           >
             <Power size={14} />
             {submitting ? 'جارٍ التحديث...' : isDeactivating ? 'تعطيل المندوب' : 'تفعيل المندوب'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Phase 23B — Collections tab ──────────────────────────────────────────
+//
+// Read-only timeline of the orders that drive the delegate's
+// "إجمالي التحصيل" number. Defaults to "delivered" only and the
+// last 90 days (matches the page-level fetch window). Adds a small
+// quick-filter for اليوم / هذا الأسبوع / هذا الشهر / آخر 90 يوم so
+// dispatchers can audit a specific window without leaving the tab.
+//
+// Strictly read-only: no DB writes, no narrowed update, just a
+// projection over the orders already loaded by the page.
+interface CollectionsTabProps {
+  a: DelegateAggregate;
+}
+
+type CollectionsRange = 'today' | 'week' | 'month' | '90d';
+
+function CollectionsTab({ a }: CollectionsTabProps) {
+  const [range, setRange] = useState<CollectionsRange>('90d');
+
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const now = Date.now();
+  const filtered = a.ordersForDelegate.filter((o) => {
+    if (o.status !== DELIVERED) return false;
+    const ts = o.created_at ? new Date(o.created_at).getTime() : NaN;
+    if (Number.isNaN(ts)) return range === '90d';
+    if (range === 'today') return (o.created_at || '').startsWith(todayIso);
+    if (range === 'week') return now - ts < 7 * 24 * 60 * 60 * 1000;
+    if (range === 'month') return now - ts < 30 * 24 * 60 * 60 * 1000;
+    return now - ts < 90 * 24 * 60 * 60 * 1000;
+  });
+
+  const collected = filtered.reduce((sum, o) => sum + Number(o.total ?? 0), 0);
+
+  return (
+    <div className="space-y-3">
+      <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 flex items-start gap-2">
+        <CheckCircle size={16} className="text-emerald-600 mt-0.5 flex-shrink-0" />
+        <div>
+          <p className="text-sm font-bold text-emerald-800">
+            محسوبة من الطلبات المسلمة فقط ({fmtMoney(collected)})
+          </p>
+          <p className="text-[11px] text-emerald-700 mt-0.5">
+            عدد الطلبات: {filtered.length}.{' '}
+            {a.totalCollected !== collected && (
+              <>
+                إجمالي آخر 90 يوم على هذا المندوب: {fmtMoney(a.totalCollected)} — التصفية الحالية
+                تعرض جزءًا منه.
+              </>
+            )}
+          </p>
+        </div>
+      </div>
+
+      {/* Phase 23B — quick range pills. Default is "آخر 90 يوم"
+          which matches the fetch window so the tab number agrees
+          with the table cell for the same delegate. */}
+      <div className="flex items-center gap-1 bg-[hsl(var(--muted))]/40 rounded-xl p-1 w-fit">
+        {(
+          [
+            { key: 'today', label: 'اليوم' },
+            { key: 'week', label: 'هذا الأسبوع' },
+            { key: 'month', label: 'هذا الشهر' },
+            { key: '90d', label: 'آخر 90 يوم' },
+          ] as const
+        ).map((opt) => (
+          <button
+            key={opt.key}
+            type="button"
+            onClick={() => setRange(opt.key)}
+            className={`px-3 py-1 text-xs font-semibold rounded-lg transition-colors ${
+              range === opt.key
+                ? 'bg-white text-[hsl(var(--foreground))] shadow-sm'
+                : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'
+            }`}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+
+      {filtered.length === 0 ? (
+        <p className="text-sm text-[hsl(var(--muted-foreground))]">
+          لا توجد طلبات مسلمة في هذه الفترة.
+        </p>
+      ) : (
+        <div className="overflow-x-auto scrollbar-thin">
+          <table className="w-full min-w-[640px] text-sm">
+            <thead>
+              <tr>
+                {['رقم الطلب', 'العميل', 'التاريخ', 'الإجمالي', 'الحالة'].map((h) => (
+                  <th key={h} className="table-header text-right">
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[hsl(var(--border))]">
+              {filtered.slice(0, 200).map((o) => (
+                <tr key={o.id} className="hover:bg-[hsl(var(--muted))]/30">
+                  <td className="table-cell font-mono text-xs">{o.order_num}</td>
+                  <td className="table-cell text-xs">{o.customer || '—'}</td>
+                  <td className="table-cell text-xs">{formatDateAr(o.created_at)}</td>
+                  <td className="table-cell font-mono text-xs">{fmtMoney(o.total)}</td>
+                  <td className="table-cell text-xs text-emerald-700">
+                    {STATUS_LABELS[o.status] || o.status}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {filtered.length > 200 && (
+            <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-2 text-center">
+              يتم عرض أحدث 200 طلب فقط في هذه التصفية.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Phase 23B — Settlements tab ──────────────────────────────────────────
+//
+// Per-delegate handover (توريد) timeline plus a header summary
+// (collected / settled / remaining) and an admin-only "تسجيل توريد"
+// CTA. Reads from the page's already-fetched `settlements` slice
+// via the aggregate; the modal that writes new settlements is a
+// separate component (`RegisterSettlementModal`).
+interface SettlementsTabProps {
+  a: DelegateAggregate;
+  canRegister?: boolean;
+  onRegister?: () => void;
+}
+
+function SettlementsTab({ a, canRegister = false, onRegister }: SettlementsTabProps) {
+  const remaining = a.remainingDue;
+  const remainingLabel =
+    remaining < 0 ? `${fmtMoney(Math.abs(remaining))} (رصيد زائد للمندوب)` : fmtMoney(remaining);
+  const remainingTone =
+    remaining > 0
+      ? 'bg-amber-50 border-amber-200 text-amber-800'
+      : remaining < 0
+        ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+        : 'bg-[hsl(var(--muted))]/40 border-[hsl(var(--border))] text-[hsl(var(--foreground))]';
+
+  return (
+    <div className="space-y-4">
+      {/* Summary triplet */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="rounded-2xl border border-[hsl(var(--border))] bg-white p-4">
+          <p className="text-[11px] font-bold text-[hsl(var(--muted-foreground))] mb-1">
+            إجمالي التحصيل من الطلبات المسلمة
+          </p>
+          <p className="text-lg font-bold">{fmtMoney(a.totalCollected)}</p>
+        </div>
+        <div className="rounded-2xl border border-[hsl(var(--border))] bg-white p-4">
+          <p className="text-[11px] font-bold text-[hsl(var(--muted-foreground))] mb-1">
+            إجمالي ما تم توريده
+          </p>
+          <p className="text-lg font-bold text-emerald-700">{fmtMoney(a.totalSettled)}</p>
+        </div>
+        <div className={`rounded-2xl border p-4 ${remainingTone}`}>
+          <p className="text-[11px] font-bold mb-1 opacity-80">المتبقي على المندوب</p>
+          <p className="text-lg font-bold">{remainingLabel}</p>
+        </div>
+      </div>
+
+      {/* Admin CTA */}
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-[hsl(var(--muted-foreground))]">
+          {a.settlements.length === 0
+            ? 'لا توجد توريدات مسجلة بعد.'
+            : `${a.settlements.length} توريد مسجل (آخر 90 يوم).`}
+        </p>
+        {canRegister && onRegister && (
+          <button
+            type="button"
+            onClick={onRegister}
+            className="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-xl"
+          >
+            <Plus size={12} /> تسجيل توريد
+          </button>
+        )}
+      </div>
+
+      {/* Timeline */}
+      {a.settlements.length === 0 ? (
+        <p className="text-sm text-[hsl(var(--muted-foreground))]">
+          لم يتم تسجيل أي توريد لهذا المندوب بعد.
+        </p>
+      ) : (
+        <div className="overflow-x-auto scrollbar-thin">
+          <table className="w-full min-w-[640px] text-sm">
+            <thead>
+              <tr>
+                {['التاريخ', 'المبلغ', 'الطريقة', 'استلم بواسطة', 'ملاحظة'].map((h) => (
+                  <th key={h} className="table-header text-right">
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[hsl(var(--border))]">
+              {a.settlements.map((s) => (
+                <tr key={s.id} className="hover:bg-[hsl(var(--muted))]/30">
+                  <td className="table-cell text-xs">{formatDateAr(s.settled_at)}</td>
+                  <td className="table-cell font-mono text-xs font-bold text-emerald-700">
+                    {fmtMoney(Number(s.amount))}
+                  </td>
+                  <td className="table-cell text-xs">{settlementMethodLabel(s.method)}</td>
+                  <td className="table-cell text-xs">{s.received_by_name || '—'}</td>
+                  <td className="table-cell text-xs text-[hsl(var(--muted-foreground))]">
+                    {s.note || '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Phase 23B — Register settlement modal ────────────────────────────────
+//
+// Admin-only form that inserts ONE row into
+// `turath_masr_delegate_settlements`. Validates client-side:
+//   • amount > 0
+//   • amount ≤ 1,000,000 ج.م without an explicit confirmation
+//     toggle (sanity guard against accidental two-extra-zeros entry)
+//   • settled_at not in the future
+//   • method ∈ SETTLEMENT_METHOD_TOKENS
+//
+// Captures the dispatcher's profile id + display name as
+// `received_by` / `received_by_name` so the timeline shows who
+// acknowledged the handover.
+//
+// The mutation is a single `INSERT` — no upserts, no rollbacks of
+// other state. Failure surfaces a clear Arabic toast (RLS rejects
+// surface as 42501; the constraint check on the `method` column
+// surfaces as 23514).
+interface RegisterSettlementModalProps {
+  delegate: DelegateRow;
+  remainingDue: number;
+  receivedBy: { id: string | null; name: string | null };
+  onClose: () => void;
+  onSaved: (message: string) => void;
+  onError: (message: string) => void;
+}
+
+function RegisterSettlementModal({
+  delegate,
+  remainingDue,
+  receivedBy,
+  onClose,
+  onSaved,
+  onError,
+}: RegisterSettlementModalProps) {
+  // Default settled_at to the current local timestamp formatted for
+  // <input type="datetime-local">. Keep seconds out — the input
+  // type's standard widget rounds to the minute.
+  const nowLocal = (() => {
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  })();
+
+  const [amount, setAmount] = useState('');
+  const [method, setMethod] = useState<SettlementMethod>('cash');
+  const [settledAt, setSettledAt] = useState(nowLocal);
+  const [note, setNote] = useState('');
+  // Sanity-confirm toggle for unusually large amounts.
+  const [largeAmountAcknowledged, setLargeAmountAcknowledged] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  const parsedAmount = Number(amount);
+  const isLarge = Number.isFinite(parsedAmount) && parsedAmount > 1_000_000;
+
+  const validate = (): string => {
+    if (!amount.trim()) return 'المبلغ مطلوب';
+    if (!Number.isFinite(parsedAmount)) return 'المبلغ غير صالح';
+    if (parsedAmount <= 0) return 'المبلغ يجب أن يكون أكبر من صفر';
+    if (isLarge && !largeAmountAcknowledged) {
+      return 'المبلغ كبير. يرجى تأكيد الرغبة في تسجيله.';
+    }
+    if (!method) return 'يجب اختيار طريقة التوريد';
+    if (settledAt) {
+      const ts = new Date(settledAt).getTime();
+      if (Number.isNaN(ts)) return 'تاريخ التوريد غير صالح';
+      // Allow a small grace (60s) for clock drift on the client.
+      if (ts - Date.now() > 60_000) return 'لا يمكن تسجيل توريد في تاريخ مستقبلي';
+    }
+    return '';
+  };
+
+  const handleSubmit = async () => {
+    setError('');
+    const err = validate();
+    if (err) {
+      setError(err);
+      return;
+    }
+    if (!delegate.profileId) {
+      setError('سجل قديم بدون ملف. لا يمكن تسجيل توريد من هنا.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const supabase = createClient();
+      const { error: insertError } = await supabase
+        .from('turath_masr_delegate_settlements')
+        .insert({
+          delegate_profile_id: delegate.profileId,
+          delegate_name: delegate.name,
+          amount: parsedAmount,
+          method,
+          received_by: receivedBy.id,
+          received_by_name: receivedBy.name,
+          note: note.trim() || null,
+          // Convert the datetime-local string (no TZ) to a proper
+          // ISO string so PostgREST stores it correctly. The
+          // browser's local TZ wins — same convention as scheduled
+          // delivery in Phase 22Q.
+          settled_at: new Date(settledAt).toISOString(),
+        });
+      if (insertError) {
+        console.error('[delegates] register settlement failed', insertError);
+        let msg = `تعذر تسجيل التوريد: ${insertError.message}`;
+        if (insertError.code === '42501') {
+          msg = 'لا تملك صلاحية تسجيل توريد. تواصل مع المدير.';
+        } else if (insertError.code === '42P01') {
+          msg = 'جدول التوريدات غير متاح بعد. لم يتم تطبيق ترحيل القاعدة.';
+        } else if (insertError.code === '23514') {
+          msg = 'البيانات المُدخَلة لا تطابق القيود (المبلغ موجب، طريقة معروفة).';
+        }
+        setError(msg);
+        onError(msg);
+        setSubmitting(false);
+        return;
+      }
+      onSaved('تم تسجيل التوريد بنجاح.');
+    } catch (e) {
+      const msg = `حدث خطأ غير متوقع: ${e instanceof Error ? e.message : String(e)}`;
+      console.error('[delegates] register settlement unexpected error', e);
+      setError(msg);
+      onError(msg);
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" dir="rtl">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-3xl shadow-modal w-full max-w-lg max-h-[90vh] flex flex-col fade-in">
+        {/* Header */}
+        <div className="flex-shrink-0 flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
+          <div>
+            <h3 className="text-base font-bold text-[hsl(var(--foreground))]">تسجيل توريد</h3>
+            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">{delegate.name}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))]"
+            aria-label="إغلاق"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-4 scrollbar-thin">
+          {/* Outstanding-balance hint so the dispatcher knows how much
+              the delegate currently owes before they pick an amount. */}
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs text-blue-800">
+            المتبقي حاليًا على المندوب:{' '}
+            <span className="font-bold">
+              {remainingDue < 0
+                ? `${fmtMoney(Math.abs(remainingDue))} (زائد)`
+                : fmtMoney(remainingDue)}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <Field
+              label="المبلغ * (ج.م)"
+              value={amount}
+              onChange={(v) => {
+                // Allow digits + a single decimal point. Strip
+                // anything else as the dispatcher types.
+                const cleaned = v.replace(/[^\d.]/g, '');
+                const parts = cleaned.split('.');
+                const normalized =
+                  parts.length > 1 ? `${parts[0]}.${parts.slice(1).join('').slice(0, 2)}` : cleaned;
+                setAmount(normalized);
+              }}
+              placeholder="0"
+              dir="ltr"
+            />
+            <div>
+              <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+                طريقة التوريد *
+              </label>
+              <select
+                className="input-field w-full"
+                value={method}
+                onChange={(e) => setMethod(e.target.value as SettlementMethod)}
+              >
+                {SETTLEMENT_METHOD_TOKENS.map((t) => (
+                  <option key={t} value={t}>
+                    {SETTLEMENT_METHOD_LABELS_AR[t]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Field
+              label="تاريخ التوريد"
+              type="datetime-local"
+              value={settledAt}
+              onChange={setSettledAt}
+              dir="ltr"
+            />
+            <div>
+              <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+                استلم بواسطة
+              </label>
+              <input
+                type="text"
+                value={receivedBy.name || '—'}
+                disabled
+                className="input-field w-full opacity-60"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+              ملاحظة (اختياري)
+            </label>
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value.slice(0, 500))}
+              placeholder="مثال: توريد كاش يوم الجمعة من المخزن"
+              rows={3}
+              className="input-field w-full resize-none"
+            />
+            <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1">
+              {note.length} / 500 حرف
+            </p>
+          </div>
+
+          {/* Sanity confirmation for unusually large amounts. */}
+          {isLarge && (
+            <label className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800">
+              <input
+                type="checkbox"
+                checked={largeAmountAcknowledged}
+                onChange={(e) => setLargeAmountAcknowledged(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                المبلغ {fmtMoney(parsedAmount)} كبير. أؤكد أن المبلغ صحيح وأرغب في تسجيله.
+              </span>
+            </label>
+          )}
+
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-700 flex items-start gap-2">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex-shrink-0 flex items-center justify-between gap-3 p-4 border-t border-[hsl(var(--border))] bg-white rounded-b-3xl">
+          <button type="button" className="btn-secondary" onClick={onClose} disabled={submitting}>
+            إلغاء
+          </button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={submitting}
+            className="px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50"
+          >
+            <Banknote size={14} />
+            {submitting ? 'جارٍ التسجيل...' : 'تسجيل التوريد'}
           </button>
         </div>
       </div>
