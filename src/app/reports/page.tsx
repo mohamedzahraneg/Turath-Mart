@@ -1,7 +1,10 @@
 'use client';
 import React, { useState, useMemo, useEffect } from 'react';
 import dynamic from 'next/dynamic';
-import Image from 'next/image';
+// Phase E1-Fix3 — `next/image` import removed. The single render
+// site that used it now goes through the shared
+// `InventoryThumbnail` (which itself wraps `next/image` internally
+// with the correct `unoptimized` posture for our RLS-gated route).
 import AppLayout from '@/components/AppLayout';
 import {
   TrendingUp,
@@ -23,6 +26,11 @@ import {
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { normalizeStatus } from '@/lib/reporting/orderMetrics';
+// Phase E1-Fix3 — render the inventory thumbnail on the products
+// table via the cached `/api/inventory/[id]/thumbnail` route so the
+// reports query no longer ships ~648 KB of base64 `images` per page
+// mount. Same shared component used by /inventory and AddOrderModal.
+import { InventoryThumbnail, inventoryThumbnailUrl } from '@/lib/inventory/InventoryThumbnail';
 
 // Phase 20E: lazy-load recharts via a dedicated client module so the
 // /reports route's initial JS chunk drops the recharts payload (~150 kB
@@ -102,18 +110,24 @@ export default function ReportsPage() {
       setLoading(true);
       try {
         const supabase = createClient();
-        // Phase 20E: explicit inventory column list. The render uses
-        // only name, sku, available, images (see allProducts JSX
-        // below); the previous select('*') also shipped category,
-        // colors (text[]), price, min_stock, withdrawn, id, created_at
-        // — the local mapper overwrites `withdrawn` so the DB value is
-        // pure waste on the wire. Schema verified against production.
+        // Phase 20E: explicit inventory column list — locks the
+        // contract so future schema additions don't silently leak.
+        //
+        // Phase E1-Fix3: dropped `images` from the inventory select.
+        // The base64-encoded `images` text[] was ~108 KB per row
+        // (~648 KB total across the 6 production rows) and was
+        // shipped on every /reports page mount just to populate the
+        // 32×32 product photo in the "all products" table. The
+        // photo now lazy-loads through the cached
+        // `/api/inventory/[id]/thumbnail` route via the shared
+        // InventoryThumbnail helper. `id` is added to the select so
+        // the render path can build the URL.
         const [oRes, iRes] = await Promise.all([
           supabase
             .from('turath_masr_orders')
             .select('id, created_at, status, total, shipping_fee, products, region')
             .order('created_at', { ascending: true }),
-          supabase.from('turath_masr_inventory').select('name, sku, available, images'),
+          supabase.from('turath_masr_inventory').select('id, name, sku, available'),
         ]);
 
         if (oRes.data) setDbOrders(oRes.data);
@@ -733,15 +747,27 @@ export default function ReportsPage() {
                   <tr key={i} className="hover:bg-gray-50/50 transition-colors">
                     <td className="px-4 py-4">
                       <div className="flex items-center gap-3">
-                        {p.images?.[0] && (
-                          <Image
-                            src={p.images[0]}
+                        {/* Phase E1-Fix3 — thumbnail loads from the
+                            cached `/api/inventory/[id]/thumbnail`
+                            route. The inventory query no longer
+                            ships base64 `images`; we build the URL
+                            from `p.id` instead. The shared
+                            InventoryThumbnail helper renders an
+                            actual <img> when the route returns 200
+                            and falls back to the 📦 emoji on 404 /
+                            load error (rare — current 6 rows all
+                            carry stored thumbnails). */}
+                        {p.id ? (
+                          <InventoryThumbnail
+                            src={inventoryThumbnailUrl(p.id)}
                             alt={p.name || 'منتج'}
+                            emoji="📦"
                             width={32}
                             height={32}
                             className="w-8 h-8 rounded-lg object-cover"
+                            emojiClassName="text-xl w-8 h-8"
                           />
-                        )}
+                        ) : null}
                         <span className="font-bold text-gray-800">{p.name}</span>
                       </div>
                     </td>

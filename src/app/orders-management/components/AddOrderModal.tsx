@@ -1,6 +1,9 @@
 'use client';
 import React, { useState, useEffect, useRef } from 'react';
-import Image from 'next/image';
+// Phase E1-Fix3 — `next/image` is no longer imported here; every
+// product / line / review thumbnail now goes through the shared
+// `InventoryThumbnail` helper (which wraps `next/image` itself with
+// the correct `unoptimized` posture for our RLS-gated route).
 import { toast } from 'sonner';
 import { Toaster } from 'sonner';
 import {
@@ -55,6 +58,13 @@ import { getDisplayName, getRoleLabel } from '@/lib/utils/userDisplay';
 // 5-minute memory + sessionStorage cache and is invalidated by the
 // `/settings` save flow when the regions row is edited.
 import { getShippingRegions } from '@/lib/settings/shippingRegionsCache';
+// Phase E1-Fix3 — the InventoryThumbnail helper that previously lived
+// inline in this file is now shared from `src/lib/inventory/` so the
+// /inventory list view and the /reports product table can reuse the
+// same URL-fetch + emoji-fallback contract. The contract and the
+// `unoptimized` reasoning are unchanged from Phase E1-Fix1.1; see the
+// shared module for the full comment block.
+import { InventoryThumbnail, inventoryThumbnailUrl } from '@/lib/inventory/InventoryThumbnail';
 // Phase 22O — returning-customer smart card + lookup helpers. The
 // card is presentational; the lookup function lives in this file
 // (it owns the Supabase client + state).
@@ -406,115 +416,13 @@ function lineTotal(line: OrderLine): number {
   return base + flash;
 }
 
-/**
- * Phase E1-Fix1.1 — render an inventory product thumbnail with an
- * emoji fallback. The `src` is expected to point at the
- * `/api/inventory/[id]/thumbnail` route, which serves raw image
- * bytes for `data:` URLs and 302-redirects for http(s):// or
- * relative URLs, and returns 404 when the row has no stored image.
- *
- * Why a wrapper component
- *   The three render sites in this file all need the same fallback:
- *   if the image fails to load, swap to the product emoji glyph in
- *   the same screen space. Centralising the logic here keeps the
- *   render sites readable and ensures the swap is consistent.
- *
- * Why `unoptimized`
- *   The thumbnail route is RLS-gated: it uses the SSR Supabase
- *   client with the request's cookies, so an authenticated browser
- *   can read the images while an anonymous one is rejected. Next.js's
- *   built-in `/_next/image` optimiser fetches the underlying URL
- *   server-to-server WITHOUT forwarding cookies, so the optimiser
- *   would always see RLS rejection and the image would never load
- *   for any user. Setting `unoptimized` makes the browser fetch the
- *   URL directly (cookies attached) and the route's
- *   `Cache-Control: public, max-age=86400, immutable` header keeps
- *   repeat renders near-zero-egress.
- *
- * Why a span fallback with matching positioning
- *   When `fill` is set, the underlying `<Image>` is absolutely
- *   positioned to fill the parent. The emoji fallback uses
- *   `absolute inset-0 flex items-center justify-center` so the
- *   emoji occupies the same screen space — no layout shift when
- *   the swap happens. For the non-fill (fixed width/height) modes,
- *   the emoji span sizes itself via inline style.
- */
-function InventoryThumbnail({
-  src,
-  alt,
-  emoji,
-  fill,
-  width,
-  height,
-  sizes,
-  className,
-  emojiClassName,
-}: {
-  src: string | undefined;
-  alt: string;
-  emoji: string;
-  fill?: boolean;
-  width?: number;
-  height?: number;
-  sizes?: string;
-  className?: string;
-  emojiClassName?: string;
-}) {
-  const [errored, setErrored] = useState(false);
-  const isLoadableUrl =
-    typeof src === 'string' &&
-    src.length > 0 &&
-    (src.startsWith('data:') ||
-      src.startsWith('http://') ||
-      src.startsWith('https://') ||
-      src.startsWith('/'));
-
-  if (!isLoadableUrl || errored) {
-    if (fill) {
-      return (
-        <span
-          className={`absolute inset-0 flex items-center justify-center ${emojiClassName ?? ''}`}
-        >
-          {emoji}
-        </span>
-      );
-    }
-    return (
-      <span
-        className={`inline-flex items-center justify-center ${emojiClassName ?? ''}`}
-        style={{ width, height }}
-      >
-        {emoji}
-      </span>
-    );
-  }
-
-  if (fill) {
-    return (
-      <Image
-        src={src as string}
-        alt={alt}
-        fill
-        sizes={sizes}
-        className={className}
-        unoptimized
-        onError={() => setErrored(true)}
-      />
-    );
-  }
-
-  return (
-    <Image
-      src={src as string}
-      alt={alt}
-      width={width || 32}
-      height={height || 32}
-      className={className}
-      unoptimized
-      onError={() => setErrored(true)}
-    />
-  );
-}
+// Phase E1-Fix3 — the inline `InventoryThumbnail` component (Phase
+// E1-Fix1.1) was moved to `src/lib/inventory/InventoryThumbnail.tsx`
+// so /inventory + /reports can share the same render + fallback
+// contract. The behaviour (URL-loaded <Image> with `unoptimized`,
+// emoji fallback on error, layout-stable swap) is unchanged. The
+// import lives at the top of this file alongside the other
+// `@/lib/...` imports.
 
 export default function AddOrderModal({ onClose }: Props) {
   const { user, currentRoleId, currentRole, profileFullName } = useAuth();
@@ -755,14 +663,15 @@ export default function AddOrderModal({ onClose }: Props) {
         basePrice: item.price,
         emoji: '📦',
         hasColor: (item.colors?.length || 0) > 0,
-        // Phase E1-Fix1.1 — thumbnail URL points at the lightweight
-        // image endpoint that decodes the base64 stored on the
-        // inventory row server-side and serves the raw bytes (saves
-        // ~33 % over the previous base64-in-JSON path) with a 24 h
-        // immutable cache. The `InventoryThumbnail` helper at the top
-        // of this file handles the 404 → emoji fallback for rows
-        // with no stored image.
-        image: `/api/inventory/${item.id}/thumbnail`,
+        // Phase E1-Fix1.1 / E1-Fix3 — thumbnail URL points at the
+        // lightweight image endpoint that decodes the base64 stored
+        // on the inventory row server-side and serves the raw bytes
+        // (saves ~33 % over the previous base64-in-JSON path) with a
+        // 24 h immutable cache. The shared `InventoryThumbnail`
+        // helper handles the 404 → emoji fallback for rows with no
+        // stored image. Builder lifted to `inventoryThumbnailUrl()`
+        // so a future route rename is a one-line change.
+        image: inventoryThumbnailUrl(item.id),
         isInventory: true,
         colors: item.colors,
         available: item.available,

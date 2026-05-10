@@ -21,6 +21,12 @@ import {
 } from 'lucide-react';
 
 import { createClient } from '@/lib/supabase/client';
+// Phase E1-Fix3 — render product thumbnails via the cached
+// `/api/inventory/[id]/thumbnail` route so the inventory list query
+// no longer ships ~648 KB of base64 `images` per page mount. The
+// shared `InventoryThumbnail` component handles the 404 → emoji
+// fallback exactly the way the AddOrderModal product cards do.
+import { InventoryThumbnail, inventoryThumbnailUrl } from '@/lib/inventory/InventoryThumbnail';
 
 interface InventoryItem {
   id: string;
@@ -107,6 +113,46 @@ function EditModal({ item, onClose, onSave, allItems }: EditModalProps) {
   const [previewIndex, setPreviewIndex] = useState(0);
   const [newColor, setNewColor] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Phase E1-Fix3 — the parent `/inventory` page no longer fetches
+  // `images` in its bulk list query (the base64 column was ~108 KB
+  // per row, ~648 KB total). When the modal opens for an EXISTING
+  // item we re-fetch the full `images` array for that single row so
+  // the carousel + add/remove/reorder behaviour stays identical to
+  // before. New-item creation starts with an empty array and writes
+  // its own uploads on save (unchanged).
+  const [imagesLoading, setImagesLoading] = useState<boolean>(!!item);
+  useEffect(() => {
+    if (!item) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const supabase = createClient();
+        const { data, error } = await supabase
+          .from('turath_masr_inventory')
+          .select('images')
+          .eq('id', item.id)
+          .single();
+        if (cancelled) return;
+        if (!error && data && Array.isArray((data as { images?: unknown }).images)) {
+          const fetched = (data as { images: string[] }).images;
+          setForm((prev) => ({ ...prev, images: fetched }));
+        }
+      } catch (err) {
+        // Best-effort: leave the carousel empty if the fetch fails;
+        // the user can still upload new images on top.
+        if (!cancelled) console.warn('[InventoryEditModal] images fetch failed', err);
+      } finally {
+        if (!cancelled) setImagesLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // We intentionally key only on `item.id`. Reopening the modal
+    // for a different item triggers a refetch; updates within the
+    // same modal session reuse the already-fetched array.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item?.id]);
 
   // Auto-generate SKU when name changes (only for new items and not manually edited)
   useEffect(() => {
@@ -181,8 +227,18 @@ function EditModal({ item, onClose, onSave, allItems }: EditModalProps) {
           {/* Multiple image upload */}
           <div>
             <label className="block text-sm font-semibold mb-2">صور المنتج</label>
-            {/* Image preview carousel */}
-            {images.length > 0 ? (
+            {/* Phase E1-Fix3 — when editing an existing item the
+                images array is fetched on demand from
+                turath_masr_inventory.images for this single row.
+                While that request is in flight we show a loading
+                placeholder so the empty-state copy ("لا توجد صور")
+                doesn't briefly flash for items that DO have images. */}
+            {imagesLoading && images.length === 0 ? (
+              <div className="w-full h-32 rounded-xl border-2 border-dashed border-[hsl(var(--border))] flex flex-col items-center justify-center gap-2 text-[hsl(var(--muted-foreground))] mb-3 bg-[hsl(var(--muted))]/20">
+                <RefreshCw size={20} className="animate-spin opacity-60" />
+                <p className="text-xs">جاري تحميل الصور...</p>
+              </div>
+            ) : images.length > 0 ? (
               <div className="relative mb-3">
                 <div className="relative w-full h-44 rounded-xl overflow-hidden bg-gray-100 border border-[hsl(var(--border))]">
                   <Image
@@ -457,17 +513,25 @@ export default function InventoryPage() {
     try {
       const supabase = createClient();
 
-      // Phase 20F: explicit inventory column list. Net wire payload
-      // is unchanged here (the page render genuinely uses every
-      // column — name, sku, available, withdrawn, min_stock, price,
-      // category, images, colors — and id for keys/CRUD), but we
-      // lock the contract so future schema additions don't silently
-      // leak into the response. Schema verified against production.
+      // Phase 20F: explicit inventory column list — locks the contract
+      // so future schema additions don't silently leak.
+      //
+      // Phase E1-Fix3: dropped `images` from the bulk list query. The
+      // base64-encoded `images` text[] was ~108 KB per row (~648 KB
+      // across the current 6 rows) and was being shipped on every
+      // /inventory page mount just to populate the 40×40 row
+      // thumbnail. List-row thumbnails now resolve through the cached
+      // `/api/inventory/[id]/thumbnail` route via the shared
+      // InventoryThumbnail helper. The full `images` array is still
+      // available to the EditModal — it issues a one-row
+      // `select('images').eq('id', item.id).single()` on open so add /
+      // remove / reorder still operates on the real data, but only
+      // for the single product being edited.
       const [invRes, ordRes] = await Promise.all([
         supabase
           .from('turath_masr_inventory')
           .select(
-            'id, name, sku, available, withdrawn, min_stock, price, category, images, colors, created_at'
+            'id, name, sku, available, withdrawn, min_stock, price, category, colors, created_at'
           )
           .order('created_at', { ascending: false }),
         // Already explicit; products + status are the only two columns
@@ -481,6 +545,13 @@ export default function InventoryPage() {
           invRes.data.map((item: any) => ({
             ...item,
             minStock: item.min_stock,
+            // Phase E1-Fix3 — `images` is intentionally absent from
+            // the list query above. We initialise the field as an
+            // empty array so downstream code that reads
+            // `item.images` (e.g. the EditModal initialiser) sees a
+            // stable shape; the modal then refetches the real array
+            // for the single item on open.
+            images: [],
           }))
         );
       }
@@ -743,36 +814,39 @@ export default function InventoryPage() {
                     item.available + realWithdrawn > 0
                       ? Math.round((item.available / (item.available + realWithdrawn)) * 100)
                       : 0;
-                  const firstImage = item.images?.[0];
                   return (
                     <tr
                       key={item.id}
                       className={`hover:bg-[hsl(var(--muted))]/30 transition-colors ${isLow ? 'bg-red-50/30' : ''}`}
                     >
                       <td className="px-4 py-3">
-                        {firstImage ? (
-                          <div className="relative">
-                            <Image
-                              src={firstImage}
-                              alt={item.name}
-                              width={40}
-                              height={40}
-                              className="w-10 h-10 rounded-lg object-cover border border-[hsl(var(--border))]"
-                            />
-                            {(item.images?.length || 0) > 1 && (
-                              <span className="absolute -bottom-1 -right-1 bg-[hsl(var(--primary))] text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
-                                {item.images!.length}
-                              </span>
-                            )}
-                          </div>
-                        ) : (
-                          <div className="w-10 h-10 rounded-lg bg-[hsl(var(--muted))] flex items-center justify-center border border-[hsl(var(--border))]">
-                            <ImageIcon
-                              size={16}
-                              className="text-[hsl(var(--muted-foreground))] opacity-50"
-                            />
-                          </div>
-                        )}
+                        {/* Phase E1-Fix3 — list-row thumbnail via
+                            the cached `/api/inventory/[id]/thumbnail`
+                            route. The list query no longer fetches
+                            the base64 `images` array, so the
+                            thumbnail loads asynchronously through
+                            the shared `InventoryThumbnail` helper
+                            and falls back to the 📦 emoji on 404 /
+                            load error (rare in practice — the
+                            current 6 inventory rows all carry stored
+                            images). The previous "+N more images"
+                            badge depended on knowing `images.length`
+                            from the bulk fetch — that signal is gone
+                            from this row, but the same count is
+                            visible in the edit modal carousel which
+                            re-fetches the full array on demand for
+                            the single item being edited. */}
+                        <div className="relative w-10 h-10 rounded-lg overflow-hidden border border-[hsl(var(--border))] bg-[hsl(var(--muted))]">
+                          <InventoryThumbnail
+                            src={inventoryThumbnailUrl(item.id)}
+                            alt={item.name}
+                            emoji="📦"
+                            fill
+                            sizes="40px"
+                            className="object-cover"
+                            emojiClassName="text-xl"
+                          />
+                        </div>
                       </td>
                       <td className="px-4 py-3 font-semibold">{item.name}</td>
                       <td className="px-4 py-3 text-[hsl(var(--muted-foreground))] font-mono text-xs">
