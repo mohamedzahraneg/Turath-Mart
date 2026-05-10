@@ -53,6 +53,18 @@ const navItems: NavItem[] = [
     href: '/shipping',
     group: 'رئيسي',
   },
+  // Phase 23A — entry to the new /delegates page (delegate
+  // management foundation). Permission gate is `view_delegates`,
+  // mapped to the route in `src/lib/permissions/permissions.ts`.
+  // The icon reuses `Users` for now; a delegate-specific glyph
+  // can be swapped in a follow-up if desired.
+  {
+    id: 'nav-delegates',
+    label: 'إدارة المناديب',
+    icon: <Users size={20} />,
+    href: '/delegates',
+    group: 'إدارة',
+  },
   {
     id: 'nav-crm',
     label: 'إدارة العملاء (CRM)',

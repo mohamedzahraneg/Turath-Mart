@@ -31,7 +31,12 @@ export const PERMISSION_ROUTE_MAP: Record<string, string[]> = {
   view_shipping: ['/shipping'],
   manage_shipping: ['/shipping'],
   assign_courier: ['/shipping'],
-  view_delegates: ['/shipping'],
+  // Phase 23A — `view_delegates` now also unlocks the new
+  // `/delegates` admin page. The previous `/shipping` mapping is
+  // preserved so r3/r4 holders continue to reach the live shipping
+  // dashboard. Admin (r1) has all permissions, so they get both
+  // routes regardless.
+  view_delegates: ['/shipping', '/delegates'],
   view_inventory: ['/inventory'],
   edit_inventory: ['/inventory'],
   view_reports: ['/reports'],
