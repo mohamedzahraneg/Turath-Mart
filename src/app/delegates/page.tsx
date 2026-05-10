@@ -193,6 +193,15 @@ interface SettlementRow {
   note: string | null;
   settled_at: string;
   created_at: string;
+  // Phase 23E — soft-void metadata. Optional in the type because
+  // pre-migration the columns don't exist; the loader treats a
+  // missing or null `status` as 'active' so legacy rows stay live.
+  status?: string | null;
+  void_reason?: string | null;
+  voided_at?: string | null;
+  voided_by?: string | null;
+  voided_by_name?: string | null;
+  updated_at?: string | null;
 }
 
 // Phase 23C — custody (الأمانات / العهد) row. Mirrors the columns
@@ -214,6 +223,14 @@ interface CustodyRow {
   returned_at: string | null;
   note: string | null;
   created_at: string;
+  // Phase 23E — soft-void metadata. `status` already exists on
+  // custody (with the wider CHECK after the migration); these are
+  // the new audit columns. Same defensive optionality.
+  void_reason?: string | null;
+  voided_at?: string | null;
+  voided_by?: string | null;
+  voided_by_name?: string | null;
+  updated_at?: string | null;
 }
 
 // Phase 23C — expense (مصروف) row. Same migration; `expense_at`
@@ -232,6 +249,13 @@ interface ExpenseRow {
   note: string | null;
   expense_at: string;
   created_at: string;
+  // Phase 23E — soft-void metadata. `status` already exists on
+  // expenses (with the wider CHECK after the migration).
+  void_reason?: string | null;
+  voided_at?: string | null;
+  voided_by?: string | null;
+  voided_by_name?: string | null;
+  updated_at?: string | null;
 }
 
 interface DelegateAggregate {
@@ -277,6 +301,30 @@ const STATUS_LABELS: Record<string, string> = {
   cancelled: 'ملغي',
   returned: 'مرتجع',
 };
+
+// ─── Phase 23E — void helpers ─────────────────────────────────────────────
+//
+// Tiny predicates used everywhere a "is this row counted in the
+// totals?" decision is made. Keep these pure + null-safe so legacy
+// rows (where `status` is undefined pre-migration) default to live.
+function isSettlementVoided(s: { status?: string | null }): boolean {
+  return s.status === 'voided';
+}
+function isSettlementActive(s: { status?: string | null }): boolean {
+  return !isSettlementVoided(s);
+}
+function isExpenseVoided(e: { status?: string | null }): boolean {
+  return e.status === 'voided';
+}
+function isExpenseApprovedActive(e: { status?: string | null }): boolean {
+  return e.status === 'approved';
+}
+function isCustodyVoided(c: { status?: string | null }): boolean {
+  return c.status === 'voided';
+}
+function isCustodyOpen(c: { status?: string | null }): boolean {
+  return c.status === 'with_delegate';
+}
 
 const ARABIC_MONTHS = [
   'يناير',
@@ -419,6 +467,24 @@ export default function DelegatesPage() {
     nextStatus: 'returned' | 'settled' | 'lost';
   } | null>(null);
   const [custodyStatusSubmitting, setCustodyStatusSubmitting] = useState(false);
+  // Phase 23E — edit + void modal targets for each of the three
+  // financial tables. `kind` identifies which modal a target opens:
+  //   'edit'  → field-level edit modal
+  //   'void'  → reason-required void confirmation
+  // The actual row payload is carried inside the target so the
+  // modals stay stateless.
+  const [settlementMutation, setSettlementMutation] = useState<{
+    row: SettlementRow;
+    kind: 'edit' | 'void';
+  } | null>(null);
+  const [expenseMutation, setExpenseMutation] = useState<{
+    row: ExpenseRow;
+    kind: 'edit' | 'void';
+  } | null>(null);
+  const [custodyMutation, setCustodyMutation] = useState<{
+    row: CustodyRow;
+    kind: 'edit' | 'void';
+  } | null>(null);
 
   // Fetch profiles + orders + ratings + settlements + custody +
   // expenses in parallel. Each query is narrowed and (where it
@@ -474,8 +540,13 @@ export default function DelegatesPage() {
             // current scale.
             supabase
               .from('turath_masr_delegate_settlements')
+              // Phase 23E — request the new void metadata columns.
+              // Pre-migration the SELECT surfaces 42703 ("column
+              // does not exist") and the catch arm below falls
+              // through to an empty list — same defensive shape
+              // as the original 23B fetch.
               .select(
-                'id, delegate_profile_id, delegate_name, amount, method, received_by, received_by_name, note, settled_at, created_at'
+                'id, delegate_profile_id, delegate_name, amount, method, received_by, received_by_name, note, settled_at, created_at, status, void_reason, voided_at, voided_by, voided_by_name, updated_at'
               )
               .order('settled_at', { ascending: false })
               .limit(1000)
@@ -490,10 +561,11 @@ export default function DelegatesPage() {
             // the "active custody value" KPI to include rows handed
             // over months ago that are still `with_delegate`. Cap at
             // 1000 rows for safety; far above any realistic scale.
+            // Phase 23E — adds the void metadata columns.
             supabase
               .from('turath_masr_delegate_custody')
               .select(
-                'id, delegate_profile_id, delegate_name, custody_type, description, quantity, estimated_value, status, handed_by, handed_by_name, received_by, received_by_name, handed_at, returned_at, note, created_at'
+                'id, delegate_profile_id, delegate_name, custody_type, description, quantity, estimated_value, status, handed_by, handed_by_name, received_by, received_by_name, handed_at, returned_at, note, created_at, void_reason, voided_at, voided_by, voided_by_name, updated_at'
               )
               .order('handed_at', { ascending: false })
               .limit(1000)
@@ -508,10 +580,11 @@ export default function DelegatesPage() {
             // window as orders/ratings/settlements so the page
             // numbers stay consistent. Older rows still exist in the
             // DB; a future "تقرير حساب المندوب" view can fetch them.
+            // Phase 23E — adds the void metadata columns.
             supabase
               .from('turath_masr_delegate_expenses')
               .select(
-                'id, delegate_profile_id, delegate_name, order_id, expense_type, amount, status, approved_by, approved_by_name, note, expense_at, created_at'
+                'id, delegate_profile_id, delegate_name, order_id, expense_type, amount, status, approved_by, approved_by_name, note, expense_at, created_at, void_reason, voided_at, voided_by, voided_by_name, updated_at'
               )
               .gte('expense_at', since)
               .order('expense_at', { ascending: false })
@@ -727,12 +800,15 @@ export default function DelegatesPage() {
         if ((s.delegate_name || '').trim() === d.name.trim()) return true;
         return false;
       });
-      const totalSettled = settlementsForDelegate.reduce(
-        (sum, s) => sum + Number(s.amount ?? 0),
-        0
-      );
+      // Phase 23E — only sum live (non-voided) settlements. Voided
+      // rows stay in the timeline (auditable) but contribute 0.
+      const totalSettled = settlementsForDelegate
+        .filter(isSettlementActive)
+        .reduce((sum, s) => sum + Number(s.amount ?? 0), 0);
       const remainingDue = totalCollected - totalSettled;
-      const lastSettledAt = settlementsForDelegate[0]?.settled_at ?? null;
+      // "Last settlement" should reflect actual money flow, so we
+      // pick the first ACTIVE row from the already-descending list.
+      const lastSettledAt = settlementsForDelegate.find(isSettlementActive)?.settled_at ?? null;
 
       // Phase 23C — per-delegate custody + expenses aggregation.
       // Same name-fallback rule as the other slices.
@@ -745,7 +821,12 @@ export default function DelegatesPage() {
       let activeCustodyCount = 0;
       let activeCashCustody = 0;
       for (const c of custodyForDelegate) {
-        if (c.status === 'with_delegate') {
+        // Phase 23E — `isCustodyOpen` already excludes 'voided' (it
+        // matches only 'with_delegate'); the explicit comment is
+        // here to remind future readers that voided custody NEVER
+        // contributes to the active balance even if it was
+        // 'with_delegate' before being voided.
+        if (isCustodyOpen(c)) {
           activeCustodyValue += Number(c.estimated_value ?? 0);
           activeCustodyCount += 1;
           if (c.custody_type === 'cash') {
@@ -759,8 +840,11 @@ export default function DelegatesPage() {
         if ((e.delegate_name || '').trim() === d.name.trim()) return true;
         return false;
       });
+      // Phase 23E — `isExpenseApprovedActive` matches only the
+      // canonical 'approved' token. Voided expenses (status='voided')
+      // and pending/rejected ones never enter the financial total.
       const approvedExpensesTotal = expensesForDelegate
-        .filter((e) => e.status === 'approved')
+        .filter(isExpenseApprovedActive)
         .reduce((sum, e) => sum + Number(e.amount ?? 0), 0);
 
       // Adjusted remaining: collected − settled − approved expenses.
@@ -821,9 +905,11 @@ export default function DelegatesPage() {
     // settlements list directly rather than the per-delegate
     // `aggregates` so legacy / orphan rows whose delegate doesn't
     // resolve cleanly still count into "إجمالي التوريدات".
+    // Phase 23E — voided settlements drop out of every aggregate.
     let totalSettled = 0;
     let lastSettledAt: string | null = null;
     for (const s of settlements) {
+      if (isSettlementVoided(s)) continue;
       totalSettled += Number(s.amount ?? 0);
       if (!lastSettledAt || (s.settled_at && s.settled_at > lastSettledAt)) {
         lastSettledAt = s.settled_at;
@@ -832,17 +918,18 @@ export default function DelegatesPage() {
     const remainingTotal = totalCollected - totalSettled;
 
     // Phase 23C — custody + expenses global KPIs.
+    // Phase 23E — voided rows drop out of both totals.
     let totalActiveCustodyValue = 0;
     let totalActiveCustodyCount = 0;
     for (const c of custody) {
-      if (c.status === 'with_delegate') {
+      if (isCustodyOpen(c)) {
         totalActiveCustodyValue += Number(c.estimated_value ?? 0);
         totalActiveCustodyCount += 1;
       }
     }
     let totalApprovedExpenses = 0;
     for (const e of expenses) {
-      if (e.status === 'approved') {
+      if (isExpenseApprovedActive(e)) {
         totalApprovedExpenses += Number(e.amount ?? 0);
       }
     }
@@ -1371,6 +1458,15 @@ export default function DelegatesPage() {
              passes this through to the AccountStatementTab to hide
              the export button for non-admin viewers. */
           canExportStatement={canExportStatement}
+          /* Phase 23E — edit / void launchers. The drawer just
+             forwards each request up to the page; modal state +
+             supabase mutations live here. */
+          onEditSettlement={(row) => setSettlementMutation({ row, kind: 'edit' })}
+          onVoidSettlement={(row) => setSettlementMutation({ row, kind: 'void' })}
+          onEditExpense={(row) => setExpenseMutation({ row, kind: 'edit' })}
+          onVoidExpense={(row) => setExpenseMutation({ row, kind: 'void' })}
+          onEditCustody={(row) => setCustodyMutation({ row, kind: 'edit' })}
+          onVoidCustody={(row) => setCustodyMutation({ row, kind: 'void' })}
         />
       )}
 
@@ -1540,6 +1636,165 @@ export default function DelegatesPage() {
         />
       )}
 
+      {/* Phase 23E — settlement edit / void modals. Admin-only at
+          the UI gate; RLS rejects non-admin UPDATEs at the second
+          layer. The page owns the supabase mutation so the modal
+          components stay stateless. */}
+      {settlementMutation && settlementMutation.kind === 'edit' && (
+        <EditSettlementModal
+          row={settlementMutation.row}
+          onClose={() => setSettlementMutation(null)}
+          onSaved={(message) => {
+            setSettlementMutation(null);
+            setReloadTick((n) => n + 1);
+            setToast({ kind: 'success', message });
+          }}
+          onError={(message) => setToast({ kind: 'error', message })}
+        />
+      )}
+      {settlementMutation && settlementMutation.kind === 'void' && (
+        <VoidMovementDialog
+          kind="settlement"
+          rowSummary={`توريد بمبلغ ${fmtMoney(Number(settlementMutation.row.amount ?? 0))} — ${settlementMethodLabel(settlementMutation.row.method)}`}
+          onCancel={() => setSettlementMutation(null)}
+          onConfirm={async (reason) => {
+            const supabase = createClient();
+            const { error } = await supabase
+              .from('turath_masr_delegate_settlements')
+              .update({
+                status: 'voided',
+                void_reason: reason,
+                voided_at: new Date().toISOString(),
+                voided_by: user?.id ?? null,
+                voided_by_name: profileFullName ?? null,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', settlementMutation.row.id);
+            if (error) {
+              console.error('[delegates] void settlement failed', error);
+              setToast({
+                kind: 'error',
+                message:
+                  error.code === '42501'
+                    ? 'لا تملك صلاحية إلغاء التوريد. تواصل مع المدير.'
+                    : `تعذر إلغاء التوريد: ${error.message}`,
+              });
+              return;
+            }
+            setSettlementMutation(null);
+            setReloadTick((n) => n + 1);
+            setToast({ kind: 'success', message: 'تم إلغاء التوريد.' });
+          }}
+        />
+      )}
+
+      {/* Phase 23E — expense edit / void modals. */}
+      {expenseMutation && expenseMutation.kind === 'edit' && (
+        <EditExpenseModal
+          row={expenseMutation.row}
+          onClose={() => setExpenseMutation(null)}
+          onSaved={(message) => {
+            setExpenseMutation(null);
+            setReloadTick((n) => n + 1);
+            setToast({ kind: 'success', message });
+          }}
+          onError={(message) => setToast({ kind: 'error', message })}
+        />
+      )}
+      {expenseMutation && expenseMutation.kind === 'void' && (
+        <VoidMovementDialog
+          kind="expense"
+          rowSummary={`مصروف بمبلغ ${fmtMoney(Number(expenseMutation.row.amount ?? 0))} — ${expenseTypeLabel(expenseMutation.row.expense_type)}`}
+          onCancel={() => setExpenseMutation(null)}
+          onConfirm={async (reason) => {
+            const supabase = createClient();
+            const { error } = await supabase
+              .from('turath_masr_delegate_expenses')
+              .update({
+                status: 'voided',
+                void_reason: reason,
+                voided_at: new Date().toISOString(),
+                voided_by: user?.id ?? null,
+                voided_by_name: profileFullName ?? null,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', expenseMutation.row.id);
+            if (error) {
+              console.error('[delegates] void expense failed', error);
+              setToast({
+                kind: 'error',
+                message:
+                  error.code === '42501'
+                    ? 'لا تملك صلاحية إلغاء المصروف. تواصل مع المدير.'
+                    : `تعذر إلغاء المصروف: ${error.message}`,
+              });
+              return;
+            }
+            setExpenseMutation(null);
+            setReloadTick((n) => n + 1);
+            setToast({ kind: 'success', message: 'تم إلغاء المصروف.' });
+          }}
+        />
+      )}
+
+      {/* Phase 23E — custody edit / void modals. The void path
+          surfaces an extra confirmation when the row already has a
+          terminal status (returned/settled/lost) — matches the
+          spec rule "هذه الأمانة لها حالة نهائية بالفعل ...". */}
+      {custodyMutation && custodyMutation.kind === 'edit' && (
+        <EditCustodyModal
+          row={custodyMutation.row}
+          onClose={() => setCustodyMutation(null)}
+          onSaved={(message) => {
+            setCustodyMutation(null);
+            setReloadTick((n) => n + 1);
+            setToast({ kind: 'success', message });
+          }}
+          onError={(message) => setToast({ kind: 'error', message })}
+        />
+      )}
+      {custodyMutation && custodyMutation.kind === 'void' && (
+        <VoidMovementDialog
+          kind="custody"
+          rowSummary={`أمانة (${custodyTypeLabel(custodyMutation.row.custody_type)}) — ${custodyMutation.row.description}`}
+          extraWarning={
+            ['returned', 'settled', 'lost'].includes(custodyMutation.row.status)
+              ? 'هذه الأمانة لها حالة نهائية بالفعل. هل تريد إلغاء السجل؟'
+              : undefined
+          }
+          onCancel={() => setCustodyMutation(null)}
+          onConfirm={async (reason) => {
+            const supabase = createClient();
+            const { error } = await supabase
+              .from('turath_masr_delegate_custody')
+              .update({
+                status: 'voided',
+                void_reason: reason,
+                voided_at: new Date().toISOString(),
+                voided_by: user?.id ?? null,
+                voided_by_name: profileFullName ?? null,
+                returned_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', custodyMutation.row.id);
+            if (error) {
+              console.error('[delegates] void custody failed', error);
+              setToast({
+                kind: 'error',
+                message:
+                  error.code === '42501'
+                    ? 'لا تملك صلاحية إلغاء الأمانة. تواصل مع المدير.'
+                    : `تعذر إلغاء الأمانة: ${error.message}`,
+              });
+              return;
+            }
+            setCustodyMutation(null);
+            setReloadTick((n) => n + 1);
+            setToast({ kind: 'success', message: 'تم إلغاء الأمانة.' });
+          }}
+        />
+      )}
+
       {/* Phase 23A-Fix2 — toast. Auto-dismisses after 4s; manual
           close button kept for keyboard accessibility. */}
       {toast && (
@@ -1636,6 +1891,16 @@ interface DrawerProps {
   onChangeCustodyStatus?: (row: CustodyRow, next: 'returned' | 'settled' | 'lost') => void;
   // Phase 23D — CSV export gate (admin-only, financial data).
   canExportStatement?: boolean;
+  // Phase 23E — edit / void hooks per table. Passed through to the
+  // matching tab. The drawer itself doesn't open the modals; it
+  // only forwards the request up to the page where the modal state
+  // lives. Hidden when the corresponding `canManage*` is false.
+  onEditSettlement?: (row: SettlementRow) => void;
+  onVoidSettlement?: (row: SettlementRow) => void;
+  onEditExpense?: (row: ExpenseRow) => void;
+  onVoidExpense?: (row: ExpenseRow) => void;
+  onEditCustody?: (row: CustodyRow) => void;
+  onVoidCustody?: (row: CustodyRow) => void;
 }
 
 function DelegateDrawer({
@@ -1652,6 +1917,12 @@ function DelegateDrawer({
   onAddExpense,
   onChangeCustodyStatus,
   canExportStatement = false,
+  onEditSettlement,
+  onVoidSettlement,
+  onEditExpense,
+  onVoidExpense,
+  onEditCustody,
+  onVoidCustody,
 }: DrawerProps) {
   const a = aggregate;
 
@@ -1773,6 +2044,9 @@ function DelegateDrawer({
               a={a}
               canRegister={canRegisterSettlement}
               onRegister={onRegisterSettlement}
+              canManage={canRegisterSettlement}
+              onEdit={onEditSettlement}
+              onVoid={onVoidSettlement}
             />
           )}
           {activeTab === 'custody' && (
@@ -1781,10 +2055,18 @@ function DelegateDrawer({
               canManage={canManageCustody}
               onAdd={onAddCustody}
               onChangeStatus={onChangeCustodyStatus}
+              onEdit={onEditCustody}
+              onVoid={onVoidCustody}
             />
           )}
           {activeTab === 'expenses' && (
-            <ExpensesTab a={a} canManage={canManageExpenses} onAdd={onAddExpense} />
+            <ExpensesTab
+              a={a}
+              canManage={canManageExpenses}
+              onAdd={onAddExpense}
+              onEdit={onEditExpense}
+              onVoid={onVoidExpense}
+            />
           )}
           {activeTab === 'statement' && (
             <AccountStatementTab a={a} canExport={canExportStatement} />
@@ -3049,9 +3331,20 @@ interface SettlementsTabProps {
   a: DelegateAggregate;
   canRegister?: boolean;
   onRegister?: () => void;
+  // Phase 23E — admin-only edit / void launchers per row.
+  canManage?: boolean;
+  onEdit?: (row: SettlementRow) => void;
+  onVoid?: (row: SettlementRow) => void;
 }
 
-function SettlementsTab({ a, canRegister = false, onRegister }: SettlementsTabProps) {
+function SettlementsTab({
+  a,
+  canRegister = false,
+  onRegister,
+  canManage = false,
+  onEdit,
+  onVoid,
+}: SettlementsTabProps) {
   const remaining = a.remainingDue;
   const remainingLabel =
     remaining < 0 ? `${fmtMoney(Math.abs(remaining))} (رصيد زائد للمندوب)` : fmtMoney(remaining);
@@ -3109,10 +3402,18 @@ function SettlementsTab({ a, canRegister = false, onRegister }: SettlementsTabPr
         </p>
       ) : (
         <div className="overflow-x-auto scrollbar-thin">
-          <table className="w-full min-w-[640px] text-sm">
+          <table className="w-full min-w-[760px] text-sm">
             <thead>
               <tr>
-                {['التاريخ', 'المبلغ', 'الطريقة', 'استلم بواسطة', 'ملاحظة'].map((h) => (
+                {[
+                  'التاريخ',
+                  'المبلغ',
+                  'الطريقة',
+                  'استلم بواسطة',
+                  'الحالة',
+                  'ملاحظة',
+                  ...(canManage ? ['إجراء'] : []),
+                ].map((h) => (
                   <th key={h} className="table-header text-right">
                     {h}
                   </th>
@@ -3120,19 +3421,80 @@ function SettlementsTab({ a, canRegister = false, onRegister }: SettlementsTabPr
               </tr>
             </thead>
             <tbody className="divide-y divide-[hsl(var(--border))]">
-              {a.settlements.map((s) => (
-                <tr key={s.id} className="hover:bg-[hsl(var(--muted))]/30">
-                  <td className="table-cell text-xs">{formatDateAr(s.settled_at)}</td>
-                  <td className="table-cell font-mono text-xs font-bold text-emerald-700">
-                    {fmtMoney(Number(s.amount))}
-                  </td>
-                  <td className="table-cell text-xs">{settlementMethodLabel(s.method)}</td>
-                  <td className="table-cell text-xs">{s.received_by_name || '—'}</td>
-                  <td className="table-cell text-xs text-[hsl(var(--muted-foreground))]">
-                    {s.note || '—'}
-                  </td>
-                </tr>
-              ))}
+              {a.settlements.map((s) => {
+                // Phase 23E — voided rows render muted with a "ملغي"
+                // badge and the reason inline. Strikethrough on the
+                // amount makes the zero-impact obvious at a glance.
+                const voided = isSettlementVoided(s);
+                return (
+                  <tr
+                    key={s.id}
+                    className={`hover:bg-[hsl(var(--muted))]/30 ${voided ? 'opacity-60' : ''}`}
+                  >
+                    <td className="table-cell text-xs">{formatDateAr(s.settled_at)}</td>
+                    <td
+                      className={`table-cell font-mono text-xs font-bold ${
+                        voided
+                          ? 'text-[hsl(var(--muted-foreground))] line-through'
+                          : 'text-emerald-700'
+                      }`}
+                    >
+                      {fmtMoney(Number(s.amount))}
+                    </td>
+                    <td className="table-cell text-xs">{settlementMethodLabel(s.method)}</td>
+                    <td className="table-cell text-xs">{s.received_by_name || '—'}</td>
+                    <td className="table-cell">
+                      {voided ? (
+                        <span className="inline-block text-[10px] font-semibold px-2 py-0.5 rounded-full border bg-red-50 text-red-700 border-red-200">
+                          ملغي
+                        </span>
+                      ) : (
+                        <span className="inline-block text-[10px] font-semibold px-2 py-0.5 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200">
+                          فعّال
+                        </span>
+                      )}
+                    </td>
+                    <td className="table-cell text-xs text-[hsl(var(--muted-foreground))]">
+                      {voided && s.void_reason ? (
+                        <span>
+                          {s.note ? `${s.note} — ` : ''}
+                          <span className="text-red-700">سبب الإلغاء: {s.void_reason}</span>
+                        </span>
+                      ) : (
+                        s.note || '—'
+                      )}
+                    </td>
+                    {canManage && (
+                      <td className="table-cell">
+                        {voided ? (
+                          <span className="text-[hsl(var(--muted-foreground))] text-xs">—</span>
+                        ) : (
+                          <div className="flex flex-wrap items-center gap-2">
+                            {onEdit && (
+                              <button
+                                type="button"
+                                onClick={() => onEdit(s)}
+                                className="inline-flex items-center gap-1 text-[11px] font-semibold text-[hsl(var(--primary))] hover:underline"
+                              >
+                                <Pencil size={11} /> تعديل
+                              </button>
+                            )}
+                            {onVoid && (
+                              <button
+                                type="button"
+                                onClick={() => onVoid(s)}
+                                className="inline-flex items-center gap-1 text-[11px] font-semibold text-red-700 hover:underline"
+                              >
+                                <X size={11} /> إلغاء
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -3429,9 +3791,19 @@ interface CustodyTabProps {
   canManage?: boolean;
   onAdd?: () => void;
   onChangeStatus?: (row: CustodyRow, next: 'returned' | 'settled' | 'lost') => void;
+  // Phase 23E — admin-only edit / void launchers per row.
+  onEdit?: (row: CustodyRow) => void;
+  onVoid?: (row: CustodyRow) => void;
 }
 
-function CustodyTab({ a, canManage = false, onAdd, onChangeStatus }: CustodyTabProps) {
+function CustodyTab({
+  a,
+  canManage = false,
+  onAdd,
+  onChangeStatus,
+  onEdit,
+  onVoid,
+}: CustodyTabProps) {
   // Pre-bucket the lifecycle counts for the header summary so the
   // render loop below can stay dumb.
   const buckets = { with_delegate: 0, returned: 0, settled: 0, lost: 0 };
@@ -3522,18 +3894,32 @@ function CustodyTab({ a, canManage = false, onAdd, onChangeStatus }: CustodyTabP
             <tbody className="divide-y divide-[hsl(var(--border))]">
               {a.custody.map((c) => {
                 const isActive = c.status === 'with_delegate';
+                const voided = isCustodyVoided(c);
                 const tone =
                   CUSTODY_STATUS_TONE[c.status as CustodyStatus] ||
-                  'bg-[hsl(var(--muted))]/40 text-[hsl(var(--muted-foreground))] border-[hsl(var(--border))]';
+                  // Phase 23E — `voided` falls outside the existing
+                  // CUSTODY_STATUS_TONE map (which knows about the
+                  // 4 original states). Use a red pill so the
+                  // dispatcher can spot voided rows immediately.
+                  (c.status === 'voided'
+                    ? 'bg-red-50 text-red-700 border-red-200'
+                    : 'bg-[hsl(var(--muted))]/40 text-[hsl(var(--muted-foreground))] border-[hsl(var(--border))]');
                 return (
-                  <tr key={c.id} className="hover:bg-[hsl(var(--muted))]/30">
+                  <tr
+                    key={c.id}
+                    className={`hover:bg-[hsl(var(--muted))]/30 ${voided ? 'opacity-60' : ''}`}
+                  >
                     <td className="table-cell text-xs">{formatDateAr(c.handed_at)}</td>
                     <td className="table-cell text-xs">{custodyTypeLabel(c.custody_type)}</td>
                     <td className="table-cell text-xs">{c.description || '—'}</td>
                     <td className="table-cell font-mono text-xs">
                       {c.quantity != null ? Number(c.quantity).toLocaleString('en-US') : '—'}
                     </td>
-                    <td className="table-cell font-mono text-xs">
+                    <td
+                      className={`table-cell font-mono text-xs ${
+                        voided ? 'line-through text-[hsl(var(--muted-foreground))]' : ''
+                      }`}
+                    >
                       {Number(c.estimated_value ?? 0) > 0
                         ? fmtMoney(Number(c.estimated_value))
                         : '—'}
@@ -3542,43 +3928,74 @@ function CustodyTab({ a, canManage = false, onAdd, onChangeStatus }: CustodyTabP
                       <span
                         className={`inline-block text-[10px] font-semibold px-2 py-0.5 rounded-full border ${tone}`}
                       >
-                        {custodyStatusLabel(c.status)}
+                        {voided ? 'ملغي' : custodyStatusLabel(c.status)}
                       </span>
                     </td>
                     <td className="table-cell text-xs text-[hsl(var(--muted-foreground))]">
-                      {c.note || '—'}
+                      {voided && c.void_reason ? (
+                        <span>
+                          {c.note ? `${c.note} — ` : ''}
+                          <span className="text-red-700">سبب الإلغاء: {c.void_reason}</span>
+                        </span>
+                      ) : (
+                        c.note || '—'
+                      )}
                     </td>
                     {canManage && (
                       <td className="table-cell">
-                        {/* Active row → three terminal-state actions.
-                            Closed rows render a dash so the column
-                            stays aligned. */}
-                        {isActive && onChangeStatus ? (
-                          <div className="flex flex-wrap items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => onChangeStatus(c, 'returned')}
-                              className="text-[11px] font-semibold text-emerald-700 hover:underline"
-                            >
-                              استلام
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => onChangeStatus(c, 'settled')}
-                              className="text-[11px] font-semibold text-blue-700 hover:underline"
-                            >
-                              تسوية
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => onChangeStatus(c, 'lost')}
-                              className="text-[11px] font-semibold text-red-700 hover:underline"
-                            >
-                              مفقود
-                            </button>
-                          </div>
-                        ) : (
+                        {/* Phase 23E — voided rows: no actions.
+                            Active rows: status-change + edit + void.
+                            Closed (returned/settled/lost): edit +
+                            void only (status-change isn't reversible
+                            from this panel). */}
+                        {voided ? (
                           <span className="text-[hsl(var(--muted-foreground))] text-xs">—</span>
+                        ) : (
+                          <div className="flex flex-wrap items-center gap-2">
+                            {isActive && onChangeStatus && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => onChangeStatus(c, 'returned')}
+                                  className="text-[11px] font-semibold text-emerald-700 hover:underline"
+                                >
+                                  استلام
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => onChangeStatus(c, 'settled')}
+                                  className="text-[11px] font-semibold text-blue-700 hover:underline"
+                                >
+                                  تسوية
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => onChangeStatus(c, 'lost')}
+                                  className="text-[11px] font-semibold text-red-700 hover:underline"
+                                >
+                                  مفقود
+                                </button>
+                              </>
+                            )}
+                            {onEdit && (
+                              <button
+                                type="button"
+                                onClick={() => onEdit(c)}
+                                className="inline-flex items-center gap-1 text-[11px] font-semibold text-[hsl(var(--primary))] hover:underline"
+                              >
+                                <Pencil size={11} /> تعديل
+                              </button>
+                            )}
+                            {onVoid && (
+                              <button
+                                type="button"
+                                onClick={() => onVoid(c)}
+                                className="inline-flex items-center gap-1 text-[11px] font-semibold text-red-700 hover:underline"
+                              >
+                                <X size={11} /> إلغاء
+                              </button>
+                            )}
+                          </div>
                         )}
                       </td>
                     )}
@@ -3602,9 +4019,12 @@ interface ExpensesTabProps {
   a: DelegateAggregate;
   canManage?: boolean;
   onAdd?: () => void;
+  // Phase 23E — admin-only edit / void launchers per row.
+  onEdit?: (row: ExpenseRow) => void;
+  onVoid?: (row: ExpenseRow) => void;
 }
 
-function ExpensesTab({ a, canManage = false, onAdd }: ExpensesTabProps) {
+function ExpensesTab({ a, canManage = false, onAdd, onEdit, onVoid }: ExpensesTabProps) {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -3645,10 +4065,18 @@ function ExpensesTab({ a, canManage = false, onAdd }: ExpensesTabProps) {
         </p>
       ) : (
         <div className="overflow-x-auto scrollbar-thin">
-          <table className="w-full min-w-[720px] text-sm">
+          <table className="w-full min-w-[820px] text-sm">
             <thead>
               <tr>
-                {['التاريخ', 'النوع', 'الطلب', 'المبلغ', 'الحالة', 'ملاحظة'].map((h) => (
+                {[
+                  'التاريخ',
+                  'النوع',
+                  'الطلب',
+                  'المبلغ',
+                  'الحالة',
+                  'ملاحظة',
+                  ...(canManage ? ['إجراء'] : []),
+                ].map((h) => (
                   <th key={h} className="table-header text-right">
                     {h}
                   </th>
@@ -3657,11 +4085,20 @@ function ExpensesTab({ a, canManage = false, onAdd }: ExpensesTabProps) {
             </thead>
             <tbody className="divide-y divide-[hsl(var(--border))]">
               {a.expenses.map((e) => {
+                const voided = isExpenseVoided(e);
                 const tone =
                   EXPENSE_STATUS_TONE[e.status as keyof typeof EXPENSE_STATUS_TONE] ||
-                  'bg-[hsl(var(--muted))]/40 text-[hsl(var(--muted-foreground))] border-[hsl(var(--border))]';
+                  // Phase 23E — `voided` falls outside the existing
+                  // EXPENSE_STATUS_TONE map (which knows about
+                  // approved/pending/rejected). Use red.
+                  (e.status === 'voided'
+                    ? 'bg-red-50 text-red-700 border-red-200'
+                    : 'bg-[hsl(var(--muted))]/40 text-[hsl(var(--muted-foreground))] border-[hsl(var(--border))]');
                 return (
-                  <tr key={e.id} className="hover:bg-[hsl(var(--muted))]/30">
+                  <tr
+                    key={e.id}
+                    className={`hover:bg-[hsl(var(--muted))]/30 ${voided ? 'opacity-60' : ''}`}
+                  >
                     <td className="table-cell text-xs">{formatDateAr(e.expense_at)}</td>
                     <td className="table-cell text-xs">{expenseTypeLabel(e.expense_type)}</td>
                     <td className="table-cell font-mono text-xs">
@@ -3671,19 +4108,60 @@ function ExpensesTab({ a, canManage = false, onAdd }: ExpensesTabProps) {
                         <span className="text-[hsl(var(--muted-foreground))]">—</span>
                       )}
                     </td>
-                    <td className="table-cell font-mono text-xs font-bold text-orange-700">
+                    <td
+                      className={`table-cell font-mono text-xs font-bold ${
+                        voided
+                          ? 'text-[hsl(var(--muted-foreground))] line-through'
+                          : 'text-orange-700'
+                      }`}
+                    >
                       {fmtMoney(Number(e.amount))}
                     </td>
                     <td className="table-cell">
                       <span
                         className={`inline-block text-[10px] font-semibold px-2 py-0.5 rounded-full border ${tone}`}
                       >
-                        {expenseStatusLabel(e.status)}
+                        {voided ? 'ملغي' : expenseStatusLabel(e.status)}
                       </span>
                     </td>
                     <td className="table-cell text-xs text-[hsl(var(--muted-foreground))]">
-                      {e.note || '—'}
+                      {voided && e.void_reason ? (
+                        <span>
+                          {e.note ? `${e.note} — ` : ''}
+                          <span className="text-red-700">سبب الإلغاء: {e.void_reason}</span>
+                        </span>
+                      ) : (
+                        e.note || '—'
+                      )}
                     </td>
+                    {canManage && (
+                      <td className="table-cell">
+                        {voided ? (
+                          <span className="text-[hsl(var(--muted-foreground))] text-xs">—</span>
+                        ) : (
+                          <div className="flex flex-wrap items-center gap-2">
+                            {onEdit && (
+                              <button
+                                type="button"
+                                onClick={() => onEdit(e)}
+                                className="inline-flex items-center gap-1 text-[11px] font-semibold text-[hsl(var(--primary))] hover:underline"
+                              >
+                                <Pencil size={11} /> تعديل
+                              </button>
+                            )}
+                            {onVoid && (
+                              <button
+                                type="button"
+                                onClick={() => onVoid(e)}
+                                className="inline-flex items-center gap-1 text-[11px] font-semibold text-red-700 hover:underline"
+                              >
+                                <X size={11} /> إلغاء
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 );
               })}
@@ -4363,8 +4841,10 @@ function AccountStatementTab({ a, canExport = false }: AccountStatementTabProps)
             .limit(2000),
           supabase
             .from('turath_masr_delegate_settlements')
+            // Phase 23E — include void metadata so the extended
+            // statement fetch matches the page-level fetch.
             .select(
-              'id, delegate_profile_id, delegate_name, amount, method, received_by, received_by_name, note, settled_at, created_at'
+              'id, delegate_profile_id, delegate_name, amount, method, received_by, received_by_name, note, settled_at, created_at, status, void_reason, voided_at, voided_by, voided_by_name, updated_at'
             )
             .eq('delegate_profile_id', a.delegate.profileId!)
             .gte('settled_at', fromTs)
@@ -4374,7 +4854,7 @@ function AccountStatementTab({ a, canExport = false }: AccountStatementTabProps)
           supabase
             .from('turath_masr_delegate_expenses')
             .select(
-              'id, delegate_profile_id, delegate_name, order_id, expense_type, amount, status, approved_by, approved_by_name, note, expense_at, created_at'
+              'id, delegate_profile_id, delegate_name, order_id, expense_type, amount, status, approved_by, approved_by_name, note, expense_at, created_at, void_reason, voided_at, voided_by, voided_by_name, updated_at'
             )
             .eq('delegate_profile_id', a.delegate.profileId!)
             .gte('expense_at', fromTs)
@@ -4386,7 +4866,7 @@ function AccountStatementTab({ a, canExport = false }: AccountStatementTabProps)
           supabase
             .from('turath_masr_delegate_custody')
             .select(
-              'id, delegate_profile_id, delegate_name, custody_type, description, quantity, estimated_value, status, handed_by, handed_by_name, received_by, received_by_name, handed_at, returned_at, note, created_at'
+              'id, delegate_profile_id, delegate_name, custody_type, description, quantity, estimated_value, status, handed_by, handed_by_name, received_by, received_by_name, handed_at, returned_at, note, created_at, void_reason, voided_at, voided_by, voided_by_name, updated_at'
             )
             .eq('delegate_profile_id', a.delegate.profileId!)
             .order('handed_at', { ascending: false })
@@ -4463,6 +4943,10 @@ function AccountStatementTab({ a, canExport = false }: AccountStatementTabProps)
         methodLabel: settlementMethodLabel(s.method),
         note: s.note,
         settled_at: s.settled_at,
+        // Phase 23E — pass status + void_reason so the helper can
+        // emit `settlement_voided` rows with the reason in the note.
+        status: s.status ?? 'active',
+        void_reason: s.void_reason ?? null,
       })),
     [sourceSlices.settlements]
   );
@@ -4477,6 +4961,8 @@ function AccountStatementTab({ a, canExport = false }: AccountStatementTabProps)
         order_id: e.order_id,
         note: e.note,
         expense_at: e.expense_at,
+        // Phase 23E — same shape as settlements above.
+        void_reason: e.void_reason ?? null,
       })),
     [sourceSlices.expenses]
   );
@@ -4493,6 +4979,9 @@ function AccountStatementTab({ a, canExport = false }: AccountStatementTabProps)
         handed_at: c.handed_at,
         returned_at: c.returned_at,
         note: c.note,
+        // Phase 23E — voided custody surfaces in the timeline with
+        // the reason in the note column.
+        void_reason: c.void_reason ?? null,
       })),
     [sourceSlices.custody]
   );
@@ -4761,6 +5250,673 @@ function AccountStatementTab({ a, canExport = false }: AccountStatementTabProps)
             </table>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Phase 23E — Shared "void with reason" dialog ─────────────────────────
+//
+// Reused by all three movement types (settlement / expense / custody).
+// The mutation logic lives in the parent — the dialog only collects
+// the reason and surfaces an optional extra warning (e.g. when a
+// dispatcher tries to void a custody row that already has a terminal
+// status). Reason is required (>= 3 chars) and capped at 500.
+interface VoidMovementDialogProps {
+  kind: 'settlement' | 'expense' | 'custody';
+  rowSummary: string;
+  extraWarning?: string;
+  onCancel: () => void;
+  onConfirm: (reason: string) => Promise<void> | void;
+}
+
+function VoidMovementDialog({
+  kind,
+  rowSummary,
+  extraWarning,
+  onCancel,
+  onConfirm,
+}: VoidMovementDialogProps) {
+  const [reason, setReason] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  const headlineByKind: Record<typeof kind, string> = {
+    settlement: 'إلغاء توريد',
+    expense: 'إلغاء مصروف',
+    custody: 'إلغاء أمانة',
+  };
+  const descriptionByKind: Record<typeof kind, string> = {
+    settlement:
+      'سيتم إلغاء التوريد. لن يدخل في حساب التوريدات المالية، ويظهر في كشف الحساب كحركة ملغاة. لا يتم حذفه فعليًا.',
+    expense:
+      'سيتم إلغاء المصروف. لن يدخل في حساب المصاريف المعتمدة، ويظهر في كشف الحساب كحركة ملغاة. لا يتم حذفه فعليًا.',
+    custody:
+      'سيتم إلغاء الأمانة. لن تدخل في الأمانات المفتوحة، وتظهر في كشف الحساب كحركة ملغاة. لا يتم حذفها فعليًا.',
+  };
+
+  const handleConfirm = async () => {
+    setError('');
+    const trimmed = reason.trim();
+    if (trimmed.length < 3) {
+      setError('سبب الإلغاء مطلوب (3 حروف على الأقل).');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await onConfirm(trimmed);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" dir="rtl">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onCancel} />
+      <div className="relative bg-white rounded-3xl shadow-modal w-full max-w-md flex flex-col fade-in">
+        <div className="p-5 border-b border-[hsl(var(--border))]">
+          <h3 className="text-base font-bold text-[hsl(var(--foreground))]">
+            {headlineByKind[kind]}
+          </h3>
+          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">{rowSummary}</p>
+        </div>
+        <div className="p-5 space-y-3">
+          <p className="text-sm text-[hsl(var(--foreground))]">{descriptionByKind[kind]}</p>
+          {extraWarning && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800 flex items-start gap-2">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+              <span>{extraWarning}</span>
+            </div>
+          )}
+          <div>
+            <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+              سبب الإلغاء *
+            </label>
+            <textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value.slice(0, 500))}
+              placeholder="مثال: تم تسجيل التوريد بمبلغ خطأ. سيتم إعادة التسجيل بالمبلغ الصحيح."
+              rows={3}
+              className="input-field w-full resize-none"
+              autoFocus
+            />
+            <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1">
+              {reason.length} / 500 حرف
+            </p>
+          </div>
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-700 flex items-start gap-2">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+        </div>
+        <div className="flex items-center justify-between gap-3 p-4 border-t border-[hsl(var(--border))]">
+          <button type="button" className="btn-secondary" onClick={onCancel} disabled={submitting}>
+            رجوع
+          </button>
+          <button
+            type="button"
+            onClick={handleConfirm}
+            disabled={submitting}
+            className="px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 text-white bg-red-600 hover:bg-red-700 disabled:opacity-50"
+          >
+            <X size={14} />
+            {submitting ? 'جارٍ الإلغاء...' : 'تأكيد الإلغاء'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Phase 23E — Edit Settlement modal ────────────────────────────────────
+//
+// Admin-only modal that updates ONLY the user-facing fields on an
+// existing settlement row. Identity columns (`delegate_profile_id`,
+// `delegate_name`, `received_by`, `received_by_name`, `created_at`)
+// are deliberately untouched — the audit trail stays honest.
+interface EditSettlementModalProps {
+  row: SettlementRow;
+  onClose: () => void;
+  onSaved: (message: string) => void;
+  onError: (message: string) => void;
+}
+
+function EditSettlementModal({ row, onClose, onSaved, onError }: EditSettlementModalProps) {
+  const initialSettledAt = (() => {
+    const d = new Date(row.settled_at);
+    if (Number.isNaN(d.getTime())) return '';
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  })();
+
+  const [amount, setAmount] = useState(String(Number(row.amount ?? 0)));
+  const [method, setMethod] = useState<SettlementMethod>(row.method as SettlementMethod);
+  const [settledAt, setSettledAt] = useState(initialSettledAt);
+  const [note, setNote] = useState(row.note ?? '');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  const parsedAmount = Number(amount);
+
+  const validate = (): string => {
+    if (!amount.trim()) return 'المبلغ مطلوب';
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0)
+      return 'المبلغ يجب أن يكون أكبر من صفر';
+    if (!method) return 'يجب اختيار طريقة التوريد';
+    if (settledAt) {
+      const ts = new Date(settledAt).getTime();
+      if (Number.isNaN(ts)) return 'تاريخ التوريد غير صالح';
+      if (ts - Date.now() > 60_000) return 'لا يمكن أن يكون التاريخ في المستقبل';
+    }
+    return '';
+  };
+
+  const handleSave = async () => {
+    setError('');
+    const err = validate();
+    if (err) {
+      setError(err);
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const supabase = createClient();
+      const { error: updateError } = await supabase
+        .from('turath_masr_delegate_settlements')
+        .update({
+          amount: parsedAmount,
+          method,
+          settled_at: new Date(settledAt).toISOString(),
+          note: note.trim() || null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', row.id);
+      if (updateError) {
+        console.error('[delegates] edit settlement failed', updateError);
+        const msg =
+          updateError.code === '42501'
+            ? 'لا تملك صلاحية تعديل التوريدات. تواصل مع المدير.'
+            : `تعذر حفظ التعديلات: ${updateError.message}`;
+        setError(msg);
+        onError(msg);
+        setSubmitting(false);
+        return;
+      }
+      onSaved('تم تعديل التوريد.');
+    } catch (e) {
+      const msg = `حدث خطأ غير متوقع: ${e instanceof Error ? e.message : String(e)}`;
+      console.error('[delegates] edit settlement unexpected error', e);
+      setError(msg);
+      onError(msg);
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" dir="rtl">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-3xl shadow-modal w-full max-w-lg max-h-[90vh] flex flex-col fade-in">
+        <div className="flex-shrink-0 flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
+          <div>
+            <h3 className="text-base font-bold text-[hsl(var(--foreground))]">تعديل التوريد</h3>
+            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
+              {row.delegate_name || '—'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))]"
+            aria-label="إغلاق"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-5 space-y-4 scrollbar-thin">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <Field
+              label="المبلغ * (ج.م)"
+              value={amount}
+              onChange={(v) => {
+                const cleaned = v.replace(/[^\d.]/g, '');
+                const parts = cleaned.split('.');
+                const normalized =
+                  parts.length > 1 ? `${parts[0]}.${parts.slice(1).join('').slice(0, 2)}` : cleaned;
+                setAmount(normalized);
+              }}
+              dir="ltr"
+            />
+            <div>
+              <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+                طريقة التوريد *
+              </label>
+              <select
+                className="input-field w-full"
+                value={method}
+                onChange={(e) => setMethod(e.target.value as SettlementMethod)}
+              >
+                {SETTLEMENT_METHOD_TOKENS.map((t) => (
+                  <option key={t} value={t}>
+                    {SETTLEMENT_METHOD_LABELS_AR[t]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Field
+              label="تاريخ التوريد"
+              type="datetime-local"
+              value={settledAt}
+              onChange={setSettledAt}
+              dir="ltr"
+            />
+          </div>
+          <div>
+            <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+              ملاحظة
+            </label>
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value.slice(0, 500))}
+              rows={3}
+              className="input-field w-full resize-none"
+            />
+          </div>
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-700 flex items-start gap-2">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+        </div>
+        <div className="flex-shrink-0 flex items-center justify-between gap-3 p-4 border-t border-[hsl(var(--border))] bg-white rounded-b-3xl">
+          <button type="button" className="btn-secondary" onClick={onClose} disabled={submitting}>
+            إلغاء
+          </button>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={submitting}
+            className="px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50"
+          >
+            <CheckCircle size={14} />
+            {submitting ? 'جارٍ الحفظ...' : 'حفظ التعديلات'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Phase 23E — Edit Expense modal ───────────────────────────────────────
+interface EditExpenseModalProps {
+  row: ExpenseRow;
+  onClose: () => void;
+  onSaved: (message: string) => void;
+  onError: (message: string) => void;
+}
+
+function EditExpenseModal({ row, onClose, onSaved, onError }: EditExpenseModalProps) {
+  const initialAt = (() => {
+    const d = new Date(row.expense_at);
+    if (Number.isNaN(d.getTime())) return '';
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  })();
+
+  const [expenseType, setExpenseType] = useState<ExpenseType>(row.expense_type as ExpenseType);
+  const [amount, setAmount] = useState(String(Number(row.amount ?? 0)));
+  const [orderId, setOrderId] = useState(row.order_id ?? '');
+  const [expenseAt, setExpenseAt] = useState(initialAt);
+  const [note, setNote] = useState(row.note ?? '');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  const parsedAmount = Number(amount);
+
+  const validate = (): string => {
+    if (!expenseType) return 'نوع المصروف مطلوب';
+    if (!amount.trim()) return 'المبلغ مطلوب';
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0)
+      return 'المبلغ يجب أن يكون أكبر من صفر';
+    if (expenseAt) {
+      const ts = new Date(expenseAt).getTime();
+      if (Number.isNaN(ts)) return 'تاريخ المصروف غير صالح';
+      if (ts - Date.now() > 60_000) return 'لا يمكن أن يكون التاريخ في المستقبل';
+    }
+    return '';
+  };
+
+  const handleSave = async () => {
+    setError('');
+    const err = validate();
+    if (err) {
+      setError(err);
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const supabase = createClient();
+      const { error: updateError } = await supabase
+        .from('turath_masr_delegate_expenses')
+        .update({
+          expense_type: expenseType,
+          amount: parsedAmount,
+          order_id: orderId.trim() || null,
+          expense_at: new Date(expenseAt).toISOString(),
+          note: note.trim() || null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', row.id);
+      if (updateError) {
+        console.error('[delegates] edit expense failed', updateError);
+        const msg =
+          updateError.code === '42501'
+            ? 'لا تملك صلاحية تعديل المصاريف. تواصل مع المدير.'
+            : `تعذر حفظ التعديلات: ${updateError.message}`;
+        setError(msg);
+        onError(msg);
+        setSubmitting(false);
+        return;
+      }
+      onSaved('تم تعديل المصروف.');
+    } catch (e) {
+      const msg = `حدث خطأ غير متوقع: ${e instanceof Error ? e.message : String(e)}`;
+      console.error('[delegates] edit expense unexpected error', e);
+      setError(msg);
+      onError(msg);
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" dir="rtl">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-3xl shadow-modal w-full max-w-lg max-h-[90vh] flex flex-col fade-in">
+        <div className="flex-shrink-0 flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
+          <div>
+            <h3 className="text-base font-bold text-[hsl(var(--foreground))]">تعديل المصروف</h3>
+            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
+              {row.delegate_name || '—'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))]"
+            aria-label="إغلاق"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-5 space-y-4 scrollbar-thin">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+                نوع المصروف *
+              </label>
+              <select
+                className="input-field w-full"
+                value={expenseType}
+                onChange={(e) => setExpenseType(e.target.value as ExpenseType)}
+              >
+                {EXPENSE_TYPE_TOKENS.map((t) => (
+                  <option key={t} value={t}>
+                    {EXPENSE_TYPE_LABELS_AR[t]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Field
+              label="المبلغ * (ج.م)"
+              value={amount}
+              onChange={(v) => {
+                const cleaned = v.replace(/[^\d.]/g, '');
+                const parts = cleaned.split('.');
+                const normalized =
+                  parts.length > 1 ? `${parts[0]}.${parts.slice(1).join('').slice(0, 2)}` : cleaned;
+                setAmount(normalized);
+              }}
+              dir="ltr"
+            />
+            <Field
+              label="رقم الطلب (اختياري)"
+              value={orderId}
+              onChange={(v) => setOrderId(v.slice(0, 64))}
+              dir="ltr"
+            />
+            <Field
+              label="تاريخ المصروف"
+              type="datetime-local"
+              value={expenseAt}
+              onChange={setExpenseAt}
+              dir="ltr"
+            />
+          </div>
+          <div>
+            <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+              ملاحظة
+            </label>
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value.slice(0, 500))}
+              rows={3}
+              className="input-field w-full resize-none"
+            />
+          </div>
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-700 flex items-start gap-2">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+        </div>
+        <div className="flex-shrink-0 flex items-center justify-between gap-3 p-4 border-t border-[hsl(var(--border))] bg-white rounded-b-3xl">
+          <button type="button" className="btn-secondary" onClick={onClose} disabled={submitting}>
+            إلغاء
+          </button>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={submitting}
+            className="px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50"
+          >
+            <CheckCircle size={14} />
+            {submitting ? 'جارٍ الحفظ...' : 'حفظ التعديلات'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Phase 23E — Edit Custody modal ───────────────────────────────────────
+interface EditCustodyModalProps {
+  row: CustodyRow;
+  onClose: () => void;
+  onSaved: (message: string) => void;
+  onError: (message: string) => void;
+}
+
+function EditCustodyModal({ row, onClose, onSaved, onError }: EditCustodyModalProps) {
+  const initialAt = (() => {
+    const d = new Date(row.handed_at);
+    if (Number.isNaN(d.getTime())) return '';
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  })();
+
+  const [custodyType, setCustodyType] = useState<CustodyType>(row.custody_type as CustodyType);
+  const [description, setDescription] = useState(row.description ?? '');
+  const [quantity, setQuantity] = useState(
+    row.quantity != null ? String(Number(row.quantity)) : '1'
+  );
+  const [estimatedValue, setEstimatedValue] = useState(
+    row.estimated_value != null ? String(Number(row.estimated_value)) : '0'
+  );
+  const [handedAt, setHandedAt] = useState(initialAt);
+  const [note, setNote] = useState(row.note ?? '');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  const parsedQty = Number(quantity);
+  const parsedValue = Number(estimatedValue);
+
+  const validate = (): string => {
+    if (!custodyType) return 'نوع الأمانة مطلوب';
+    if (!description.trim()) return 'الوصف مطلوب';
+    if (!Number.isFinite(parsedQty) || parsedQty <= 0) return 'الكمية يجب أن تكون أكبر من صفر';
+    if (!Number.isFinite(parsedValue) || parsedValue < 0)
+      return 'القيمة التقديرية لا يمكن أن تكون سالبة';
+    if (handedAt) {
+      const ts = new Date(handedAt).getTime();
+      if (Number.isNaN(ts)) return 'تاريخ التسليم غير صالح';
+      if (ts - Date.now() > 60_000) return 'لا يمكن أن يكون التاريخ في المستقبل';
+    }
+    return '';
+  };
+
+  const handleSave = async () => {
+    setError('');
+    const err = validate();
+    if (err) {
+      setError(err);
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const supabase = createClient();
+      const { error: updateError } = await supabase
+        .from('turath_masr_delegate_custody')
+        .update({
+          custody_type: custodyType,
+          description: description.trim(),
+          quantity: parsedQty,
+          estimated_value: parsedValue,
+          handed_at: new Date(handedAt).toISOString(),
+          note: note.trim() || null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', row.id);
+      if (updateError) {
+        console.error('[delegates] edit custody failed', updateError);
+        const msg =
+          updateError.code === '42501'
+            ? 'لا تملك صلاحية تعديل الأمانات. تواصل مع المدير.'
+            : `تعذر حفظ التعديلات: ${updateError.message}`;
+        setError(msg);
+        onError(msg);
+        setSubmitting(false);
+        return;
+      }
+      onSaved('تم تعديل الأمانة.');
+    } catch (e) {
+      const msg = `حدث خطأ غير متوقع: ${e instanceof Error ? e.message : String(e)}`;
+      console.error('[delegates] edit custody unexpected error', e);
+      setError(msg);
+      onError(msg);
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" dir="rtl">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-3xl shadow-modal w-full max-w-lg max-h-[90vh] flex flex-col fade-in">
+        <div className="flex-shrink-0 flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
+          <div>
+            <h3 className="text-base font-bold text-[hsl(var(--foreground))]">تعديل الأمانة</h3>
+            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
+              {row.delegate_name || '—'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))]"
+            aria-label="إغلاق"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-5 space-y-4 scrollbar-thin">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+                نوع الأمانة *
+              </label>
+              <select
+                className="input-field w-full"
+                value={custodyType}
+                onChange={(e) => setCustodyType(e.target.value as CustodyType)}
+              >
+                {CUSTODY_TYPE_TOKENS.map((t) => (
+                  <option key={t} value={t}>
+                    {CUSTODY_TYPE_LABELS_AR[t]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Field label="الوصف *" value={description} onChange={setDescription} />
+            <Field
+              label="الكمية"
+              value={quantity}
+              onChange={(v) => setQuantity(v.replace(/[^\d.]/g, '').slice(0, 10))}
+              dir="ltr"
+            />
+            <Field
+              label="القيمة التقديرية (ج.م)"
+              value={estimatedValue}
+              onChange={(v) => {
+                const cleaned = v.replace(/[^\d.]/g, '');
+                const parts = cleaned.split('.');
+                const normalized =
+                  parts.length > 1 ? `${parts[0]}.${parts.slice(1).join('').slice(0, 2)}` : cleaned;
+                setEstimatedValue(normalized);
+              }}
+              dir="ltr"
+            />
+            <Field
+              label="تاريخ التسليم"
+              type="datetime-local"
+              value={handedAt}
+              onChange={setHandedAt}
+              dir="ltr"
+            />
+          </div>
+          <div>
+            <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+              ملاحظة
+            </label>
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value.slice(0, 500))}
+              rows={3}
+              className="input-field w-full resize-none"
+            />
+          </div>
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-700 flex items-start gap-2">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+        </div>
+        <div className="flex-shrink-0 flex items-center justify-between gap-3 p-4 border-t border-[hsl(var(--border))] bg-white rounded-b-3xl">
+          <button type="button" className="btn-secondary" onClick={onClose} disabled={submitting}>
+            إلغاء
+          </button>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={submitting}
+            className="px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50"
+          >
+            <CheckCircle size={14} />
+            {submitting ? 'جارٍ الحفظ...' : 'حفظ التعديلات'}
+          </button>
+        </div>
       </div>
     </div>
   );

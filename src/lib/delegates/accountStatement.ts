@@ -24,15 +24,25 @@
  *  unified statement timeline. The first three drive the financial
  *  balance; the four `custody_*` kinds are informational only and
  *  never carry debit/credit amounts (the spec is explicit on this:
- *  "custody appears in a separate summary"). */
+ *  "custody appears in a separate summary").
+ *
+ *  Phase 23E — adds three `*_voided` kinds. They render in the
+ *  timeline + CSV with a "ملغي" badge and contribute zero to the
+ *  debit / credit columns so the financial impact is preserved
+ *  exactly as if the row never existed. The original reason
+ *  string surfaces in the `note` column so the dispatcher can see
+ *  why the row was killed. */
 export type StatementRowType =
   | 'collection'
   | 'settlement'
+  | 'settlement_voided'
   | 'expense'
+  | 'expense_voided'
   | 'custody_out'
   | 'custody_in'
   | 'custody_settled'
-  | 'custody_lost';
+  | 'custody_lost'
+  | 'custody_voided';
 
 export interface DelegateStatementRow {
   /** Stable id so React keys stay sane. Built from
@@ -185,6 +195,11 @@ export interface StatementSettlementInput {
   methodLabel: string;
   note: string | null;
   settled_at: string;
+  // Phase 23E — void metadata. `status` defaults to 'active' on
+  // the page side; void_reason is the dispatcher-supplied Arabic
+  // string surfaced in the timeline note column.
+  status?: string | null;
+  void_reason?: string | null;
 }
 export interface StatementExpenseInput {
   id: string;
@@ -195,6 +210,8 @@ export interface StatementExpenseInput {
   order_id: string | null;
   note: string | null;
   expense_at: string;
+  // Phase 23E — void metadata.
+  void_reason?: string | null;
 }
 export interface StatementCustodyInput {
   id: string;
@@ -207,6 +224,8 @@ export interface StatementCustodyInput {
   handed_at: string;
   returned_at: string | null;
   note: string | null;
+  // Phase 23E — void metadata.
+  void_reason?: string | null;
 }
 
 const DELIVERED_STATUS = 'delivered';
@@ -255,36 +274,51 @@ export function buildStatementRows(
     });
   }
 
-  // Settlements
+  // Settlements — Phase 23E splits live vs voided. Voided rows are
+  // emitted with `debit = credit = 0` so they appear in the
+  // timeline / CSV without distorting totals. The reason string is
+  // appended to the note column so it's visible at a glance.
   for (const s of inputs.settlements) {
     if (!isInRange(s.settled_at, fromIso, toIso)) continue;
+    const voided = s.status === 'voided';
     out.push({
       id: `settlement:${s.id}`,
       date: s.settled_at,
-      type: 'settlement',
-      label: 'توريد',
+      type: voided ? 'settlement_voided' : 'settlement',
+      label: voided ? 'توريد ملغي' : 'توريد',
       reference: s.id.slice(0, 8),
       description: `توريد مالي (${s.methodLabel || s.method})`,
       debit: 0,
-      credit: Number(s.amount ?? 0),
-      note: s.note ?? undefined,
+      credit: voided ? 0 : Number(s.amount ?? 0),
+      note: voided
+        ? [s.note, s.void_reason ? `سبب الإلغاء: ${s.void_reason}` : null]
+            .filter(Boolean)
+            .join(' — ') || undefined
+        : (s.note ?? undefined),
     });
   }
 
-  // Approved expenses
+  // Expenses — same split. We also include `voided` rows here so
+  // the audit trail is complete; rejected/pending rows continue to
+  // be skipped (they never had financial impact in the first place).
   for (const e of inputs.expenses) {
-    if (e.status !== APPROVED_EXPENSE_STATUS) continue;
+    if (e.status !== APPROVED_EXPENSE_STATUS && e.status !== 'voided') continue;
     if (!isInRange(e.expense_at, fromIso, toIso)) continue;
+    const voided = e.status === 'voided';
     out.push({
       id: `expense:${e.id}`,
       date: e.expense_at,
-      type: 'expense',
-      label: 'مصروف',
+      type: voided ? 'expense_voided' : 'expense',
+      label: voided ? 'مصروف ملغي' : 'مصروف',
       reference: e.order_id || e.id.slice(0, 8),
       description: `مصروف معتمد (${e.expenseTypeLabel || e.expense_type})`,
       debit: 0,
-      credit: Number(e.amount ?? 0),
-      note: e.note ?? undefined,
+      credit: voided ? 0 : Number(e.amount ?? 0),
+      note: voided
+        ? [e.note, e.void_reason ? `سبب الإلغاء: ${e.void_reason}` : null]
+            .filter(Boolean)
+            .join(' — ') || undefined
+        : (e.note ?? undefined),
     });
   }
 
@@ -292,6 +326,11 @@ export function buildStatementRows(
   // event AND a second row for each terminal transition that falls
   // in the window. This way a custody row that was opened in March
   // but settled in June shows up correctly in either range.
+  //
+  // Phase 23E — `voided` is a fifth terminal state that maps to its
+  // own row type (`custody_voided`) so the dispatcher can tell it
+  // apart from "returned" / "settled" / "lost". Same zero-impact
+  // contract as the other custody rows.
   for (const c of inputs.custody) {
     const valueText =
       Number(c.estimated_value ?? 0) > 0
@@ -318,7 +357,9 @@ export function buildStatementRows(
             ? { type: 'custody_settled' as const, label: 'تسوية أمانة', verb: 'تسوية' }
             : c.status === 'lost'
               ? { type: 'custody_lost' as const, label: 'أمانة مفقودة', verb: 'فقد' }
-              : null;
+              : c.status === 'voided'
+                ? { type: 'custody_voided' as const, label: 'أمانة ملغاة', verb: 'إلغاء' }
+                : null;
       if (terminalLabel) {
         out.push({
           id: `${terminalLabel.type}:${c.id}`,
@@ -329,7 +370,12 @@ export function buildStatementRows(
           description: `${terminalLabel.verb} أمانة (${c.custodyTypeLabel || c.custody_type}) — ${c.description}${valueText}`,
           debit: 0,
           credit: 0,
-          note: c.note ?? undefined,
+          note:
+            c.status === 'voided'
+              ? [c.note, c.void_reason ? `سبب الإلغاء: ${c.void_reason}` : null]
+                  .filter(Boolean)
+                  .join(' — ') || undefined
+              : (c.note ?? undefined),
         });
       }
     }
@@ -358,6 +404,8 @@ export function summariseStatement(
     else if (r.type === 'settlement') totalSettled += r.credit;
     else if (r.type === 'expense') totalApprovedExpenses += r.credit;
   }
+  // Phase 23E — `with_delegate` is the only "open" status. Voided
+  // / returned / settled / lost rows are all excluded.
   let activeCustodyValue = 0;
   let openCustodyCount = 0;
   for (const c of allCustody) {
