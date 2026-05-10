@@ -56,6 +56,11 @@ import {
   Archive,
   FileImage,
   FileWarning,
+  // Phase 23L — icon for the aggregate-reports launcher in the page
+  // header and inside the report's section titles.
+  BarChart3,
+  Search,
+  ArrowUpDown,
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import { createClient } from '@/lib/supabase/client';
@@ -160,6 +165,23 @@ import {
   type StatementExpenseInput,
   type StatementCustodyInput,
 } from '@/lib/delegates/accountStatement';
+// Phase 23L — pure helpers for the aggregate "تقارير المناديب" modal.
+import {
+  computeDelegatesReport,
+  sortAggregateRows,
+  aggregateReportToCsv,
+  aggregateCsvFilename,
+  type AggregateRow,
+  type AggregateSortField,
+  type DelegatesReport,
+  type ReportDelegateInput,
+  type ReportOrderInput,
+  type ReportSettlementInput,
+  type ReportExpenseInput,
+  type ReportCustodyInput,
+  type ReportRatingInput,
+  type SortDirection,
+} from '@/lib/delegates/aggregateReports';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 interface DelegateRow {
@@ -555,6 +577,8 @@ export default function DelegatesPage() {
   // delegate creation. Declared here so the loader useEffect below
   // can subscribe to `reloadTick` for refetches.
   const [wizardOpen, setWizardOpen] = useState(false);
+  // Phase 23L — controls the "تقارير المناديب" aggregate-report modal.
+  const [reportOpen, setReportOpen] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
   // Phase 23A-Fix2 — edit-delegate modal state. `editKey` is the
   // delegate.key whose row is currently being edited; `null` when
@@ -1290,19 +1314,32 @@ export default function DelegatesPage() {
               زمني.
             </p>
           </div>
-          {/* Phase 23F — only admins can add a delegate. The
-              shipping supervisor (r3) lands on the page with read-
-              only access and never sees this button. RLS would
-              also reject the underlying profiles INSERT. */}
-          {canManageDelegates && (
+          <div className="flex flex-wrap gap-2">
+            {/* Phase 23L — aggregate report launcher. Visible to anyone
+                with `view_delegates` (admin + shipping supervisor r3).
+                CSV export inside the modal is gated to admin only;
+                print is available to both. */}
             <button
               type="button"
-              onClick={() => setWizardOpen(true)}
-              className="flex items-center gap-2 px-4 py-2.5 bg-[hsl(var(--primary))] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
+              onClick={() => setReportOpen(true)}
+              className="flex items-center gap-2 px-4 py-2.5 bg-[hsl(var(--muted))]/60 hover:bg-[hsl(var(--muted))] text-[hsl(var(--foreground))] border border-[hsl(var(--border))] rounded-xl text-sm font-semibold transition-colors"
             >
-              <Plus size={16} /> إضافة مندوب جديد
+              <BarChart3 size={16} /> تقارير المناديب
             </button>
-          )}
+            {/* Phase 23F — only admins can add a delegate. The
+                shipping supervisor (r3) lands on the page with read-
+                only access and never sees this button. RLS would
+                also reject the underlying profiles INSERT. */}
+            {canManageDelegates && (
+              <button
+                type="button"
+                onClick={() => setWizardOpen(true)}
+                className="flex items-center gap-2 px-4 py-2.5 bg-[hsl(var(--primary))] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
+              >
+                <Plus size={16} /> إضافة مندوب جديد
+              </button>
+            )}
+          </div>
         </div>
 
         {errorMessage && (
@@ -1916,6 +1953,26 @@ export default function DelegatesPage() {
             setReloadTick((n) => n + 1);
             setToast({ kind: 'success', message: 'تم إنشاء المندوب بنجاح.' });
           }}
+        />
+      )}
+
+      {/* Phase 23L — fleet-wide aggregate report. Pure-presentation
+          modal: it reads the same in-memory slices the page already
+          loaded (orders / settlements / custody / expenses / ratings),
+          recomputes everything per-range via the pure helper, and
+          gates the CSV download on admin-only. Print is available to
+          admin AND shipping supervisor (r3). */}
+      {reportOpen && (
+        <DelegatesReportModal
+          delegates={profiles}
+          orders={orders}
+          settlements={settlements}
+          expenses={expenses}
+          custody={custody}
+          ratings={ratings}
+          canExportCsv={canExportDelegateStatement}
+          issuerName={profileFullName || user?.email || 'لا يوجد'}
+          onClose={() => setReportOpen(false)}
         />
       )}
 
@@ -7946,5 +8003,897 @@ function DocumentArchiveLine({ doc, canManage }: DocumentArchiveLineProps) {
         </span>
       )}
     </div>
+  );
+}
+
+// ─── Phase 23L — Delegates Aggregate Reports Modal ───────────────────────
+//
+// Fleet-wide report rendered as a full-screen modal off the page
+// header. Pure presentation: the heavy lifting (date filtering, per-
+// delegate accumulation, rankings, CSV serialisation) lives in
+// `src/lib/delegates/aggregateReports.ts` so a future server-side
+// endpoint can reuse it verbatim.
+//
+// Permission posture (matches the spec)
+//   • Open / view → admin AND shipping supervisor (r3 read-only)
+//   • Print     → admin + r3 (the page already exposes the
+//                 "طباعة / حفظ PDF" affordance to both, same model)
+//   • CSV       → admin only (`canExportCsv` controls the button
+//                 visibility)
+//
+// Data posture
+//   • No refetch. We reuse the slices the page already has in scope.
+//   • Orders / expenses are bounded by the page's 90-day window on
+//     mount, so the modal surfaces a banner the moment the user picks
+//     a `from` date earlier than that. The cards / table still render
+//     — they just reflect the subset we have.
+//   • Custody is "current state" (NOT date-filtered), labelled as
+//     "حاليًا" so the reader knows.
+//   • Settlements / custody / ratings are not date-bounded by the
+//     page fetch (settlements/custody capped at 1000 rows, ratings
+//     at 500), so the in-memory data is complete for any practical
+//     range.
+
+interface DelegatesReportModalProps {
+  delegates: DelegateRow[];
+  orders: OrderRow[];
+  settlements: SettlementRow[];
+  expenses: ExpenseRow[];
+  custody: CustodyRow[];
+  ratings: RatingRow[];
+  canExportCsv: boolean;
+  issuerName: string;
+  onClose: () => void;
+}
+
+// Long-range warning threshold from the spec ("may take longer").
+// We apply it as a UX hint only — the in-memory aggregator is fast
+// for any practical input size.
+const LONG_RANGE_DAYS = 180;
+// The page's data fetch is bounded by this many days. Used to warn
+// the user when their `from` date predates the cached slice.
+const PAGE_FETCH_WINDOW_DAYS = 90;
+
+function fmtMoneyShort(n: number): string {
+  // 4,250 ج matches the spec's example. Keeping the existing
+  // `fmtMoney` shape ("ج.م") for consistency with the rest of the
+  // page is also fine — sticking with the spec's short form here.
+  return `${Math.round(n).toLocaleString('en-US')} ج`;
+}
+
+function fmtRatingDisplay(r: number | null): string {
+  if (r == null) return 'لا توجد بيانات';
+  return r.toFixed(2);
+}
+
+function activeBadgeClass(isActive: boolean | null): string {
+  if (isActive === true) return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+  if (isActive === false) return 'bg-red-50 text-red-700 border-red-200';
+  return 'bg-[hsl(var(--muted))]/40 text-[hsl(var(--muted-foreground))] border-[hsl(var(--border))]';
+}
+function activeBadgeLabel(isActive: boolean | null): string {
+  if (isActive === true) return 'نشط';
+  if (isActive === false) return 'غير نشط';
+  return '—';
+}
+
+// ── Slim row mappers ─────────────────────────────────────────────────────
+//
+// Project each rich row type to the lean Report*Input shape the
+// helper expects. Keeps the helper module free of page-specific
+// fields and makes the typing the only gate for sensitive-field
+// leakage.
+
+function toReportDelegates(rows: DelegateRow[]): ReportDelegateInput[] {
+  return rows.map((d) => ({
+    key: d.key,
+    name: d.name,
+    profileId: d.profileId,
+    isActive: d.delegateIsActive,
+  }));
+}
+function toReportOrders(rows: OrderRow[]): ReportOrderInput[] {
+  return rows.map((o) => ({
+    id: o.id,
+    order_num: o.order_num,
+    total: o.total,
+    status: o.status,
+    assigned_to: o.assigned_to,
+    delegate_name: o.delegate_name,
+    created_at: o.created_at,
+  }));
+}
+function toReportSettlements(rows: SettlementRow[]): ReportSettlementInput[] {
+  return rows.map((s) => ({
+    id: s.id,
+    delegate_profile_id: s.delegate_profile_id,
+    delegate_name: s.delegate_name,
+    amount: s.amount,
+    status: s.status ?? null,
+    settled_at: s.settled_at,
+  }));
+}
+function toReportExpenses(rows: ExpenseRow[]): ReportExpenseInput[] {
+  return rows.map((e) => ({
+    id: e.id,
+    delegate_profile_id: e.delegate_profile_id,
+    delegate_name: e.delegate_name,
+    amount: e.amount,
+    status: e.status,
+    expense_at: e.expense_at,
+  }));
+}
+function toReportCustody(rows: CustodyRow[]): ReportCustodyInput[] {
+  return rows.map((c) => ({
+    id: c.id,
+    delegate_profile_id: c.delegate_profile_id,
+    delegate_name: c.delegate_name,
+    status: c.status,
+    estimated_value: c.estimated_value,
+    handed_at: c.handed_at,
+  }));
+}
+function toReportRatings(rows: RatingRow[]): ReportRatingInput[] {
+  return rows.map((r) => ({
+    id: r.id,
+    assigned_to: r.assigned_to,
+    delegate_name: r.delegate_name,
+    rating: r.rating,
+    created_at: r.created_at,
+  }));
+}
+
+function DelegatesReportModal({
+  delegates,
+  orders,
+  settlements,
+  expenses,
+  custody,
+  ratings,
+  canExportCsv,
+  issuerName,
+  onClose,
+}: DelegatesReportModalProps) {
+  // Default to "last 90 days" — matches the page's existing fetch
+  // window so the first paint never shows a "data limited" banner.
+  const initial = useMemo(() => resolveRangePreset('last90d'), []);
+  const [preset, setPreset] = useState<StatementRangePreset>('last90d');
+  const [fromIso, setFromIso] = useState(initial.fromIso);
+  const [toIso, setToIso] = useState(initial.toIso);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortField, setSortField] = useState<AggregateSortField>('collected');
+  const [sortDir, setSortDir] = useState<SortDirection>('desc');
+
+  // ESC-to-close — matches the rest of the page's modal conventions.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const applyPreset = (next: StatementRangePreset) => {
+    setPreset(next);
+    if (next === 'custom') return;
+    const r = resolveRangePreset(next);
+    setFromIso(r.fromIso);
+    setToIso(r.toIso);
+  };
+
+  // Validity + warnings
+  const rangeValid = isValidRange(fromIso, toIso);
+  const days = rangeValid ? rangeDays(fromIso, toIso) : 0;
+  const longRange = days > LONG_RANGE_DAYS;
+
+  // True iff the user's `from` date is earlier than the page's
+  // 90-day cached fetch boundary. In that case we still render the
+  // report — just with a banner that orders + expenses before the
+  // boundary may be missing.
+  const fromDate = fromIsoDate(fromIso);
+  const now = new Date();
+  const pageFetchSince = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate() - PAGE_FETCH_WINDOW_DAYS,
+    0,
+    0,
+    0,
+    0
+  );
+  const fromBeforeCache = !!fromDate && fromDate.getTime() < pageFetchSince.getTime();
+
+  // ── Compute the report ────────────────────────────────────────────────
+  const report: DelegatesReport | null = useMemo(() => {
+    if (!rangeValid) return null;
+    return computeDelegatesReport({
+      delegates: toReportDelegates(delegates),
+      orders: toReportOrders(orders),
+      settlements: toReportSettlements(settlements),
+      expenses: toReportExpenses(expenses),
+      custody: toReportCustody(custody),
+      ratings: toReportRatings(ratings),
+      fromIso,
+      toIso,
+    });
+  }, [delegates, orders, settlements, expenses, custody, ratings, fromIso, toIso, rangeValid]);
+
+  // ── Filtered + sorted rows for the comparison table ───────────────────
+  const filteredSortedRows = useMemo(() => {
+    if (!report) return [] as AggregateRow[];
+    const q = searchQuery.trim().toLowerCase();
+    const filtered = q ? report.rows.filter((r) => r.name.toLowerCase().includes(q)) : report.rows;
+    return sortAggregateRows(filtered, sortField, sortDir);
+  }, [report, searchQuery, sortField, sortDir]);
+
+  const toggleSort = (field: AggregateSortField) => {
+    setSortField((prev) => {
+      if (prev === field) {
+        setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+        return prev;
+      }
+      // Sensible default: numeric fields descending, name ascending.
+      setSortDir(field === 'name' ? 'asc' : 'desc');
+      return field;
+    });
+  };
+
+  const handleExportCsv = () => {
+    if (!canExportCsv || !report) return;
+    const csv = aggregateReportToCsv(report);
+    downloadCsv(aggregateCsvFilename(fromIso, toIso), csv);
+  };
+  const handlePrint = () => {
+    if (typeof window !== 'undefined') window.print();
+  };
+
+  const issueDate = formatDateAr(new Date().toISOString());
+
+  const hasAnyActivity = (report?.summary.delegatesWithActivity ?? 0) > 0;
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-stretch justify-center p-0 sm:p-4 print:p-0 print:static print:bg-white"
+      dir="rtl"
+    >
+      <div className="absolute inset-0 bg-black/50 print:hidden" onClick={onClose} aria-hidden />
+      <div className="relative bg-white w-full sm:max-w-6xl sm:rounded-2xl flex flex-col shadow-2xl max-h-[100vh] sm:max-h-[95vh] overflow-hidden print:max-h-none print:overflow-visible print:shadow-none print:rounded-none print:max-w-none">
+        {/* Header (hidden on print — the print layout has its own
+            official header below). */}
+        <div className="flex items-center gap-3 px-5 py-4 bg-[hsl(var(--primary))] sm:rounded-t-2xl flex-shrink-0 print:hidden">
+          <BarChart3 size={20} className="text-white" />
+          <div className="flex-1">
+            <h2 className="text-white font-bold text-base">تقارير المناديب</h2>
+            <p className="text-white/70 text-xs">تقرير مجمع لكل المناديب خلال فترة محددة</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 hover:bg-white/20 rounded-lg transition-colors"
+            aria-label="إغلاق"
+          >
+            <X size={18} className="text-white" />
+          </button>
+        </div>
+
+        {/* Scrollable body */}
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 print:overflow-visible print:p-0">
+          {/* Print-only official header */}
+          <div className="hidden print:block print-report">
+            <header className="print-header">
+              <p className="print-brand">تراث مصر</p>
+              <p className="print-title">تقرير المناديب المجمع</p>
+              <p className="print-subline">
+                الفترة: من {fromIso} إلى {toIso}
+              </p>
+              <p className="print-subline">تاريخ الإصدار: {issueDate}</p>
+              <p className="print-subline">تم الإصدار بواسطة: {issuerName}</p>
+            </header>
+          </div>
+
+          {/* Range controls (screen only) */}
+          <div className="space-y-3 print:hidden">
+            <div className="flex flex-wrap items-center gap-1 bg-[hsl(var(--muted))]/40 rounded-xl p-1 w-fit">
+              {(
+                [
+                  'today',
+                  'week',
+                  'month',
+                  'last90d',
+                  'custom',
+                ] as ReadonlyArray<StatementRangePreset>
+              ).map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => applyPreset(p)}
+                  className={`px-3 py-1 text-xs font-semibold rounded-lg transition-colors ${
+                    preset === p
+                      ? 'bg-white text-[hsl(var(--foreground))] shadow-sm'
+                      : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'
+                  }`}
+                >
+                  {RANGE_PRESET_LABELS[p]}
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-end gap-3">
+              <div>
+                <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+                  من تاريخ
+                </label>
+                <input
+                  type="date"
+                  value={fromIso}
+                  onChange={(e) => {
+                    setFromIso(e.target.value);
+                    setPreset('custom');
+                  }}
+                  className="input-field"
+                  dir="ltr"
+                />
+              </div>
+              <div>
+                <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+                  إلى تاريخ
+                </label>
+                <input
+                  type="date"
+                  value={toIso}
+                  onChange={(e) => {
+                    setToIso(e.target.value);
+                    setPreset('custom');
+                  }}
+                  className="input-field"
+                  dir="ltr"
+                />
+              </div>
+              <div className="flex flex-wrap gap-2 ml-auto">
+                {canExportCsv && (
+                  <button
+                    type="button"
+                    onClick={handleExportCsv}
+                    disabled={!report}
+                    className="flex items-center gap-2 px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    <Download size={14} /> تصدير CSV
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handlePrint}
+                  disabled={!report}
+                  className="flex items-center gap-2 px-3 py-2 bg-[hsl(var(--muted))]/40 hover:bg-[hsl(var(--muted))] text-[hsl(var(--foreground))] border border-[hsl(var(--border))] rounded-xl text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  <Printer size={14} /> طباعة / حفظ PDF
+                </button>
+              </div>
+            </div>
+
+            {/* Validation + warnings */}
+            {!rangeValid && (
+              <div className="rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs px-3 py-2 flex items-center gap-2">
+                <AlertTriangle size={14} /> الفترة غير صالحة — تأكد أن &quot;من&quot; قبل
+                &quot;إلى&quot;.
+              </div>
+            )}
+            {rangeValid && longRange && (
+              <div className="rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-xs px-3 py-2 flex items-center gap-2">
+                <AlertTriangle size={14} /> قد يستغرق التقرير لفترة طويلة وقتًا أطول.
+              </div>
+            )}
+            {rangeValid && fromBeforeCache && (
+              <div className="rounded-xl bg-blue-50 border border-blue-200 text-blue-800 text-xs px-3 py-2 flex items-center gap-2">
+                <AlertTriangle size={14} /> الطلبات والمصاريف قبل آخر 90 يوم غير محمّلة بعد —
+                النتائج تعكس البيانات المتاحة فقط.
+              </div>
+            )}
+          </div>
+
+          {!rangeValid || !report ? (
+            <div className="text-center text-[hsl(var(--muted-foreground))] text-sm py-12">
+              اختر فترة صالحة لعرض التقرير.
+            </div>
+          ) : !hasAnyActivity ? (
+            <div className="rounded-2xl border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted))]/20 text-center text-sm text-[hsl(var(--muted-foreground))] py-12">
+              لا توجد بيانات في الفترة المحددة.
+            </div>
+          ) : (
+            <>
+              {/* Summary cards */}
+              <section>
+                <h3 className="text-sm font-bold text-[hsl(var(--foreground))] mb-3 print:print-section-title">
+                  ملخص الفترة
+                </h3>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 print:grid-cols-4 print:gap-2">
+                  <ReportSummaryCard
+                    icon={<Wallet size={16} className="text-emerald-600" />}
+                    label="إجمالي التحصيلات"
+                    value={fmtMoneyShort(report.summary.totalCollected)}
+                  />
+                  <ReportSummaryCard
+                    icon={<Banknote size={16} className="text-emerald-600" />}
+                    label="إجمالي التوريدات"
+                    value={fmtMoneyShort(report.summary.totalSettled)}
+                  />
+                  <ReportSummaryCard
+                    icon={<Receipt size={16} className="text-amber-600" />}
+                    label="إجمالي المصاريف"
+                    value={fmtMoneyShort(report.summary.totalExpenses)}
+                  />
+                  <ReportSummaryCard
+                    icon={<Wallet size={16} className="text-blue-600" />}
+                    label="إجمالي المتبقي"
+                    value={fmtMoneyShort(report.summary.totalRemaining)}
+                  />
+                  <ReportSummaryCard
+                    icon={<Briefcase size={16} className="text-[hsl(var(--muted-foreground))]" />}
+                    label="إجمالي الأمانات المفتوحة (حاليًا)"
+                    value={`${fmtMoneyShort(report.summary.totalOpenCustody)} · ${report.summary.totalOpenCustodyCount} عهدة`}
+                  />
+                  <ReportSummaryCard
+                    icon={<Star size={16} className="text-amber-500" />}
+                    label="متوسط تقييم المناديب"
+                    value={
+                      report.summary.fleetAverageRating == null
+                        ? 'لا توجد بيانات'
+                        : report.summary.fleetAverageRating.toFixed(2)
+                    }
+                  />
+                  <ReportSummaryCard
+                    icon={<CheckCircle size={16} className="text-emerald-600" />}
+                    label="الطلبات المسلمة"
+                    value={String(report.summary.totalDelivered)}
+                  />
+                  <ReportSummaryCard
+                    icon={<RotateCcw size={16} className="text-red-600" />}
+                    label="الطلبات المرتجعة"
+                    value={String(report.summary.totalReturned)}
+                  />
+                </div>
+              </section>
+
+              {/* Ranking cards */}
+              <section>
+                <h3 className="text-sm font-bold text-[hsl(var(--foreground))] mb-3 print:print-section-title">
+                  المراكز
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 print:grid-cols-3 print:gap-2">
+                  <RankingCard
+                    icon={<Wallet size={16} />}
+                    title="أعلى مندوب تحصيلًا"
+                    entry={report.rankings.topCollector}
+                    valueRender={(v) => `${fmtMoneyShort(v)} تحصيل`}
+                    accent="emerald"
+                  />
+                  <RankingCard
+                    icon={<Receipt size={16} />}
+                    title="أعلى مندوب مصاريف"
+                    entry={report.rankings.topExpenses}
+                    valueRender={(v) => `${fmtMoneyShort(v)} مصاريف`}
+                    accent="amber"
+                  />
+                  <RankingCard
+                    icon={<Wallet size={16} />}
+                    title="أعلى مندوب متبقي عليه"
+                    entry={report.rankings.topRemaining}
+                    valueRender={(v) => `${fmtMoneyShort(v)} متبقي`}
+                    accent="blue"
+                  />
+                  <RankingCard
+                    icon={<Star size={16} />}
+                    title="أفضل تقييم"
+                    entry={report.rankings.bestRated}
+                    valueRender={(v) => `${v.toFixed(2)} متوسط`}
+                    accent="amber"
+                  />
+                  <RankingCard
+                    icon={<Star size={16} />}
+                    title="أسوأ تقييم"
+                    entry={report.rankings.worstRated}
+                    valueRender={(v) => `${v.toFixed(2)} متوسط`}
+                    accent="red"
+                  />
+                  <RankingCard
+                    icon={<RotateCcw size={16} />}
+                    title="أعلى مرتجعات"
+                    entry={report.rankings.topReturned}
+                    valueRender={(v) => `${v} مرتجع`}
+                    accent="red"
+                  />
+                </div>
+              </section>
+
+              {/* Comparison table */}
+              <section>
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+                  <h3 className="text-sm font-bold text-[hsl(var(--foreground))] print:print-section-title">
+                    مقارنة بين المناديب
+                  </h3>
+                  <div className="flex items-center gap-2 print:hidden">
+                    <Search size={14} className="text-[hsl(var(--muted-foreground))]" />
+                    <input
+                      type="search"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="بحث باسم المندوب"
+                      className="input-field text-xs"
+                    />
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-[hsl(var(--border))] overflow-x-auto bg-white print:rounded-none print:border-0">
+                  <table className="w-full text-xs print-comparison">
+                    <thead className="bg-[hsl(var(--muted))]/30 text-[hsl(var(--muted-foreground))]">
+                      <tr>
+                        <ReportTh
+                          field="name"
+                          label="المندوب"
+                          currentField={sortField}
+                          currentDir={sortDir}
+                          onClick={toggleSort}
+                          textAlign="right"
+                        />
+                        <th className="px-3 py-2 text-center font-semibold whitespace-nowrap">
+                          الحالة
+                        </th>
+                        <ReportTh
+                          field="delivered"
+                          label="مسلمة"
+                          currentField={sortField}
+                          currentDir={sortDir}
+                          onClick={toggleSort}
+                        />
+                        <ReportTh
+                          field="returned"
+                          label="مرتجعة"
+                          currentField={sortField}
+                          currentDir={sortDir}
+                          onClick={toggleSort}
+                        />
+                        <ReportTh
+                          field="collected"
+                          label="التحصيل"
+                          currentField={sortField}
+                          currentDir={sortDir}
+                          onClick={toggleSort}
+                        />
+                        <ReportTh
+                          field="settled"
+                          label="التوريد"
+                          currentField={sortField}
+                          currentDir={sortDir}
+                          onClick={toggleSort}
+                        />
+                        <ReportTh
+                          field="expenses"
+                          label="المصاريف"
+                          currentField={sortField}
+                          currentDir={sortDir}
+                          onClick={toggleSort}
+                        />
+                        <ReportTh
+                          field="remaining"
+                          label="المتبقي"
+                          currentField={sortField}
+                          currentDir={sortDir}
+                          onClick={toggleSort}
+                        />
+                        <ReportTh
+                          field="openCustodyValue"
+                          label="الأمانات (حاليًا)"
+                          currentField={sortField}
+                          currentDir={sortDir}
+                          onClick={toggleSort}
+                        />
+                        <ReportTh
+                          field="averageRating"
+                          label="التقييم"
+                          currentField={sortField}
+                          currentDir={sortDir}
+                          onClick={toggleSort}
+                        />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredSortedRows.length === 0 ? (
+                        <tr>
+                          <td
+                            colSpan={10}
+                            className="text-center text-[hsl(var(--muted-foreground))] py-6"
+                          >
+                            لا توجد بيانات مطابقة.
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredSortedRows.map((row) => (
+                          <tr
+                            key={row.key}
+                            className="border-t border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/20"
+                          >
+                            <td className="px-3 py-2 font-semibold text-[hsl(var(--foreground))] whitespace-nowrap">
+                              {row.name}
+                            </td>
+                            <td className="px-3 py-2 text-center">
+                              <span
+                                className={`inline-flex items-center gap-1 rounded-full border text-[10px] font-semibold px-2 py-0.5 ${activeBadgeClass(row.isActive)}`}
+                              >
+                                {activeBadgeLabel(row.isActive)}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 text-center num">{row.delivered}</td>
+                            <td className="px-3 py-2 text-center num">{row.returned}</td>
+                            <td className="px-3 py-2 text-center num">
+                              {fmtMoneyShort(row.collected)}
+                            </td>
+                            <td className="px-3 py-2 text-center num">
+                              {fmtMoneyShort(row.settled)}
+                            </td>
+                            <td className="px-3 py-2 text-center num">
+                              {fmtMoneyShort(row.expenses)}
+                            </td>
+                            <td className="px-3 py-2 text-center num">
+                              {fmtMoneyShort(row.remaining)}
+                            </td>
+                            <td className="px-3 py-2 text-center num whitespace-nowrap">
+                              {fmtMoneyShort(row.openCustodyValue)}
+                              <span className="text-[10px] text-[hsl(var(--muted-foreground))]">
+                                {' '}
+                                ({row.openCustodyCount})
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 text-center">
+                              {fmtRatingDisplay(row.averageRating)}
+                              {row.ratingCount > 0 && (
+                                <span className="block text-[10px] text-[hsl(var(--muted-foreground))]">
+                                  {row.ratingCount} تقييم
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              {/* Print-only signature footer */}
+              <footer className="hidden print:block print-footer">
+                <div className="print-footer-cell">
+                  <p className="print-footer-label">تم الإصدار بواسطة</p>
+                  <p className="print-footer-value">{issuerName}</p>
+                </div>
+                <div className="print-footer-cell">
+                  <p className="print-footer-label">توقيع الإدارة</p>
+                  <p className="print-footer-line">_______________________</p>
+                </div>
+              </footer>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Print stylesheet — scoped to .print-* classes. Mirrors the
+          per-delegate statement printout's structure so the official
+          look stays consistent across reports. */}
+      <style jsx global>{`
+        @media print {
+          @page {
+            size: A4 portrait;
+            margin: 14mm 12mm;
+          }
+          body {
+            background: #ffffff !important;
+            color: #000000 !important;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+          }
+          .print-report {
+            direction: rtl;
+            font-family:
+              'Cairo',
+              'Tajawal',
+              'Segoe UI',
+              system-ui,
+              -apple-system,
+              Arial,
+              sans-serif;
+            color: #000;
+          }
+          .print-header {
+            border-bottom: 2px solid #000;
+            padding-bottom: 6mm;
+            margin-bottom: 5mm;
+            text-align: center;
+          }
+          .print-brand {
+            font-size: 20pt;
+            font-weight: 700;
+            letter-spacing: 0.5pt;
+          }
+          .print-title {
+            font-size: 13pt;
+            margin-top: 1mm;
+          }
+          .print-subline {
+            font-size: 10pt;
+            margin-top: 1mm;
+            color: #333;
+          }
+          .print-section-title {
+            font-size: 12pt;
+            font-weight: 700;
+            margin: 5mm 0 2mm 0;
+            border-bottom: 1px solid #000;
+            padding-bottom: 1mm;
+          }
+          .print-comparison {
+            width: 100%;
+            border-collapse: collapse;
+            page-break-inside: auto;
+          }
+          .print-comparison th,
+          .print-comparison td {
+            border: 1px solid #777;
+            padding: 3pt 5pt;
+            font-size: 9.5pt;
+            vertical-align: top;
+            text-align: center;
+          }
+          .print-comparison thead th {
+            background: #e8e8e8;
+            font-weight: 700;
+          }
+          .print-comparison tr {
+            page-break-inside: avoid;
+          }
+          .print-footer {
+            display: flex;
+            justify-content: space-between;
+            gap: 30mm;
+            margin-top: 12mm;
+            page-break-inside: avoid;
+          }
+          .print-footer-cell {
+            flex: 1;
+            text-align: center;
+            border-top: 1px solid #000;
+            padding-top: 2mm;
+          }
+          .print-footer-label {
+            font-size: 9.5pt;
+            color: #555;
+            margin: 0 0 1mm 0;
+          }
+          .print-footer-value {
+            font-size: 11pt;
+            font-weight: 700;
+            margin: 0;
+          }
+          .print-footer-line {
+            font-size: 11pt;
+            letter-spacing: 1pt;
+            margin: 0;
+          }
+          .num {
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+          }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+// ── Report sub-components ────────────────────────────────────────────────
+
+function ReportSummaryCard({
+  icon,
+  label,
+  value,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-[hsl(var(--border))] bg-white p-3 print:rounded-none print:border print:border-[#777]">
+      <div className="flex items-center gap-2 text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1">
+        {icon}
+        <span>{label}</span>
+      </div>
+      <p className="text-base font-bold text-[hsl(var(--foreground))]">{value}</p>
+    </div>
+  );
+}
+
+function RankingCard({
+  icon,
+  title,
+  entry,
+  valueRender,
+  accent,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  entry: { delegateName: string; value: number; context?: string } | null;
+  valueRender: (value: number) => string;
+  accent: 'emerald' | 'amber' | 'blue' | 'red';
+}) {
+  const accentBg = {
+    emerald: 'bg-emerald-50 border-emerald-100',
+    amber: 'bg-amber-50 border-amber-100',
+    blue: 'bg-blue-50 border-blue-100',
+    red: 'bg-red-50 border-red-100',
+  }[accent];
+  const accentText = {
+    emerald: 'text-emerald-700',
+    amber: 'text-amber-700',
+    blue: 'text-blue-700',
+    red: 'text-red-700',
+  }[accent];
+
+  return (
+    <div
+      className={`rounded-2xl border ${accentBg} p-3 print:rounded-none print:border print:border-[#777] print:bg-white`}
+    >
+      <div className={`flex items-center gap-2 text-[11px] font-semibold ${accentText} mb-1`}>
+        {icon}
+        <span>{title}</span>
+      </div>
+      {entry ? (
+        <>
+          <p className="text-sm font-bold text-[hsl(var(--foreground))] truncate">
+            {entry.delegateName}
+          </p>
+          <p className={`text-xs ${accentText} mt-0.5`}>{valueRender(entry.value)}</p>
+          {entry.context && (
+            <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
+              {entry.context}
+            </p>
+          )}
+        </>
+      ) : (
+        <p className="text-xs text-[hsl(var(--muted-foreground))]">لا توجد بيانات</p>
+      )}
+    </div>
+  );
+}
+
+function ReportTh({
+  field,
+  label,
+  currentField,
+  currentDir,
+  onClick,
+  textAlign = 'center',
+}: {
+  field: AggregateSortField;
+  label: string;
+  currentField: AggregateSortField;
+  currentDir: SortDirection;
+  onClick: (field: AggregateSortField) => void;
+  textAlign?: 'right' | 'center';
+}) {
+  const active = currentField === field;
+  const dirArrow = active ? (currentDir === 'asc' ? '▲' : '▼') : '';
+  return (
+    <th
+      className={`px-3 py-2 font-semibold whitespace-nowrap ${
+        textAlign === 'right' ? 'text-right' : 'text-center'
+      }`}
+    >
+      <button
+        type="button"
+        onClick={() => onClick(field)}
+        className={`inline-flex items-center gap-1 ${active ? 'text-[hsl(var(--foreground))]' : ''}`}
+      >
+        <span>{label}</span>
+        {active ? (
+          <span className="text-[9px]">{dirArrow}</span>
+        ) : (
+          <ArrowUpDown size={10} className="opacity-50" />
+        )}
+      </button>
+    </th>
   );
 }
