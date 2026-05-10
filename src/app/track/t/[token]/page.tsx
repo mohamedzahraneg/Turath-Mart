@@ -616,6 +616,153 @@ const COMPLAINT_ERR_MAP: Record<string, string> = {
 
 type SubmitStatus = { kind: 'idle' | 'success' | 'error'; text?: string };
 
+// ─── Phase 23A — Delivery rating panel ─────────────────────────────────────
+interface DeliveryRatingPanelProps {
+  token: string;
+  delegate?: string;
+}
+
+const RATING_STORAGE_PREFIX = 'turath:delivery_rating:v1:';
+
+function DeliveryRatingPanel({ token, delegate }: DeliveryRatingPanelProps) {
+  const storageKey = `${RATING_STORAGE_PREFIX}${token}`;
+  const [hover, setHover] = useState<number>(0);
+  const [rating, setRating] = useState<number>(0);
+  const [comment, setComment] = useState<string>('');
+  const [submitting, setSubmitting] = useState<boolean>(false);
+  const [submitted, setSubmitted] = useState<boolean>(false);
+  const [error, setError] = useState<string>('');
+
+  // Re-show "thank you" when the customer reloads after a previous
+  // submission. We persist a tiny marker keyed by tracking token in
+  // sessionStorage so the indicator survives a soft reload but
+  // disappears when the browser tab closes.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const flag = window.sessionStorage.getItem(storageKey);
+      if (flag === 'submitted') setSubmitted(true);
+    } catch {
+      // sessionStorage may be disabled (Safari private mode) — ignored.
+    }
+  }, [storageKey]);
+
+  const onSubmit = async () => {
+    if (submitting) return;
+    if (rating < 1 || rating > 5) {
+      setError('برجاء اختيار عدد النجوم');
+      return;
+    }
+    setSubmitting(true);
+    setError('');
+    try {
+      const res = await fetch('/api/customer/rating', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tracking_token: token,
+          rating,
+          comment: comment.trim() || null,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (res.ok && data.ok) {
+        setSubmitted(true);
+        try {
+          if (typeof window !== 'undefined') {
+            window.sessionStorage.setItem(storageKey, 'submitted');
+          }
+        } catch {
+          // ignore
+        }
+      } else {
+        const msg =
+          data.error === 'not_delivered'
+            ? 'يمكن التقييم بعد التسليم فقط.'
+            : data.error === 'not_found'
+              ? 'تعذر التحقق من الطلب.'
+              : 'تعذر إرسال التقييم. حاول مرة أخرى.';
+        setError(msg);
+      }
+    } catch {
+      setError('تعذر الاتصال بالخادم. حاول مرة أخرى.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (submitted) {
+    return (
+      <div className="bg-emerald-50 border border-emerald-200 rounded-2xl shadow-sm p-4">
+        <div className="flex items-center gap-2 mb-1">
+          <CheckCircle size={16} className="text-emerald-700" />
+          <h2 className="font-bold text-sm text-emerald-800">تم استلام تقييمك</h2>
+        </div>
+        <p className="text-xs text-emerald-700">شكرًا لمساعدتنا في تحسين تجربة التوصيل.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white rounded-2xl border border-[hsl(var(--border))] shadow-sm p-4">
+      <div className="flex items-center gap-2 mb-2">
+        <Star size={16} className="text-amber-500" />
+        <h2 className="font-bold text-sm text-[hsl(var(--foreground))]">قيّم تجربة التوصيل</h2>
+      </div>
+      <p className="text-xs text-[hsl(var(--muted-foreground))] mb-3">
+        رأيك يساعدنا على تحسين الخدمة{delegate ? ` ومتابعة أداء المندوب ${delegate}` : ''}.
+      </p>
+      <div
+        className="flex items-center gap-1 mb-3"
+        onMouseLeave={() => setHover(0)}
+        role="radiogroup"
+        aria-label="تقييم تجربة التوصيل"
+      >
+        {[1, 2, 3, 4, 5].map((n) => {
+          const filled = (hover || rating) >= n;
+          return (
+            <button
+              key={n}
+              type="button"
+              onClick={() => setRating(n)}
+              onMouseEnter={() => setHover(n)}
+              className="p-1 transition-transform hover:scale-110"
+              aria-label={`${n} نجوم`}
+              aria-checked={rating === n}
+              role="radio"
+            >
+              <Star
+                size={28}
+                className={filled ? 'text-amber-500' : 'text-gray-300'}
+                fill={filled ? 'currentColor' : 'none'}
+              />
+            </button>
+          );
+        })}
+      </div>
+      <textarea
+        rows={3}
+        value={comment}
+        onChange={(e) => setComment(e.target.value.slice(0, 1000))}
+        placeholder="ملاحظتك عن تجربة التوصيل (اختياري)"
+        className="w-full input-field resize-none text-sm"
+      />
+      {error && <p className="text-xs text-red-600 mt-2 font-semibold">{error}</p>}
+      <button
+        type="button"
+        onClick={onSubmit}
+        disabled={submitting || rating < 1}
+        className={`mt-3 w-full justify-center ${submitting || rating < 1 ? 'btn-secondary opacity-60 cursor-not-allowed' : 'btn-primary'}`}
+      >
+        {submitting ? 'جارٍ الإرسال...' : 'إرسال التقييم'}
+      </button>
+      <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-2 text-center">
+        لتقديم شكوى عن التوصيل استخدم زر &quot;تقديم شكوى&quot; أسفل الصفحة.
+      </p>
+    </div>
+  );
+}
+
 interface ChatPanelProps {
   type: 'delegate' | 'support';
   order: TrackingOrder;
@@ -2017,6 +2164,12 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
             </p>
           </div>
         )}
+
+        {/* Phase 23A — Customer delivery rating panel. Only renders
+            after the order has reached `delivered` status. The token
+            is used as a stable submission key so a refresh keeps the
+            "thank you" state when the customer comes back. */}
+        {isDelivered && <DeliveryRatingPanel token={token} delegate={order.delegate} />}
 
         {/* Order Details */}
         <div className="bg-white rounded-2xl border border-[hsl(var(--border))] shadow-sm p-4">
