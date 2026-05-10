@@ -38,6 +38,12 @@ export type StatementRowType =
   | 'settlement_voided'
   | 'expense'
   | 'expense_voided'
+  // Phase 23G — pending and rejected expenses surface as
+  // informational rows in the statement (debit = credit = 0). They
+  // share the audit trail with approved expenses but never enter
+  // the financial totals.
+  | 'expense_pending'
+  | 'expense_rejected'
   | 'custody_out'
   | 'custody_in'
   | 'custody_settled'
@@ -212,6 +218,10 @@ export interface StatementExpenseInput {
   expense_at: string;
   // Phase 23E — void metadata.
   void_reason?: string | null;
+  // Phase 23G — review-decision metadata. `review_reason` carries
+  // the rejection reason (or optional approve note) and surfaces
+  // in the timeline note column.
+  review_reason?: string | null;
 }
 export interface StatementCustodyInput {
   id: string;
@@ -298,28 +308,80 @@ export function buildStatementRows(
     });
   }
 
-  // Expenses — same split. We also include `voided` rows here so
-  // the audit trail is complete; rejected/pending rows continue to
-  // be skipped (they never had financial impact in the first place).
+  // Expenses — Phase 23G now emits four kinds of rows. Approved rows
+  // contribute to the financial credit total; voided / pending /
+  // rejected rows are informational with debit=credit=0 so the audit
+  // trail is complete without distorting the balance.
   for (const e of inputs.expenses) {
-    if (e.status !== APPROVED_EXPENSE_STATUS && e.status !== 'voided') continue;
+    if (
+      e.status !== APPROVED_EXPENSE_STATUS &&
+      e.status !== 'voided' &&
+      e.status !== 'pending' &&
+      e.status !== 'rejected'
+    ) {
+      continue;
+    }
     if (!isInRange(e.expense_at, fromIso, toIso)) continue;
-    const voided = e.status === 'voided';
-    out.push({
-      id: `expense:${e.id}`,
-      date: e.expense_at,
-      type: voided ? 'expense_voided' : 'expense',
-      label: voided ? 'مصروف ملغي' : 'مصروف',
-      reference: e.order_id || e.id.slice(0, 8),
-      description: `مصروف معتمد (${e.expenseTypeLabel || e.expense_type})`,
-      debit: 0,
-      credit: voided ? 0 : Number(e.amount ?? 0),
-      note: voided
-        ? [e.note, e.void_reason ? `سبب الإلغاء: ${e.void_reason}` : null]
+
+    const description = `مصروف معتمد (${e.expenseTypeLabel || e.expense_type})`;
+    const reference = e.order_id || e.id.slice(0, 8);
+
+    if (e.status === APPROVED_EXPENSE_STATUS) {
+      out.push({
+        id: `expense:${e.id}`,
+        date: e.expense_at,
+        type: 'expense',
+        label: 'مصروف',
+        reference,
+        description,
+        debit: 0,
+        credit: Number(e.amount ?? 0),
+        note: e.note ?? undefined,
+      });
+    } else if (e.status === 'voided') {
+      out.push({
+        id: `expense:${e.id}`,
+        date: e.expense_at,
+        type: 'expense_voided',
+        label: 'مصروف ملغي',
+        reference,
+        description,
+        debit: 0,
+        credit: 0,
+        note:
+          [e.note, e.void_reason ? `سبب الإلغاء: ${e.void_reason}` : null]
             .filter(Boolean)
-            .join(' — ') || undefined
-        : (e.note ?? undefined),
-    });
+            .join(' — ') || undefined,
+      });
+    } else if (e.status === 'pending') {
+      out.push({
+        id: `expense:${e.id}`,
+        date: e.expense_at,
+        type: 'expense_pending',
+        label: 'مصروف قيد المراجعة',
+        reference,
+        description,
+        debit: 0,
+        credit: 0,
+        note: e.note ?? undefined,
+      });
+    } else {
+      // rejected
+      out.push({
+        id: `expense:${e.id}`,
+        date: e.expense_at,
+        type: 'expense_rejected',
+        label: 'مصروف مرفوض',
+        reference,
+        description,
+        debit: 0,
+        credit: 0,
+        note:
+          [e.note, e.review_reason ? `سبب الرفض: ${e.review_reason}` : null]
+            .filter(Boolean)
+            .join(' — ') || undefined,
+      });
+    }
   }
 
   // Custody — informational only. We emit one row for the handover
