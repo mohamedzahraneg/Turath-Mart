@@ -36,9 +36,22 @@ export default function RecentOrdersTable() {
     const fetchRecentOrders = async () => {
       try {
         const supabase = createClient();
+        // Phase E1-Fix1 — explicit column list. The previous
+        // `select('*')` shipped the heavy `lines` jsonb (avg ~125 KB
+        // per row, base64 line-image data) to render the recent-orders
+        // dashboard widget, which only displays
+        // customer / phone / region / products / total / status / time.
+        // Same pattern as Phase 20C-1 narrowed
+        // `OrdersTableSection.loadOrders`. Net per-mount payload drops
+        // from ~1.25 MB (10 rows × ~125 KB) to ~5 KB. `district` and
+        // `neighborhood` are added to the explicit list as forward
+        // compatibility for any future region-display tweaks (a few
+        // dozen bytes per row at most).
         const { data, error } = await supabase
           .from('turath_masr_orders')
-          .select('*')
+          .select(
+            'id, order_num, customer, phone, region, district, neighborhood, products, total, status, time, created_at'
+          )
           .order('created_at', { ascending: false })
           .limit(10);
 
