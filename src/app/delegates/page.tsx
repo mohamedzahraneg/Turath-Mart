@@ -48,6 +48,9 @@ import {
   Banknote,
   Briefcase,
   Receipt,
+  FileText,
+  Download,
+  Printer,
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import { createClient } from '@/lib/supabase/client';
@@ -92,6 +95,27 @@ import {
   EXPENSE_STATUS_TONE,
   expenseStatusLabel,
 } from '@/lib/delegates/expenseTypes';
+// Phase 23D — pure helpers for the account-statement tab + CSV.
+import {
+  RANGE_PRESET_LABELS,
+  resolveRangePreset,
+  isValidRange,
+  rangeDays,
+  buildStatementRows,
+  summariseStatement,
+  toCsv,
+  downloadCsv,
+  csvFilename,
+  toIsoDate,
+  fromIsoDate,
+  type StatementRangePreset,
+  type DelegateStatementRow,
+  type DelegateStatementSummary,
+  type StatementOrderInput,
+  type StatementSettlementInput,
+  type StatementExpenseInput,
+  type StatementCustodyInput,
+} from '@/lib/delegates/accountStatement';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 interface DelegateRow {
@@ -319,6 +343,11 @@ export default function DelegatesPage() {
   // (`custody_admin_*` / `expenses_admin_*`). Same UI gate.
   const canManageCustody = perms.isAdmin;
   const canManageExpenses = perms.isAdmin;
+  // Phase 23D — CSV export of the per-delegate account statement is
+  // admin-only because the export carries financial movements. Non-
+  // admin viewers can read the on-screen statement (gated by the
+  // same RLS that fed the page) but cannot persist it to disk.
+  const canExportStatement = perms.isAdmin;
 
   const [profiles, setProfiles] = useState<DelegateRow[]>([]);
   const [orders, setOrders] = useState<OrderRow[]>([]);
@@ -336,8 +365,9 @@ export default function DelegatesPage() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   // Phase 23B — promoted `collections` + `settlements` from placeholder
   // tabs to first-class tab ids so the drawer can render real content.
-  // Phase 23C — same for `custody` + `expenses`. The placeholder set
-  // is now empty; the union still includes `placeholder` for type
+  // Phase 23C — same for `custody` + `expenses`. Phase 23D — adds
+  // the `statement` tab (كشف الحساب). The placeholder set is now
+  // empty; the union still includes `placeholder` for type
   // compatibility with old serialised state, but no tab routes there.
   const [activeTab, setActiveTab] = useState<
     | 'summary'
@@ -346,6 +376,7 @@ export default function DelegatesPage() {
     | 'settlements'
     | 'custody'
     | 'expenses'
+    | 'statement'
     | 'ratings'
     | 'activity'
     | 'placeholder'
@@ -1336,6 +1367,10 @@ export default function DelegatesPage() {
           onAddCustody={() => setCustodyTargetKey(selected.delegate.key)}
           onAddExpense={() => setExpenseTargetKey(selected.delegate.key)}
           onChangeCustodyStatus={(row, nextStatus) => setCustodyStatusTarget({ row, nextStatus })}
+          /* Phase 23D — CSV export gated on admin only. The drawer
+             passes this through to the AccountStatementTab to hide
+             the export button for non-admin viewers. */
+          canExportStatement={canExportStatement}
         />
       )}
 
@@ -1576,6 +1611,7 @@ type DrawerTab =
   | 'settlements'
   | 'custody'
   | 'expenses'
+  | 'statement'
   | 'ratings'
   | 'activity'
   | 'placeholder';
@@ -1598,6 +1634,8 @@ interface DrawerProps {
   onAddCustody?: () => void;
   onAddExpense?: () => void;
   onChangeCustodyStatus?: (row: CustodyRow, next: 'returned' | 'settled' | 'lost') => void;
+  // Phase 23D — CSV export gate (admin-only, financial data).
+  canExportStatement?: boolean;
 }
 
 function DelegateDrawer({
@@ -1613,6 +1651,7 @@ function DelegateDrawer({
   onAddCustody,
   onAddExpense,
   onChangeCustodyStatus,
+  canExportStatement = false,
 }: DrawerProps) {
   const a = aggregate;
 
@@ -1631,6 +1670,10 @@ function DelegateDrawer({
     // Phase 23C — same for الأمانات + المصاريف.
     { id: 'custody', label: 'الأمانات' },
     { id: 'expenses', label: 'المصاريف' },
+    // Phase 23D — unified account-statement view with date range
+    // + CSV export. Sits between the per-section tabs (custody /
+    // expenses) and the auxiliary tabs (ratings / activity).
+    { id: 'statement', label: 'كشف الحساب' },
     { id: 'ratings', label: 'التقييمات والشكاوى' },
     { id: 'activity', label: 'النشاط' },
   ];
@@ -1742,6 +1785,9 @@ function DelegateDrawer({
           )}
           {activeTab === 'expenses' && (
             <ExpensesTab a={a} canManage={canManageExpenses} onAdd={onAddExpense} />
+          )}
+          {activeTab === 'statement' && (
+            <AccountStatementTab a={a} canExport={canExportStatement} />
           )}
           {activeTab === 'ratings' && <RatingsTab a={a} />}
           {activeTab === 'activity' && <ActivityTab a={a} />}
@@ -4202,6 +4248,519 @@ function CustodyStatusDialog({
             {submitting ? 'جارٍ التحديث...' : headlineByStatus[nextStatus]}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Phase 23D — Account Statement tab ────────────────────────────────────
+//
+// Unified per-delegate ledger for collections + settlements +
+// approved expenses + custody movements within a configurable date
+// window. Defaults to "آخر 90 يوم" so the cached page data covers
+// the view without an extra round-trip.
+//
+// Custom ranges that go outside the cached 90-day window trigger a
+// per-delegate re-fetch. The re-fetch is narrow:
+//   • orders        — by `assigned_to = delegate.profileId`
+//   • settlements   — by `delegate_profile_id`
+//   • expenses      — by `delegate_profile_id`
+//   • custody       — by `delegate_profile_id` (no date filter — we
+//                      need every open custody for the summary)
+// Falls back to the cached aggregate slices on any fetch failure
+// (RLS deny, network) so the dispatcher always sees something
+// rather than a hard error.
+//
+// Performance: every query is column-narrowed (no `select('*')`,
+// no `lines`, no images). The fetch is gated on
+// `delegate.profileId` so legacy `delegate_name`-only delegates
+// can't trigger a full-table scan — they just render the cached
+// rows the page already has.
+interface AccountStatementTabProps {
+  a: DelegateAggregate;
+  canExport?: boolean;
+}
+
+interface StatementFetchedSlices {
+  orders: OrderRow[];
+  settlements: SettlementRow[];
+  expenses: ExpenseRow[];
+  custody: CustodyRow[];
+}
+
+function AccountStatementTab({ a, canExport = false }: AccountStatementTabProps) {
+  // Default range — last 90 days, computed once at mount. Matches
+  // the page's primary fetch window so we use cached data without
+  // any extra round-trips.
+  const defaultRange = useMemo(() => resolveRangePreset('last90d'), []);
+
+  const [preset, setPreset] = useState<StatementRangePreset>('last90d');
+  const [fromIso, setFromIso] = useState<string>(defaultRange.fromIso);
+  const [toIso, setToIso] = useState<string>(defaultRange.toIso);
+  const [validationError, setValidationError] = useState<string>('');
+
+  // Fetched slices for ranges that exceed the cached 90-day window.
+  // `null` = "use the page-level aggregate slices" (cache hit).
+  const [extendedSlices, setExtendedSlices] = useState<StatementFetchedSlices | null>(null);
+  const [extendedLoading, setExtendedLoading] = useState(false);
+  const [extendedError, setExtendedError] = useState<string>('');
+
+  // Whether the requested `from` is older than ~90 days ago. The
+  // cached page data only goes back 90 days, so anything older
+  // demands a per-delegate re-fetch. Use a small buffer (3 days) so
+  // a borderline "from = 90 days ago" doesn't double-fetch.
+  const needsExtendedFetch = useMemo(() => {
+    const f = fromIsoDate(fromIso);
+    if (!f) return false;
+    const threshold = Date.now() - 87 * 86_400_000;
+    return f.getTime() < threshold;
+  }, [fromIso]);
+
+  // Re-fetch when the range extends past the cached window. Skips
+  // legacy `delegate_name`-only rows because they have no
+  // `profileId` to anchor the FK queries to — those rows fall back
+  // to the cached page data which already matches by name.
+  useEffect(() => {
+    if (!needsExtendedFetch) {
+      setExtendedSlices(null);
+      setExtendedError('');
+      return;
+    }
+    if (!a.delegate.profileId) {
+      // Legacy delegate, no profile-id-keyed query possible.
+      setExtendedSlices(null);
+      setExtendedError('هذا المندوب سجل قديم بدون ملف. لا يمكن جلب بيانات أقدم من 90 يوم له.');
+      return;
+    }
+    let cancelled = false;
+    setExtendedLoading(true);
+    setExtendedError('');
+    (async () => {
+      const supabase = createClient();
+      // The to-date is end-of-day local; widen by one day so the
+      // server filter is inclusive (Supabase's `lte` is < value
+      // when value carries time = 00:00 UTC). Adding 1 day covers
+      // the timezone gap without needing a custom RPC.
+      const fromTs = new Date(`${fromIso}T00:00:00`).toISOString();
+      const toExclusiveDate = (() => {
+        const t = fromIsoDate(toIso);
+        if (!t) return new Date().toISOString();
+        const next = new Date(t);
+        next.setDate(next.getDate() + 1);
+        return next.toISOString();
+      })();
+      try {
+        const [ordersRes, settlementsRes, expensesRes, custodyRes] = await Promise.all([
+          supabase
+            .from('turath_masr_orders')
+            .select(
+              'id, order_num, customer, region, district, neighborhood, total, shipping_fee, status, date, delegate_name, assigned_to, scheduled_delivery_date, scheduled_delivery_from, scheduled_delivery_to, created_at'
+            )
+            .eq('assigned_to', a.delegate.profileId!)
+            .gte('created_at', fromTs)
+            .lt('created_at', toExclusiveDate)
+            .order('created_at', { ascending: false })
+            .limit(2000),
+          supabase
+            .from('turath_masr_delegate_settlements')
+            .select(
+              'id, delegate_profile_id, delegate_name, amount, method, received_by, received_by_name, note, settled_at, created_at'
+            )
+            .eq('delegate_profile_id', a.delegate.profileId!)
+            .gte('settled_at', fromTs)
+            .lt('settled_at', toExclusiveDate)
+            .order('settled_at', { ascending: false })
+            .limit(2000),
+          supabase
+            .from('turath_masr_delegate_expenses')
+            .select(
+              'id, delegate_profile_id, delegate_name, order_id, expense_type, amount, status, approved_by, approved_by_name, note, expense_at, created_at'
+            )
+            .eq('delegate_profile_id', a.delegate.profileId!)
+            .gte('expense_at', fromTs)
+            .lt('expense_at', toExclusiveDate)
+            .order('expense_at', { ascending: false })
+            .limit(2000),
+          // Custody is NOT date-filtered — we need every row to
+          // compute the open balance correctly.
+          supabase
+            .from('turath_masr_delegate_custody')
+            .select(
+              'id, delegate_profile_id, delegate_name, custody_type, description, quantity, estimated_value, status, handed_by, handed_by_name, received_by, received_by_name, handed_at, returned_at, note, created_at'
+            )
+            .eq('delegate_profile_id', a.delegate.profileId!)
+            .order('handed_at', { ascending: false })
+            .limit(2000),
+        ]);
+        if (cancelled) return;
+        const anyError =
+          ordersRes.error || settlementsRes.error || expensesRes.error || custodyRes.error;
+        if (anyError) {
+          console.warn('[delegates] statement extended fetch partial failure', anyError);
+          // Don't block render — surface a soft warning and fall
+          // back to the cached aggregate slices. RLS denials and
+          // 42P01s land here.
+          setExtendedError(
+            'تعذّر جلب بعض البيانات لهذه الفترة. سيتم العرض من البيانات المتوفرة فقط.'
+          );
+        }
+        setExtendedSlices({
+          orders: (ordersRes.data ?? []) as OrderRow[],
+          settlements: (settlementsRes.data ?? []) as SettlementRow[],
+          expenses: (expensesRes.data ?? []) as ExpenseRow[],
+          custody: (custodyRes.data ?? []) as CustodyRow[],
+        });
+      } catch (e) {
+        if (cancelled) return;
+        console.error('[delegates] statement extended fetch failed', e);
+        setExtendedError('حدث خطأ أثناء جلب البيانات. سيتم العرض من البيانات المتوفرة.');
+        setExtendedSlices(null);
+      } finally {
+        if (!cancelled) setExtendedLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [needsExtendedFetch, fromIso, toIso, a.delegate.profileId]);
+
+  // Validation: from <= to, valid ISO dates.
+  useEffect(() => {
+    if (!isValidRange(fromIso, toIso)) {
+      setValidationError('تاريخ "من" يجب أن يكون قبل أو يساوي تاريخ "إلى".');
+    } else {
+      setValidationError('');
+    }
+  }, [fromIso, toIso]);
+
+  // Pick the source slices to project from.
+  const sourceSlices = extendedSlices ?? {
+    orders: a.ordersForDelegate,
+    settlements: a.settlements,
+    expenses: a.expenses,
+    custody: a.custody,
+  };
+
+  // Project to the slim shapes the helper module accepts.
+  const orderInputs: StatementOrderInput[] = useMemo(
+    () =>
+      sourceSlices.orders.map((o) => ({
+        id: o.id,
+        order_num: o.order_num,
+        customer: o.customer,
+        total: o.total,
+        status: o.status,
+        created_at: o.created_at,
+      })),
+    [sourceSlices.orders]
+  );
+  const settlementInputs: StatementSettlementInput[] = useMemo(
+    () =>
+      sourceSlices.settlements.map((s) => ({
+        id: s.id,
+        amount: Number(s.amount ?? 0),
+        method: s.method,
+        methodLabel: settlementMethodLabel(s.method),
+        note: s.note,
+        settled_at: s.settled_at,
+      })),
+    [sourceSlices.settlements]
+  );
+  const expenseInputs: StatementExpenseInput[] = useMemo(
+    () =>
+      sourceSlices.expenses.map((e) => ({
+        id: e.id,
+        amount: Number(e.amount ?? 0),
+        expense_type: e.expense_type,
+        expenseTypeLabel: expenseTypeLabel(e.expense_type),
+        status: e.status,
+        order_id: e.order_id,
+        note: e.note,
+        expense_at: e.expense_at,
+      })),
+    [sourceSlices.expenses]
+  );
+  const custodyInputs: StatementCustodyInput[] = useMemo(
+    () =>
+      sourceSlices.custody.map((c) => ({
+        id: c.id,
+        custody_type: c.custody_type,
+        custodyTypeLabel: custodyTypeLabel(c.custody_type),
+        description: c.description,
+        quantity: c.quantity,
+        estimated_value: c.estimated_value,
+        status: c.status,
+        handed_at: c.handed_at,
+        returned_at: c.returned_at,
+        note: c.note,
+      })),
+    [sourceSlices.custody]
+  );
+
+  // Build the unified row list + summary. Memoised so a noisy
+  // parent re-render doesn't recompute on every keystroke.
+  const rows: DelegateStatementRow[] = useMemo(
+    () =>
+      isValidRange(fromIso, toIso)
+        ? buildStatementRows(fromIso, toIso, {
+            orders: orderInputs,
+            settlements: settlementInputs,
+            expenses: expenseInputs,
+            custody: custodyInputs,
+          })
+        : [],
+    [fromIso, toIso, orderInputs, settlementInputs, expenseInputs, custodyInputs]
+  );
+
+  const summary: DelegateStatementSummary = useMemo(
+    () => summariseStatement(fromIso, toIso, rows, custodyInputs),
+    [fromIso, toIso, rows, custodyInputs]
+  );
+
+  const days = rangeDays(fromIso, toIso);
+  const longRange = days > 365;
+
+  const applyPreset = (next: StatementRangePreset) => {
+    setPreset(next);
+    if (next === 'custom') return;
+    const r = resolveRangePreset(next);
+    setFromIso(r.fromIso);
+    setToIso(r.toIso);
+  };
+
+  const handleExport = () => {
+    if (!canExport) return;
+    if (!isValidRange(fromIso, toIso)) return;
+    const csv = toCsv({ name: a.delegate.name }, summary, rows);
+    downloadCsv(csvFilename(a.delegate.name, fromIso, toIso), csv);
+  };
+
+  const handlePrint = () => {
+    if (typeof window !== 'undefined') {
+      window.print();
+    }
+  };
+
+  const debitTotal = rows.reduce((s, r) => s + r.debit, 0);
+  const creditTotal = rows.reduce((s, r) => s + r.credit, 0);
+
+  return (
+    <div className="space-y-4">
+      {/* Range controls */}
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-1 bg-[hsl(var(--muted))]/40 rounded-xl p-1 w-fit">
+          {(
+            ['today', 'week', 'month', 'last90d', 'custom'] as ReadonlyArray<StatementRangePreset>
+          ).map((p) => (
+            <button
+              key={p}
+              type="button"
+              onClick={() => applyPreset(p)}
+              className={`px-3 py-1 text-xs font-semibold rounded-lg transition-colors ${
+                preset === p
+                  ? 'bg-white text-[hsl(var(--foreground))] shadow-sm'
+                  : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'
+              }`}
+            >
+              {RANGE_PRESET_LABELS[p]}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+              من تاريخ
+            </label>
+            <input
+              type="date"
+              value={fromIso}
+              onChange={(e) => {
+                setFromIso(e.target.value);
+                setPreset('custom');
+              }}
+              className="input-field"
+              dir="ltr"
+            />
+          </div>
+          <div>
+            <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+              إلى تاريخ
+            </label>
+            <input
+              type="date"
+              value={toIso}
+              onChange={(e) => {
+                setToIso(e.target.value);
+                setPreset('custom');
+              }}
+              className="input-field"
+              dir="ltr"
+            />
+          </div>
+          <div className="flex flex-wrap gap-2 ml-auto print:hidden">
+            <button
+              type="button"
+              onClick={handlePrint}
+              className="inline-flex items-center gap-1 px-3 py-2 bg-[hsl(var(--muted))] hover:bg-[hsl(var(--muted))]/70 text-[hsl(var(--foreground))] text-xs font-semibold rounded-xl"
+            >
+              <Printer size={12} /> طباعة
+            </button>
+            {canExport && (
+              <button
+                type="button"
+                onClick={handleExport}
+                className="inline-flex items-center gap-1 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-xl"
+                disabled={!!validationError || rows.length === 0}
+              >
+                <Download size={12} /> تصدير CSV
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Validation + range warnings */}
+        {validationError && (
+          <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-700 flex items-start gap-2">
+            <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+            <span>{validationError}</span>
+          </div>
+        )}
+        {!validationError && longRange && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800 flex items-start gap-2">
+            <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+            <span>قد يستغرق الكشف لفترة طويلة وقتًا أطول. الفترة الحالية {days} يوم.</span>
+          </div>
+        )}
+        {!validationError && extendedError && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800 flex items-start gap-2">
+            <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+            <span>{extendedError}</span>
+          </div>
+        )}
+        {extendedLoading && (
+          <p className="text-xs text-[hsl(var(--muted-foreground))]">جاري تحميل البيانات...</p>
+        )}
+      </div>
+
+      {/* Summary cards */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+        <div className="rounded-2xl border border-[hsl(var(--border))] bg-white p-4">
+          <p className="text-[11px] font-bold text-[hsl(var(--muted-foreground))] mb-1">
+            إجمالي التحصيلات
+          </p>
+          <p className="text-lg font-bold">{fmtMoney(summary.totalCollected)}</p>
+        </div>
+        <div className="rounded-2xl border border-[hsl(var(--border))] bg-white p-4">
+          <p className="text-[11px] font-bold text-[hsl(var(--muted-foreground))] mb-1">
+            إجمالي التوريدات
+          </p>
+          <p className="text-lg font-bold text-emerald-700">{fmtMoney(summary.totalSettled)}</p>
+        </div>
+        <div className="rounded-2xl border border-[hsl(var(--border))] bg-white p-4">
+          <p className="text-[11px] font-bold text-[hsl(var(--muted-foreground))] mb-1">
+            إجمالي المصاريف المعتمدة
+          </p>
+          <p className="text-lg font-bold text-orange-700">
+            {fmtMoney(summary.totalApprovedExpenses)}
+          </p>
+        </div>
+        <div
+          className={`rounded-2xl border p-4 ${
+            summary.financialRemaining > 0
+              ? 'bg-amber-50 border-amber-200'
+              : summary.financialRemaining < 0
+                ? 'bg-emerald-50 border-emerald-200'
+                : 'bg-white border-[hsl(var(--border))]'
+          }`}
+        >
+          <p className="text-[11px] font-bold mb-1 opacity-80">المتبقي المالي</p>
+          <p className="text-lg font-bold">
+            {summary.financialRemaining < 0
+              ? `${fmtMoney(Math.abs(summary.financialRemaining))} (زائد)`
+              : fmtMoney(summary.financialRemaining)}
+          </p>
+        </div>
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+          <p className="text-[11px] font-bold text-amber-800 mb-1">قيمة الأمانات الحالية</p>
+          <p className="text-lg font-bold text-amber-900">{fmtMoney(summary.activeCustodyValue)}</p>
+          <p className="text-[10px] text-amber-700 mt-1">(مستقلة عن الفترة)</p>
+        </div>
+        <div className="rounded-2xl border border-[hsl(var(--border))] bg-white p-4">
+          <p className="text-[11px] font-bold text-[hsl(var(--muted-foreground))] mb-1">
+            عدد الأمانات المفتوحة
+          </p>
+          <p className="text-lg font-bold">{summary.openCustodyCount}</p>
+        </div>
+      </div>
+
+      {/* Movements table */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <h4 className="text-sm font-bold">حركات الفترة</h4>
+          <p className="text-[11px] text-[hsl(var(--muted-foreground))]">
+            مدين: {fmtMoney(debitTotal)} — دائن: {fmtMoney(creditTotal)}
+          </p>
+        </div>
+
+        {rows.length === 0 ? (
+          <p className="text-sm text-[hsl(var(--muted-foreground))]">
+            لا توجد حركات في الفترة المحددة.
+          </p>
+        ) : (
+          <div className="overflow-x-auto scrollbar-thin">
+            <table className="w-full min-w-[820px] text-sm">
+              <thead>
+                <tr>
+                  {['التاريخ', 'النوع', 'المرجع', 'الوصف', 'مدين', 'دائن', 'ملاحظة'].map((h) => (
+                    <th key={h} className="table-header text-right">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[hsl(var(--border))]">
+                {rows.map((r) => {
+                  // Tone the row by type so the dispatcher can scan
+                  // money flow at a glance.
+                  const tone =
+                    r.type === 'collection'
+                      ? 'text-blue-700'
+                      : r.type === 'settlement'
+                        ? 'text-emerald-700'
+                        : r.type === 'expense'
+                          ? 'text-orange-700'
+                          : 'text-[hsl(var(--muted-foreground))]';
+                  return (
+                    <tr key={r.id} className="hover:bg-[hsl(var(--muted))]/30">
+                      <td className="table-cell text-xs">{formatDateAr(r.date)}</td>
+                      <td className={`table-cell text-xs font-semibold ${tone}`}>{r.label}</td>
+                      <td className="table-cell font-mono text-xs">{r.reference || '—'}</td>
+                      <td className="table-cell text-xs">{r.description}</td>
+                      <td className="table-cell font-mono text-xs">
+                        {r.debit > 0 ? (
+                          <span className="text-blue-700 font-bold">{fmtMoney(r.debit)}</span>
+                        ) : (
+                          <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                        )}
+                      </td>
+                      <td className="table-cell font-mono text-xs">
+                        {r.credit > 0 ? (
+                          <span className="text-emerald-700 font-bold">{fmtMoney(r.credit)}</span>
+                        ) : (
+                          <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                        )}
+                      </td>
+                      <td className="table-cell text-xs text-[hsl(var(--muted-foreground))]">
+                        {r.note || '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
