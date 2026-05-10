@@ -1476,7 +1476,18 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
                     'السبت',
                   ];
                   foundHistory = data.statusTimeline.map(
-                    (e: { status: string; changedAt: string }) => {
+                    (e: {
+                      status: string;
+                      changedAt: string;
+                      // Phase 22P — customer-safe return reason
+                      // surfaced by the
+                      // `get_tracking_timeline_by_token` RPC. Null
+                      // for non-returned events and for legacy
+                      // timelines (the field is also harmlessly
+                      // absent until the Phase 22P migration is
+                      // applied).
+                      returnReason?: string | null;
+                    }) => {
                       const ts = new Date(e.changedAt);
                       const time = ts.toLocaleTimeString('en-US', {
                         hour: '2-digit',
@@ -1485,12 +1496,24 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
                         hour12: false,
                       });
                       const date = `${days[ts.getDay()]} ${ts.toLocaleDateString('en-GB')}`;
+                      // Phase 22P — for the `returned` status prefer
+                      // the actual return reason the admin entered;
+                      // it's the piece of context a customer cares
+                      // about ("لماذا تم إرجاع طلبي؟"). Falls back
+                      // to the generic STATUS_CONFIG description
+                      // when the reason is missing (legacy rows or
+                      // pre-migration timelines), so the visible
+                      // step never goes blank.
+                      const description =
+                        e.status === 'returned' && e.returnReason
+                          ? e.returnReason
+                          : STATUS_CONFIG[e.status]?.description || '';
                       return {
                         status: e.status,
                         label: STATUS_CONFIG[e.status]?.label || e.status,
                         time,
                         date,
-                        note: STATUS_CONFIG[e.status]?.description || '',
+                        note: description,
                       };
                     }
                   );

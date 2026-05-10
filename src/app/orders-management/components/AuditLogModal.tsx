@@ -3,6 +3,11 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { X, Clock, User, Edit2, RefreshCw, AlertCircle } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { UserStamp } from '@/components/UserStamp';
+// Phase 22P — split structured `{ reason, note }` payloads in the
+// audit log timeline so cancellation / return reasons stand apart
+// from free-form admin notes. Legacy plain-text rows fall through
+// to a single italic quote (same look as pre-Phase-22P).
+import { parseAuditNote } from '@/lib/orders/auditNote';
 
 export interface AuditEntry {
   id: string;
@@ -286,9 +291,35 @@ export default function AuditLogModal({ orderId, orderNum, onClose }: Props) {
                             )}
                           </div>
                         )}
-                        {log.note && (
-                          <p className="text-xs mt-1.5 italic opacity-80">"{log.note}"</p>
-                        )}
+                        {/* Phase 22P — render reason + note from the
+                            structured JSON envelope when present;
+                            fall back to plain text for legacy rows
+                            (`parsed.raw`). */}
+                        {(() => {
+                          const parsed = parseAuditNote(log.note);
+                          if (!parsed.reason && !parsed.note && !parsed.raw) return null;
+                          return (
+                            <div className="text-xs mt-1.5 space-y-0.5">
+                              {parsed.reason && (
+                                <p className="leading-snug">
+                                  <span className="font-bold opacity-80">سبب الإرجاع:</span>{' '}
+                                  <span className="italic opacity-80">{parsed.reason}</span>
+                                </p>
+                              )}
+                              {parsed.note && (
+                                <p className="leading-snug">
+                                  <span className="font-bold opacity-80">ملاحظة:</span>{' '}
+                                  <span className="italic opacity-80">{parsed.note}</span>
+                                </p>
+                              )}
+                              {parsed.raw && (
+                                <p className="italic opacity-80 leading-snug">
+                                  &ldquo;{parsed.raw}&rdquo;
+                                </p>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </div>
                     </div>
                   );

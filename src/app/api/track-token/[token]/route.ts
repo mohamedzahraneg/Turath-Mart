@@ -93,7 +93,13 @@ interface TrackingDTO {
   date: string | null;
   createdAt: string | null;
   updatedAt: string | null;
-  statusTimeline: Array<{ status: string; changedAt: string }>;
+  // Phase 22P — `returnReason` is the customer-safe extract of the
+  // structured `note` payload. Populated only for status='returned'
+  // rows by the `get_tracking_timeline_by_token` RPC; null/undefined
+  // otherwise (and for legacy plain-text notes that don't carry the
+  // JSON envelope). Free-form admin notes remain redacted server-side
+  // and never reach this DTO.
+  statusTimeline: Array<{ status: string; changedAt: string; returnReason?: string | null }>;
 }
 
 // Strict 8-4-4-4-12 hex UUID. We do NOT enforce a specific UUID version
@@ -209,10 +215,16 @@ export async function GET(_request: Request, context: { params: Promise<{ token:
     createdAt: row.created_at ?? null,
     updatedAt: row.updated_at ?? null,
     statusTimeline: Array.isArray(timelineRows)
-      ? timelineRows.map((t: { new_status: string; changed_at: string }) => ({
-          status: t.new_status,
-          changedAt: t.changed_at,
-        }))
+      ? timelineRows.map(
+          (t: { new_status: string; changed_at: string; return_reason?: string | null }) => ({
+            status: t.new_status,
+            changedAt: t.changed_at,
+            // Phase 22P — pass through the RPC's `return_reason` (NULL
+            // until the Phase 22P migration is applied; the page
+            // render is defensive against undefined either way).
+            returnReason: t.return_reason ?? null,
+          })
+        )
       : [],
   };
 

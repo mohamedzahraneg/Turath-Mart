@@ -1530,7 +1530,16 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
                     'السبت',
                   ];
                   foundHistory = data.statusTimeline.map(
-                    (e: { status: string; changedAt: string }) => {
+                    (e: {
+                      status: string;
+                      changedAt: string;
+                      // Phase 22P — customer-safe return reason
+                      // surfaced by the `get_tracking_timeline` RPC.
+                      // Null for non-returned events and for legacy
+                      // timelines (also harmlessly absent until the
+                      // Phase 22P migration is applied).
+                      returnReason?: string | null;
+                    }) => {
                       const ts = new Date(e.changedAt);
                       const time = ts.toLocaleTimeString('en-US', {
                         hour: '2-digit',
@@ -1539,12 +1548,20 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
                         hour12: false,
                       });
                       const date = `${days[ts.getDay()]} ${ts.toLocaleDateString('en-GB')}`;
+                      // Phase 22P — for `returned`, prefer the
+                      // admin-entered reason over the generic
+                      // STATUS_CONFIG description so customers see
+                      // the actual context.
+                      const description =
+                        e.status === 'returned' && e.returnReason
+                          ? e.returnReason
+                          : STATUS_CONFIG[e.status]?.description || '';
                       return {
                         status: e.status,
                         label: STATUS_CONFIG[e.status]?.label || e.status,
                         time,
                         date,
-                        note: STATUS_CONFIG[e.status]?.description || '',
+                        note: description,
                       };
                     }
                   );
