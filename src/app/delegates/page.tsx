@@ -51,6 +51,11 @@ import {
   FileText,
   Download,
   Printer,
+  Upload,
+  Eye,
+  Archive,
+  FileImage,
+  FileWarning,
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import { createClient } from '@/lib/supabase/client';
@@ -99,6 +104,29 @@ import {
   EXPENSE_STATUS_TONE,
   expenseStatusLabel,
 } from '@/lib/delegates/expenseTypes';
+// Phase 23I — document type tokens + Arabic labels + upload validation
+// helpers, plus the per-delegate alert rollup that drives the new
+// KPIs / filter pills / row-level badge.
+import {
+  DOCUMENT_TYPE_TOKENS,
+  DOCUMENT_TYPE_LABELS_AR,
+  documentTypeLabel,
+  type DocumentType,
+  REQUIRED_DOCUMENT_TYPES,
+  OPTIONAL_DOCUMENT_TYPES,
+  ACCEPTED_MIME_TYPES,
+  MAX_UPLOAD_BYTES,
+  isAcceptedMime,
+  sanitizeFilename,
+  buildStoragePath,
+} from '@/lib/delegates/documentTypes';
+import {
+  computeDelegateAlert,
+  ALERT_LEVEL_TONE,
+  ALERT_LEVEL_LABEL_AR,
+  type DelegateAlertLevel,
+  type DelegateAlertSummary,
+} from '@/lib/delegates/licenseAlert';
 // Phase 23D — pure helpers for the account-statement tab + CSV.
 import {
   RANGE_PRESET_LABELS,
@@ -240,6 +268,29 @@ interface CustodyRow {
 // Phase 23C — expense (مصروف) row. Same migration; `expense_at`
 // is the real-world date (back-datable), `created_at` is the
 // immutable record-creation timestamp.
+// Phase 23I — delegate document row (metadata only — file bytes
+// live in the private storage bucket `delegate-documents`).
+// Pre-migration the relation doesn't exist; the page swallows the
+// 42P01 and falls back to an empty list so the documents tab still
+// renders the placeholder.
+interface DocumentRow {
+  id: string;
+  delegate_profile_id: string | null;
+  delegate_name: string | null;
+  document_type: string;
+  file_path: string;
+  file_name: string | null;
+  mime_type: string | null;
+  size_bytes: number | null;
+  uploaded_by: string | null;
+  uploaded_by_name: string | null;
+  uploaded_at: string;
+  expires_at: string | null;
+  note: string | null;
+  status: string;
+  created_at: string;
+}
+
 interface ExpenseRow {
   id: string;
   delegate_profile_id: string | null;
@@ -303,6 +354,15 @@ interface DelegateAggregate {
   expenses: ExpenseRow[];
   approvedExpensesTotal: number;
   adjustedRemaining: number;
+  // Phase 23I — document metadata + alert rollup.
+  //   documents          — every metadata row for this delegate
+  //                         (active + archived) so the documents tab
+  //                         can render history. Empty array pre-
+  //                         migration / on RLS deny.
+  //   alert              — DelegateAlertSummary with the page-level
+  //                         filter / KPI / row-badge level.
+  documents: DocumentRow[];
+  alert: DelegateAlertSummary;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -420,6 +480,12 @@ export default function DelegatesPage() {
   const canManageDelegates = perms.isAdmin;
   const canManageDelegateFinance = perms.isAdmin;
   const canExportDelegateStatement = perms.isAdmin;
+  // Phase 23I — document upload / replace / archive is admin-only
+  // (matches the `documents_admin_*` storage + table policies). r3
+  // (shipping supervisor) sees the documents tab via the new
+  // `documents_finance_reader_select` SELECT policy but can't
+  // mutate.
+  const canManageDelegateDocuments = perms.isAdmin;
   // Aliases retained so existing call-sites that already speak the
   // older vocabulary continue to compile without churn. They all
   // resolve to the same bool — admin-only, both UI + RLS-enforced.
@@ -440,6 +506,11 @@ export default function DelegatesPage() {
   // both fall back to empty arrays.
   const [custody, setCustody] = useState<CustodyRow[]>([]);
   const [expenses, setExpenses] = useState<ExpenseRow[]>([]);
+  // Phase 23I — document metadata. Pre-migration the relation does
+  // not exist; the loader below tolerates the 42P01 + RLS-deny and
+  // falls through to an empty list so the documents tab renders
+  // the "ميزة المستندات غير مفعّلة بعد" placeholder cleanly.
+  const [documents, setDocuments] = useState<DocumentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -456,6 +527,7 @@ export default function DelegatesPage() {
     | 'settlements'
     | 'custody'
     | 'expenses'
+    | 'documents' // Phase 23I
     | 'statement'
     | 'ratings'
     | 'activity'
@@ -494,6 +566,12 @@ export default function DelegatesPage() {
   // rows have a null active flag; we treat them as active for
   // filter purposes (they were never explicitly deactivated).
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  // Phase 23I — license-alert filter. Independent from the
+  // active/inactive filter so dispatchers can combine "نشط +
+  // مستندات ناقصة" naturally.
+  const [alertFilter, setAlertFilter] = useState<
+    'all' | 'valid' | 'expiring' | 'expired' | 'missing_docs'
+  >('all');
   // Phase 23B — register-settlement modal target (`null` when closed).
   const [settlementTargetKey, setSettlementTargetKey] = useState<string | null>(null);
   // Phase 23C — add-custody and add-expense modal targets. The
@@ -537,109 +615,136 @@ export default function DelegatesPage() {
       const supabase = createClient();
       const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
       try {
-        const [profilesRes, ordersRes, ratingsRes, settlementsRes, custodyRes, expensesRes] =
-          await Promise.all([
-            // Phase 23A-Fix1 — request the new operational columns.
-            // Pre-migration the columns don't exist yet; the SELECT
-            // will surface a 42703 error which the catch arm below
-            // swallows so the page still renders the legacy fields.
-            supabase
-              .from('profiles')
-              .select(
-                'id, full_name, email, role_id, role_name, phone, national_id, transport_type, vehicle_license_number, vehicle_license_starts_at, vehicle_license_expires_at, driving_license_number, driving_license_starts_at, driving_license_expires_at, delegate_is_active'
-              )
-              .in('role_id', ['r3', 'r4']),
-            supabase
-              .from('turath_masr_orders')
-              .select(
-                'id, order_num, customer, region, district, neighborhood, total, shipping_fee, status, date, delegate_name, assigned_to, scheduled_delivery_date, scheduled_delivery_from, scheduled_delivery_to, created_at'
-              )
-              .gte('created_at', since)
-              .order('created_at', { ascending: false }),
-            // Ratings table may not exist yet (migration staged). The
-            // try/catch guard below tolerates the 42P01 missing-table
-            // error and falls back to an empty list so the page still
-            // renders.
-            supabase
-              .from('turath_masr_delegate_ratings')
-              .select('id, order_id, delegate_name, assigned_to, rating, comment, created_at')
-              .order('created_at', { ascending: false })
-              .limit(500)
-              .then(
-                (r: { data: RatingRow[] | null; error: unknown }) => r,
-                (err: unknown) => ({
-                  data: null as RatingRow[] | null,
-                  error: err,
-                })
-              ),
-            // Phase 23B — settlements. Same defensive shape as the
-            // ratings fetch: pre-migration the relation does not exist
-            // and we fall through to an empty array. Post-migration
-            // an admin (RLS gates SELECT on `is_admin()`) gets the
-            // full timeline; non-admins get an empty array silently.
-            // Cap at 1000 rows to bound the page; aggregate matching
-            // is per-delegate and fits well inside that ceiling at
-            // current scale.
-            supabase
-              .from('turath_masr_delegate_settlements')
-              // Phase 23E — request the new void metadata columns.
-              // Pre-migration the SELECT surfaces 42703 ("column
-              // does not exist") and the catch arm below falls
-              // through to an empty list — same defensive shape
-              // as the original 23B fetch.
-              .select(
-                'id, delegate_profile_id, delegate_name, amount, method, received_by, received_by_name, note, settled_at, created_at, status, void_reason, voided_at, voided_by, voided_by_name, updated_at'
-              )
-              .order('settled_at', { ascending: false })
-              .limit(1000)
-              .then(
-                (r: { data: SettlementRow[] | null; error: unknown }) => r,
-                (err: unknown) => ({
-                  data: null as SettlementRow[] | null,
-                  error: err,
-                })
-              ),
-            // Phase 23C — custody. NOT date-limited because we want
-            // the "active custody value" KPI to include rows handed
-            // over months ago that are still `with_delegate`. Cap at
-            // 1000 rows for safety; far above any realistic scale.
-            // Phase 23E — adds the void metadata columns.
-            supabase
-              .from('turath_masr_delegate_custody')
-              .select(
-                'id, delegate_profile_id, delegate_name, custody_type, description, quantity, estimated_value, status, handed_by, handed_by_name, received_by, received_by_name, handed_at, returned_at, note, created_at, void_reason, voided_at, voided_by, voided_by_name, updated_at'
-              )
-              .order('handed_at', { ascending: false })
-              .limit(1000)
-              .then(
-                (r: { data: CustodyRow[] | null; error: unknown }) => r,
-                (err: unknown) => ({
-                  data: null as CustodyRow[] | null,
-                  error: err,
-                })
-              ),
-            // Phase 23C — expenses. Date-bounded to the same 90-day
-            // window as orders/ratings/settlements so the page
-            // numbers stay consistent. Older rows still exist in the
-            // DB; a future "تقرير حساب المندوب" view can fetch them.
-            // Phase 23E — adds the void metadata columns.
-            // Phase 23G — adds the review metadata columns.
-            supabase
-              .from('turath_masr_delegate_expenses')
-              .select(
-                'id, delegate_profile_id, delegate_name, order_id, expense_type, amount, status, approved_by, approved_by_name, note, expense_at, created_at, void_reason, voided_at, voided_by, voided_by_name, updated_at, review_reason, reviewed_at, reviewed_by, reviewed_by_name'
-              )
-              .gte('expense_at', since)
-              .order('expense_at', { ascending: false })
-              .limit(1000)
-              .then(
-                (r: { data: ExpenseRow[] | null; error: unknown }) => r,
-                (err: unknown) => ({
-                  data: null as ExpenseRow[] | null,
-                  error: err,
-                })
-              ),
-          ]);
+        const [
+          profilesRes,
+          ordersRes,
+          ratingsRes,
+          settlementsRes,
+          custodyRes,
+          expensesRes,
+          documentsRes,
+        ] = await Promise.all([
+          // Phase 23A-Fix1 — request the new operational columns.
+          // Pre-migration the columns don't exist yet; the SELECT
+          // will surface a 42703 error which the catch arm below
+          // swallows so the page still renders the legacy fields.
+          supabase
+            .from('profiles')
+            .select(
+              'id, full_name, email, role_id, role_name, phone, national_id, transport_type, vehicle_license_number, vehicle_license_starts_at, vehicle_license_expires_at, driving_license_number, driving_license_starts_at, driving_license_expires_at, delegate_is_active'
+            )
+            .in('role_id', ['r3', 'r4']),
+          supabase
+            .from('turath_masr_orders')
+            .select(
+              'id, order_num, customer, region, district, neighborhood, total, shipping_fee, status, date, delegate_name, assigned_to, scheduled_delivery_date, scheduled_delivery_from, scheduled_delivery_to, created_at'
+            )
+            .gte('created_at', since)
+            .order('created_at', { ascending: false }),
+          // Ratings table may not exist yet (migration staged). The
+          // try/catch guard below tolerates the 42P01 missing-table
+          // error and falls back to an empty list so the page still
+          // renders.
+          supabase
+            .from('turath_masr_delegate_ratings')
+            .select('id, order_id, delegate_name, assigned_to, rating, comment, created_at')
+            .order('created_at', { ascending: false })
+            .limit(500)
+            .then(
+              (r: { data: RatingRow[] | null; error: unknown }) => r,
+              (err: unknown) => ({
+                data: null as RatingRow[] | null,
+                error: err,
+              })
+            ),
+          // Phase 23B — settlements. Same defensive shape as the
+          // ratings fetch: pre-migration the relation does not exist
+          // and we fall through to an empty array. Post-migration
+          // an admin (RLS gates SELECT on `is_admin()`) gets the
+          // full timeline; non-admins get an empty array silently.
+          // Cap at 1000 rows to bound the page; aggregate matching
+          // is per-delegate and fits well inside that ceiling at
+          // current scale.
+          supabase
+            .from('turath_masr_delegate_settlements')
+            // Phase 23E — request the new void metadata columns.
+            // Pre-migration the SELECT surfaces 42703 ("column
+            // does not exist") and the catch arm below falls
+            // through to an empty list — same defensive shape
+            // as the original 23B fetch.
+            .select(
+              'id, delegate_profile_id, delegate_name, amount, method, received_by, received_by_name, note, settled_at, created_at, status, void_reason, voided_at, voided_by, voided_by_name, updated_at'
+            )
+            .order('settled_at', { ascending: false })
+            .limit(1000)
+            .then(
+              (r: { data: SettlementRow[] | null; error: unknown }) => r,
+              (err: unknown) => ({
+                data: null as SettlementRow[] | null,
+                error: err,
+              })
+            ),
+          // Phase 23C — custody. NOT date-limited because we want
+          // the "active custody value" KPI to include rows handed
+          // over months ago that are still `with_delegate`. Cap at
+          // 1000 rows for safety; far above any realistic scale.
+          // Phase 23E — adds the void metadata columns.
+          supabase
+            .from('turath_masr_delegate_custody')
+            .select(
+              'id, delegate_profile_id, delegate_name, custody_type, description, quantity, estimated_value, status, handed_by, handed_by_name, received_by, received_by_name, handed_at, returned_at, note, created_at, void_reason, voided_at, voided_by, voided_by_name, updated_at'
+            )
+            .order('handed_at', { ascending: false })
+            .limit(1000)
+            .then(
+              (r: { data: CustodyRow[] | null; error: unknown }) => r,
+              (err: unknown) => ({
+                data: null as CustodyRow[] | null,
+                error: err,
+              })
+            ),
+          // Phase 23C — expenses. Date-bounded to the same 90-day
+          // window as orders/ratings/settlements so the page
+          // numbers stay consistent. Older rows still exist in the
+          // DB; a future "تقرير حساب المندوب" view can fetch them.
+          // Phase 23E — adds the void metadata columns.
+          // Phase 23G — adds the review metadata columns.
+          supabase
+            .from('turath_masr_delegate_expenses')
+            .select(
+              'id, delegate_profile_id, delegate_name, order_id, expense_type, amount, status, approved_by, approved_by_name, note, expense_at, created_at, void_reason, voided_at, voided_by, voided_by_name, updated_at, review_reason, reviewed_at, reviewed_by, reviewed_by_name'
+            )
+            .gte('expense_at', since)
+            .order('expense_at', { ascending: false })
+            .limit(1000)
+            .then(
+              (r: { data: ExpenseRow[] | null; error: unknown }) => r,
+              (err: unknown) => ({
+                data: null as ExpenseRow[] | null,
+                error: err,
+              })
+            ),
+          // Phase 23I — delegate documents metadata. NOT date-
+          // limited (a passport scan from 2 years ago is still
+          // valid). Cap at 5000 rows for safety. Pre-migration
+          // the table doesn't exist; the catch arm below swallows
+          // 42P01 and falls through to an empty list so the
+          // documents tab renders the placeholder cleanly.
+          supabase
+            .from('turath_masr_delegate_documents')
+            .select(
+              'id, delegate_profile_id, delegate_name, document_type, file_path, file_name, mime_type, size_bytes, uploaded_by, uploaded_by_name, uploaded_at, expires_at, note, status, created_at'
+            )
+            .order('uploaded_at', { ascending: false })
+            .limit(5000)
+            .then(
+              (r: { data: DocumentRow[] | null; error: unknown }) => r,
+              (err: unknown) => ({
+                data: null as DocumentRow[] | null,
+                error: err,
+              })
+            ),
+        ]);
         if (cancelled) return;
 
         if (profilesRes.error) {
@@ -771,6 +876,20 @@ export default function DelegatesPage() {
         }
         setExpenses(expensesData);
 
+        // Phase 23I — same defensive pattern for documents. Pre-
+        // migration the relation doesn't exist; a non-admin /
+        // non-finance-reader hits a 42501 RLS deny. Either way,
+        // empty list keeps the documents tab rendering the
+        // placeholder cleanly.
+        const documentsData =
+          documentsRes && 'error' in documentsRes && documentsRes.error
+            ? []
+            : ((documentsRes as { data: DocumentRow[] | null }).data ?? []);
+        if (documentsRes && 'error' in documentsRes && documentsRes.error) {
+          console.warn('[delegates] documents fetch unavailable', documentsRes.error);
+        }
+        setDocuments(documentsData);
+
         setLoading(false);
       } catch (e) {
         if (cancelled) return;
@@ -896,6 +1015,25 @@ export default function DelegatesPage() {
       // surfaced but never auto-deducted).
       const adjustedRemaining = totalCollected - totalSettled - approvedExpensesTotal;
 
+      // Phase 23I — documents + alert rollup. We only consider
+      // `active` rows for the completeness check; archived rows
+      // shouldn't satisfy a required-document slot.
+      const documentsForDelegate = documents.filter((doc) => {
+        if (d.profileId && doc.delegate_profile_id === d.profileId) return true;
+        return false;
+      });
+      const activeDocumentTypes = new Set<string>(
+        documentsForDelegate
+          .filter((doc) => doc.status === 'active')
+          .map((doc) => doc.document_type)
+      );
+      const alert = computeDelegateAlert({
+        vehicleLicenseExpiresAt: d.vehicleLicenseExpiresAt,
+        drivingLicenseExpiresAt: d.drivingLicenseExpiresAt,
+        activeDocumentTypes,
+        hasProfile: d.hasProfile,
+      });
+
       return {
         delegate: d,
         inFlight,
@@ -917,9 +1055,11 @@ export default function DelegatesPage() {
         expenses: expensesForDelegate,
         approvedExpensesTotal,
         adjustedRemaining,
+        documents: documentsForDelegate,
+        alert,
       };
     });
-  }, [profiles, orders, ratings, settlements, custody, expenses]);
+  }, [profiles, orders, ratings, settlements, custody, expenses, documents]);
 
   const kpis = useMemo(() => {
     const today = new Date();
@@ -1003,13 +1143,30 @@ export default function DelegatesPage() {
   // Phase 23A-Fix2 — apply the active/inactive filter at render
   // time. Legacy delegate_name-only rows have `delegateIsActive`
   // null and are bucketed as "active" (never explicitly disabled).
+  // Phase 23I — chains the license-alert filter on top so the two
+  // dimensions (active state + license alert) compose cleanly.
   const visibleAggregates = useMemo(() => {
-    if (statusFilter === 'all') return aggregates;
-    return aggregates.filter((a) => {
-      const isInactive = a.delegate.delegateIsActive === false;
-      return statusFilter === 'inactive' ? isInactive : !isInactive;
-    });
-  }, [aggregates, statusFilter]);
+    let out = aggregates;
+    if (statusFilter !== 'all') {
+      out = out.filter((a) => {
+        const isInactive = a.delegate.delegateIsActive === false;
+        return statusFilter === 'inactive' ? isInactive : !isInactive;
+      });
+    }
+    if (alertFilter !== 'all') {
+      out = out.filter((a) => a.alert.level === alertFilter);
+    }
+    return out;
+  }, [aggregates, statusFilter, alertFilter]);
+
+  // Phase 23I — global license-alert KPI counts derived off the
+  // unfiltered aggregate set so the KPI cards reflect the dataset
+  // before any filter is applied.
+  const alertCounts = useMemo(() => {
+    const c = { expired: 0, expiring: 0, missing_docs: 0, valid: 0, unknown: 0 };
+    for (const a of aggregates) c[a.alert.level] += 1;
+    return c;
+  }, [aggregates]);
 
   // Phase 23A-Fix2 — resolve the edit/toggle target rows from their
   // keys so child components can prefill cleanly without prop-drilling.
@@ -1150,35 +1307,90 @@ export default function DelegatesPage() {
           />
         </div>
 
+        {/* Phase 23I — license / document alert KPI row. */}
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <KpiCard
+            icon={<FileWarning size={18} className="text-red-600" />}
+            label="رخص منتهية"
+            value={alertCounts.expired}
+          />
+          <KpiCard
+            icon={<CalendarClock size={18} className="text-amber-600" />}
+            label="تنتهي خلال 30 يوم"
+            value={alertCounts.expiring}
+          />
+          <KpiCard
+            icon={<FileText size={18} className="text-blue-600" />}
+            label="مستندات ناقصة"
+            value={alertCounts.missing_docs}
+          />
+        </div>
+
         {/* Delegates table */}
         <div className="card-section overflow-hidden">
-          <div className="px-5 py-3 border-b border-[hsl(var(--border))] bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <h2 className="text-base font-bold text-[hsl(var(--foreground))]">قائمة المناديب</h2>
-            {/* Phase 23A-Fix2 — quick filter for active / inactive
-                delegates. Counts are computed off `aggregates` so the
-                tab labels reflect the dataset before filtering. */}
-            <div className="flex items-center gap-1 bg-[hsl(var(--muted))]/40 rounded-xl p-1 self-end sm:self-auto">
+          <div className="px-5 py-3 border-b border-[hsl(var(--border))] bg-white flex flex-col gap-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <h2 className="text-base font-bold text-[hsl(var(--foreground))]">قائمة المناديب</h2>
+              {/* Phase 23A-Fix2 — quick filter for active / inactive
+                  delegates. Counts are computed off `aggregates` so the
+                  tab labels reflect the dataset before filtering. */}
+              <div className="flex items-center gap-1 bg-[hsl(var(--muted))]/40 rounded-xl p-1 self-end sm:self-auto">
+                {(
+                  [
+                    { key: 'all', label: 'الكل', count: aggregates.length },
+                    {
+                      key: 'active',
+                      label: 'نشط',
+                      count: aggregates.filter((a) => a.delegate.delegateIsActive !== false).length,
+                    },
+                    {
+                      key: 'inactive',
+                      label: 'غير نشط',
+                      count: aggregates.filter((a) => a.delegate.delegateIsActive === false).length,
+                    },
+                  ] as const
+                ).map((opt) => (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => setStatusFilter(opt.key)}
+                    className={`px-3 py-1 text-xs font-semibold rounded-lg transition-colors ${
+                      statusFilter === opt.key
+                        ? 'bg-white text-[hsl(var(--foreground))] shadow-sm'
+                        : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'
+                    }`}
+                  >
+                    {opt.label}
+                    <span className="ml-1 text-[10px] text-[hsl(var(--muted-foreground))]">
+                      ({opt.count})
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Phase 23I — license alert filter pills. Row two so the
+                two filter dimensions stay visually distinct. */}
+            <div className="flex flex-wrap items-center gap-1 bg-[hsl(var(--muted))]/40 rounded-xl p-1 self-start">
               {(
                 [
                   { key: 'all', label: 'الكل', count: aggregates.length },
+                  { key: 'valid', label: 'رخص سارية', count: alertCounts.valid },
+                  { key: 'expiring', label: 'تنتهي قريبًا', count: alertCounts.expiring },
+                  { key: 'expired', label: 'رخص منتهية', count: alertCounts.expired },
                   {
-                    key: 'active',
-                    label: 'نشط',
-                    count: aggregates.filter((a) => a.delegate.delegateIsActive !== false).length,
-                  },
-                  {
-                    key: 'inactive',
-                    label: 'غير نشط',
-                    count: aggregates.filter((a) => a.delegate.delegateIsActive === false).length,
+                    key: 'missing_docs',
+                    label: 'مستندات ناقصة',
+                    count: alertCounts.missing_docs,
                   },
                 ] as const
               ).map((opt) => (
                 <button
                   key={opt.key}
                   type="button"
-                  onClick={() => setStatusFilter(opt.key)}
+                  onClick={() => setAlertFilter(opt.key)}
                   className={`px-3 py-1 text-xs font-semibold rounded-lg transition-colors ${
-                    statusFilter === opt.key
+                    alertFilter === opt.key
                       ? 'bg-white text-[hsl(var(--foreground))] shadow-sm'
                       : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'
                   }`}
@@ -1297,14 +1509,22 @@ export default function DelegatesPage() {
                           )}
                         </td>
                         <td className="table-cell">
-                          {worse ? (
-                            <span
-                              className={`inline-block text-[10px] font-semibold px-2 py-0.5 rounded-full border ${worse.toneClass}`}
-                            >
-                              {worse.label}
-                            </span>
-                          ) : (
+                          {/* Phase 23I — replaces the worst-of-two-licences
+                              pill with the unified alert badge. The two
+                              expiry days are still surfaced as a tooltip so
+                              the dispatcher can hover for the granular
+                              "متبقي N يوم" detail. */}
+                          {a.alert.level === 'unknown' ? (
                             <span className="text-xs text-[hsl(var(--muted-foreground))]">—</span>
+                          ) : (
+                            <span
+                              className={`inline-block text-[10px] font-semibold px-2 py-0.5 rounded-full border ${
+                                ALERT_LEVEL_TONE[a.alert.level]
+                              }`}
+                              title={worse ? worse.label : ALERT_LEVEL_LABEL_AR[a.alert.level]}
+                            >
+                              {ALERT_LEVEL_LABEL_AR[a.alert.level]}
+                            </span>
                           )}
                         </td>
                         <td className="table-cell">
@@ -1530,6 +1750,11 @@ export default function DelegatesPage() {
           /* Phase 23F — issuer name lands in the printable PDF
              footer ("تم الإصدار بواسطة"). */
           issuerName={profileFullName}
+          /* Phase 23I — document tab gates + uploader id +
+             refetch trigger after upload/archive. */
+          canManageDelegateDocuments={canManageDelegateDocuments}
+          issuerId={user?.id ?? null}
+          onDocumentsChanged={() => setReloadTick((n) => n + 1)}
           /* Phase 23E — edit / void launchers. The drawer just
              forwards each request up to the page; modal state +
              supabase mutations live here. */
@@ -2166,6 +2391,7 @@ type DrawerTab =
   | 'settlements'
   | 'custody'
   | 'expenses'
+  | 'documents' // Phase 23I
   | 'statement'
   | 'ratings'
   | 'activity'
@@ -2193,6 +2419,11 @@ interface DrawerProps {
   canExportStatement?: boolean;
   // Phase 23F — issuer name surfaced in the printable / PDF footer.
   issuerName?: string | null;
+  // Phase 23I — documents tab gates + issuer id (for `uploaded_by`)
+  // and a refetch hook the page wires to its `setReloadTick`.
+  canManageDelegateDocuments?: boolean;
+  issuerId?: string | null;
+  onDocumentsChanged?: () => void;
   // Phase 23E — edit / void hooks per table. Passed through to the
   // matching tab. The drawer itself doesn't open the modals; it
   // only forwards the request up to the page where the modal state
@@ -2225,6 +2456,9 @@ function DelegateDrawer({
   onChangeCustodyStatus,
   canExportStatement = false,
   issuerName = null,
+  canManageDelegateDocuments = false,
+  issuerId = null,
+  onDocumentsChanged,
   onEditSettlement,
   onVoidSettlement,
   onEditExpense,
@@ -2251,6 +2485,10 @@ function DelegateDrawer({
     // Phase 23C — same for الأمانات + المصاريف.
     { id: 'custody', label: 'الأمانات' },
     { id: 'expenses', label: 'المصاريف' },
+    // Phase 23I — documents tab. Sits between expenses and the
+    // unified statement so dispatchers triaging a delegate flow
+    // through operational → financial → compliance order.
+    { id: 'documents', label: 'المستندات' },
     // Phase 23D — unified account-statement view with date range
     // + CSV export. Sits between the per-section tabs (custody /
     // expenses) and the auxiliary tabs (ratings / activity).
@@ -2378,6 +2616,14 @@ function DelegateDrawer({
               onVoid={onVoidExpense}
               onApprove={onApproveExpense}
               onReject={onRejectExpense}
+            />
+          )}
+          {activeTab === 'documents' && (
+            <DocumentsTab
+              a={a}
+              canManage={canManageDelegateDocuments}
+              issuer={{ id: issuerId, name: issuerName }}
+              onChanged={onDocumentsChanged}
             />
           )}
           {activeTab === 'statement' && (
@@ -7049,6 +7295,386 @@ function EditCustodyModal({ row, onClose, onSaved, onError }: EditCustodyModalPr
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Phase 23I — Documents tab ────────────────────────────────────────────
+//
+// Per-delegate document gallery. Upload / preview / archive all go
+// through the private `delegate-documents` storage bucket; metadata
+// rows live in `turath_masr_delegate_documents`. Pre-migration the
+// tab renders a placeholder so it doesn't surface 42P01 errors.
+//
+// Required-document set (national ID front+back, driving licence,
+// vehicle licence) gets dedicated cards even when no row exists, so
+// dispatchers can see at a glance which slots are empty. Optional
+// documents (vehicle photo, other) render as empty slots in their
+// own section so the spec's full type list is visible at all times.
+//
+// Preview / download — every authorised view goes through a fresh
+// `createSignedUrl(60)` call so there are no long-lived public URLs
+// floating around. The signed URL is opened in a new tab with
+// `noopener` to prevent the file context from getting access to
+// `window.opener`.
+interface DocumentsTabProps {
+  a: DelegateAggregate;
+  canManage?: boolean;
+  issuer: { id: string | null; name: string | null };
+  onChanged?: () => void;
+}
+
+function DocumentsTab({ a, canManage = false, issuer, onChanged }: DocumentsTabProps) {
+  const activeDocs = a.documents.filter((d) => d.status === 'active');
+  const archivedDocs = a.documents.filter((d) => d.status === 'archived');
+
+  // Build a "latest active doc per type" map so each card can show
+  // the most recent upload at a glance even if the dispatcher has
+  // replaced a doc multiple times.
+  const latestByType = new Map<string, DocumentRow>();
+  for (const doc of activeDocs) {
+    const existing = latestByType.get(doc.document_type);
+    if (!existing || doc.uploaded_at > existing.uploaded_at) {
+      latestByType.set(doc.document_type, doc);
+    }
+  }
+
+  if (!a.delegate.profileId) {
+    return (
+      <div className="bg-[hsl(var(--muted))]/30 border border-[hsl(var(--border))] rounded-xl p-6 text-center">
+        <p className="text-sm text-[hsl(var(--muted-foreground))]">
+          سجل قديم بدون ملف. لا يمكن إدارة المستندات لهذا المندوب.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 flex items-start gap-2">
+        <FileText size={16} className="text-blue-600 mt-0.5 flex-shrink-0" />
+        <div className="flex-1">
+          <p className="text-sm font-bold text-blue-800">
+            مستندات المندوب — {activeDocs.length} مرفوعة
+            {archivedDocs.length > 0 ? `، ${archivedDocs.length} مؤرشفة` : ''}
+          </p>
+          <p className="text-[11px] text-blue-700 mt-0.5">
+            الحد الأقصى 5 ميجا للملف. الأنواع المقبولة: JPEG / PNG / WEBP / PDF. لا يتم عرض هذه
+            المستندات للعملاء أو على صفحات التتبع.
+          </p>
+        </div>
+      </div>
+
+      {a.alert.missingRequiredDocs.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-start gap-2">
+          <FileWarning size={16} className="text-amber-600 mt-0.5 flex-shrink-0" />
+          <div>
+            <p className="text-sm font-bold text-amber-800">
+              مستندات مطلوبة مفقودة ({a.alert.missingRequiredDocs.length})
+            </p>
+            <p className="text-[11px] text-amber-700 mt-0.5">
+              {a.alert.missingRequiredDocs.map((t) => documentTypeLabel(t)).join(' · ')}
+            </p>
+          </div>
+        </div>
+      )}
+
+      <div>
+        <h4 className="text-sm font-bold mb-2">المستندات المطلوبة</h4>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {REQUIRED_DOCUMENT_TYPES.map((t) => (
+            <DocumentSlotCard
+              key={t}
+              documentType={t}
+              latest={latestByType.get(t) ?? null}
+              delegate={a.delegate}
+              canManage={canManage}
+              issuer={issuer}
+              onChanged={onChanged}
+            />
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <h4 className="text-sm font-bold mb-2">مستندات إضافية (اختيارية)</h4>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {OPTIONAL_DOCUMENT_TYPES.map((t) => (
+            <DocumentSlotCard
+              key={t}
+              documentType={t}
+              latest={latestByType.get(t) ?? null}
+              delegate={a.delegate}
+              canManage={canManage}
+              issuer={issuer}
+              onChanged={onChanged}
+            />
+          ))}
+        </div>
+      </div>
+
+      {archivedDocs.length > 0 && (
+        <details className="border border-[hsl(var(--border))] rounded-xl">
+          <summary className="cursor-pointer p-3 text-xs font-semibold text-[hsl(var(--muted-foreground))]">
+            <Archive size={12} className="inline ml-1" /> سجل المستندات المؤرشفة (
+            {archivedDocs.length})
+          </summary>
+          <div className="p-3 pt-0 space-y-2">
+            {archivedDocs.map((d) => (
+              <DocumentArchiveLine key={d.id} doc={d} canManage={canManage} />
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+interface DocumentSlotCardProps {
+  documentType: DocumentType;
+  latest: DocumentRow | null;
+  delegate: DelegateRow;
+  canManage: boolean;
+  issuer: { id: string | null; name: string | null };
+  onChanged?: () => void;
+}
+
+function DocumentSlotCard({
+  documentType,
+  latest,
+  delegate,
+  canManage,
+  issuer,
+  onChanged,
+}: DocumentSlotCardProps) {
+  const [busy, setBusy] = useState<'upload' | 'preview' | 'archive' | null>(null);
+  const [error, setError] = useState('');
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  const label = documentTypeLabel(documentType);
+  const present = latest != null;
+
+  const handlePickFile = () => {
+    if (!canManage) return;
+    setError('');
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    if (!isAcceptedMime(file.type)) {
+      setError(`نوع الملف غير مدعوم. الأنواع المقبولة: ${ACCEPTED_MIME_TYPES.join(' / ')}.`);
+      return;
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setError('حجم الملف أكبر من 5 ميجا. اختر ملفًا أصغر.');
+      return;
+    }
+    if (!delegate.profileId) {
+      setError('سجل قديم بدون ملف. لا يمكن رفع المستندات.');
+      return;
+    }
+    setBusy('upload');
+    setError('');
+    try {
+      const supabase = createClient();
+      const safeName = sanitizeFilename(file.name);
+      const ts = Date.now();
+      const path = buildStoragePath(delegate.profileId, documentType, ts, safeName);
+      const { error: uploadErr } = await supabase.storage
+        .from('delegate-documents')
+        .upload(path, file, { contentType: file.type, upsert: false });
+      if (uploadErr) throw uploadErr;
+      if (latest) {
+        const { error: archiveErr } = await supabase
+          .from('turath_masr_delegate_documents')
+          .update({ status: 'archived' })
+          .eq('id', latest.id);
+        if (archiveErr) throw archiveErr;
+      }
+      const { error: insertErr } = await supabase.from('turath_masr_delegate_documents').insert({
+        delegate_profile_id: delegate.profileId,
+        delegate_name: delegate.name,
+        document_type: documentType,
+        file_path: path,
+        file_name: safeName,
+        mime_type: file.type,
+        size_bytes: file.size,
+        uploaded_by: issuer.id,
+        uploaded_by_name: issuer.name,
+        uploaded_at: new Date(ts).toISOString(),
+        status: 'active',
+      });
+      if (insertErr) throw insertErr;
+      onChanged?.();
+    } catch (err) {
+      const e = err as { code?: string; message?: string; statusCode?: string };
+      console.error('[delegates] document upload failed', err);
+      setError(
+        e.code === '42501' || e.statusCode === '403'
+          ? 'لا تملك صلاحية رفع المستندات. تواصل مع المدير.'
+          : e.code === '42P01'
+            ? 'ميزة المستندات غير مفعّلة بعد. لم يتم تطبيق ترحيل القاعدة.'
+            : `تعذر رفع الملف: ${e.message || 'خطأ غير متوقع'}`
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handlePreview = async () => {
+    if (!latest) return;
+    setBusy('preview');
+    setError('');
+    try {
+      const supabase = createClient();
+      const { data, error: signErr } = await supabase.storage
+        .from('delegate-documents')
+        .createSignedUrl(latest.file_path, 60);
+      if (signErr || !data?.signedUrl) throw signErr ?? new Error('signed url empty');
+      window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
+    } catch (err) {
+      const e = err as { message?: string };
+      console.error('[delegates] preview signed url failed', err);
+      setError(`تعذر فتح المستند: ${e.message || 'خطأ غير متوقع'}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleArchive = async () => {
+    if (!latest || !canManage) return;
+    setBusy('archive');
+    setError('');
+    try {
+      const supabase = createClient();
+      const { error: updateErr } = await supabase
+        .from('turath_masr_delegate_documents')
+        .update({ status: 'archived' })
+        .eq('id', latest.id);
+      if (updateErr) throw updateErr;
+      onChanged?.();
+    } catch (err) {
+      const e = err as { code?: string; message?: string };
+      console.error('[delegates] document archive failed', err);
+      setError(
+        e.code === '42501'
+          ? 'لا تملك صلاحية أرشفة المستندات.'
+          : `تعذر أرشفة المستند: ${e.message || 'خطأ غير متوقع'}`
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div
+      className={`rounded-2xl border p-4 ${
+        present
+          ? 'border-emerald-200 bg-emerald-50/40'
+          : 'border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted))]/20'
+      }`}
+    >
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <div>
+          <p className="text-sm font-bold">{label}</p>
+          <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-0.5">
+            {present ? (
+              <>
+                <span className="text-emerald-700 font-semibold">مرفوع</span> ·{' '}
+                {formatDateAr(latest.uploaded_at)}
+                {latest.file_name ? ` · ${latest.file_name}` : ''}
+              </>
+            ) : (
+              <span className="text-[hsl(var(--muted-foreground))]">غير مرفوع</span>
+            )}
+          </p>
+        </div>
+        {present ? (
+          <FileImage size={20} className="text-emerald-600 flex-shrink-0" />
+        ) : (
+          <FileWarning size={20} className="text-[hsl(var(--muted-foreground))] flex-shrink-0" />
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 mt-2">
+        {present && (
+          <button
+            type="button"
+            onClick={handlePreview}
+            disabled={busy === 'preview'}
+            className="inline-flex items-center gap-1 px-3 py-1.5 bg-[hsl(var(--muted))] hover:bg-[hsl(var(--muted))]/70 text-[hsl(var(--foreground))] text-xs font-semibold rounded-xl"
+          >
+            <Eye size={11} /> {busy === 'preview' ? 'جارٍ التحضير...' : 'عرض'}
+          </button>
+        )}
+        {canManage && (
+          <button
+            type="button"
+            onClick={handlePickFile}
+            disabled={busy === 'upload'}
+            className="inline-flex items-center gap-1 px-3 py-1.5 bg-[hsl(var(--primary))] hover:opacity-90 text-white text-xs font-semibold rounded-xl"
+          >
+            <Upload size={11} /> {busy === 'upload' ? 'جارٍ الرفع...' : present ? 'استبدال' : 'رفع'}
+          </button>
+        )}
+        {canManage && present && (
+          <button
+            type="button"
+            onClick={handleArchive}
+            disabled={busy === 'archive'}
+            className="inline-flex items-center gap-1 px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-800 text-xs font-semibold rounded-xl"
+          >
+            <Archive size={11} /> {busy === 'archive' ? 'جارٍ الأرشفة...' : 'أرشفة'}
+          </button>
+        )}
+      </div>
+
+      {error && (
+        <p className="text-[11px] text-red-700 mt-2 flex items-start gap-1">
+          <AlertTriangle size={11} className="mt-0.5 flex-shrink-0" /> {error}
+        </p>
+      )}
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={ACCEPTED_MIME_TYPES.join(',')}
+        onChange={handleFileChange}
+        className="hidden"
+      />
+    </div>
+  );
+}
+
+interface DocumentArchiveLineProps {
+  doc: DocumentRow;
+  canManage: boolean;
+}
+
+function DocumentArchiveLine({ doc, canManage }: DocumentArchiveLineProps) {
+  void canManage;
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 text-xs bg-[hsl(var(--muted))]/30 rounded-xl p-2.5">
+      <div className="flex items-center gap-2">
+        <Archive size={12} className="text-[hsl(var(--muted-foreground))]" />
+        <span className="font-semibold">{documentTypeLabel(doc.document_type)}</span>
+        <span className="text-[hsl(var(--muted-foreground))]">·</span>
+        <span className="text-[hsl(var(--muted-foreground))]">{formatDateAr(doc.uploaded_at)}</span>
+        {doc.file_name && (
+          <>
+            <span className="text-[hsl(var(--muted-foreground))]">·</span>
+            <span className="text-[hsl(var(--muted-foreground))] font-mono">{doc.file_name}</span>
+          </>
+        )}
+      </div>
+      {doc.uploaded_by_name && (
+        <span className="text-[10px] text-[hsl(var(--muted-foreground))]">
+          رفع: {doc.uploaded_by_name}
+        </span>
+      )}
     </div>
   );
 }
