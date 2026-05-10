@@ -24,6 +24,10 @@ import {
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { toast, Toaster } from 'sonner';
+// Phase E1-Fix2 — drop the AddOrderModal-side shipping-regions cache
+// after a successful save here, so admin edits surface within the
+// same browser session without waiting for the 5-minute TTL.
+import { clearShippingRegionsCache } from '@/lib/settings/shippingRegionsCache';
 
 type TabKey =
   | 'company'
@@ -117,6 +121,16 @@ function useSettingsSync<T>(key: string, initial: T) {
     setSuccess(true);
     setTimeout(() => setSuccess(false), 2000);
     if (newData !== undefined) setData(newData);
+    // Phase E1-Fix2 — when an admin saves the shipping-regions row,
+    // invalidate the AddOrderModal-side cache so the next modal open
+    // refetches fresh data instead of serving the just-edited row
+    // from the 5-minute browser cache. No-op for any other settings
+    // key. The clear is best-effort (it touches sessionStorage, which
+    // can be unavailable in private-browsing modes); we don't gate
+    // save success on it.
+    if (key === 'settings_regions') {
+      clearShippingRegionsCache();
+    }
     setSaving(false);
   };
 

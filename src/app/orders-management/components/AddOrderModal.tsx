@@ -48,6 +48,13 @@ import {
 import { resolveShippingFeeFromCoverage } from '@/lib/shipping/resolveShippingFee';
 import type { ShippingDistrict, ShippingGovernorate } from '@/lib/shipping/types';
 import { getDisplayName, getRoleLabel } from '@/lib/utils/userDisplay';
+// Phase E1-Fix2 — fetch the heavy `settings_regions` payload through
+// the cached server route instead of issuing a direct Supabase
+// `from('turath_masr_settings').select('value').eq('key',
+// 'settings_regions')` call on every modal open. The helper owns a
+// 5-minute memory + sessionStorage cache and is invalidated by the
+// `/settings` save flow when the regions row is edited.
+import { getShippingRegions } from '@/lib/settings/shippingRegionsCache';
 // Phase 22O — returning-customer smart card + lookup helpers. The
 // card is presentational; the lookup function lives in this file
 // (it owns the Supabase client + state).
@@ -764,25 +771,32 @@ export default function AddOrderModal({ onClose }: Props) {
       inventoryRef.current = inventoryItems;
       setProductCards(inventoryCards);
 
-      // 8. `settings_regions` — fetched separately because it's the
-      //    single large value we genuinely need (~754 KB of districts
-      //    + neighborhoods that drive the governorate / area /
-      //    neighborhood pickers). Keeping it as a dedicated request
-      //    makes the cost legible and lets future caching target this
-      //    one key.
-      const { data: regionsData } = await supabase
-        .from('turath_masr_settings')
-        .select('value')
-        .eq('key', 'settings_regions')
-        .single();
-      if (regionsData?.value && Array.isArray(regionsData.value)) {
-        const regs = regionsData.value as any[];
-        setDbRegions(regs);
-        regs.forEach((r: any) => {
-          if (r.name && r.fee && r.enabled !== false) {
-            REGIONAL_FEES[r.name] = Number(r.fee);
-          }
-        });
+      // 8. `settings_regions` — fetched through the cached server
+      //    route. The payload is ~754 KB of districts + neighborhoods
+      //    that drive the governorate / area / neighborhood pickers,
+      //    and used to be re-issued by every modal open. Phase E1-Fix2
+      //    routes it through `/api/settings/shipping-regions`, which
+      //    is itself behind a memory + sessionStorage cache (5-minute
+      //    TTL). The `/settings` save flow invalidates the cache so
+      //    admin edits surface within the same tab.
+      //
+      //    Same downstream behaviour as before: the value flows into
+      //    `setDbRegions` (for the picker UI) and into `REGIONAL_FEES`
+      //    (for the legacy flat-fee fallback). On any failure we keep
+      //    the existing UX of "no regions visible" rather than blocking
+      //    modal open.
+      try {
+        const regs = (await getShippingRegions()) as any[];
+        if (Array.isArray(regs) && regs.length > 0) {
+          setDbRegions(regs);
+          regs.forEach((r: any) => {
+            if (r.name && r.fee && r.enabled !== false) {
+              REGIONAL_FEES[r.name] = Number(r.fee);
+            }
+          });
+        }
+      } catch (err) {
+        console.warn('[AddOrderModal] shipping regions fetch failed', err);
       }
     };
 
