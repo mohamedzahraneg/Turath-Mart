@@ -41,6 +41,19 @@ interface TrackingDTO {
   date: string | null;
   createdAt: string | null;
   updatedAt: string | null;
+  // Phase 22Q — schedule + delegate. The order_num-keyed RPC
+  // `get_tracking_info` is enumerable, so by privacy decision we do
+  // NOT widen it to expose the schedule or the assigned delegate
+  // here (only the unguessable token URL gets that). The fields stay
+  // typed for type-shape parity with the token DTO, but always
+  // emitted as null on this endpoint.
+  scheduledDelivery: {
+    date: string;
+    from: string;
+    to: string;
+    reason: string | null;
+  } | null;
+  delegateName: string | null;
   // Phase 22P — `returnReason` is the customer-safe extract of the
   // structured `note` payload. Populated only for status='returned'
   // rows by the `get_tracking_timeline` RPC; null/undefined for
@@ -110,6 +123,12 @@ export async function GET(_request: Request, context: { params: Promise<{ orderI
     date: row.date ?? null,
     createdAt: row.created_at ?? null,
     updatedAt: row.updated_at ?? null,
+    // Phase 22Q — privacy decision: the order_num-keyed RPC is
+    // enumerable so we never expose the schedule or the assigned
+    // delegate here. Always emit null. Customers who need this info
+    // use the unguessable `/track/t/<token>` URL.
+    scheduledDelivery: null,
+    delegateName: null,
     statusTimeline: Array.isArray(timelineRows)
       ? timelineRows.map(
           (t: { new_status: string; changed_at: string; return_reason?: string | null }) => ({

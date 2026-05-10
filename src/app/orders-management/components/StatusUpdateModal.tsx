@@ -3,15 +3,35 @@ import React, { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import { Toaster } from 'sonner';
-import { X, Clock, AlertTriangle, CheckCircle, MapPin, ShieldOff } from 'lucide-react';
+import {
+  X,
+  Clock,
+  AlertTriangle,
+  CheckCircle,
+  MapPin,
+  ShieldOff,
+  Calendar,
+  UserCheck,
+  RotateCcw,
+} from 'lucide-react';
 import { useAuth, getPermissionsForRoleId } from '@/contexts/AuthContext';
 import { addAuditLog, getAuditLogs } from './AuditLogModal';
 import { createClient } from '@/lib/supabase/client';
 // Phase 22P — structured `note` payload. The audit-log `note`
-// column carries `JSON.stringify({ reason?, note? })` so cancellation
-// / return reasons and free-form admin notes survive into every
-// history surface; legacy plain-text rows are still understood.
+// column carries `JSON.stringify({ reason?, note?, schedule? })` so
+// cancellation / return reasons, free-form admin notes, AND the
+// Phase 22Q delivery-schedule snapshot survive into every history
+// surface; legacy plain-text rows are still understood.
 import { buildAuditNote, parseAuditNote } from '@/lib/orders/auditNote';
+// Phase 22Q — Arabic-locale formatters for the delivery schedule.
+// Centralised so the modal preview, status history, and tracking
+// pages all produce identical strings.
+import {
+  formatScheduleDateAr,
+  formatTime12hAr,
+  formatSchedulePreviewAr,
+  nextNDaysAr,
+} from '@/lib/orders/scheduleFormat';
 import { isAdminRole } from '@/lib/constants/roles';
 import { getDisplayName, getRoleLabel } from '@/lib/utils/userDisplay';
 import { UserStamp } from '@/components/UserStamp';
@@ -182,11 +202,153 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
     };
   }, [order.id]);
 
+  // ───── Phase 22Q — delivery-schedule state ─────
+  // The scheduling section is independent of react-hook-form because
+  // its widgets (day cards + 24-hour time inputs) need their own
+  // controlled state for live preview rendering. We persist the three
+  // pieces (date, from-time, to-time) plus the optional reschedule
+  // reason; the existing schedule (if any) is fetched on mount so we
+  // can detect "user changed an existing schedule" and require a
+  // reason.
+  const [scheduleDate, setScheduleDate] = useState<string>('');
+  const [scheduleFrom, setScheduleFrom] = useState<string>('');
+  const [scheduleTo, setScheduleTo] = useState<string>('');
+  const [rescheduleReason, setRescheduleReason] = useState<string>('');
+  const [scheduleError, setScheduleError] = useState<string>('');
+  // Existing schedule pulled from the row when the modal opens — used
+  // ONLY to decide whether the user is editing an existing schedule
+  // (which gates the "reschedule reason" requirement).
+  const [existingSchedule, setExistingSchedule] = useState<{
+    date: string | null;
+    from: string | null;
+    to: string | null;
+  } | null>(null);
+  // Defensive flag: when the staged Phase 22Q migration has not yet
+  // been applied, the SELECT below returns a 42703 (column does not
+  // exist) error. We swallow it, leave `existingSchedule = null`, and
+  // let the user attempt the save — the UPDATE will reject with the
+  // same column error and the toast surfaces it. This keeps the UI
+  // visible (per spec) without crashing pre-migration.
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const supabase = createClient();
+        const { data, error } = await supabase
+          .from('turath_masr_orders')
+          .select('scheduled_delivery_date, scheduled_delivery_from, scheduled_delivery_to')
+          .eq('id', order.id)
+          .maybeSingle();
+        if (cancelled) return;
+        if (error) {
+          // Migration not applied yet — leave existing schedule null.
+          return;
+        }
+        const row = data as {
+          scheduled_delivery_date?: string | null;
+          scheduled_delivery_from?: string | null;
+          scheduled_delivery_to?: string | null;
+        } | null;
+        if (row) {
+          setExistingSchedule({
+            date: row.scheduled_delivery_date ?? null,
+            from: row.scheduled_delivery_from ?? null,
+            to: row.scheduled_delivery_to ?? null,
+          });
+          // Pre-fill the form so the user sees what's currently saved.
+          if (row.scheduled_delivery_date) setScheduleDate(row.scheduled_delivery_date);
+          if (row.scheduled_delivery_from) {
+            // Postgres `time` may emit `HH:MM:SS`; the <input type=time>
+            // wants `HH:MM`. Trim defensively.
+            setScheduleFrom(String(row.scheduled_delivery_from).slice(0, 5));
+          }
+          if (row.scheduled_delivery_to) {
+            setScheduleTo(String(row.scheduled_delivery_to).slice(0, 5));
+          }
+        }
+      } catch {
+        // Swallow — schedule remains null.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [order.id]);
+
+  // Phase 22Q — derive whether the user is EDITING (vs first-time
+  // setting) the schedule. We treat any non-empty existing field as
+  // "scheduled" so changing just the date or just a single time
+  // boundary still triggers the reason requirement.
+  const isEditingExistingSchedule =
+    !!existingSchedule && !!(existingSchedule.date || existingSchedule.from || existingSchedule.to);
+  const scheduleChanged =
+    !!existingSchedule &&
+    ((existingSchedule.date ?? '') !== (scheduleDate ?? '') ||
+      (existingSchedule.from ? String(existingSchedule.from).slice(0, 5) : '') !==
+        (scheduleFrom ?? '') ||
+      (existingSchedule.to ? String(existingSchedule.to).slice(0, 5) : '') !== (scheduleTo ?? ''));
+
+  // The Phase 22Q schedule fields are all optional — admin can save a
+  // status update without setting any of them. But once one is
+  // touched, validation kicks in (date + from + to must all be set).
+  const scheduleAnyTouched = !!(scheduleDate || scheduleFrom || scheduleTo);
+  const scheduleAllSet = !!(scheduleDate && scheduleFrom && scheduleTo);
+
+  // Pre-build the next-7-days picker on every render. Cheap (7 small
+  // objects) and avoids re-running clock logic in dependency arrays.
+  const dayCards = React.useMemo(() => nextNDaysAr(7), []);
+
+  // Live preview text — empty until all three components are set.
+  const schedulePreview = formatSchedulePreviewAr(scheduleDate, scheduleFrom, scheduleTo);
+
   const onSubmit = async (data: StatusFormData) => {
     if (!canUpdate) {
       toast.error('ليس لديك صلاحية تحديث حالة الأوردر');
       return;
     }
+
+    // ───── Phase 22Q — schedule validation ─────
+    // The schedule section is fully optional, but as soon as the
+    // admin starts filling it in we require the full triplet
+    // (date + from + to). We also block "today + already-passed"
+    // windows so the customer card never shows a delivery time the
+    // courier obviously can't honour, and we require a reason when
+    // the admin is changing an existing schedule.
+    setScheduleError('');
+    if (scheduleAnyTouched && !scheduleAllSet) {
+      setScheduleError('يجب اختيار يوم التسليم وساعة البداية وساعة النهاية معًا');
+      toast.error('بيانات جدولة التسليم غير مكتملة');
+      return;
+    }
+    if (scheduleAllSet && scheduleFrom >= scheduleTo) {
+      setScheduleError('ساعة النهاية يجب أن تكون بعد ساعة البداية');
+      toast.error('ساعة النهاية يجب أن تكون بعد ساعة البداية');
+      return;
+    }
+    if (scheduleAllSet) {
+      // If date is today, block windows that already finished.
+      const today = new Date();
+      const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      if (scheduleDate === todayIso) {
+        const nowMins = today.getHours() * 60 + today.getMinutes();
+        const [toH, toM] = scheduleTo.split(':').map((s) => Number.parseInt(s, 10));
+        const toMins = (toH || 0) * 60 + (toM || 0);
+        if (toMins <= nowMins) {
+          setScheduleError('لا يمكن جدولة موعد انتهت ساعته بالفعل اليوم');
+          toast.error('لا يمكن جدولة موعد انتهت ساعته بالفعل اليوم');
+          return;
+        }
+      }
+    }
+    if (scheduleAllSet && isEditingExistingSchedule && scheduleChanged) {
+      const reasonTrim = rescheduleReason.trim();
+      if (!reasonTrim) {
+        setScheduleError('يجب كتابة سبب الترحيل / تغيير الموعد');
+        toast.error('يجب كتابة سبب الترحيل / تغيير الموعد');
+        return;
+      }
+    }
+
     setIsSubmitting(true);
 
     const user = getCurrentUser();
@@ -202,9 +364,25 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
     // statuses (the form hides the input otherwise), so we gate it
     // on `isDestructive` to avoid persisting a stale draft if the
     // user toggled the status away from a destructive option.
+    //
+    // Phase 22Q — when the admin sets / changes the delivery schedule
+    // we also include a structured `schedule` fragment on the audit
+    // envelope. The fragment carries date / from / to plus the
+    // optional reschedule reason so the history shows WHAT changed
+    // even after another reschedule overwrites the live row columns.
+    const scheduleFragment = scheduleAllSet
+      ? {
+          date: scheduleDate,
+          from: scheduleFrom,
+          to: scheduleTo,
+          reason:
+            isEditingExistingSchedule && scheduleChanged ? rescheduleReason.trim() : undefined,
+        }
+      : undefined;
     const noteValue = buildAuditNote({
       reason: isDestructive ? data.reason : undefined,
       note: data.note,
+      schedule: scheduleFragment,
     });
 
     // Log the status change
@@ -249,6 +427,24 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
       };
       if (authUser?.id) {
         updatePayload.updated_by = authUser.id;
+      }
+      // Phase 22Q — persist the delivery schedule onto the order row
+      // alongside the status change. We only set the columns when the
+      // admin filled them in (validation gate above ensures the
+      // triplet is complete or all empty); leaving them OUT of the
+      // payload when untouched preserves whatever was previously
+      // saved. The `_updated_at` / `_updated_by` columns are written
+      // every time the schedule itself is touched so the admin
+      // history can show "moved by X at Y" even without diving into
+      // the audit log.
+      if (scheduleAllSet) {
+        updatePayload.scheduled_delivery_date = scheduleDate;
+        updatePayload.scheduled_delivery_from = scheduleFrom;
+        updatePayload.scheduled_delivery_to = scheduleTo;
+        updatePayload.scheduled_delivery_reason =
+          isEditingExistingSchedule && scheduleChanged ? rescheduleReason.trim() : null;
+        updatePayload.scheduled_delivery_updated_at = new Date().toISOString();
+        updatePayload.scheduled_delivery_updated_by = user.name;
       }
       const { error } = await supabase
         .from('turath_masr_orders')
@@ -439,6 +635,123 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
                 </select>
               </div>
 
+              {/* ───── Phase 22Q — Delivery Scheduling ───── */}
+              <div className="border border-[hsl(var(--border))] rounded-2xl p-4 bg-[hsl(var(--muted))]/20 space-y-3">
+                <div className="flex items-center gap-2">
+                  <Calendar size={15} className="text-[hsl(var(--primary))]" />
+                  <label className="label-text mb-0">جدولة التسليم</label>
+                  <span className="text-[10px] text-[hsl(var(--muted-foreground))]">
+                    (اختياري — لا يغير حالة الطلب تلقائيًا)
+                  </span>
+                </div>
+
+                {/* Warning when no delegate is assigned */}
+                {!selectedDelegate.trim() && (
+                  <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl p-2 text-[11px] text-amber-700">
+                    <UserCheck size={13} className="mt-0.5 flex-shrink-0" />
+                    <span>يفضل تعيين مندوب قبل جدولة التسليم</span>
+                  </div>
+                )}
+
+                {/* Weekly day picker — Arabic days + dates, next 7. */}
+                <div>
+                  <p className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1.5">
+                    اختر يوم التسليم
+                  </p>
+                  <div className="grid grid-cols-4 sm:grid-cols-7 gap-1.5">
+                    {dayCards.map((card) => {
+                      const selected = card.iso === scheduleDate;
+                      return (
+                        <button
+                          key={card.iso}
+                          type="button"
+                          onClick={() => setScheduleDate(card.iso)}
+                          className={`flex flex-col items-center justify-center rounded-xl border px-1.5 py-2 text-[10px] transition-all ${
+                            selected
+                              ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))] font-bold'
+                              : 'border-[hsl(var(--border))] bg-white hover:border-gray-400'
+                          }`}
+                        >
+                          <span className="font-semibold leading-tight">{card.dayNameAr}</span>
+                          <span className="font-mono mt-0.5 text-[11px]">
+                            {card.dayOfMonth} {card.monthNameAr}
+                          </span>
+                          {card.isToday && (
+                            <span className="text-[8px] text-emerald-600 mt-0.5 font-bold">
+                              اليوم
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* From/To time inputs */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+                      من الساعة
+                    </label>
+                    <input
+                      type="time"
+                      className="input-field w-full"
+                      value={scheduleFrom}
+                      onChange={(e) => setScheduleFrom(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+                      إلى الساعة
+                    </label>
+                    <input
+                      type="time"
+                      className="input-field w-full"
+                      value={scheduleTo}
+                      onChange={(e) => setScheduleTo(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                {/* Live preview — only when triplet is complete. */}
+                {schedulePreview && (
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-xs text-emerald-800 leading-relaxed whitespace-pre-line">
+                    {schedulePreview}
+                  </div>
+                )}
+
+                {/* Reschedule reason — required when changing existing
+                    schedule (date / from / to). Hidden otherwise. */}
+                {isEditingExistingSchedule && scheduleChanged && (
+                  <div className="bg-orange-50 border border-orange-200 rounded-xl p-3 fade-in">
+                    <div className="flex items-center gap-2 mb-2">
+                      <RotateCcw size={14} className="text-orange-600" />
+                      <label
+                        className="text-xs font-bold text-orange-700"
+                        htmlFor="rescheduleReason"
+                      >
+                        سبب الترحيل / تغيير الموعد *
+                      </label>
+                    </div>
+                    <textarea
+                      id="rescheduleReason"
+                      rows={2}
+                      value={rescheduleReason}
+                      onChange={(e) => setRescheduleReason(e.target.value)}
+                      placeholder="مثال: العميل طلب التأجيل / تأخر في التجهيز / لا يمكن تسليم الطلب اليوم"
+                      className="input-field resize-none border-orange-300 focus:ring-orange-400 w-full"
+                    />
+                    <p className="text-[10px] text-orange-700 mt-1">
+                      السبب يظهر للعميل في صفحة التتبع وفي سجل الحالات.
+                    </p>
+                  </div>
+                )}
+
+                {scheduleError && (
+                  <p className="text-red-600 text-xs font-semibold">{scheduleError}</p>
+                )}
+              </div>
+
               {/* Note */}
               <div>
                 <label className="label-text" htmlFor="statusNote">
@@ -503,6 +816,7 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
                       const hasNoteBlock =
                         Boolean(parsedNote.reason) ||
                         Boolean(parsedNote.note) ||
+                        Boolean(parsedNote.schedule) ||
                         Boolean(parsedNote.raw);
                       return (
                         <div
@@ -551,6 +865,40 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
                                     <span className="font-semibold text-red-700">سبب الإرجاع:</span>{' '}
                                     <span className="italic">{parsedNote.reason}</span>
                                   </p>
+                                )}
+                                {/* Phase 22Q — schedule snapshot from
+                                    the audit envelope. Shows the
+                                    delivery date + time window the
+                                    admin set on this status change,
+                                    plus the reschedule reason if it
+                                    was a move. */}
+                                {parsedNote.schedule && (
+                                  <div className="leading-snug">
+                                    <p>
+                                      <span className="font-semibold text-emerald-700">
+                                        موعد التسليم:
+                                      </span>{' '}
+                                      <span>{formatScheduleDateAr(parsedNote.schedule.date)}</span>
+                                    </p>
+                                    <p>
+                                      <span className="text-[hsl(var(--muted-foreground))]">
+                                        من الساعة
+                                      </span>{' '}
+                                      <span>{formatTime12hAr(parsedNote.schedule.from)}</span>{' '}
+                                      <span className="text-[hsl(var(--muted-foreground))]">
+                                        إلى الساعة
+                                      </span>{' '}
+                                      <span>{formatTime12hAr(parsedNote.schedule.to)}</span>
+                                    </p>
+                                    {parsedNote.schedule.reason && (
+                                      <p>
+                                        <span className="font-semibold text-orange-700">
+                                          سبب الترحيل:
+                                        </span>{' '}
+                                        <span className="italic">{parsedNote.schedule.reason}</span>
+                                      </p>
+                                    )}
+                                  </div>
                                 )}
                                 {parsedNote.note && (
                                   <p className="leading-snug">

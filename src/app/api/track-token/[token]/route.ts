@@ -93,6 +93,23 @@ interface TrackingDTO {
   date: string | null;
   createdAt: string | null;
   updatedAt: string | null;
+  // Phase 22Q — customer-facing delivery schedule. Populated when an
+  // admin has saved a scheduled window via StatusUpdateModal and the
+  // companion migration has been applied; null otherwise. The
+  // optional `reason` carries the reschedule reason (only when the
+  // schedule was MOVED, not on first-time scheduling).
+  scheduledDelivery: {
+    date: string;
+    from: string;
+    to: string;
+    reason: string | null;
+  } | null;
+  // Phase 22Q — assigned delegate's display name, exposed to the
+  // customer on `/track/t/<token>` so the tracking-page delegate
+  // card can show "اسم المندوب: …". Phone is intentionally NOT
+  // exposed because `profiles` doesn't carry it; see Phase 22Q
+  // report. Null when no delegate assigned.
+  delegateName: string | null;
   // Phase 22P — `returnReason` is the customer-safe extract of the
   // structured `note` payload. Populated only for status='returned'
   // rows by the `get_tracking_timeline_by_token` RPC; null/undefined
@@ -214,6 +231,32 @@ export async function GET(_request: Request, context: { params: Promise<{ token:
     date: row.date ?? null,
     createdAt: row.created_at ?? null,
     updatedAt: row.updated_at ?? null,
+    // Phase 22Q — schedule + delegate. The fields are NULL until the
+    // companion migration `20260510160000_tracking_info_add_scheduled_delivery.sql`
+    // is applied; the cast through `Record<string, unknown>` lets us
+    // read them defensively without TypeScript fighting the local
+    // RPC row type. We only emit a non-null `scheduledDelivery`
+    // object when the date AND both time bounds are present so the
+    // client can rely on the triplet without per-field guards.
+    scheduledDelivery: (() => {
+      const r = row as Record<string, unknown>;
+      const d = typeof r.scheduled_delivery_date === 'string' ? r.scheduled_delivery_date : null;
+      const f = typeof r.scheduled_delivery_from === 'string' ? r.scheduled_delivery_from : null;
+      const t = typeof r.scheduled_delivery_to === 'string' ? r.scheduled_delivery_to : null;
+      const re =
+        typeof r.scheduled_delivery_reason === 'string' && r.scheduled_delivery_reason
+          ? r.scheduled_delivery_reason
+          : null;
+      if (d && f && t) {
+        return { date: d, from: f, to: t, reason: re };
+      }
+      return null;
+    })(),
+    delegateName:
+      typeof (row as Record<string, unknown>).delegate_name === 'string' &&
+      (row as Record<string, unknown>).delegate_name
+        ? ((row as Record<string, unknown>).delegate_name as string)
+        : null,
     statusTimeline: Array.isArray(timelineRows)
       ? timelineRows.map(
           (t: { new_status: string; changed_at: string; return_reason?: string | null }) => ({
