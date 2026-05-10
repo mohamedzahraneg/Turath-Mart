@@ -90,6 +90,13 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
       'assign_courier',
       'view_inventory',
       'view_reports',
+      // Phase 23F — read-only access to /delegates. The matching
+      // RLS migration (20260510240000_delegate_finance_reader.sql)
+      // wires the actual read permission on the financial tables
+      // via `public.is_delegate_finance_reader()`. Write
+      // operations stay admin-only at both layers (UI gate +
+      // existing `*_admin_*` policies).
+      'view_delegates',
     ],
   },
   {
