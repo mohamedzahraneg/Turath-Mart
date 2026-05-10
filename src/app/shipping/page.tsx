@@ -112,18 +112,28 @@ function DelegateChatWithDetails({
     const loadMessages = async () => {
       try {
         const supabase = createClient();
-        // Phase 21B: explicit columns. The mapper below reads only id,
-        // sender, message, created_at; chat_type is constrained by the
-        // .eq() filter, so we don't need it back. Schema verified.
+        // Phase 23K: scope reads to THIS order via `order_id` (the
+        // chat row's `order_id` column carries the order_num). Prior
+        // behaviour pulled in messages from every other order the same
+        // customer had on file. We keep the redundant phone equality —
+        // the table is indexed on (customer_phone, created_at) — so the
+        // pre-Phase-23K rows that exist without `order_id` STILL appear
+        // here for backward compatibility, and the order_id filter
+        // narrows once the column is populated. Sorting is still by
+        // created_at ascending.
         const { data } = await supabase
           .from('turath_masr_crm_chat')
-          .select('id, sender, message, created_at')
+          .select('id, sender, message, created_at, order_id')
           .eq('customer_phone', order.phone)
           .eq('chat_type', 'delegate')
           .order('created_at', { ascending: true });
         if (data && data.length > 0) {
+          // Backward-compat: any row whose `order_id` is null / matches
+          // this order's order_num is shown. A row tagged with a
+          // different order_id belongs to that other order — drop it.
+          const scoped = data.filter((m: any) => !m.order_id || m.order_id === order.orderNum);
           setMessages(
-            data.map((m: any) => ({
+            scoped.map((m: any) => ({
               id: m.id || `msg-${m.created_at}`,
               sender: m.sender === 'customer' ? 'customer' : 'delegate',
               text: m.message,
@@ -151,15 +161,21 @@ function DelegateChatWithDetails({
     loadMessages();
 
     const supabase = createClient();
+    // Phase 23K: Realtime channel + filter scoped to THIS order's
+    // `order_id`. Two delegates with the same customer phone on
+    // different orders no longer fan-out into each other's chats. The
+    // server-side filter is the strict guarantee — the chat_type guard
+    // remains as a defence-in-depth, and the existing dedupe by `id`
+    // prevents double-renders if a re-send happens.
     const channel = supabase
-      .channel(`delegate-chat-${order.phone}-${order.id}`)
+      .channel(`delegate-chat-${order.orderNum}`)
       .on(
         'postgres_changes',
         {
           event: 'INSERT',
           schema: 'public',
           table: 'turath_masr_crm_chat',
-          filter: `customer_phone=eq.${order.phone}`,
+          filter: `order_id=eq.${order.orderNum}`,
         },
         (payload: any) => {
           const m = payload.new;
@@ -195,7 +211,7 @@ function DelegateChatWithDetails({
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [order.phone, order.id]);
+  }, [order.phone, order.id, order.orderNum]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -217,11 +233,16 @@ function DelegateChatWithDetails({
     setInput('');
     try {
       const supabase = createClient();
+      // Phase 23K: stamp the order's `order_num` into `order_id` so
+      // the row joins the right per-order thread on both the customer
+      // and the admin sides. Sender stays 'delegate' to keep the
+      // bubble role identical to before.
       await supabase.from('turath_masr_crm_chat').insert({
         customer_phone: order.phone,
         sender: 'delegate',
         message: msgText,
         chat_type: 'delegate',
+        order_id: order.orderNum,
       });
     } catch (err) {
       console.error('Error sending delegate message:', err);

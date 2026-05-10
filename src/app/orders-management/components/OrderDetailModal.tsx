@@ -22,6 +22,9 @@ import {
   Copy,
   Clock,
   History,
+  Headphones,
+  Truck,
+  Send,
 } from 'lucide-react';
 import AuditLogModal, { getAuditLogs, AuditEntry } from './AuditLogModal';
 import { createClient } from '@/lib/supabase/client';
@@ -119,6 +122,7 @@ const STATUS_BADGE_MAP: Record<string, { label: string; cls: string }> = {
 const TABS = [
   { id: 'tab-details', label: 'تفاصيل الأوردر' },
   { id: 'tab-tracking', label: 'رابط التتبع' },
+  { id: 'tab-chat', label: 'محادثة الطلب' },
   { id: 'tab-history', label: 'سجل الحالات' },
   { id: 'tab-audit', label: 'سجل التعديلات' },
   { id: 'tab-notifications', label: 'سجل الإشعارات' },
@@ -904,6 +908,16 @@ export default function OrderDetailModal({ order, onClose }: Props) {
             </div>
           )}
 
+          {/* Chat Tab — Phase 23K: order-scoped chat history.
+              Reads `turath_masr_crm_chat` filtered to this order's
+              `order_id` (= order_num) so we never bleed messages from
+              another order with the same customer phone. Two sub-tabs
+              isolate the support thread from the delegate thread,
+              matching the customer-side /track/t/[token] UX. */}
+          {activeTab === 'tab-chat' && (
+            <OrderChatTab orderNum={liveOrder.orderNum} customerPhone={liveOrder.phone} />
+          )}
+
           {/* History Tab */}
           {activeTab === 'tab-history' && (
             <div className="space-y-3 fade-in">
@@ -1475,6 +1489,292 @@ export default function OrderDetailModal({ order, onClose }: Props) {
           onClose={() => setShowAuditModal(false)}
         />
       )}
+    </div>
+  );
+}
+
+// ─── Phase 23K — Order-scoped chat tab ─────────────────────────────────────
+//
+// Renders the per-order chat history for the admin / dispatcher reading
+// the order detail modal. Reads `turath_masr_crm_chat` directly under
+// the existing r1/r2/r5/r6 SELECT policy — admins are already authorised
+// for the whole table; what's new here is filtering by `order_id` so
+// the rendered thread is strictly the chat of THIS order. Sister
+// messages on other orders for the same customer phone are no longer
+// mixed in.
+//
+// Two sub-tabs (support / delegate) match the customer-side /track/t/[token]
+// experience. Sending posts a row with the matching `chat_type`, sender
+// pinned to `'support'` or `'delegate'` (no admin impersonation toggle).
+// Realtime channel is scoped to this order via the `order_id` filter,
+// so two admins viewing different orders do not receive each other's
+// INSERTs.
+
+type OrderChatThread = 'support' | 'delegate';
+
+interface OrderChatRow {
+  id: string;
+  sender: string;
+  message: string;
+  chat_type: string;
+  created_at: string;
+}
+
+function formatOrderChatTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const dayNames = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+  return `${d.toLocaleTimeString('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })} • ${dayNames[d.getDay()]} ${d.toLocaleDateString('en-GB')}`;
+}
+
+function OrderChatTab({ orderNum, customerPhone }: { orderNum: string; customerPhone: string }) {
+  const [thread, setThread] = useState<OrderChatThread>('support');
+  const [messages, setMessages] = useState<OrderChatRow[]>([]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const bottomRef = React.useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setMessages([]);
+    setError(null);
+    const supabase = createClient();
+
+    const load = async () => {
+      const { data, error: fetchErr } = await supabase
+        .from('turath_masr_crm_chat')
+        .select('id, sender, message, chat_type, created_at')
+        .eq('order_id', orderNum)
+        .eq('chat_type', thread)
+        .order('created_at', { ascending: true })
+        .limit(500);
+      if (cancelled) return;
+      if (fetchErr) {
+        // 42P01 (table missing) / 42501 (RLS deny) → silent empty;
+        // anything else surfaces a small inline banner.
+        const code = (fetchErr as { code?: string }).code || '';
+        if (code !== '42P01' && code !== '42501') {
+          setError('تعذر تحميل الرسائل. حاول لاحقًا.');
+        }
+        setMessages([]);
+      } else {
+        setMessages((data as OrderChatRow[]) || []);
+      }
+      setLoading(false);
+    };
+    load();
+
+    // Realtime — narrow to THIS order. The Postgres replication filter
+    // is server-evaluated, so other orders' INSERTs never reach the
+    // client (and the user can't spy on adjacent orders via DevTools).
+    const channel = supabase
+      .channel(`order-chat-${orderNum}-${thread}`)
+      .on(
+        'postgres_changes' as any,
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'turath_masr_crm_chat',
+          filter: `order_id=eq.${orderNum}`,
+        },
+        (payload: { new: OrderChatRow }) => {
+          const m = payload.new;
+          if (!m || m.chat_type !== thread) return;
+          setMessages((prev) => {
+            if (prev.some((p) => p.id === m.id)) return prev;
+            return [...prev, m];
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(channel);
+    };
+  }, [orderNum, thread]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ block: 'end' });
+  }, [messages.length]);
+
+  const sendMessage = async () => {
+    if (sending) return;
+    const msg = input.trim();
+    if (!msg) return;
+    if (msg.length > 1000) {
+      setError('الرسالة طويلة جدًا (الحد 1000 حرف).');
+      return;
+    }
+    setSending(true);
+    setError(null);
+    try {
+      const supabase = createClient();
+      // Sender mirrors the existing convention:
+      //   - 'support' thread → sender='support' (CRM page convention)
+      //   - 'delegate' thread → sender='delegate' (shipping page convention)
+      // Both render as the "staff" bubble on the customer side, so we
+      // stay aligned with both legacy surfaces without inventing a
+      // third sender label.
+      const senderRole: 'support' | 'delegate' = thread;
+      const { error: insertErr } = await supabase.from('turath_masr_crm_chat').insert({
+        customer_phone: customerPhone,
+        sender: senderRole,
+        message: msg,
+        chat_type: thread,
+        order_id: orderNum,
+      });
+      if (insertErr) {
+        const code = (insertErr as { code?: string }).code || '';
+        if (code === '42501') {
+          setError('ليست لديك صلاحية إرسال الرسائل.');
+        } else {
+          setError('تعذر إرسال الرسالة. حاول لاحقًا.');
+        }
+      } else {
+        setInput('');
+      }
+    } catch {
+      setError('تعذر الاتصال. حاول مرة أخرى.');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const threadLabel = thread === 'support' ? 'محادثة الدعم' : 'محادثة المندوب';
+  const threadAccent =
+    thread === 'support'
+      ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+      : 'bg-[hsl(211,67%,28%)] hover:bg-[hsl(211,67%,22%)] text-white';
+
+  return (
+    <div className="fade-in" dir="rtl">
+      {/* Thread switcher — support vs delegate */}
+      <div className="flex items-center gap-2 mb-3">
+        <button
+          type="button"
+          onClick={() => setThread('support')}
+          className={`flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold border transition-colors ${
+            thread === 'support'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+              : 'bg-white border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))] hover:bg-emerald-50/40'
+          }`}
+        >
+          <Headphones size={14} />
+          محادثة الدعم
+        </button>
+        <button
+          type="button"
+          onClick={() => setThread('delegate')}
+          className={`flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold border transition-colors ${
+            thread === 'delegate'
+              ? 'bg-[hsl(211,67%,28%)]/10 border-[hsl(211,67%,28%)]/30 text-[hsl(211,67%,28%)]'
+              : 'bg-white border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(211,67%,28%)]/5'
+          }`}
+        >
+          <Truck size={14} />
+          محادثة المندوب
+        </button>
+      </div>
+
+      {/* Scope hint */}
+      <p className="text-xs text-[hsl(var(--muted-foreground))] mb-3 leading-relaxed">
+        هذه المحادثة مقتصرة على رسائل الطلب <span className="font-mono">{orderNum}</span> فقط. لن
+        تظهر هنا أي رسائل من طلبات أخرى لنفس العميل.
+      </p>
+
+      <div className="rounded-2xl border border-[hsl(var(--border))] bg-white overflow-hidden flex flex-col h-[480px]">
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto bg-gray-50 px-3 py-3 space-y-2">
+          {loading ? (
+            <p className="text-xs text-center text-gray-400 py-8">جارٍ التحميل…</p>
+          ) : messages.length === 0 ? (
+            <div className="text-center text-gray-400 py-10 px-4">
+              <MessageCircle size={32} className="mx-auto mb-2 opacity-40" />
+              <p className="text-xs leading-relaxed">
+                لا توجد رسائل في {threadLabel} لهذا الطلب بعد.
+              </p>
+            </div>
+          ) : (
+            messages.map((m) => {
+              const isCustomer = m.sender === 'customer';
+              return (
+                <div
+                  key={m.id}
+                  className={`max-w-[80%] rounded-2xl px-3 py-2 shadow-sm ${
+                    isCustomer
+                      ? 'bg-white border border-gray-200 text-gray-800 mr-auto rounded-br-md'
+                      : `${threadAccent.split(' ')[0]} text-white ml-auto rounded-bl-md`
+                  }`}
+                >
+                  <p className="text-[11px] font-semibold opacity-80 mb-1">
+                    {isCustomer ? 'العميل' : m.sender === 'delegate' ? 'المندوب' : 'فريق الدعم'}
+                  </p>
+                  <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">
+                    {m.message}
+                  </p>
+                  <p
+                    className={`text-[10px] mt-1 ${isCustomer ? 'text-gray-400' : 'text-white/70'}`}
+                  >
+                    {formatOrderChatTime(m.created_at)}
+                  </p>
+                </div>
+              );
+            })
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        {error && (
+          <div className="px-3 pt-2 flex-shrink-0">
+            <div className="rounded-xl bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">
+              {error}
+            </div>
+          </div>
+        )}
+
+        {/* Composer */}
+        <div className="border-t border-[hsl(var(--border))] px-3 py-3 flex-shrink-0 bg-white">
+          <div className="flex items-end gap-2">
+            <textarea
+              className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(211,67%,28%)] resize-none"
+              placeholder={`اكتب رسالتك في ${threadLabel}...`}
+              rows={2}
+              value={input}
+              onChange={(e) => {
+                setInput(e.target.value);
+                if (error) setError(null);
+              }}
+              maxLength={1000}
+              disabled={sending}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  void sendMessage();
+                }
+              }}
+            />
+            <button
+              type="button"
+              onClick={sendMessage}
+              disabled={sending || !input.trim()}
+              className={`flex items-center justify-center gap-1 ${threadAccent} rounded-xl px-4 py-2.5 text-sm font-bold transition-colors disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed flex-shrink-0`}
+              aria-label="إرسال"
+            >
+              <Send size={14} />
+              {sending ? '…' : 'إرسال'}
+            </button>
+          </div>
+          <p className="mt-1 text-[10px] text-gray-400 text-left">{input.length}/1000</p>
+        </div>
+      </div>
     </div>
   );
 }
