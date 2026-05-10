@@ -377,25 +377,35 @@ const IN_FLIGHT_STATUSES = new Set(['preparing', 'warehouse', 'shipping']);
 export default function DelegatesPage() {
   const perms = usePermissions();
   const { user, profileFullName } = useAuth();
-  // Phase 23A-Fix2 — only admins (r1) can edit profile fields or
-  // toggle `delegate_is_active`. The underlying RLS policy on
-  // `public.profiles` (`profiles_admin_update`) is gated on
-  // `is_admin()`, so any non-admin caller would get a 42501 from
-  // PostgREST. Hiding the buttons keeps the UI honest.
-  const canEditDelegate = perms.isAdmin;
-  // Phase 23B — settlement writes are admin-only by RLS
-  // (`settlements_admin_insert`). Reads are also admin-only on the
-  // RLS side; we still gate the UI button to keep it consistent.
-  const canRegisterSettlement = perms.isAdmin;
-  // Phase 23C — custody + expenses writes are admin-only by RLS
-  // (`custody_admin_*` / `expenses_admin_*`). Same UI gate.
-  const canManageCustody = perms.isAdmin;
-  const canManageExpenses = perms.isAdmin;
-  // Phase 23D — CSV export of the per-delegate account statement is
-  // admin-only because the export carries financial movements. Non-
-  // admin viewers can read the on-screen statement (gated by the
-  // same RLS that fed the page) but cannot persist it to disk.
-  const canExportStatement = perms.isAdmin;
+  // Phase 23F — capability gates restructured around three concepts:
+  //   • canManageDelegates  → add / edit / activate / deactivate
+  //                           delegate profiles. Admin only.
+  //   • canManageDelegateFinance → settlements / custody / expenses
+  //                           add / edit / void. Admin only at
+  //                           BOTH the UI gate and the underlying
+  //                           RLS layer.
+  //   • canExportDelegateStatement → CSV export of the per-delegate
+  //                           account statement. Admin only because
+  //                           the CSV carries the financial movement
+  //                           detail; the printable view is the
+  //                           read-only export path for shipping
+  //                           supervisor.
+  //
+  // Phase 23A-Fix2 / 23B / 23C / 23D / 23E gates are subsumed by
+  // these three. r3 (shipping supervisor) gets `view_delegates` from
+  // the permissions module so they reach the page; the three gates
+  // below stay false for them, matching the read-only contract.
+  const canManageDelegates = perms.isAdmin;
+  const canManageDelegateFinance = perms.isAdmin;
+  const canExportDelegateStatement = perms.isAdmin;
+  // Aliases retained so existing call-sites that already speak the
+  // older vocabulary continue to compile without churn. They all
+  // resolve to the same bool — admin-only, both UI + RLS-enforced.
+  const canEditDelegate = canManageDelegates;
+  const canRegisterSettlement = canManageDelegateFinance;
+  const canManageCustody = canManageDelegateFinance;
+  const canManageExpenses = canManageDelegateFinance;
+  const canExportStatement = canExportDelegateStatement;
 
   const [profiles, setProfiles] = useState<DelegateRow[]>([]);
   const [orders, setOrders] = useState<OrderRow[]>([]);
@@ -1005,13 +1015,19 @@ export default function DelegatesPage() {
               زمني.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => setWizardOpen(true)}
-            className="flex items-center gap-2 px-4 py-2.5 bg-[hsl(var(--primary))] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
-          >
-            <Plus size={16} /> إضافة مندوب جديد
-          </button>
+          {/* Phase 23F — only admins can add a delegate. The
+              shipping supervisor (r3) lands on the page with read-
+              only access and never sees this button. RLS would
+              also reject the underlying profiles INSERT. */}
+          {canManageDelegates && (
+            <button
+              type="button"
+              onClick={() => setWizardOpen(true)}
+              className="flex items-center gap-2 px-4 py-2.5 bg-[hsl(var(--primary))] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
+            >
+              <Plus size={16} /> إضافة مندوب جديد
+            </button>
+          )}
         </div>
 
         {errorMessage && (
@@ -1458,6 +1474,9 @@ export default function DelegatesPage() {
              passes this through to the AccountStatementTab to hide
              the export button for non-admin viewers. */
           canExportStatement={canExportStatement}
+          /* Phase 23F — issuer name lands in the printable PDF
+             footer ("تم الإصدار بواسطة"). */
+          issuerName={profileFullName}
           /* Phase 23E — edit / void launchers. The drawer just
              forwards each request up to the page; modal state +
              supabase mutations live here. */
@@ -1891,6 +1910,8 @@ interface DrawerProps {
   onChangeCustodyStatus?: (row: CustodyRow, next: 'returned' | 'settled' | 'lost') => void;
   // Phase 23D — CSV export gate (admin-only, financial data).
   canExportStatement?: boolean;
+  // Phase 23F — issuer name surfaced in the printable / PDF footer.
+  issuerName?: string | null;
   // Phase 23E — edit / void hooks per table. Passed through to the
   // matching tab. The drawer itself doesn't open the modals; it
   // only forwards the request up to the page where the modal state
@@ -1917,6 +1938,7 @@ function DelegateDrawer({
   onAddExpense,
   onChangeCustodyStatus,
   canExportStatement = false,
+  issuerName = null,
   onEditSettlement,
   onVoidSettlement,
   onEditExpense,
@@ -2069,7 +2091,7 @@ function DelegateDrawer({
             />
           )}
           {activeTab === 'statement' && (
-            <AccountStatementTab a={a} canExport={canExportStatement} />
+            <AccountStatementTab a={a} canExport={canExportStatement} issuerName={issuerName} />
           )}
           {activeTab === 'ratings' && <RatingsTab a={a} />}
           {activeTab === 'activity' && <ActivityTab a={a} />}
@@ -4757,6 +4779,11 @@ function CustodyStatusDialog({
 interface AccountStatementTabProps {
   a: DelegateAggregate;
   canExport?: boolean;
+  // Phase 23F — issuer is the currently signed-in dispatcher's
+  // display name. Surfaces in the printable / PDF footer "تم
+  // الإصدار بواسطة" line and the official audit trail. Falls back
+  // to "—" when unavailable so the layout stays stable.
+  issuerName?: string | null;
 }
 
 interface StatementFetchedSlices {
@@ -4766,7 +4793,11 @@ interface StatementFetchedSlices {
   custody: CustodyRow[];
 }
 
-function AccountStatementTab({ a, canExport = false }: AccountStatementTabProps) {
+function AccountStatementTab({
+  a,
+  canExport = false,
+  issuerName = null,
+}: AccountStatementTabProps) {
   // Default range — last 90 days, computed once at mount. Matches
   // the page's primary fetch window so we use cached data without
   // any extra round-trips.
@@ -5088,12 +5119,18 @@ function AccountStatementTab({ a, canExport = false }: AccountStatementTabProps)
             />
           </div>
           <div className="flex flex-wrap gap-2 ml-auto print:hidden">
+            {/* Phase 23F — relabelled to "طباعة / حفظ PDF" so the
+                dispatcher knows the browser print dialog can save
+                the official statement as a PDF. Visible to anyone
+                who can read the tab; the underlying RLS already
+                gates which rows actually load. */}
             <button
               type="button"
               onClick={handlePrint}
-              className="inline-flex items-center gap-1 px-3 py-2 bg-[hsl(var(--muted))] hover:bg-[hsl(var(--muted))]/70 text-[hsl(var(--foreground))] text-xs font-semibold rounded-xl"
+              className="inline-flex items-center gap-1 px-3 py-2 bg-[hsl(var(--primary))] hover:opacity-90 text-white text-xs font-semibold rounded-xl"
+              disabled={!!validationError}
             >
-              <Printer size={12} /> طباعة
+              <Printer size={12} /> طباعة / حفظ PDF
             </button>
             {canExport && (
               <button
@@ -5132,8 +5169,11 @@ function AccountStatementTab({ a, canExport = false }: AccountStatementTabProps)
         )}
       </div>
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+      {/* Summary cards — Phase 23F: print:hidden so the on-screen
+          card grid doesn't double up with the official print block
+          appended at the end of this tab. The print block emits a
+          tighter, paper-friendly summary table. */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 print:hidden">
         <div className="rounded-2xl border border-[hsl(var(--border))] bg-white p-4">
           <p className="text-[11px] font-bold text-[hsl(var(--muted-foreground))] mb-1">
             إجمالي التحصيلات
@@ -5183,8 +5223,10 @@ function AccountStatementTab({ a, canExport = false }: AccountStatementTabProps)
         </div>
       </div>
 
-      {/* Movements table */}
-      <div className="space-y-2">
+      {/* Movements table — Phase 23F: print:hidden because the
+          official print block appended at the end of this tab
+          emits a paper-friendly version of the same table. */}
+      <div className="space-y-2 print:hidden">
         <div className="flex items-center justify-between">
           <h4 className="text-sm font-bold">حركات الفترة</h4>
           <p className="text-[11px] text-[hsl(var(--muted-foreground))]">
@@ -5251,6 +5293,273 @@ function AccountStatementTab({ a, canExport = false }: AccountStatementTabProps)
           </div>
         )}
       </div>
+
+      {/* ─── Phase 23F — Official printable / PDF layout ───────────────────
+          Hidden on screen (`hidden`) and shown only in print
+          (`print:block`). The browser's print dialog ("Save as PDF")
+          turns this section into a polished one-page (or paginated)
+          PDF without any new dependency. The print stylesheet at the
+          bottom of this section trims the rest of the page so only
+          this block is visible on paper.
+
+          Sensitive fields excluded by design — the section reads only
+          from `a.delegate.name`, `a.delegate.phone`, `summary`, and
+          `rows`. None of `national_id`, license numbers, login info,
+          or admin-only profile fields can ever appear here. */}
+      <section className="hidden print:block" dir="rtl" aria-label="كشف حساب رسمي">
+        <div className="print-statement">
+          {/* Header */}
+          <header className="print-header">
+            <div className="print-brand">تراث مصر</div>
+            <div className="print-title">كشف حساب مندوب</div>
+          </header>
+
+          {/* Metadata */}
+          <table className="print-meta">
+            <tbody>
+              <tr>
+                <th>المندوب</th>
+                <td>{a.delegate.name}</td>
+                <th>رقم الهاتف</th>
+                <td className="ltr">{a.delegate.phone || '—'}</td>
+              </tr>
+              <tr>
+                <th>الفترة</th>
+                <td className="ltr">
+                  {summary.fromIso} إلى {summary.toIso}
+                </td>
+                <th>تاريخ الإصدار</th>
+                <td className="ltr">{toIsoDate(new Date())}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          {/* Summary table */}
+          <h3 className="print-section-title">الملخص المالي</h3>
+          <table className="print-summary">
+            <tbody>
+              <tr>
+                <th>إجمالي التحصيلات</th>
+                <td>{fmtMoney(summary.totalCollected)}</td>
+                <th>إجمالي التوريدات</th>
+                <td>{fmtMoney(summary.totalSettled)}</td>
+              </tr>
+              <tr>
+                <th>إجمالي المصاريف المعتمدة</th>
+                <td>{fmtMoney(summary.totalApprovedExpenses)}</td>
+                <th>المتبقي المالي</th>
+                <td>
+                  {summary.financialRemaining < 0
+                    ? `${fmtMoney(Math.abs(summary.financialRemaining))} (زائد)`
+                    : fmtMoney(summary.financialRemaining)}
+                </td>
+              </tr>
+              <tr>
+                <th>قيمة الأمانات الحالية</th>
+                <td>{fmtMoney(summary.activeCustodyValue)}</td>
+                <th>عدد الأمانات المفتوحة</th>
+                <td>{summary.openCustodyCount}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          {/* Movements table */}
+          <h3 className="print-section-title">حركات الفترة</h3>
+          {rows.length === 0 ? (
+            <p className="print-empty">لا توجد حركات في الفترة المحددة.</p>
+          ) : (
+            <table className="print-movements">
+              <thead>
+                <tr>
+                  <th>التاريخ</th>
+                  <th>النوع</th>
+                  <th>المرجع</th>
+                  <th>الوصف</th>
+                  <th>مدين</th>
+                  <th>دائن</th>
+                  <th>ملاحظة</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={`print-${r.id}`}>
+                    <td className="ltr">{formatDateAr(r.date)}</td>
+                    <td>{r.label}</td>
+                    <td className="ltr">{r.reference || '—'}</td>
+                    <td>{r.description}</td>
+                    <td className="num">{r.debit > 0 ? fmtMoney(r.debit) : '—'}</td>
+                    <td className="num">{r.credit > 0 ? fmtMoney(r.credit) : '—'}</td>
+                    <td>{r.note || '—'}</td>
+                  </tr>
+                ))}
+                <tr className="print-totals-row">
+                  <th colSpan={4}>الإجماليات</th>
+                  <th className="num">{fmtMoney(debitTotal)}</th>
+                  <th className="num">{fmtMoney(creditTotal)}</th>
+                  <td>—</td>
+                </tr>
+              </tbody>
+            </table>
+          )}
+
+          {/* Footer */}
+          <footer className="print-footer">
+            <div className="print-footer-cell">
+              <p className="print-footer-label">تم الإصدار بواسطة</p>
+              <p className="print-footer-value">{issuerName || '—'}</p>
+            </div>
+            <div className="print-footer-cell">
+              <p className="print-footer-label">توقيع الإدارة</p>
+              <p className="print-footer-line">_______________________</p>
+            </div>
+          </footer>
+        </div>
+
+        {/* Print stylesheet — kept inline so the print layout is
+            self-contained and doesn't depend on the global Tailwind
+            print preset. The selectors are scoped to `.print-*`
+            classes above so they can't bleed into the screen view. */}
+        <style jsx global>{`
+          @media print {
+            @page {
+              size: A4 portrait;
+              margin: 18mm 14mm;
+            }
+            body {
+              background: #ffffff !important;
+              color: #000000 !important;
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
+            }
+            .print-statement {
+              direction: rtl;
+              font-family:
+                'Cairo',
+                'Tajawal',
+                'Segoe UI',
+                system-ui,
+                -apple-system,
+                Arial,
+                sans-serif;
+              font-size: 11pt;
+              color: #000;
+            }
+            .print-header {
+              border-bottom: 2px solid #000;
+              padding-bottom: 8mm;
+              margin-bottom: 6mm;
+              text-align: center;
+            }
+            .print-brand {
+              font-size: 22pt;
+              font-weight: 700;
+              letter-spacing: 0.5pt;
+            }
+            .print-title {
+              font-size: 14pt;
+              margin-top: 2mm;
+            }
+            .print-meta,
+            .print-summary,
+            .print-movements {
+              width: 100%;
+              border-collapse: collapse;
+              margin-bottom: 6mm;
+              page-break-inside: auto;
+            }
+            .print-meta th,
+            .print-meta td,
+            .print-summary th,
+            .print-summary td {
+              border: 1px solid #777;
+              padding: 4pt 6pt;
+              font-size: 10.5pt;
+            }
+            .print-meta th,
+            .print-summary th {
+              background: #f3f3f3;
+              text-align: right;
+              width: 22%;
+              font-weight: 700;
+            }
+            .print-section-title {
+              font-size: 12pt;
+              font-weight: 700;
+              margin: 6mm 0 3mm 0;
+              border-bottom: 1px solid #000;
+              padding-bottom: 1mm;
+            }
+            .print-movements th,
+            .print-movements td {
+              border: 1px solid #777;
+              padding: 3pt 5pt;
+              font-size: 9.5pt;
+              vertical-align: top;
+              text-align: right;
+            }
+            .print-movements thead th {
+              background: #e8e8e8;
+              font-weight: 700;
+            }
+            .print-movements tr {
+              page-break-inside: avoid;
+            }
+            .print-totals-row th,
+            .print-totals-row td {
+              background: #f3f3f3;
+              font-weight: 700;
+            }
+            .print-empty {
+              font-size: 10.5pt;
+              color: #444;
+              padding: 6pt 0;
+              border: 1px dashed #999;
+              text-align: center;
+            }
+            .print-footer {
+              display: flex;
+              justify-content: space-between;
+              gap: 30mm;
+              margin-top: 14mm;
+              page-break-inside: avoid;
+            }
+            .print-footer-cell {
+              flex: 1;
+              text-align: center;
+              border-top: 1px solid #000;
+              padding-top: 3mm;
+            }
+            .print-footer-label {
+              font-size: 9.5pt;
+              color: #555;
+              margin: 0 0 2mm 0;
+            }
+            .print-footer-value {
+              font-size: 11pt;
+              font-weight: 700;
+              margin: 0;
+            }
+            .print-footer-line {
+              font-size: 11pt;
+              letter-spacing: 1pt;
+              margin: 0;
+            }
+            .ltr {
+              direction: ltr;
+              unicode-bidi: embed;
+              text-align: right;
+            }
+            .num {
+              font-variant-numeric: tabular-nums;
+              white-space: nowrap;
+            }
+            /* Drawer chrome: the existing print:hidden Tailwind
+               classes on the screen statement (range pills, action
+               buttons, summary cards, on-screen movements table)
+               keep the print output limited to .print-statement. */
+          }
+        `}</style>
+      </section>
     </div>
   );
 }
