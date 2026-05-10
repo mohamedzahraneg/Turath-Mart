@@ -54,6 +54,10 @@ interface TrackingDTO {
     reason: string | null;
   } | null;
   delegateName: string | null;
+  // Phase 23A-Fix1 — type parity with the token DTO; this endpoint
+  // never exposes delegate phone because the order_num key is
+  // enumerable. Always null on this route.
+  delegatePhone: string | null;
   // Phase 22P — `returnReason` is the customer-safe extract of the
   // structured `note` payload. Populated only for status='returned'
   // rows by the `get_tracking_timeline` RPC; null/undefined for
@@ -129,6 +133,9 @@ export async function GET(_request: Request, context: { params: Promise<{ orderI
     // use the unguessable `/track/t/<token>` URL.
     scheduledDelivery: null,
     delegateName: null,
+    // Phase 23A-Fix1 — privacy parity: never exposed on the
+    // order_num path. Always null.
+    delegatePhone: null,
     statusTimeline: Array.isArray(timelineRows)
       ? timelineRows.map(
           (t: { new_status: string; changed_at: string; return_reason?: string | null }) => ({

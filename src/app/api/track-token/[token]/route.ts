@@ -106,10 +106,18 @@ interface TrackingDTO {
   } | null;
   // Phase 22Q — assigned delegate's display name, exposed to the
   // customer on `/track/t/<token>` so the tracking-page delegate
-  // card can show "اسم المندوب: …". Phone is intentionally NOT
-  // exposed because `profiles` doesn't carry it; see Phase 22Q
-  // report. Null when no delegate assigned.
+  // card can show "اسم المندوب: …". Null when no delegate
+  // assigned.
   delegateName: string | null;
+  // Phase 23A-Fix1 — assigned delegate's contact phone, joined
+  // server-side by `get_tracking_info_by_token` from
+  // `profiles.phone` via `orders.assigned_to`. Renders as a
+  // tappable `tel:` link in the tracking-page delegate card.
+  // Null when the delegate has no phone on file or when only the
+  // legacy `delegate_name` text is set on the order. National ID,
+  // licence numbers, transport type, and admin notes are NEVER
+  // included on this DTO.
+  delegatePhone: string | null;
   // Phase 22P — `returnReason` is the customer-safe extract of the
   // structured `note` payload. Populated only for status='returned'
   // rows by the `get_tracking_timeline_by_token` RPC; null/undefined
@@ -256,6 +264,16 @@ export async function GET(_request: Request, context: { params: Promise<{ token:
       typeof (row as Record<string, unknown>).delegate_name === 'string' &&
       (row as Record<string, unknown>).delegate_name
         ? ((row as Record<string, unknown>).delegate_name as string)
+        : null,
+    // Phase 23A-Fix1 — pass-through. NULL until the companion
+    // tracking-RPC migration is applied (the RPC simply doesn't
+    // return the column, and the optional-chained access yields
+    // undefined → coerced to null). The tracking page renders a
+    // tappable `tel:` link only when this is truthy.
+    delegatePhone:
+      typeof (row as Record<string, unknown>).delegate_phone === 'string' &&
+      (row as Record<string, unknown>).delegate_phone
+        ? ((row as Record<string, unknown>).delegate_phone as string)
         : null,
     statusTimeline: Array.isArray(timelineRows)
       ? timelineRows.map(

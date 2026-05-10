@@ -36,9 +36,27 @@ import {
   X,
   User,
   Clock,
+  Plus,
+  IdCard,
+  CalendarClock,
+  ChevronLeft,
+  ChevronRight,
+  Lock,
+  ShieldCheck,
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import { createClient } from '@/lib/supabase/client';
+import { isValidEgyptianMobile } from '@/lib/validators/phone';
+// Phase 23A-Fix1 — transport-type tokens + Arabic labels, plus the
+// licence-status helper that drives the "متبقي N يوم" badges in the
+// delegates table and detail drawer.
+import {
+  TRANSPORT_TYPE_TOKENS,
+  TRANSPORT_TYPE_LABELS_AR,
+  transportLabel,
+  type TransportType,
+} from '@/lib/delegates/transportTypes';
+import { licenseStatus } from '@/lib/delegates/licenseStatus';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 interface DelegateRow {
@@ -52,10 +70,24 @@ interface DelegateRow {
   roleId: string | null;
   roleName: string | null;
   email: string | null;
-  /** `profiles.phone` is intentionally NOT exposed — the column does
-   *  not exist on this schema (audited in Phase 22Q). The card
-   *  renders "رقم الهاتف غير مسجل" as a follow-up note. */
   hasProfile: boolean;
+  // Phase 23A-Fix1 — operational profile fields. All optional; the
+  // detail drawer hides any blank field. The companion migration
+  // (`20260510190000_profiles_delegate_fields.sql`) adds these
+  // columns to `profiles`; before it lands the profile fetch
+  // simply omits them and every renderer here treats them as
+  // null. national_id + licence numbers are admin-only — they
+  // are never echoed back to the customer-facing tracking page.
+  phone: string | null;
+  nationalId: string | null;
+  transportType: string | null;
+  vehicleLicenseNumber: string | null;
+  vehicleLicenseStartsAt: string | null;
+  vehicleLicenseExpiresAt: string | null;
+  drivingLicenseNumber: string | null;
+  drivingLicenseStartsAt: string | null;
+  drivingLicenseExpiresAt: string | null;
+  delegateIsActive: boolean | null;
 }
 
 interface OrderRow {
@@ -168,6 +200,11 @@ export default function DelegatesPage() {
     'summary' | 'orders' | 'ratings' | 'activity' | 'placeholder'
   >('summary');
   const [placeholderTab, setPlaceholderTab] = useState<string>('');
+  // Phase 23A-Fix1 — wizard state + refetch trigger after successful
+  // delegate creation. Declared here so the loader useEffect below
+  // can subscribe to `reloadTick` for refetches.
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [reloadTick, setReloadTick] = useState(0);
 
   // Fetch profiles + orders + ratings in parallel. Each query is
   // narrowed and date-bounded.
@@ -178,9 +215,15 @@ export default function DelegatesPage() {
       const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
       try {
         const [profilesRes, ordersRes, ratingsRes] = await Promise.all([
+          // Phase 23A-Fix1 — request the new operational columns.
+          // Pre-migration the columns don't exist yet; the SELECT
+          // will surface a 42703 error which the catch arm below
+          // swallows so the page still renders the legacy fields.
           supabase
             .from('profiles')
-            .select('id, full_name, email, role_id, role_name')
+            .select(
+              'id, full_name, email, role_id, role_name, phone, national_id, transport_type, vehicle_license_number, vehicle_license_starts_at, vehicle_license_expires_at, driving_license_number, driving_license_starts_at, driving_license_expires_at, delegate_is_active'
+            )
             .in('role_id', ['r3', 'r4']),
           supabase
             .from('turath_masr_orders')
@@ -218,6 +261,16 @@ export default function DelegatesPage() {
             email: string | null;
             role_id: string | null;
             role_name: string | null;
+            phone?: string | null;
+            national_id?: string | null;
+            transport_type?: string | null;
+            vehicle_license_number?: string | null;
+            vehicle_license_starts_at?: string | null;
+            vehicle_license_expires_at?: string | null;
+            driving_license_number?: string | null;
+            driving_license_starts_at?: string | null;
+            driving_license_expires_at?: string | null;
+            delegate_is_active?: boolean | null;
           }>
         ).map((p) => ({
           key: p.id,
@@ -227,6 +280,16 @@ export default function DelegatesPage() {
           roleName: p.role_name ?? null,
           email: p.email ?? null,
           hasProfile: true,
+          phone: p.phone ?? null,
+          nationalId: p.national_id ?? null,
+          transportType: p.transport_type ?? null,
+          vehicleLicenseNumber: p.vehicle_license_number ?? null,
+          vehicleLicenseStartsAt: p.vehicle_license_starts_at ?? null,
+          vehicleLicenseExpiresAt: p.vehicle_license_expires_at ?? null,
+          drivingLicenseNumber: p.driving_license_number ?? null,
+          drivingLicenseStartsAt: p.driving_license_starts_at ?? null,
+          drivingLicenseExpiresAt: p.driving_license_expires_at ?? null,
+          delegateIsActive: p.delegate_is_active ?? null,
         }));
 
         // Backfill from legacy delegate_name text values that don't
@@ -249,6 +312,21 @@ export default function DelegatesPage() {
           roleName: null,
           email: null,
           hasProfile: false,
+          // Phase 23A-Fix1 — legacy `delegate_name`-only rows have
+          // no profile to draw operational data from. Every new
+          // field defaults to null so the renderers degrade
+          // gracefully (the table cell renders "—", the drawer
+          // hides the row).
+          phone: null,
+          nationalId: null,
+          transportType: null,
+          vehicleLicenseNumber: null,
+          vehicleLicenseStartsAt: null,
+          vehicleLicenseExpiresAt: null,
+          drivingLicenseNumber: null,
+          drivingLicenseStartsAt: null,
+          drivingLicenseExpiresAt: null,
+          delegateIsActive: null,
         }));
 
         const allDelegates = [...profileRows, ...legacyRows].sort((a, b) =>
@@ -278,7 +356,10 @@ export default function DelegatesPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+    // Phase 23A-Fix1 — re-run the loader when the wizard bumps
+    // `reloadTick`. Declared above the loader so React's hook
+    // ordering guarantees still hold.
+  }, [reloadTick]);
 
   // Per-delegate aggregation. Cheap O(N*M) walk; the page only
   // renders <100 delegates and <1000 orders in practice.
@@ -379,6 +460,13 @@ export default function DelegatesPage() {
               مرحلة لاحقة.
             </p>
           </div>
+          <button
+            type="button"
+            onClick={() => setWizardOpen(true)}
+            className="flex items-center gap-2 px-4 py-2.5 bg-[hsl(var(--primary))] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
+          >
+            <Plus size={16} /> إضافة مندوب جديد
+          </button>
         </div>
 
         {errorMessage && (
@@ -450,9 +538,11 @@ export default function DelegatesPage() {
                     {[
                       'المندوب',
                       'الدور',
+                      'الهاتف',
+                      'وسيلة المواصلات',
+                      'حالة الرخص',
                       'الطلبات الآن',
                       'تم التسليم',
-                      'المرتجع',
                       'إجمالي التحصيل',
                       'التقييم',
                       'إجراء',
@@ -464,46 +554,90 @@ export default function DelegatesPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[hsl(var(--border))]">
-                  {aggregates.map((a) => (
-                    <tr key={a.delegate.key} className="hover:bg-[hsl(var(--muted))]/30">
-                      <td className="table-cell">
-                        <div className="font-semibold">{a.delegate.name}</div>
-                        <div className="text-[10px] text-[hsl(var(--muted-foreground))]">
-                          {a.delegate.email || (a.delegate.hasProfile ? '' : 'سجل قديم')}
-                        </div>
-                      </td>
-                      <td className="table-cell text-xs">
-                        {a.delegate.roleName || a.delegate.roleId || '—'}
-                      </td>
-                      <td className="table-cell font-mono">{a.inFlight}</td>
-                      <td className="table-cell font-mono text-emerald-700">{a.delivered}</td>
-                      <td className="table-cell font-mono text-red-700">{a.returned}</td>
-                      <td className="table-cell font-mono">{fmtMoney(a.totalCollected)}</td>
-                      <td className="table-cell">
-                        {a.averageRating != null ? (
-                          <span className="inline-flex items-center gap-1 text-amber-600 font-semibold">
-                            <Star size={12} /> {a.averageRating.toFixed(1)}
-                          </span>
-                        ) : (
-                          <span className="text-xs text-[hsl(var(--muted-foreground))]">
-                            لا تقييم
-                          </span>
-                        )}
-                      </td>
-                      <td className="table-cell">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedKey(a.delegate.key);
-                            setActiveTab('summary');
-                          }}
-                          className="text-xs font-semibold text-[hsl(var(--primary))] hover:underline"
-                        >
-                          عرض التفاصيل
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {aggregates.map((a) => {
+                    // Phase 23A-Fix1 — pre-compute the licence
+                    // status so the table cell can pick the
+                    // worse of the two and surface a single
+                    // colour-coded pill. The drawer shows full
+                    // detail on each licence separately.
+                    const vehStatus = licenseStatus(a.delegate.vehicleLicenseExpiresAt);
+                    const drvStatus = licenseStatus(a.delegate.drivingLicenseExpiresAt);
+                    const worse =
+                      [vehStatus, drvStatus]
+                        .filter((s) => s.status !== 'unknown')
+                        .sort((a2, b2) => {
+                          const order = ['expired', 'today', 'warning', 'valid'];
+                          return order.indexOf(a2.status) - order.indexOf(b2.status);
+                        })[0] ?? null;
+                    return (
+                      <tr key={a.delegate.key} className="hover:bg-[hsl(var(--muted))]/30">
+                        <td className="table-cell">
+                          <div className="font-semibold">{a.delegate.name}</div>
+                          <div className="text-[10px] text-[hsl(var(--muted-foreground))]">
+                            {a.delegate.email || (a.delegate.hasProfile ? '' : 'سجل قديم')}
+                          </div>
+                        </td>
+                        <td className="table-cell text-xs">
+                          {a.delegate.roleName || a.delegate.roleId || '—'}
+                        </td>
+                        <td className="table-cell font-mono text-xs">
+                          {a.delegate.phone ? (
+                            <a
+                              href={`tel:${a.delegate.phone}`}
+                              className="text-[hsl(var(--primary))] hover:underline"
+                              dir="ltr"
+                            >
+                              {a.delegate.phone}
+                            </a>
+                          ) : (
+                            <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                          )}
+                        </td>
+                        <td className="table-cell text-xs">
+                          {transportLabel(a.delegate.transportType) || (
+                            <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                          )}
+                        </td>
+                        <td className="table-cell">
+                          {worse ? (
+                            <span
+                              className={`inline-block text-[10px] font-semibold px-2 py-0.5 rounded-full border ${worse.toneClass}`}
+                            >
+                              {worse.label}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-[hsl(var(--muted-foreground))]">—</span>
+                          )}
+                        </td>
+                        <td className="table-cell font-mono">{a.inFlight}</td>
+                        <td className="table-cell font-mono text-emerald-700">{a.delivered}</td>
+                        <td className="table-cell font-mono">{fmtMoney(a.totalCollected)}</td>
+                        <td className="table-cell">
+                          {a.averageRating != null ? (
+                            <span className="inline-flex items-center gap-1 text-amber-600 font-semibold">
+                              <Star size={12} /> {a.averageRating.toFixed(1)}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-[hsl(var(--muted-foreground))]">
+                              لا تقييم
+                            </span>
+                          )}
+                        </td>
+                        <td className="table-cell">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedKey(a.delegate.key);
+                              setActiveTab('summary');
+                            }}
+                            className="text-xs font-semibold text-[hsl(var(--primary))] hover:underline"
+                          >
+                            عرض التفاصيل
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -521,6 +655,16 @@ export default function DelegatesPage() {
             setPlaceholderTab(ph || '');
           }}
           onClose={() => setSelectedKey(null)}
+        />
+      )}
+
+      {wizardOpen && (
+        <AddDelegateWizard
+          onClose={() => setWizardOpen(false)}
+          onCreated={() => {
+            setWizardOpen(false);
+            setReloadTick((n) => n + 1);
+          }}
         />
       )}
     </AppLayout>
@@ -675,33 +819,160 @@ function SummaryTab({ a }: { a: DelegateAggregate }) {
     totalDoneOrReturned > 0 ? Math.round((a.delivered / totalDoneOrReturned) * 100) : 0;
   const returnedPct = totalDoneOrReturned > 0 ? 100 - deliveredPct : 0;
 
+  // Phase 23A-Fix1 — licence statuses + admin-only operational
+  // info card. Both licences are rendered separately so the
+  // dispatcher can see exactly which one is closer to expiry.
+  const vehStatus = licenseStatus(a.delegate.vehicleLicenseExpiresAt);
+  const drvStatus = licenseStatus(a.delegate.drivingLicenseExpiresAt);
+
   return (
-    <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-      <KpiCard icon={<Package size={16} />} label="طلبات اليوم" value={ordersToday} />
-      <KpiCard icon={<Package size={16} />} label="طلبات الأسبوع" value={ordersWeek} />
-      <KpiCard icon={<Package size={16} />} label="طلبات الشهر" value={ordersMonth} />
-      <KpiCard
-        icon={<CheckCircle size={16} className="text-emerald-600" />}
-        label="نسبة التسليم"
-        value={`${deliveredPct}%`}
-      />
-      <KpiCard
-        icon={<RotateCcw size={16} className="text-red-600" />}
-        label="نسبة المرتجع"
-        value={`${returnedPct}%`}
-      />
-      <KpiCard
-        icon={<Wallet size={16} />}
-        label="إجمالي التحصيل"
-        value={fmtMoney(a.totalCollected)}
-      />
-      <KpiCard
-        icon={<Star size={16} className="text-amber-500" />}
-        label="متوسط التقييم"
-        value={a.averageRating != null ? `${a.averageRating.toFixed(1)} / 5` : 'لا تقييم'}
-      />
-      <KpiCard icon={<Wallet size={16} />} label="إجمالي التوريد" value="قريبًا" placeholder />
-      <KpiCard icon={<Wallet size={16} />} label="المتبقي عليه" value="قريبًا" placeholder />
+    <div className="space-y-4">
+      {/* Phase 23A-Fix1 — operational profile card. Hidden when
+          all fields are blank (legacy delegate_name-only rows
+          fall through to that branch automatically). */}
+      {(a.delegate.phone ||
+        a.delegate.nationalId ||
+        a.delegate.transportType ||
+        a.delegate.vehicleLicenseNumber ||
+        a.delegate.drivingLicenseNumber) && (
+        <div className="card-section p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <IdCard size={15} className="text-[hsl(var(--primary))]" />
+            <h4 className="text-sm font-bold">البيانات الأساسية</h4>
+          </div>
+          <dl className="grid grid-cols-2 gap-3 text-sm">
+            {a.delegate.phone && (
+              <div>
+                <dt className="text-[11px] text-[hsl(var(--muted-foreground))] mb-0.5">
+                  رقم الهاتف
+                </dt>
+                <dd className="font-mono font-semibold" dir="ltr">
+                  {a.delegate.phone}
+                </dd>
+              </div>
+            )}
+            {a.delegate.nationalId && (
+              <div>
+                <dt className="text-[11px] text-[hsl(var(--muted-foreground))] mb-0.5">
+                  الرقم القومي
+                </dt>
+                <dd className="font-mono" dir="ltr">
+                  {a.delegate.nationalId}
+                </dd>
+              </div>
+            )}
+            {a.delegate.transportType && (
+              <div>
+                <dt className="text-[11px] text-[hsl(var(--muted-foreground))] mb-0.5">
+                  وسيلة المواصلات
+                </dt>
+                <dd className="font-semibold">{transportLabel(a.delegate.transportType)}</dd>
+              </div>
+            )}
+            {a.delegate.delegateIsActive === false && (
+              <div>
+                <dt className="text-[11px] text-[hsl(var(--muted-foreground))] mb-0.5">الحالة</dt>
+                <dd className="font-semibold text-red-700">معطّل</dd>
+              </div>
+            )}
+          </dl>
+
+          {/* Vehicle licence */}
+          {(a.delegate.vehicleLicenseNumber ||
+            a.delegate.vehicleLicenseStartsAt ||
+            a.delegate.vehicleLicenseExpiresAt) && (
+            <div className="mt-4 pt-3 border-t border-[hsl(var(--border))]">
+              <div className="flex items-center gap-2 mb-2">
+                <CalendarClock size={13} className="text-[hsl(var(--muted-foreground))]" />
+                <p className="text-xs font-bold">رخصة المركبة</p>
+                {vehStatus.label && (
+                  <span
+                    className={`inline-block text-[10px] font-semibold px-2 py-0.5 rounded-full border ${vehStatus.toneClass}`}
+                  >
+                    {vehStatus.label}
+                  </span>
+                )}
+              </div>
+              <dl className="grid grid-cols-3 gap-3 text-xs">
+                <div>
+                  <dt className="text-[hsl(var(--muted-foreground))] mb-0.5">رقم الرخصة</dt>
+                  <dd className="font-mono">{a.delegate.vehicleLicenseNumber || '—'}</dd>
+                </div>
+                <div>
+                  <dt className="text-[hsl(var(--muted-foreground))] mb-0.5">البداية</dt>
+                  <dd className="font-mono">{a.delegate.vehicleLicenseStartsAt || '—'}</dd>
+                </div>
+                <div>
+                  <dt className="text-[hsl(var(--muted-foreground))] mb-0.5">النهاية</dt>
+                  <dd className="font-mono">{a.delegate.vehicleLicenseExpiresAt || '—'}</dd>
+                </div>
+              </dl>
+            </div>
+          )}
+
+          {/* Driving licence */}
+          {(a.delegate.drivingLicenseNumber ||
+            a.delegate.drivingLicenseStartsAt ||
+            a.delegate.drivingLicenseExpiresAt) && (
+            <div className="mt-3 pt-3 border-t border-[hsl(var(--border))]">
+              <div className="flex items-center gap-2 mb-2">
+                <CalendarClock size={13} className="text-[hsl(var(--muted-foreground))]" />
+                <p className="text-xs font-bold">رخصة القيادة</p>
+                {drvStatus.label && (
+                  <span
+                    className={`inline-block text-[10px] font-semibold px-2 py-0.5 rounded-full border ${drvStatus.toneClass}`}
+                  >
+                    {drvStatus.label}
+                  </span>
+                )}
+              </div>
+              <dl className="grid grid-cols-3 gap-3 text-xs">
+                <div>
+                  <dt className="text-[hsl(var(--muted-foreground))] mb-0.5">رقم الرخصة</dt>
+                  <dd className="font-mono">{a.delegate.drivingLicenseNumber || '—'}</dd>
+                </div>
+                <div>
+                  <dt className="text-[hsl(var(--muted-foreground))] mb-0.5">البداية</dt>
+                  <dd className="font-mono">{a.delegate.drivingLicenseStartsAt || '—'}</dd>
+                </div>
+                <div>
+                  <dt className="text-[hsl(var(--muted-foreground))] mb-0.5">النهاية</dt>
+                  <dd className="font-mono">{a.delegate.drivingLicenseExpiresAt || '—'}</dd>
+                </div>
+              </dl>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Existing operational KPIs */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+        <KpiCard icon={<Package size={16} />} label="طلبات اليوم" value={ordersToday} />
+        <KpiCard icon={<Package size={16} />} label="طلبات الأسبوع" value={ordersWeek} />
+        <KpiCard icon={<Package size={16} />} label="طلبات الشهر" value={ordersMonth} />
+        <KpiCard
+          icon={<CheckCircle size={16} className="text-emerald-600" />}
+          label="نسبة التسليم"
+          value={`${deliveredPct}%`}
+        />
+        <KpiCard
+          icon={<RotateCcw size={16} className="text-red-600" />}
+          label="نسبة المرتجع"
+          value={`${returnedPct}%`}
+        />
+        <KpiCard
+          icon={<Wallet size={16} />}
+          label="إجمالي التحصيل"
+          value={fmtMoney(a.totalCollected)}
+        />
+        <KpiCard
+          icon={<Star size={16} className="text-amber-500" />}
+          label="متوسط التقييم"
+          value={a.averageRating != null ? `${a.averageRating.toFixed(1)} / 5` : 'لا تقييم'}
+        />
+        <KpiCard icon={<Wallet size={16} />} label="إجمالي التوريد" value="قريبًا" placeholder />
+        <KpiCard icon={<Wallet size={16} />} label="المتبقي عليه" value="قريبًا" placeholder />
+      </div>
     </div>
   );
 }
@@ -877,6 +1148,414 @@ function PlaceholderTab({ kind }: { kind: string }) {
       {cfg.phase && (
         <p className="text-[10px] text-[hsl(var(--primary))] font-bold">{cfg.phase} — قريبًا</p>
       )}
+    </div>
+  );
+}
+
+// ─── Phase 23A-Fix1 — Add delegate wizard ──────────────────────────────────
+//
+// Two-step modal that captures the operational profile + login
+// account for a new delegate. The login is created through the
+// existing public `supabase.auth.signUp` API (same pattern as
+// `src/app/roles/page.tsx`); plaintext passwords NEVER touch any
+// table — Supabase Auth hashes server-side. The wizard then upserts
+// the matching `profiles` row with the operational fields the
+// existing `profiles_admin_insert` / `_update` RLS policies allow
+// for an admin caller.
+//
+// Caveats / limitations that the report flags as follow-ups:
+//   • Without a service-role key, `supabase.auth.signUp` may
+//     auto-log-in the new user when email confirmation is OFF —
+//     the admin's session would switch. We display a yellow
+//     warning banner before submission.
+//   • If the auth signUp succeeds but the profile upsert fails
+//     (e.g. pre-migration RPC schema mismatch, transient RLS
+//     hiccup), the auth user remains but the profile is empty.
+//     The toast walks the admin through "the login was created
+//     but extra fields weren't saved — try again from the edit
+//     button" explicitly so they aren't left guessing.
+interface AddDelegateWizardProps {
+  onClose: () => void;
+  onCreated: () => void;
+}
+
+function AddDelegateWizard({ onClose, onCreated }: AddDelegateWizardProps) {
+  const [step, setStep] = useState<1 | 2>(1);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string>('');
+
+  // Step 1 — profile
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [nationalId, setNationalId] = useState('');
+  const [transportType, setTransportType] = useState<TransportType | ''>('');
+  const [vehicleLicenseNumber, setVehicleLicenseNumber] = useState('');
+  const [vehicleStarts, setVehicleStarts] = useState('');
+  const [vehicleExpires, setVehicleExpires] = useState('');
+  const [drivingLicenseNumber, setDrivingLicenseNumber] = useState('');
+  const [drivingStarts, setDrivingStarts] = useState('');
+  const [drivingExpires, setDrivingExpires] = useState('');
+
+  // Step 2 — login
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [delegateActive, setDelegateActive] = useState(true);
+
+  const validateStep1 = (): string => {
+    if (!name.trim()) return 'الاسم مطلوب';
+    if (!phone.trim()) return 'رقم الهاتف مطلوب';
+    if (!isValidEgyptianMobile(phone.trim())) {
+      return 'رقم الهاتف غير صالح. يجب أن يكون رقم موبايل مصري (010 / 011 / 012 / 015).';
+    }
+    if (!nationalId.trim()) return 'الرقم القومي مطلوب';
+    if (!/^\d{14}$/.test(nationalId.trim())) {
+      return 'الرقم القومي يجب أن يكون 14 رقم';
+    }
+    if (!transportType) return 'يجب اختيار وسيلة المواصلات';
+    if (vehicleStarts && vehicleExpires && vehicleExpires <= vehicleStarts) {
+      return 'تاريخ نهاية رخصة المركبة يجب أن يكون بعد البداية';
+    }
+    if (drivingStarts && drivingExpires && drivingExpires <= drivingStarts) {
+      return 'تاريخ نهاية رخصة القيادة يجب أن يكون بعد البداية';
+    }
+    return '';
+  };
+
+  const validateStep2 = (): string => {
+    if (!email.trim()) return 'البريد الإلكتروني / اسم المستخدم مطلوب';
+    if (!email.includes('@')) {
+      return 'البريد الإلكتروني يجب أن يكون بالشكل name@example.com';
+    }
+    if (!password) return 'كلمة المرور مطلوبة';
+    if (password.length < 8) return 'كلمة المرور يجب ألا تقل عن 8 حروف';
+    if (password !== confirmPassword) return 'كلمتا المرور غير متطابقتين';
+    return '';
+  };
+
+  const handleNext = () => {
+    setError('');
+    const err = validateStep1();
+    if (err) {
+      setError(err);
+      return;
+    }
+    setStep(2);
+  };
+
+  const handleSubmit = async () => {
+    setError('');
+    const err = validateStep2();
+    if (err) {
+      setError(err);
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const supabase = createClient();
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+        email: email.trim(),
+        password,
+        options: {
+          data: {
+            full_name: name.trim(),
+            role: 'delegate',
+            // Phase 22B convention — r4 is the delegate role id.
+            role_id: 'r4',
+          },
+        },
+      });
+      if (signUpError) {
+        setError(`تعذر إنشاء حساب الدخول: ${signUpError.message}`);
+        setSubmitting(false);
+        return;
+      }
+      const newUserId = signUpData?.user?.id;
+      if (!newUserId) {
+        setError('تم إنشاء الحساب لكن لم يتم استرجاع معرف المستخدم. حاول إعادة المحاولة.');
+        setSubmitting(false);
+        return;
+      }
+      // Phase 23A-Fix1 — write the operational profile row. The
+      // existing `handle_new_user` trigger may have already
+      // inserted a minimal row; `upsert` keeps the row idempotent
+      // either way.
+      const { error: profileError } = await supabase.from('profiles').upsert({
+        id: newUserId,
+        email: email.trim(),
+        full_name: name.trim(),
+        role: 'delegate',
+        role_id: 'r4',
+        role_name: 'مندوب شحن',
+        phone: phone.trim(),
+        national_id: nationalId.trim(),
+        transport_type: transportType,
+        vehicle_license_number: vehicleLicenseNumber.trim() || null,
+        vehicle_license_starts_at: vehicleStarts || null,
+        vehicle_license_expires_at: vehicleExpires || null,
+        driving_license_number: drivingLicenseNumber.trim() || null,
+        driving_license_starts_at: drivingStarts || null,
+        driving_license_expires_at: drivingExpires || null,
+        delegate_is_active: delegateActive,
+      });
+      if (profileError) {
+        // The auth user exists; the profile update failed. Surface
+        // the issue clearly so the dispatcher knows the partial
+        // state and can recover (re-edit from the table).
+        setError(
+          `تم إنشاء حساب الدخول، لكن تعذر حفظ بيانات الملف: ${profileError.message}. ` +
+            'يمكن استكمال البيانات لاحقًا من زر التعديل في الجدول.'
+        );
+        setSubmitting(false);
+        return;
+      }
+      onCreated();
+    } catch (e) {
+      setError(`حدث خطأ غير متوقع: ${e instanceof Error ? e.message : String(e)}`);
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" dir="rtl">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-3xl shadow-modal w-full max-w-2xl max-h-[90vh] flex flex-col fade-in">
+        {/* Header */}
+        <div className="flex-shrink-0 flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
+          <div>
+            <h3 className="text-base font-bold text-[hsl(var(--foreground))]">إضافة مندوب جديد</h3>
+            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
+              الخطوة {step} من 2 — {step === 1 ? 'بيانات المندوب' : 'حساب الدخول'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))]"
+            aria-label="إغلاق"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-4 scrollbar-thin">
+          {step === 1 ? (
+            <>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <Field label="الاسم *" value={name} onChange={setName} placeholder="الاسم الكامل" />
+                <Field
+                  label="رقم الهاتف *"
+                  value={phone}
+                  onChange={(v) => setPhone(v.replace(/\D/g, '').slice(0, 11))}
+                  placeholder="01012345678"
+                  dir="ltr"
+                />
+                <Field
+                  label="الرقم القومي *"
+                  value={nationalId}
+                  onChange={(v) => setNationalId(v.replace(/\D/g, '').slice(0, 14))}
+                  placeholder="14 رقم"
+                  dir="ltr"
+                />
+                <div>
+                  <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+                    وسيلة المواصلات *
+                  </label>
+                  <select
+                    className="input-field w-full"
+                    value={transportType}
+                    onChange={(e) => setTransportType(e.target.value as TransportType)}
+                  >
+                    <option value="">— اختر —</option>
+                    {TRANSPORT_TYPE_TOKENS.map((t) => (
+                      <option key={t} value={t}>
+                        {TRANSPORT_TYPE_LABELS_AR[t]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <fieldset className="border border-[hsl(var(--border))] rounded-xl p-3">
+                <legend className="text-xs font-bold px-2">رخصة المركبة (اختياري)</legend>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-2">
+                  <Field
+                    label="رقم الرخصة"
+                    value={vehicleLicenseNumber}
+                    onChange={setVehicleLicenseNumber}
+                  />
+                  <Field
+                    label="بداية الرخصة"
+                    type="date"
+                    value={vehicleStarts}
+                    onChange={setVehicleStarts}
+                  />
+                  <Field
+                    label="نهاية الرخصة"
+                    type="date"
+                    value={vehicleExpires}
+                    onChange={setVehicleExpires}
+                  />
+                </div>
+              </fieldset>
+
+              <fieldset className="border border-[hsl(var(--border))] rounded-xl p-3">
+                <legend className="text-xs font-bold px-2">رخصة القيادة (اختياري)</legend>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-2">
+                  <Field
+                    label="رقم الرخصة"
+                    value={drivingLicenseNumber}
+                    onChange={setDrivingLicenseNumber}
+                  />
+                  <Field
+                    label="بداية الرخصة"
+                    type="date"
+                    value={drivingStarts}
+                    onChange={setDrivingStarts}
+                  />
+                  <Field
+                    label="نهاية الرخصة"
+                    type="date"
+                    value={drivingExpires}
+                    onChange={setDrivingExpires}
+                  />
+                </div>
+              </fieldset>
+            </>
+          ) : (
+            <>
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800 flex items-start gap-2">
+                <ShieldCheck size={14} className="mt-0.5 flex-shrink-0" />
+                <div>
+                  كلمة المرور تذهب مباشرة إلى Supabase Auth ولا تُخزَّن في أي جدول. بعد الإنشاء قد
+                  تحتاج لإعادة تسجيل الدخول إذا تغيّرت الجلسة.
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <Field
+                  label="البريد الإلكتروني *"
+                  type="email"
+                  value={email}
+                  onChange={setEmail}
+                  placeholder="delegate@example.com"
+                  dir="ltr"
+                />
+                <div>
+                  <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+                    الدور
+                  </label>
+                  <input
+                    type="text"
+                    value="مندوب شحن"
+                    disabled
+                    className="input-field w-full opacity-60"
+                  />
+                </div>
+                <Field
+                  label="كلمة المرور *"
+                  type="password"
+                  value={password}
+                  onChange={setPassword}
+                  placeholder="8 حروف على الأقل"
+                  dir="ltr"
+                />
+                <Field
+                  label="تأكيد كلمة المرور *"
+                  type="password"
+                  value={confirmPassword}
+                  onChange={setConfirmPassword}
+                  dir="ltr"
+                />
+              </div>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={delegateActive}
+                  onChange={(e) => setDelegateActive(e.target.checked)}
+                />
+                <span>تفعيل الحساب فور الإنشاء</span>
+              </label>
+            </>
+          )}
+
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-700 flex items-start gap-2">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex-shrink-0 flex items-center justify-between gap-3 p-4 border-t border-[hsl(var(--border))] bg-white rounded-b-3xl">
+          <button type="button" className="btn-secondary" onClick={onClose}>
+            إلغاء
+          </button>
+          <div className="flex items-center gap-3">
+            {step === 2 && (
+              <button
+                type="button"
+                className="btn-secondary flex items-center gap-1"
+                onClick={() => {
+                  setError('');
+                  setStep(1);
+                }}
+              >
+                <ChevronRight size={14} /> رجوع
+              </button>
+            )}
+            {step === 1 ? (
+              <button
+                type="button"
+                className="btn-primary flex items-center gap-1"
+                onClick={handleNext}
+              >
+                التالي <ChevronLeft size={14} />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn-primary flex items-center gap-1"
+                onClick={handleSubmit}
+                disabled={submitting}
+              >
+                <Lock size={14} />
+                {submitting ? 'جارٍ الإنشاء...' : 'إنشاء المندوب'}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Tiny shared text field for the wizard. Centralised so the whole
+// modal stays scannable and a future styling tweak is one edit.
+interface FieldProps {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  type?: string;
+  dir?: 'ltr' | 'rtl';
+}
+
+function Field({ label, value, onChange, placeholder, type = 'text', dir = 'rtl' }: FieldProps) {
+  return (
+    <div>
+      <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] mb-1 block">
+        {label}
+      </label>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        dir={dir}
+        className="input-field w-full"
+      />
     </div>
   );
 }
