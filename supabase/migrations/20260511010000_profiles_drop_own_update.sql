@@ -1,0 +1,101 @@
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Phase 23M-Fix1 — Drop `profiles_own_update` so direct self-writes to
+-- `public.profiles` are no longer possible from the browser.
+--
+-- Why this exists
+-- ---------------
+-- Pre-Fix1 policy set on `public.profiles`:
+--
+--   profiles_own_select      SELECT  authenticated  (id = auth.uid())
+--   profiles_own_update      UPDATE  authenticated  (id = auth.uid())     ← removed by this migration
+--   profiles_admin_select    SELECT  authenticated  is_admin()
+--   profiles_admin_insert    INSERT  authenticated  is_admin()
+--   profiles_admin_update    UPDATE  authenticated  is_admin()
+--   profiles_admin_delete    DELETE  authenticated  is_admin()
+--
+-- `profiles_own_update` allowed ANY authenticated user to PATCH any
+-- column on their own profile row via PostgREST, including columns the
+-- application explicitly gates through other workflows:
+--
+--   role / role_id / role_name / permissions  → managed by /roles page
+--                                               (admin-only) and the
+--                                               turath_roles trigger
+--   delegate_is_active                        → admin-only deactivate /
+--                                               reassign flow
+--   phone / national_id / transport_type /
+--   vehicle_license_* / driving_license_*     → Phase 23M
+--                                               change-request workflow,
+--                                               admin-approved
+--
+-- After Phase 23M (delegate change-request workflow) the application
+-- never writes to `profiles` from the delegate side — every flow is
+-- either an admin write (under `profiles_admin_update`) OR the
+-- SECURITY DEFINER `approve_delegate_change_request` RPC which bypasses
+-- RLS anyway. Removing `profiles_own_update` closes the direct-API
+-- escape hatch and enforces the workflow at the DB layer too.
+--
+-- Audit (full grep of `src/`) confirmed:
+--   • Zero `.update()` or `.upsert()` calls against `profiles` where
+--     the target row id equals the caller's auth.uid().
+--   • Every existing profile write is admin-gated (id of OTHER row)
+--     and goes through `profiles_admin_update` / `profiles_admin_insert`.
+--   • The change-request approval RPC is SECURITY DEFINER — RLS does
+--     not apply, so this drop does not affect it.
+--   • `profiles_own_select` is preserved because AuthContext, the
+--     sign-in screen, the Phase 23M change-request form, and the
+--     /shipping delegate banner all need to read the caller's own
+--     profile row.
+--
+-- Safety properties
+-- -----------------
+--   • DROP POLICY IF EXISTS — idempotent, no-op on re-run
+--   • Single statement, no transaction needed
+--   • Reversible: re-creating the policy if a future flow needs it
+--     is a one-line CREATE POLICY (kept inline as a comment below for
+--     reference)
+--   • No DROP TABLE / TRUNCATE / DELETE / ALTER COLUMN
+--   • No effect on the other 5 policies, on triggers, or on the
+--     change-request RPCs
+--
+-- DEPLOY GATE — DO NOT APPLY WITHOUT EXPLICIT APPROVAL
+-- ─────────────────────────────────────────────────────────────────────────────
+
+DROP POLICY IF EXISTS profiles_own_update ON public.profiles;
+
+-- For future reference: the dropped policy was
+--   CREATE POLICY profiles_own_update
+--     ON public.profiles
+--     FOR UPDATE
+--     TO authenticated
+--     USING      (id = auth.uid())
+--     WITH CHECK (id = auth.uid());
+-- Re-create only if a new product flow legitimately requires a
+-- delegate-side direct write to a NARROW column whitelist; a column-
+-- list policy plus a row-level trigger is the safer pattern.
+
+
+-- =============================================================================
+-- POST-MIGRATION VERIFICATION (run manually after applying):
+--
+--   -- 1. Confirm own_update is gone, admin_update remains.
+--   SELECT policyname, cmd, roles, qual, with_check
+--     FROM pg_policies
+--    WHERE schemaname='public'
+--      AND tablename='profiles'
+--    ORDER BY policyname;
+--   -- expected 5 policies:
+--   --   profiles_admin_delete  DELETE  authenticated  is_admin()
+--   --   profiles_admin_insert  INSERT  authenticated  is_admin()
+--   --   profiles_admin_select  SELECT  authenticated  is_admin()
+--   --   profiles_admin_update  UPDATE  authenticated  is_admin()
+--   --   profiles_own_select    SELECT  authenticated  (id = auth.uid())
+--
+--   -- 2. Sanity check that the admin update policy still has both
+--   --    USING and WITH CHECK clauses.
+--   SELECT policyname, qual, with_check
+--     FROM pg_policies
+--    WHERE schemaname='public'
+--      AND tablename='profiles'
+--      AND policyname='profiles_admin_update';
+--   -- expected qual=with_check=is_admin()
+-- =============================================================================
