@@ -122,6 +122,10 @@ import {
   phoneFromCustomerKey,
   customerKeyFromPhone,
 } from '@/lib/crm/customerCrm';
+// Phase 26D-1 — staff audit on CRM mutations (notes / tasks /
+// attachments) so /roles → الأمان والتدقيق surfaces operational
+// activity beside per-customer history.
+import { writeStaffAuditLog } from '@/lib/security/staffAudit';
 
 type TabId =
   | 'overview'
@@ -1864,6 +1868,25 @@ function NotesTab({
         setSubmitting(false);
         return;
       }
+      // Phase 26D-1 — staff audit for the note. Trimmed preview only
+      // (no full note body) to keep metadata small.
+      try {
+        await writeStaffAuditLog(supabase, {
+          action: 'customer.note_created',
+          actorId: userId,
+          actorName: userName,
+          entity: { type: 'customer', id: customerPhone, label: customerName || customerPhone },
+          description: `أُضيفت ملاحظة للعميل ${customerName || customerPhone}: ${t.slice(0, 80)}${t.length > 80 ? '…' : ''}`,
+          metadata: {
+            customer_phone: customerPhone,
+            note_length: t.length,
+            note_type: 'general',
+            visibility: 'internal',
+          },
+        });
+      } catch (auditErr) {
+        console.warn('[customer.note_created] staff audit failed:', auditErr);
+      }
       setText('');
       setSubmitting(false);
       onChanged();
@@ -2059,6 +2082,30 @@ function AttachmentsTab({
         else setError('تم رفع الملف لكن تعذر حفظ بياناته.');
         setUploading(false);
         return;
+      }
+      // Phase 26D-1 — staff audit for attachment upload. The file
+      // path + size are safe metadata; we never log the raw bytes.
+      try {
+        await writeStaffAuditLog(supabase, {
+          action: 'customer.attachment_uploaded',
+          actorId: userId,
+          actorName: userName,
+          entity: {
+            type: 'customer',
+            id: customerPhone,
+            label: customerName || customerPhone,
+          },
+          description: `رفع مرفق "${file.name}" للعميل ${customerName || customerPhone} (${(file.size / 1024).toFixed(1)} KB)`,
+          metadata: {
+            customer_phone: customerPhone,
+            file_path: path,
+            file_name: file.name,
+            mime_type: file.type || null,
+            size_bytes: file.size,
+          },
+        });
+      } catch (auditErr) {
+        console.warn('[customer.attachment_uploaded] staff audit failed:', auditErr);
       }
       setUploading(false);
       onChanged();
@@ -2298,6 +2345,28 @@ function TasksTab({
         else setError('تعذر تحديث حالة المهمة.');
         setSubmitting(false);
         return;
+      }
+      // Phase 26D-1 — staff audit for task status flip.
+      try {
+        await writeStaffAuditLog(supabase, {
+          action: 'customer.task_status_changed',
+          actorId: userId,
+          actorName: userName,
+          entity: {
+            type: 'customer_task',
+            id: task.id,
+            label: (task.title ?? '').slice(0, 80),
+          },
+          description: `تغيير حالة مهمة "${task.title ?? ''}" إلى ${next}`,
+          metadata: {
+            task_id: task.id,
+            customer_phone: customerPhone,
+            before: task.status,
+            after: next,
+          },
+        });
+      } catch (auditErr) {
+        console.warn('[customer.task_status_changed] staff audit failed:', auditErr);
       }
       setSubmitting(false);
       onChanged();
@@ -2659,6 +2728,35 @@ function TaskEditModal({
         else setError('تعذر حفظ المهمة. حاول مرة أخرى.');
         setSubmitting(false);
         return;
+      }
+      // Phase 26D-1 — staff audit for task create/update. Description
+      // carries the task title; metadata captures the diff fields.
+      try {
+        await writeStaffAuditLog(supabase, {
+          action: mode === 'create' ? 'customer.task_created' : 'customer.task_updated',
+          actorId: userId,
+          actorName: userName,
+          entity: {
+            type: 'customer_task',
+            id: task?.id ?? undefined,
+            label: title.trim().slice(0, 80),
+          },
+          description:
+            mode === 'create'
+              ? `إنشاء مهمة "${title.trim()}" للعميل ${customerName || customerPhone}`
+              : `تعديل مهمة "${title.trim()}" للعميل ${customerName || customerPhone}`,
+          metadata: {
+            customer_phone: customerPhone,
+            task_id: task?.id ?? null,
+            priority,
+            status: mode === 'create' ? 'open' : status,
+            order_id: orderId.trim() || null,
+            assigned_to: assigneeId.trim() || null,
+            due_at: dueAt || null,
+          },
+        });
+      } catch (auditErr) {
+        console.warn('[customer.task] staff audit failed:', auditErr);
       }
       setSubmitting(false);
       onSaved();

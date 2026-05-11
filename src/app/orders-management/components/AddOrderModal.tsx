@@ -35,6 +35,8 @@ import { normalizeArabic } from '@/lib/utils/arabic';
 // API routes) now goes through these helpers so we never persist
 // Arabic-Indic or Persian digits anywhere downstream.
 import { sanitizePhoneInput, normalizeEgyptPhone, toEnglishDigits } from '@/lib/phone/egyptPhone';
+// Phase 26D-1 — staff audit on order creation.
+import { writeStaffAuditLog } from '@/lib/security/staffAudit';
 // Phase 22N — true hierarchy. The hierarchy transformer converts the
 // raw `settings_regions` array (mixed legacy strings + Phase 22M
 // objects) into nested top-level areas with `children`, applies the
@@ -1910,6 +1912,27 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
       setSuccessTotal(grandTotal);
       setSuccessLines([...lines]);
       setOrderSuccess(true);
+
+      // Phase 26D-1 — staff audit log for order creation. Best-effort.
+      try {
+        await writeStaffAuditLog(supabase, {
+          action: 'order.created',
+          actorId: user?.id ?? null,
+          actorName: (profileFullName ?? '').trim() || user?.email || null,
+          actorRoleId: currentRoleId ?? null,
+          entity: { type: 'order', id: newOrder.id, label: `#${orderNum}` },
+          description: `تم إنشاء الطلب #${orderNum} للعميل ${customerName} بقيمة ${grandTotal.toLocaleString('en-US')} ج.م`,
+          metadata: {
+            order_id: newOrder.id,
+            order_num: orderNum,
+            customer_phone: phoneCanonical,
+            total: grandTotal,
+            line_count: lines.length,
+          },
+        });
+      } catch (auditErr) {
+        console.warn('[AddOrderModal] staff audit write failed:', auditErr);
+      }
     } catch (err) {
       console.error('Supabase save error:', err);
       toast.error('حدث خطأ أثناء حفظ الأوردر في قاعدة البيانات');

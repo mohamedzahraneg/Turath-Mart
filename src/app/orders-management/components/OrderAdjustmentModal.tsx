@@ -48,6 +48,8 @@ import {
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
+// Phase 26D-1 — staff audit log mirror for adjustment creation.
+import { writeStaffAuditLog } from '@/lib/security/staffAudit';
 import {
   ADJUSTMENT_KIND_LABEL_AR,
   PRICE_DIFFERENCE_DIRECTION_LABEL_AR,
@@ -451,6 +453,38 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
         });
       } catch (auditErr) {
         console.warn('[OrderAdjustmentModal] audit log mirror failed:', auditErr);
+      }
+
+      // Phase 26D-1 — staff audit log for the adjustment creation.
+      // Mirrors the per-order timeline entry above but lives in
+      // `turath_masr_staff_audit_logs` so it shows up in /roles →
+      // الأمان والتدقيق alongside other staff actions.
+      try {
+        await writeStaffAuditLog(supabase, {
+          action: 'adjustment.created',
+          actorId: user?.id ?? null,
+          actorName: createdByName,
+          actorRoleId: currentRoleId ?? null,
+          entity: {
+            type: 'adjustment',
+            id: inserted?.id ?? undefined,
+            label: `${ADJUSTMENT_KIND_LABEL_AR[draft.kind]} — #${order.orderNum}`,
+          },
+          description: `تم إنشاء ${ADJUSTMENT_KIND_LABEL_AR[draft.kind]} للطلب #${order.orderNum} — السبب: ${draft.reason}`,
+          metadata: {
+            adjustment_id: inserted?.id ?? null,
+            order_id: order.id,
+            order_num: order.orderNum,
+            kind: draft.kind,
+            refund_mode: draft.refund_mode,
+            refund_amount: draft.refund_amount,
+            price_difference: draft.price_difference,
+            customer_collect_amount: draft.customer_collect_amount ?? 0,
+            shipping_payer: draft.shipping_payer,
+          },
+        });
+      } catch (staffAuditErr) {
+        console.warn('[OrderAdjustmentModal] staff audit failed:', staffAuditErr);
       }
 
       toast.success('تم إنشاء طلب التسوية، بانتظار الموافقة.');

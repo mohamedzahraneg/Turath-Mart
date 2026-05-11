@@ -54,6 +54,8 @@ import {
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import { createClient } from '@/lib/supabase/client';
+// Phase 26D-1 — staff audit on customer creation.
+import { writeStaffAuditLog } from '@/lib/security/staffAudit';
 import { usePermissions } from '@/hooks/usePermissions';
 import {
   type CustomerRow,
@@ -1024,6 +1026,21 @@ function NewCustomerModal({
         else setError('تعذر إضافة العميل. حاول لاحقًا.');
         setSubmitting(false);
         return;
+      }
+      // Phase 26D-1 — staff audit for the new customer.
+      try {
+        await writeStaffAuditLog(supabase, {
+          action: 'customer.created',
+          entity: { type: 'customer', id: phone, label: form.full_name.trim() },
+          description: `إنشاء عميل جديد: ${form.full_name.trim()} (${phone})`,
+          metadata: {
+            customer_phone: phone,
+            customer_type: form.customer_type.trim() || null,
+            customer_status: form.customer_status.trim() || null,
+          },
+        });
+      } catch (auditErr) {
+        console.warn('[customer.created] staff audit failed:', auditErr);
       }
       onCreated();
     } catch {

@@ -66,6 +66,9 @@ import OrderAdjustmentModal from './OrderAdjustmentModal';
 // Phase Egress-Fix1 — resolve line image URL across legacy / inventory /
 // storage sources so consumers stop hard-coding `line.image`.
 import { resolveLineImageUrl } from '@/lib/orders/lineImage';
+// Phase 26D-1 — staff audit log on adjustment decisions + child order
+// + auto-created complaint.
+import { writeStaffAuditLog } from '@/lib/security/staffAudit';
 import { UserStamp } from '@/components/UserStamp';
 
 interface OrderLine {
@@ -540,6 +543,31 @@ export default function OrderDetailModal({ order, onClose }: Props) {
           childOrderId = (childOrderInserted as { id?: string } | null)?.id ?? null;
           childOrderNum =
             (childOrderInserted as { order_num?: string } | null)?.order_num ?? childOrderNum;
+          // Phase 26D-1 — staff audit for the child order spawn.
+          try {
+            await writeStaffAuditLog(supabase, {
+              action: 'adjustment.child_order_created',
+              actorId: user?.id ?? null,
+              actorName: decidedByName,
+              actorRoleId: currentRoleId ?? null,
+              entity: {
+                type: 'order',
+                id: childOrderId ?? undefined,
+                label: childOrderNum ? `#${childOrderNum}` : 'طلب فرعي',
+              },
+              description: `تم إنشاء الطلب الفرعي #${childOrderNum} عند الموافقة على ${ADJUSTMENT_KIND_LABEL_AR[adjustment.kind]} للطلب #${adjustment.order_num}`,
+              metadata: {
+                adjustment_id: adjustment.id,
+                parent_order_id: adjustment.order_id,
+                parent_order_num: adjustment.order_num,
+                child_order_id: childOrderId,
+                child_order_num: childOrderNum,
+                kind: adjustment.kind,
+              },
+            });
+          } catch (auditErr) {
+            console.warn('[OrderDetailModal] child-order staff audit failed:', auditErr);
+          }
         } catch (childCreateErr) {
           console.error('[OrderDetailModal] child order create exception:', childCreateErr);
           toast.error('فشل إنشاء الطلب الفرعي.');
@@ -587,6 +615,32 @@ export default function OrderDetailModal({ order, onClose }: Props) {
             console.warn('[OrderDetailModal] complaint create failed:', complaintErr);
           } else {
             linkedComplaintId = (complaintInserted as { id?: string } | null)?.id ?? null;
+            // Phase 26D-1 — staff audit for the auto-created complaint.
+            try {
+              await writeStaffAuditLog(supabase, {
+                action: 'customer.complaint_created',
+                actorId: user?.id ?? null,
+                actorName: decidedByName,
+                actorRoleId: currentRoleId ?? null,
+                entity: {
+                  type: 'complaint',
+                  id: linkedComplaintId ?? undefined,
+                  label: subject,
+                },
+                description: `تم فتح شكوى تلقائيًا بعد اعتماد ${ADJUSTMENT_KIND_LABEL_AR[adjustment.kind]} للطلب #${adjustment.order_num}`,
+                metadata: {
+                  complaint_id: linkedComplaintId,
+                  adjustment_id: adjustment.id,
+                  order_id: adjustment.order_id,
+                  order_num: adjustment.order_num,
+                  child_order_num: childOrderNum,
+                  customer_phone: liveOrder.phone,
+                  complaint_type: complaintType,
+                },
+              });
+            } catch (auditErr) {
+              console.warn('[OrderDetailModal] complaint staff audit failed:', auditErr);
+            }
           }
         } catch (complaintExc) {
           console.warn('[OrderDetailModal] complaint create exception:', complaintExc);
@@ -640,6 +694,58 @@ export default function OrderDetailModal({ order, onClose }: Props) {
         });
       } catch (auditErr) {
         console.warn('[OrderDetailModal] audit log mirror failed:', auditErr);
+      }
+      // Phase 26D-1 — staff audit for the state transition.
+      try {
+        const STATE_ACTION_MAP: Record<
+          AdjustmentState,
+          | 'adjustment.approved'
+          | 'adjustment.rejected'
+          | 'adjustment.completed'
+          | 'adjustment.cancelled'
+          | null
+        > = {
+          pending: null,
+          approved: 'adjustment.approved',
+          rejected: 'adjustment.rejected',
+          completed: 'adjustment.completed',
+          cancelled: 'adjustment.cancelled',
+        };
+        const staffAction = STATE_ACTION_MAP[nextState];
+        if (staffAction) {
+          const STATE_LABEL_AR: Record<AdjustmentState, string> = {
+            pending: 'قيد المراجعة',
+            approved: 'تمت الموافقة',
+            rejected: 'مرفوضة',
+            completed: 'منفذة',
+            cancelled: 'ملغاة',
+          };
+          await writeStaffAuditLog(supabase, {
+            action: staffAction,
+            actorId: user?.id ?? null,
+            actorName: decidedByName,
+            actorRoleId: currentRoleId ?? null,
+            entity: {
+              type: 'adjustment',
+              id: adjustment.id,
+              label: `${ADJUSTMENT_KIND_LABEL_AR[adjustment.kind]} — #${adjustment.order_num}`,
+            },
+            description: `${STATE_LABEL_AR[nextState]} — ${ADJUSTMENT_KIND_LABEL_AR[adjustment.kind]} للطلب #${adjustment.order_num}`,
+            metadata: {
+              adjustment_id: adjustment.id,
+              order_id: adjustment.order_id,
+              order_num: adjustment.order_num,
+              before: adjustment.state,
+              after: nextState,
+              kind: adjustment.kind,
+              ...(childOrderNum ? { child_order_num: childOrderNum } : {}),
+              ...(linkedComplaintId ? { linked_complaint_id: linkedComplaintId } : {}),
+              ...(decisionNote?.trim() ? { decision_note: decisionNote.trim() } : {}),
+            },
+          });
+        }
+      } catch (auditErr) {
+        console.warn('[OrderDetailModal] staff audit decision failed:', auditErr);
       }
       toast.success(
         nextState === 'approved' && childOrderNum
