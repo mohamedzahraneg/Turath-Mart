@@ -42,6 +42,10 @@
 
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
+// Phase 24B-Fix1 — convert Arabic-Indic / Persian digits to ASCII
+// BEFORE the PHONE_RE check (otherwise the regex rejects valid
+// numbers typed in Arabic glyphs).
+import { toEnglishDigits } from '@/lib/phone/egyptPhone';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -84,7 +88,9 @@ export async function POST(request: Request) {
   }
 
   // customer_phone — required, must match phone allow-list.
-  const phoneRaw = typeof body.customer_phone === 'string' ? body.customer_phone.trim() : '';
+  // Phase 24B-Fix1 — accept Arabic-Indic / Persian glyphs.
+  const phoneRaw =
+    typeof body.customer_phone === 'string' ? toEnglishDigits(body.customer_phone).trim() : '';
   if (!PHONE_RE.test(phoneRaw)) {
     return NextResponse.json({ error: 'invalid_input', field: 'customer_phone' }, { status: 400 });
   }
