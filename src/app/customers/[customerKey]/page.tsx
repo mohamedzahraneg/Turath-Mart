@@ -2521,12 +2521,68 @@ function TaskEditModal({
   const [status, setStatus] = useState<string>(task?.status ?? 'open');
   const [dueAt, setDueAt] = useState<string>(task?.due_at ? task.due_at.slice(0, 16) : '');
   const [orderId, setOrderId] = useState<string>(task?.order_id ?? '');
+  // Phase 24D-Fix1 — assignee state. We try the SELECT from profiles
+  // (restricted to CRM roles); if it fails (RLS / network), we fall
+  // back to a plain text input so the field is NEVER hidden.
+  const [assigneeId, setAssigneeId] = useState<string>(task?.assigned_to ?? '');
+  const [assigneeName, setAssigneeName] = useState<string>(task?.assigned_to_name ?? '');
+  const [assigneeOptions, setAssigneeOptions] = useState<
+    Array<{ id: string; full_name: string | null; role_id: string | null }>
+  >([]);
+  const [assigneeFetchFailed, setAssigneeFetchFailed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Phase 24D-Fix1 — fetch the CRM-role profile list once on mount.
+  // Narrow columns, capped at 200 rows. If the call errors we silently
+  // fall through to the free-text input — the rule is "the field is
+  // never missing", not "the dropdown must work".
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const supabase = createClient();
+      const { data, error: fetchErr } = await supabase
+        .from('profiles')
+        .select('id, full_name, role_id')
+        .in('role_id', ['r1', 'r2', 'r5', 'r6'])
+        .order('full_name', { ascending: true, nullsFirst: false })
+        .limit(200);
+      if (cancelled) return;
+      if (fetchErr || !data || data.length === 0) {
+        setAssigneeFetchFailed(true);
+        setAssigneeOptions([]);
+      } else {
+        setAssigneeOptions(
+          data as Array<{ id: string; full_name: string | null; role_id: string | null }>
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Phase 24D-Fix1 — quick-date buttons set the datetime-local input
+  // to a sensible default time of day (5pm) so the dispatcher doesn't
+  // have to pick an hour for every quick choice.
+  const fmtLocal = (d: Date) => {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+  const setQuickDate = (kind: 'today' | 'tomorrow' | 'in3' | 'nextWeek') => {
+    const d = new Date();
+    d.setHours(17, 0, 0, 0);
+    if (kind === 'tomorrow') d.setDate(d.getDate() + 1);
+    else if (kind === 'in3') d.setDate(d.getDate() + 3);
+    else if (kind === 'nextWeek') d.setDate(d.getDate() + 7);
+    setDueAt(fmtLocal(d));
+  };
+
+  const titleValid = title.trim().length > 0;
+
   const handleSubmit = async () => {
     if (submitting) return;
-    if (!title.trim()) {
+    if (!titleValid) {
       setError('عنوان المهمة مطلوب.');
       return;
     }
@@ -2544,6 +2600,8 @@ function TaskEditModal({
         priority,
         order_id: orderId.trim() || null,
         due_at: dueAt ? new Date(dueAt).toISOString() : null,
+        assigned_to: assigneeId.trim() || null,
+        assigned_to_name: assigneeName.trim() || null,
         updated_at: new Date().toISOString(),
       };
       let queryError: unknown = null;
@@ -2585,7 +2643,7 @@ function TaskEditModal({
   return (
     <div className="fixed inset-0 z-[55] flex items-stretch justify-center p-0 sm:p-4" dir="rtl">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden />
-      <div className="relative bg-white w-full sm:max-w-lg sm:rounded-2xl flex flex-col shadow-2xl max-h-[95vh] overflow-hidden">
+      <div className="relative bg-white w-full sm:max-w-xl sm:rounded-2xl flex flex-col shadow-2xl max-h-[95vh] overflow-hidden">
         <div className="flex items-center gap-3 px-5 py-4 bg-[hsl(var(--primary))] sm:rounded-t-2xl flex-shrink-0">
           <ClipboardCheck size={18} className="text-white" />
           <h2 className="flex-1 text-white font-bold text-base">
@@ -2600,12 +2658,34 @@ function TaskEditModal({
           </button>
         </div>
 
+        {/* Phase 24D-Fix1 — customer header strip. The dispatcher
+            often clicks "إضافة مهمة" from a busy timeline and needs
+            to confirm WHICH customer the task belongs to without
+            scrolling back. */}
+        <div className="px-5 py-3 bg-[hsl(var(--muted))]/30 border-b border-[hsl(var(--border))] flex flex-wrap items-center gap-3 text-xs">
+          <span className="text-[hsl(var(--muted-foreground))]">العميل:</span>
+          <span className="font-bold text-[hsl(var(--foreground))]">
+            {customerName || 'بدون اسم'}
+          </span>
+          <span className="text-[hsl(var(--muted-foreground))]">·</span>
+          <span className="font-mono" dir="ltr">
+            {customerPhone || '—'}
+          </span>
+          {mode === 'create' && (
+            <span className="ms-auto inline-flex items-center gap-1 rounded-full border bg-slate-100 text-slate-700 border-slate-200 text-[10px] font-semibold px-2 py-0.5">
+              الحالة: مفتوحة
+            </span>
+          )}
+        </div>
+
         <div className="flex-1 overflow-y-auto p-5 space-y-3">
           {error && (
             <div className="rounded-xl bg-red-50 border border-red-200 text-xs text-red-700 px-3 py-2">
               {error}
             </div>
           )}
+
+          {/* 1. Title */}
           <div>
             <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] block mb-1">
               عنوان المهمة *
@@ -2615,10 +2695,17 @@ function TaskEditModal({
               value={title}
               maxLength={200}
               onChange={(e) => setTitle(e.target.value)}
-              className="input-field"
+              className={`input-field ${!titleValid ? 'border-red-200' : ''}`}
+              placeholder="مثال: متابعة شكوى التأخر في التسليم"
               disabled={submitting}
+              autoFocus
             />
+            {!titleValid && (
+              <p className="mt-1 text-[10px] text-red-600">يجب إدخال عنوان المهمة قبل الحفظ.</p>
+            )}
           </div>
+
+          {/* 2. Description */}
           <div>
             <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] block mb-1">
               الوصف
@@ -2629,9 +2716,12 @@ function TaskEditModal({
               onChange={(e) => setDescription(e.target.value)}
               rows={3}
               className="input-field resize-none"
+              placeholder="تفاصيل إضافية للمهمة (اختياري)"
               disabled={submitting}
             />
           </div>
+
+          {/* 3. Priority + 4. Due date */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] block mb-1">
@@ -2659,10 +2749,87 @@ function TaskEditModal({
                 value={dueAt}
                 onChange={(e) => setDueAt(e.target.value)}
                 className="input-field"
+                placeholder="اختر تاريخ ووقت الاستحقاق"
                 disabled={submitting}
               />
+              {/* Phase 24D-Fix1 — quick-date shortcuts. Default time
+                  is 5pm so the dispatcher doesn't pick a clock hour
+                  on every single task. */}
+              <div className="flex flex-wrap gap-1 mt-1.5">
+                {(
+                  [
+                    { key: 'today', label: 'اليوم' },
+                    { key: 'tomorrow', label: 'غدًا' },
+                    { key: 'in3', label: 'بعد 3 أيام' },
+                    { key: 'nextWeek', label: 'الأسبوع القادم' },
+                  ] as const
+                ).map((b) => (
+                  <button
+                    key={b.key}
+                    type="button"
+                    onClick={() => setQuickDate(b.key)}
+                    disabled={submitting}
+                    className="px-2 py-1 rounded-lg bg-[hsl(var(--muted))]/40 hover:bg-[hsl(var(--muted))] text-[10px] font-semibold text-[hsl(var(--foreground))] disabled:opacity-50"
+                  >
+                    {b.label}
+                  </button>
+                ))}
+                {dueAt && (
+                  <button
+                    type="button"
+                    onClick={() => setDueAt('')}
+                    disabled={submitting}
+                    className="px-2 py-1 rounded-lg bg-white border border-[hsl(var(--border))] text-[10px] text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] disabled:opacity-50"
+                  >
+                    مسح
+                  </button>
+                )}
+              </div>
             </div>
           </div>
+
+          {/* 5. Assignee — Phase 24D-Fix1 — uses select when profile
+              fetch worked, otherwise falls back to a free-text input. */}
+          <div>
+            <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] block mb-1">
+              تعيين إلى
+            </label>
+            {assigneeOptions.length > 0 && !assigneeFetchFailed ? (
+              <select
+                value={assigneeId}
+                onChange={(e) => {
+                  const id = e.target.value;
+                  setAssigneeId(id);
+                  if (id === '') {
+                    setAssigneeName('');
+                  } else {
+                    const hit = assigneeOptions.find((o) => o.id === id);
+                    setAssigneeName(hit?.full_name || '');
+                  }
+                }}
+                className="input-field"
+                disabled={submitting}
+              >
+                <option value="">— بدون مسؤول —</option>
+                {assigneeOptions.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.full_name || 'بدون اسم'}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={assigneeName}
+                onChange={(e) => setAssigneeName(e.target.value)}
+                placeholder="اسم المسؤول"
+                className="input-field"
+                disabled={submitting}
+              />
+            )}
+          </div>
+
+          {/* 6. Linked order + 7. Status (edit only) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] block mb-1">
@@ -2674,12 +2841,16 @@ function TaskEditModal({
                 className="input-field"
                 disabled={submitting}
               >
-                <option value="">— غير محدد —</option>
-                {orders.slice(0, 50).map((o) => (
-                  <option key={o.id} value={o.order_num}>
-                    {o.order_num}
-                  </option>
-                ))}
+                <option value="">بدون طلب مرتبط</option>
+                {orders.slice(0, 50).map((o) => {
+                  const statusLabel = ORDER_STATUS_LABEL_AR[o.status] || o.status;
+                  const total = fmtMoney(o.total);
+                  return (
+                    <option key={o.id} value={o.order_num}>
+                      {`#${o.order_num} — ${statusLabel} — ${total}`}
+                    </option>
+                  );
+                })}
               </select>
             </div>
             {mode === 'edit' && (
@@ -2713,11 +2884,13 @@ function TaskEditModal({
           >
             إلغاء
           </button>
+          {/* Phase 24D-Fix1 — submit disabled until title is non-empty
+              so the user gets a visual hint before clicking. */}
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={submitting}
-            className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-[hsl(var(--primary))] text-white rounded-xl disabled:opacity-50"
+            disabled={submitting || !titleValid}
+            className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-[hsl(var(--primary))] text-white rounded-xl disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed"
           >
             {mode === 'create' ? <Plus size={12} /> : <Save size={12} />}
             {submitting ? 'جارٍ الحفظ…' : mode === 'create' ? 'إضافة' : 'حفظ'}
