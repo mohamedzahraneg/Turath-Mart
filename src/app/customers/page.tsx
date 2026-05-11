@@ -47,6 +47,10 @@ import {
   // Phase 24B — duplicate KPI / badge iconography.
   Copy as CopyIcon,
   AlertTriangle,
+  // Phase 24D — tasks KPI / panel iconography.
+  ClipboardCheck,
+  Clock,
+  Flame,
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import { createClient } from '@/lib/supabase/client';
@@ -57,6 +61,7 @@ import {
   type ComplaintRow,
   type NoteRow,
   type DashboardCustomerRow,
+  type TaskRow,
   buildDashboardRows,
   computeDashboardKpis,
   computeMetricsByPhone,
@@ -75,9 +80,16 @@ import {
   downloadCsv,
   fmtMoney,
   fmtRate,
+  fmtDateYmd,
   buildWhatsAppHref,
   buildTelHref,
   normalisePhone,
+  // Phase 24D — task helpers.
+  bucketTasks,
+  deriveTaskFlags,
+  rankTasks,
+  TASK_PRIORITY_LABEL_AR,
+  TASK_PRIORITY_TONE,
 } from '@/lib/crm/customerCrm';
 
 interface DashboardKpiCardProps {
@@ -121,6 +133,9 @@ export default function CustomersPage() {
   const [complaints, setComplaints] = useState<ComplaintRow[]>([]);
   const [latestNotes, setLatestNotes] = useState<Map<string, NoteRow | null>>(new Map());
   const [delegateNotesCount, setDelegateNotesCount] = useState(0);
+  // Phase 24D — dashboard tasks slice. Drives the new KPI cards and
+  // the urgent/overdue panel below the customer list.
+  const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
 
@@ -143,7 +158,7 @@ export default function CustomersPage() {
       const since365 = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
       const since90 = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
 
-      const [custRes, ordersRes, complaintsRes, auditRes, notesRes] = await Promise.all([
+      const [custRes, ordersRes, complaintsRes, auditRes, notesRes, tasksRes] = await Promise.all([
         supabase
           .from('turath_masr_customers')
           .select(
@@ -203,6 +218,23 @@ export default function CustomersPage() {
             (r: { data: NoteRow[] | null; error: unknown }) => r,
             (err: unknown) => ({ data: null as NoteRow[] | null, error: err })
           ),
+        // Phase 24D — active tasks for the dashboard KPI cards + the
+        // urgent/overdue panel. Capped at 2,000 so a noisy CRM team
+        // doesn't blow up the page; the panel itself only renders the
+        // top 10 ranked rows. `done` and `cancelled` rows are
+        // intentionally pulled too so the urgent-active count remains
+        // accurate even when the dispatcher just closed something.
+        supabase
+          .from('turath_masr_customer_tasks')
+          .select(
+            'id, customer_phone, customer_name, order_id, title, description, priority, status, due_at, assigned_to, assigned_to_name, created_by, created_by_name, created_at, updated_at'
+          )
+          .order('due_at', { ascending: true, nullsFirst: false })
+          .limit(2000)
+          .then(
+            (r: { data: TaskRow[] | null; error: unknown }) => r,
+            (err: unknown) => ({ data: null as TaskRow[] | null, error: err })
+          ),
       ]);
       if (cancelled) return;
 
@@ -213,6 +245,7 @@ export default function CustomersPage() {
       setOrders((ordersRes.data ?? []) as OrderRow[]);
       setComplaints((complaintsRes.data ?? []) as ComplaintRow[]);
       setDelegateNotesCount((auditRes.data ?? []).length);
+      setTasks((tasksRes.data ?? []) as TaskRow[]);
 
       const noteMap = new Map<string, NoteRow | null>();
       for (const n of (notesRes.data ?? []) as NoteRow[]) {
@@ -258,6 +291,12 @@ export default function CustomersPage() {
     [customers, orders]
   );
   const duplicatePhoneCount = useMemo(() => countDuplicatePhones(customers), [customers]);
+
+  // Phase 24D — task buckets + top-10 ranked list. `rankTasks` only
+  // surfaces active (open/in_progress) tasks; closed ones are
+  // intentionally hidden from the urgent/overdue panel.
+  const taskBuckets = useMemo(() => bucketTasks(tasks), [tasks]);
+  const topTasks = useMemo(() => rankTasks(tasks).slice(0, 10), [tasks]);
   const [duplicatesOnly, setDuplicatesOnly] = useState(false);
 
   // Phase 24A-Fix1 — filter options now derive from `rows` (which
@@ -424,6 +463,43 @@ export default function CustomersPage() {
             tone="amber"
           />
         </div>
+
+        {/* Phase 24D — tasks KPI row. Three cards (today / overdue /
+            open) sit alongside the duplicates KPI in the secondary
+            section. We render them as their own row so the primary
+            customer KPIs stay visually prominent above the fold. */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <DashboardKpiCard
+            icon={<Clock size={22} />}
+            label="مهام اليوم"
+            value={taskBuckets.todayCount.toLocaleString('en-US')}
+            tone="amber"
+          />
+          <DashboardKpiCard
+            icon={<AlertTriangle size={22} />}
+            label="مهام متأخرة"
+            value={taskBuckets.overdueCount.toLocaleString('en-US')}
+            tone="red"
+          />
+          <DashboardKpiCard
+            icon={<ClipboardCheck size={22} />}
+            label="مهام مفتوحة"
+            value={taskBuckets.openCount.toLocaleString('en-US')}
+            tone="blue"
+          />
+          <DashboardKpiCard
+            icon={<Flame size={22} />}
+            label="مهام عاجلة"
+            value={taskBuckets.urgentActiveCount.toLocaleString('en-US')}
+            tone="red"
+          />
+        </div>
+
+        {/* Phase 24D — urgent / overdue tasks panel. Renders only when
+            there's at least one row to surface so the dashboard
+            doesn't show an empty card on a quiet day. Each row links
+            straight to the customer profile's tasks tab. */}
+        {topTasks.length > 0 && <UrgentTasksPanel tasks={topTasks} />}
 
         {/* Phase 24B — warning banner. Surfaced only when at least
             one duplicate group exists. Clicking "عرض المكررين" sets
@@ -1106,6 +1182,73 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
         {label}
       </label>
       {children}
+    </div>
+  );
+}
+
+// ─── Phase 24D — Urgent / overdue tasks dashboard panel ──────────────────
+//
+// Renders the top 10 ranked active tasks (urgent + overdue first, then
+// due-today, then by priority + earliest due_at). Clicking a row jumps
+// to the customer profile's tasks tab.
+
+function UrgentTasksPanel({ tasks }: { tasks: TaskRow[] }) {
+  return (
+    <div className="bg-white rounded-2xl border border-[hsl(var(--border))] overflow-hidden">
+      <div className="flex items-center justify-between gap-3 px-5 py-3 border-b border-[hsl(var(--border))]">
+        <div className="flex items-center gap-2">
+          <Flame size={16} className="text-red-600" />
+          <h2 className="text-sm font-bold text-[hsl(var(--foreground))]">
+            المهام العاجلة والمتأخرة
+          </h2>
+        </div>
+        <span className="text-[11px] text-[hsl(var(--muted-foreground))]">{tasks.length} مهمة</span>
+      </div>
+      <ul className="divide-y divide-[hsl(var(--border))]">
+        {tasks.map((t) => {
+          const d = deriveTaskFlags(t);
+          const tone = TASK_PRIORITY_TONE[t.priority] || '';
+          const key = customerKeyFromPhone(t.customer_phone) || t.customer_phone;
+          return (
+            <li
+              key={t.id}
+              className="px-5 py-3 flex flex-wrap items-center justify-between gap-3 hover:bg-[hsl(var(--muted))]/15"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2 mb-1">
+                  <span className="text-sm font-bold text-[hsl(var(--foreground))]">{t.title}</span>
+                  <span
+                    className={`inline-flex rounded-full border text-[10px] font-semibold px-2 py-0.5 ${tone}`}
+                  >
+                    {TASK_PRIORITY_LABEL_AR[t.priority] || t.priority}
+                  </span>
+                  {d.isOverdue && (
+                    <span className="inline-flex rounded-full border bg-red-50 text-red-700 border-red-200 text-[10px] font-bold px-2 py-0.5">
+                      متأخرة
+                    </span>
+                  )}
+                  {d.isDueToday && !d.isOverdue && (
+                    <span className="inline-flex rounded-full border bg-amber-50 text-amber-700 border-amber-200 text-[10px] font-bold px-2 py-0.5">
+                      اليوم
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-[hsl(var(--muted-foreground))]">
+                  <span>العميل: {t.customer_name || t.customer_phone}</span>
+                  {t.due_at && <span>الاستحقاق: {fmtDateYmd(t.due_at)}</span>}
+                  {t.assigned_to_name && <span>المسؤول: {t.assigned_to_name}</span>}
+                </div>
+              </div>
+              <Link
+                href={`/customers/${key}`}
+                className="px-2 py-1 rounded-lg bg-[hsl(var(--primary))]/10 hover:bg-[hsl(var(--primary))]/20 text-[hsl(var(--primary))] text-[10px] font-bold"
+              >
+                فتح الملف
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

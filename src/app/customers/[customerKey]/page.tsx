@@ -42,6 +42,7 @@ import {
   Clock,
   Briefcase,
   ListChecks,
+  ClipboardCheck,
   Activity,
   StickyNote,
   Paperclip,
@@ -98,6 +99,9 @@ import {
   TASK_PRIORITY_TONE,
   TASK_STATUS_LABEL_AR,
   TASK_STATUS_TONE,
+  // Phase 24D — tasks helpers.
+  deriveTaskFlags,
+  rankTasks,
   buildMailtoHref,
   buildTelHref,
   buildTimeline,
@@ -123,6 +127,7 @@ type TabId =
   | 'overview'
   | 'data'
   | 'orders'
+  | 'tasks'
   | 'complaints'
   | 'suggestions'
   | 'chat'
@@ -134,6 +139,10 @@ const TABS: { id: TabId; label: string; icon: React.ReactNode }[] = [
   { id: 'overview', label: 'نظرة عامة', icon: <TrendingUp size={14} /> },
   { id: 'data', label: 'البيانات', icon: <ListChecks size={14} /> },
   { id: 'orders', label: 'الطلبات', icon: <ShoppingBag size={14} /> },
+  // Phase 24D — promote tasks from an overview-only card to a
+  // first-class tab so the dispatcher can add / start / complete /
+  // cancel without having to leave the profile.
+  { id: 'tasks', label: 'مهام العميل', icon: <ClipboardCheck size={14} /> },
   { id: 'complaints', label: 'الشكاوى', icon: <AlertCircle size={14} /> },
   { id: 'suggestions', label: 'الاقتراحات', icon: <Star size={14} /> },
   { id: 'chat', label: 'الشات والمحادثات', icon: <MessageCircle size={14} /> },
@@ -755,6 +764,18 @@ export default function CustomerProfilePage() {
                 )}
                 {activeTab === 'orders' && (
                   <OrdersTab orders={orders} search={search} onOpenOrder={setOpenOrderId} />
+                )}
+                {activeTab === 'tasks' && (
+                  <TasksTab
+                    tasks={tasks}
+                    orders={orders}
+                    customerPhone={phone}
+                    customerName={customer?.full_name || null}
+                    canEdit={canEdit}
+                    userId={user?.id ?? null}
+                    userName={profileFullName ?? user?.email ?? null}
+                    onChanged={refresh}
+                  />
                 )}
                 {activeTab === 'complaints' && (
                   <ComplaintsTab complaints={complaints} search={search} />
@@ -2189,5 +2210,520 @@ function ComplaintBadge({ status }: { status: string }) {
     >
       {COMPLAINT_STATUS_LABEL_AR[key] || status}
     </span>
+  );
+}
+
+// ─── Phase 24D — Customer Tasks tab ──────────────────────────────────────
+//
+// Lists every task scoped to the current customer phone, supports
+// inline status transitions (start / done / cancel), and opens an
+// add / edit modal off the toolbar.
+//
+// Permissions
+//   • View — every CRM-allowed reader of the profile (r1/r2/r5/r6).
+//   • Add / Edit / Status change — admin-only client gate (`canEdit`).
+//     The RLS layer also enforces r1/r2/r5/r6 INSERT/UPDATE.
+
+function TasksTab({
+  tasks,
+  orders,
+  customerPhone,
+  customerName,
+  canEdit,
+  userId,
+  userName,
+  onChanged,
+}: {
+  tasks: TaskRow[];
+  orders: OrderRow[];
+  customerPhone: string;
+  customerName: string | null;
+  canEdit: boolean;
+  userId: string | null;
+  userName: string | null;
+  onChanged: () => void;
+}) {
+  const [addOpen, setAddOpen] = useState(false);
+  const [editTask, setEditTask] = useState<TaskRow | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const ranked = useMemo(() => rankTasks(tasks), [tasks]);
+  const closed = useMemo(
+    () => tasks.filter((t) => t.status === 'done' || t.status === 'cancelled'),
+    [tasks]
+  );
+
+  const setStatus = async (task: TaskRow, next: 'in_progress' | 'done' | 'cancelled') => {
+    if (!canEdit || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const supabase = createClient();
+      const { error: updateErr } = await supabase
+        .from('turath_masr_customer_tasks')
+        .update({ status: next, updated_at: new Date().toISOString() })
+        .eq('id', task.id);
+      if (updateErr) {
+        const code = (updateErr as { code?: string }).code || '';
+        if (code === '42501') setError('لا تملك صلاحية تعديل المهمة.');
+        else setError('تعذر تحديث حالة المهمة.');
+        setSubmitting(false);
+        return;
+      }
+      setSubmitting(false);
+      onChanged();
+    } catch {
+      setError('تعذر الاتصال بالخادم.');
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3" dir="rtl">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-xs text-[hsl(var(--muted-foreground))]">
+          {ranked.length} مهمة نشطة · {closed.length} مهمة سابقة
+        </div>
+        {canEdit && (
+          <button
+            type="button"
+            onClick={() => setAddOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[hsl(var(--primary))] text-white text-xs font-bold hover:opacity-90"
+          >
+            <Plus size={12} /> إضافة مهمة
+          </button>
+        )}
+      </div>
+
+      {error && (
+        <div className="rounded-xl bg-red-50 border border-red-200 text-xs text-red-700 px-3 py-2">
+          {error}
+        </div>
+      )}
+
+      {ranked.length === 0 && closed.length === 0 ? (
+        <EmptyState text="لا توجد مهام للعميل." />
+      ) : (
+        <>
+          {ranked.length > 0 && (
+            <section>
+              <h4 className="text-xs font-semibold text-[hsl(var(--muted-foreground))] mb-2">
+                المهام النشطة
+              </h4>
+              <ul className="space-y-2">
+                {ranked.map((t) => (
+                  <TaskRowCard
+                    key={t.id}
+                    task={t}
+                    canEdit={canEdit}
+                    submitting={submitting}
+                    onStart={() => setStatus(t, 'in_progress')}
+                    onDone={() => setStatus(t, 'done')}
+                    onCancel={() => setStatus(t, 'cancelled')}
+                    onEdit={() => setEditTask(t)}
+                  />
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {closed.length > 0 && (
+            <section>
+              <h4 className="text-xs font-semibold text-[hsl(var(--muted-foreground))] mb-2 mt-4">
+                المهام السابقة
+              </h4>
+              <ul className="space-y-2">
+                {closed.map((t) => (
+                  <TaskRowCard
+                    key={t.id}
+                    task={t}
+                    canEdit={canEdit}
+                    submitting={submitting}
+                    onStart={() => setStatus(t, 'in_progress')}
+                    onDone={() => setStatus(t, 'done')}
+                    onCancel={() => setStatus(t, 'cancelled')}
+                    onEdit={() => setEditTask(t)}
+                  />
+                ))}
+              </ul>
+            </section>
+          )}
+        </>
+      )}
+
+      {addOpen && canEdit && (
+        <TaskEditModal
+          mode="create"
+          task={null}
+          orders={orders}
+          customerPhone={customerPhone}
+          customerName={customerName}
+          userId={userId}
+          userName={userName}
+          onClose={() => setAddOpen(false)}
+          onSaved={() => {
+            setAddOpen(false);
+            onChanged();
+          }}
+        />
+      )}
+      {editTask && canEdit && (
+        <TaskEditModal
+          mode="edit"
+          task={editTask}
+          orders={orders}
+          customerPhone={customerPhone}
+          customerName={customerName}
+          userId={userId}
+          userName={userName}
+          onClose={() => setEditTask(null)}
+          onSaved={() => {
+            setEditTask(null);
+            onChanged();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function TaskRowCard({
+  task,
+  canEdit,
+  submitting,
+  onStart,
+  onDone,
+  onCancel,
+  onEdit,
+}: {
+  task: TaskRow;
+  canEdit: boolean;
+  submitting: boolean;
+  onStart: () => void;
+  onDone: () => void;
+  onCancel: () => void;
+  onEdit: () => void;
+}) {
+  const d = deriveTaskFlags(task);
+  const priorityTone = TASK_PRIORITY_TONE[task.priority] || '';
+  const statusTone = TASK_STATUS_TONE[task.status] || '';
+  return (
+    <li className="rounded-2xl border border-[hsl(var(--border))] bg-white p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5 mb-1">
+            <span className="text-sm font-bold text-[hsl(var(--foreground))]">{task.title}</span>
+            <span
+              className={`inline-flex rounded-full border text-[10px] font-semibold px-2 py-0.5 ${priorityTone}`}
+            >
+              {TASK_PRIORITY_LABEL_AR[task.priority] || task.priority}
+            </span>
+            <span
+              className={`inline-flex rounded-full border text-[10px] font-semibold px-2 py-0.5 ${statusTone}`}
+            >
+              {TASK_STATUS_LABEL_AR[task.status] || task.status}
+            </span>
+            {d.isOverdue && (
+              <span className="inline-flex rounded-full border bg-red-50 text-red-700 border-red-200 text-[10px] font-bold px-2 py-0.5">
+                متأخرة
+              </span>
+            )}
+            {d.isDueToday && !d.isOverdue && (
+              <span className="inline-flex rounded-full border bg-amber-50 text-amber-700 border-amber-200 text-[10px] font-bold px-2 py-0.5">
+                اليوم
+              </span>
+            )}
+          </div>
+          {task.description && (
+            <p className="text-xs text-[hsl(var(--muted-foreground))] mb-1 whitespace-pre-wrap">
+              {task.description}
+            </p>
+          )}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-[hsl(var(--muted-foreground))]">
+            {task.due_at && <span>الاستحقاق: {fmtDateYmd(task.due_at)}</span>}
+            {task.assigned_to_name && <span>المسؤول: {task.assigned_to_name}</span>}
+            {task.order_id && <span>الطلب: {task.order_id}</span>}
+            {task.created_by_name && <span>أنشأها: {task.created_by_name}</span>}
+            <span>{fmtDateTimeAr(task.created_at)}</span>
+          </div>
+        </div>
+        {canEdit && (
+          <div className="flex flex-wrap gap-1 flex-shrink-0">
+            {task.status === 'open' && (
+              <button
+                type="button"
+                onClick={onStart}
+                disabled={submitting}
+                className="px-2 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 text-[10px] font-bold disabled:opacity-50"
+              >
+                بدء التنفيذ
+              </button>
+            )}
+            {(task.status === 'open' || task.status === 'in_progress') && (
+              <button
+                type="button"
+                onClick={onDone}
+                disabled={submitting}
+                className="px-2 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold disabled:opacity-50"
+              >
+                إنهاء
+              </button>
+            )}
+            {(task.status === 'open' || task.status === 'in_progress') && (
+              <button
+                type="button"
+                onClick={onCancel}
+                disabled={submitting}
+                className="px-2 py-1 rounded-lg bg-red-50 hover:bg-red-100 text-red-700 text-[10px] font-bold disabled:opacity-50"
+              >
+                إلغاء
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onEdit}
+              className="px-2 py-1 rounded-lg bg-[hsl(var(--muted))]/40 hover:bg-[hsl(var(--muted))] text-[hsl(var(--foreground))] text-[10px] font-bold"
+            >
+              تعديل
+            </button>
+          </div>
+        )}
+      </div>
+    </li>
+  );
+}
+
+function TaskEditModal({
+  mode,
+  task,
+  orders,
+  customerPhone,
+  customerName,
+  userId,
+  userName,
+  onClose,
+  onSaved,
+}: {
+  mode: 'create' | 'edit';
+  task: TaskRow | null;
+  orders: OrderRow[];
+  customerPhone: string;
+  customerName: string | null;
+  userId: string | null;
+  userName: string | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [title, setTitle] = useState(task?.title ?? '');
+  const [description, setDescription] = useState(task?.description ?? '');
+  const [priority, setPriority] = useState<string>(task?.priority ?? 'medium');
+  const [status, setStatus] = useState<string>(task?.status ?? 'open');
+  const [dueAt, setDueAt] = useState<string>(task?.due_at ? task.due_at.slice(0, 16) : '');
+  const [orderId, setOrderId] = useState<string>(task?.order_id ?? '');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async () => {
+    if (submitting) return;
+    if (!title.trim()) {
+      setError('عنوان المهمة مطلوب.');
+      return;
+    }
+    if (!['low', 'medium', 'high', 'urgent'].includes(priority)) {
+      setError('الأولوية غير صحيحة.');
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const supabase = createClient();
+      const payload: Record<string, unknown> = {
+        title: title.trim(),
+        description: description.trim() || null,
+        priority,
+        order_id: orderId.trim() || null,
+        due_at: dueAt ? new Date(dueAt).toISOString() : null,
+        updated_at: new Date().toISOString(),
+      };
+      let queryError: unknown = null;
+      if (mode === 'create') {
+        payload.customer_phone = customerPhone;
+        payload.customer_name = customerName;
+        payload.status = 'open';
+        payload.created_by = userId;
+        payload.created_by_name = userName;
+        const { error: insertErr } = await supabase
+          .from('turath_masr_customer_tasks')
+          .insert(payload);
+        queryError = insertErr;
+      } else if (task) {
+        payload.status = status;
+        const { error: updateErr } = await supabase
+          .from('turath_masr_customer_tasks')
+          .update(payload)
+          .eq('id', task.id);
+        queryError = updateErr;
+      }
+      if (queryError) {
+        const code = (queryError as { code?: string }).code || '';
+        if (code === '23514') setError('قيمة أولوية أو حالة غير مسموح بها.');
+        else if (code === '42501') setError('لا تملك صلاحية حفظ المهمة.');
+        else if (code === '42P01') setError('ميزة المهام غير مفعّلة بعد.');
+        else setError('تعذر حفظ المهمة. حاول مرة أخرى.');
+        setSubmitting(false);
+        return;
+      }
+      setSubmitting(false);
+      onSaved();
+    } catch {
+      setError('تعذر الاتصال بالخادم.');
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[55] flex items-stretch justify-center p-0 sm:p-4" dir="rtl">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden />
+      <div className="relative bg-white w-full sm:max-w-lg sm:rounded-2xl flex flex-col shadow-2xl max-h-[95vh] overflow-hidden">
+        <div className="flex items-center gap-3 px-5 py-4 bg-[hsl(var(--primary))] sm:rounded-t-2xl flex-shrink-0">
+          <ClipboardCheck size={18} className="text-white" />
+          <h2 className="flex-1 text-white font-bold text-base">
+            {mode === 'create' ? 'إضافة مهمة' : 'تعديل المهمة'}
+          </h2>
+          <button
+            onClick={onClose}
+            className="p-1.5 hover:bg-white/20 rounded-lg"
+            aria-label="إغلاق"
+          >
+            <X size={16} className="text-white" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-3">
+          {error && (
+            <div className="rounded-xl bg-red-50 border border-red-200 text-xs text-red-700 px-3 py-2">
+              {error}
+            </div>
+          )}
+          <div>
+            <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] block mb-1">
+              عنوان المهمة *
+            </label>
+            <input
+              type="text"
+              value={title}
+              maxLength={200}
+              onChange={(e) => setTitle(e.target.value)}
+              className="input-field"
+              disabled={submitting}
+            />
+          </div>
+          <div>
+            <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] block mb-1">
+              الوصف
+            </label>
+            <textarea
+              value={description}
+              maxLength={2000}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={3}
+              className="input-field resize-none"
+              disabled={submitting}
+            />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] block mb-1">
+                الأولوية *
+              </label>
+              <select
+                value={priority}
+                onChange={(e) => setPriority(e.target.value)}
+                className="input-field"
+                disabled={submitting}
+              >
+                {(['low', 'medium', 'high', 'urgent'] as const).map((p) => (
+                  <option key={p} value={p}>
+                    {TASK_PRIORITY_LABEL_AR[p]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] block mb-1">
+                تاريخ الاستحقاق
+              </label>
+              <input
+                type="datetime-local"
+                value={dueAt}
+                onChange={(e) => setDueAt(e.target.value)}
+                className="input-field"
+                disabled={submitting}
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] block mb-1">
+                ربط بطلب (اختياري)
+              </label>
+              <select
+                value={orderId}
+                onChange={(e) => setOrderId(e.target.value)}
+                className="input-field"
+                disabled={submitting}
+              >
+                <option value="">— غير محدد —</option>
+                {orders.slice(0, 50).map((o) => (
+                  <option key={o.id} value={o.order_num}>
+                    {o.order_num}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {mode === 'edit' && (
+              <div>
+                <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] block mb-1">
+                  الحالة
+                </label>
+                <select
+                  value={status}
+                  onChange={(e) => setStatus(e.target.value)}
+                  className="input-field"
+                  disabled={submitting}
+                >
+                  {(['open', 'in_progress', 'done', 'cancelled'] as const).map((s) => (
+                    <option key={s} value={s}>
+                      {TASK_STATUS_LABEL_AR[s]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-[hsl(var(--border))] bg-[hsl(var(--muted))]/20">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            className="px-4 py-2 text-xs font-semibold bg-white border border-[hsl(var(--border))] rounded-xl"
+          >
+            إلغاء
+          </button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={submitting}
+            className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-[hsl(var(--primary))] text-white rounded-xl disabled:opacity-50"
+          >
+            {mode === 'create' ? <Plus size={12} /> : <Save size={12} />}
+            {submitting ? 'جارٍ الحفظ…' : mode === 'create' ? 'إضافة' : 'حفظ'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

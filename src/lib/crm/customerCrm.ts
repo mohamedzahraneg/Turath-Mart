@@ -674,10 +674,13 @@ export const COMPLAINT_STATUS_TONE: Record<string, string> = {
   closed: 'bg-gray-100 text-gray-700 border-gray-200',
 };
 
+// Phase 24D — task status labels are tightened to the four canonical
+// tokens used by the workflow buttons (مفتوحة / قيد التنفيذ / منتهية /
+// ملغاة). The DB CHECK already enforces this set.
 export const TASK_STATUS_LABEL_AR: Record<string, string> = {
-  open: 'لم تبدأ',
+  open: 'مفتوحة',
   in_progress: 'قيد التنفيذ',
-  done: 'مكتملة',
+  done: 'منتهية',
   cancelled: 'ملغاة',
 };
 
@@ -688,17 +691,115 @@ export const TASK_STATUS_TONE: Record<string, string> = {
   cancelled: 'bg-gray-100 text-gray-700 border-gray-200',
 };
 
+// Phase 24D — added `urgent` priority (red). The DB CHECK is widened
+// in migration 20260511030000_customer_tasks_priority_urgent.sql.
 export const TASK_PRIORITY_LABEL_AR: Record<string, string> = {
   low: 'منخفضة',
   medium: 'متوسطة',
   high: 'عالية',
+  urgent: 'عاجلة',
 };
 
 export const TASK_PRIORITY_TONE: Record<string, string> = {
-  low: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-  medium: 'bg-amber-50 text-amber-700 border-amber-200',
-  high: 'bg-red-50 text-red-700 border-red-200',
+  low: 'bg-gray-100 text-gray-700 border-gray-200',
+  medium: 'bg-blue-50 text-blue-700 border-blue-200',
+  high: 'bg-amber-50 text-amber-700 border-amber-200',
+  urgent: 'bg-red-50 text-red-700 border-red-200',
 };
+
+// Phase 24D — task lifecycle helpers. Pure: takes a task row, returns
+// derived flags the UI uses for badges and KPI counts.
+export interface TaskDerived {
+  isActive: boolean;
+  isOverdue: boolean;
+  isDueToday: boolean;
+  /** True only when `due_at` is in the past AND the task is still
+   *  active. The dashboard "متأخرة" card counts these. */
+  daysToDue: number | null;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function startOfDay(d: Date): number {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+export function deriveTaskFlags(task: { status: string; due_at: string | null }): TaskDerived {
+  const isActive = task.status === 'open' || task.status === 'in_progress';
+  if (!task.due_at) {
+    return { isActive, isOverdue: false, isDueToday: false, daysToDue: null };
+  }
+  const t = Date.parse(task.due_at);
+  if (Number.isNaN(t)) {
+    return { isActive, isOverdue: false, isDueToday: false, daysToDue: null };
+  }
+  const now = new Date();
+  const dueDay = startOfDay(new Date(t));
+  const todayDay = startOfDay(now);
+  const daysToDue = Math.round((dueDay - todayDay) / DAY_MS);
+  return {
+    isActive,
+    isOverdue: isActive && t < now.getTime() && dueDay < todayDay,
+    isDueToday: isActive && dueDay === todayDay,
+    daysToDue,
+  };
+}
+
+/** Count buckets used by the dashboard KPI cards. */
+export interface TaskBuckets {
+  todayCount: number;
+  overdueCount: number;
+  openCount: number;
+  urgentActiveCount: number;
+}
+
+export function bucketTasks(tasks: ReadonlyArray<TaskRow>): TaskBuckets {
+  let todayCount = 0;
+  let overdueCount = 0;
+  let openCount = 0;
+  let urgentActiveCount = 0;
+  for (const t of tasks) {
+    const d = deriveTaskFlags(t);
+    if (!d.isActive) continue;
+    openCount += 1;
+    if (d.isOverdue) overdueCount += 1;
+    if (d.isDueToday) todayCount += 1;
+    if (t.priority === 'urgent') urgentActiveCount += 1;
+  }
+  return { todayCount, overdueCount, openCount, urgentActiveCount };
+}
+
+/** Rank-order used by the dashboard "urgent + overdue" panel. Tasks
+ *  that are overdue OR urgent surface first, then due-today, then
+ *  the rest ordered by `due_at` ASC (oldest first). Done/cancelled
+ *  are excluded. */
+export function rankTasks(tasks: ReadonlyArray<TaskRow>): TaskRow[] {
+  const active = tasks.filter((t) => t.status === 'open' || t.status === 'in_progress');
+  const priorityWeight: Record<string, number> = {
+    urgent: 0,
+    high: 1,
+    medium: 2,
+    low: 3,
+  };
+  return active.slice().sort((a, b) => {
+    const da = deriveTaskFlags(a);
+    const db = deriveTaskFlags(b);
+    // Overdue + urgent first
+    const aHot = (da.isOverdue ? 1 : 0) + (a.priority === 'urgent' ? 1 : 0);
+    const bHot = (db.isOverdue ? 1 : 0) + (b.priority === 'urgent' ? 1 : 0);
+    if (aHot !== bHot) return bHot - aHot;
+    // Then due-today
+    if (da.isDueToday !== db.isDueToday) return da.isDueToday ? -1 : 1;
+    // Then priority weight (lower = hotter)
+    const pa = priorityWeight[a.priority] ?? 9;
+    const pb = priorityWeight[b.priority] ?? 9;
+    if (pa !== pb) return pa - pb;
+    // Then due_at ASC (oldest first)
+    const ax = a.due_at ? Date.parse(a.due_at) : Number.POSITIVE_INFINITY;
+    const bx = b.due_at ? Date.parse(b.due_at) : Number.POSITIVE_INFINITY;
+    return ax - bx;
+  });
+}
 
 // Phase 24A-Fix1 — derived classification + account status replace
 // the all-`regular` fallback we shipped in Phase 24A. Both helpers
