@@ -65,6 +65,21 @@ import { useAuth } from '@/contexts/AuthContext';
 // profile-side "عرض" button opens the full order details in-place
 // instead of routing out to /orders-management.
 import OrderDetailModal from '@/app/orders-management/components/OrderDetailModal';
+// Phase 24C — reuse the canonical AddOrderModal so creating an order
+// from inside the customer profile shares every validator + payload
+// shape with the existing /orders-management header. We load it
+// dynamically (the modal is ~2,000 lines and only renders after a
+// button click). `defaultCustomer` was added in this phase so the
+// modal lands with the customer's prefilled fields.
+import dynamic from 'next/dynamic';
+import type { AddOrderDefaultCustomer } from '@/app/orders-management/components/AddOrderModal';
+const AddOrderModal = dynamic(() => import('@/app/orders-management/components/AddOrderModal'), {
+  ssr: false,
+});
+// Phase 24C — order-create permission gate; matches the role set
+// already allowed by /orders-management.
+import { canCreateOrders } from '@/lib/constants/roles';
+import { toast } from 'sonner';
 import {
   type AttachmentRow,
   type AuditRow,
@@ -133,8 +148,13 @@ export default function CustomerProfilePage() {
   const customerKey = params?.customerKey ?? '';
   const phone = phoneFromCustomerKey(customerKey);
   const perms = usePermissions();
-  const { profileFullName, user } = useAuth();
+  const { profileFullName, user, currentRoleId } = useAuth();
   const canEdit = perms.isAdmin;
+  // Phase 24C — order-creation gate. Mirrors /orders-management; r3
+  // (shipping supervisor) sees the customer profile read-only and
+  // therefore no "إنشاء طلب جديد" button. Delegate r4 and anon never
+  // reach this page.
+  const canCreateOrder = canCreateOrders(currentRoleId ?? null);
 
   const [customer, setCustomer] = useState<CustomerRow | null>(null);
   // Phase 24B — additional customer rows that share the same
@@ -160,6 +180,11 @@ export default function CustomerProfilePage() {
   // is briefly true between click and fetch completion.
   const [openOrderId, setOpenOrderId] = useState<string | null>(null);
   const [modalOrder, setModalOrder] = useState<OrderModalShape | null>(null);
+  // Phase 24C — controls the AddOrderModal mount for the customer-
+  // profile entry point. The launcher button below the header opens
+  // it; `onSuccess` closes it, fires a toast, and refetches the
+  // customer's orders via the existing `reloadTick` hook.
+  const [addOrderOpen, setAddOrderOpen] = useState(false);
   const [modalLoading, setModalLoading] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
 
@@ -205,7 +230,11 @@ export default function CustomerProfilePage() {
         supabase
           .from('turath_masr_orders')
           .select(
-            'id, order_num, customer, phone, phone2, total, status, date, delegate_name, scheduled_delivery_date, scheduled_delivery_from, scheduled_delivery_to, tracking_token, notes, created_at'
+            // Phase 24C — also pull region/district/neighborhood/address
+            // so the new "إنشاء طلب جديد" launcher can prefill the
+            // Add Order modal from the customer's latest shipping
+            // destination without a second round-trip.
+            'id, order_num, customer, phone, phone2, total, status, date, delegate_name, scheduled_delivery_date, scheduled_delivery_from, scheduled_delivery_to, tracking_token, notes, region, district, neighborhood, address, created_at'
           )
           .or(`phone.eq.${phone},phone2.eq.${phone}`)
           .gte('created_at', since)
@@ -574,6 +603,21 @@ export default function CustomerProfilePage() {
                   <Mail size={13} /> إرسال إيميل
                 </a>
               )}
+              {/* Phase 24C — "إنشاء طلب جديد" launcher. Hidden for roles
+                  that can't create orders (e.g. r3 shipping supervisor,
+                  delegates never reach this page). Opens the existing
+                  /orders-management AddOrderModal with prefilled
+                  customer fields and refetches the orders tab on
+                  success. */}
+              {canCreateOrder && (
+                <button
+                  type="button"
+                  onClick={() => setAddOrderOpen(true)}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold"
+                >
+                  <ShoppingBag size={13} /> إنشاء طلب جديد
+                </button>
+              )}
               <button
                 type="button"
                 disabled={!canEdit}
@@ -797,8 +841,71 @@ export default function CustomerProfilePage() {
           )}
         </>
       )}
+
+      {/* Phase 24C — Add Order modal opened from the customer profile.
+          Prefilled with the customer row + the latest order's address
+          fields so the dispatcher doesn't retype the destination on
+          every repeat order. On success we fire a toast and bump
+          `reloadTick` so the orders tab + metrics refresh in place. */}
+      {addOrderOpen && canCreateOrder && (
+        <AddOrderModal
+          defaultCustomer={buildAddOrderDefault(customer, orders, phone)}
+          onClose={() => setAddOrderOpen(false)}
+          onSuccess={({ orderNum }) => {
+            setAddOrderOpen(false);
+            toast.success(`تم إنشاء الطلب ${orderNum} وربطه بالعميل بنجاح.`);
+            refresh();
+          }}
+        />
+      )}
     </AppLayout>
   );
+}
+
+// Phase 24C — Build the AddOrderModal prefill from the freshest data
+// the profile already has in memory:
+//   • customer name comes from the customers row (or the latest order
+//     when the customer row is missing — same fallback the profile
+//     header uses).
+//   • phone comes from the route's normalised phone (always ASCII).
+//   • phone2 + region + district + neighborhood + address come from
+//     the most recent order that has them populated (orders are
+//     already sorted DESC by created_at on the profile fetch).
+function buildAddOrderDefault(
+  customer: CustomerRow | null,
+  orders: OrderRow[],
+  routePhone: string
+): AddOrderDefaultCustomer {
+  // Find the freshest order with any address fragment so we don't
+  // pick an old order with `address=null` over a recent one.
+  const recent = orders.find(
+    (o) =>
+      o.phone2 ||
+      o.notes ||
+      (o as { region?: string | null }).region ||
+      (o as { address?: string | null }).address
+  );
+  // The slim OrderRow type doesn't carry region / district /
+  // neighborhood / address — read them off the row via a defensive
+  // cast. They land on `turath_masr_orders` and are selected by the
+  // page-level fetch (see /track helpers).
+  const r = (recent ?? null) as
+    | (OrderRow & {
+        region?: string | null;
+        district?: string | null;
+        neighborhood?: string | null;
+        address?: string | null;
+      })
+    | null;
+  return {
+    name: customer?.full_name?.trim() || recent?.customer?.trim() || '',
+    phone: routePhone,
+    phone2: r?.phone2 ?? null,
+    region: r?.region ?? null,
+    district: r?.district ?? null,
+    neighborhood: r?.neighborhood ?? null,
+    address: r?.address ?? customer?.address ?? null,
+  };
 }
 
 // ─── Phase 24A-Fix1 — Order → OrderDetailModal shape mapper ──────────────
