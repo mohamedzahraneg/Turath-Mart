@@ -25,18 +25,41 @@ import {
   Headphones,
   Truck,
   Send,
+  RotateCcw,
+  XCircle,
+  PlayCircle,
 } from 'lucide-react';
 import AuditLogModal, { getAuditLogs, AuditEntry } from './AuditLogModal';
 import { createClient } from '@/lib/supabase/client';
 import { STATUS_LABELS } from './AuditLogModal';
 import { useAuth } from '@/contexts/AuthContext';
-import { canUseAdminOnlyFinancialFields, canEditOrders } from '@/lib/constants/roles';
+import {
+  canUseAdminOnlyFinancialFields,
+  canEditOrders,
+  isManagerOrAbove,
+  ROLE_IDS,
+} from '@/lib/constants/roles';
 // Phase 22P — split structured `{ reason, note }` payloads in the
 // status-history + audit timeline render paths below.
 // Phase 22Q — also surfaces the optional `schedule` fragment.
 import { parseAuditNote } from '@/lib/orders/auditNote';
 // Phase 22Q — Arabic-locale formatters for the delivery schedule.
 import { formatScheduleDateAr, formatTime12hAr } from '@/lib/orders/scheduleFormat';
+// Phase 25A — returns & exchanges helper + modal.
+import {
+  ADJUSTMENT_KIND_LABEL_AR,
+  ADJUSTMENT_KIND_TONE,
+  ADJUSTMENT_STATE_LABEL_AR,
+  ADJUSTMENT_STATE_TONE,
+  REFUND_MODE_LABEL_AR,
+  SHIPPING_PAYER_LABEL_AR,
+  allowedNextStates,
+  isAdjustmentActionable,
+  isOrderAdjustable,
+  type AdjustmentState,
+  type OrderAdjustment,
+} from '@/lib/orders/orderAdjustments';
+import OrderAdjustmentModal from './OrderAdjustmentModal';
 import { UserStamp } from '@/components/UserStamp';
 
 interface OrderLine {
@@ -170,7 +193,7 @@ interface Props {
 }
 
 export default function OrderDetailModal({ order, onClose }: Props) {
-  const { currentRoleId } = useAuth();
+  const { currentRoleId, user, profileFullName } = useAuth();
   const IS_ADMIN = canUseAdminOnlyFinancialFields(currentRoleId);
   const CAN_SEE_SENSITIVE = canEditOrders(currentRoleId);
 
@@ -181,6 +204,19 @@ export default function OrderDetailModal({ order, onClose }: Props) {
   const [liveOrder, setLiveOrder] = useState(order);
   const [loadingNotifs, setLoadingNotifs] = useState(true);
   const [waTemplate, setWaTemplate] = useState(DEFAULT_WA_TEMPLATE);
+
+  // Phase 25A — returns & exchanges
+  const [adjustments, setAdjustments] = useState<OrderAdjustment[]>([]);
+  const [showAdjustmentModal, setShowAdjustmentModal] = useState(false);
+  const [adjustmentBusyId, setAdjustmentBusyId] = useState<string | null>(null);
+  const ADJUSTMENT_CREATOR_ROLES: string[] = [
+    ROLE_IDS.ADMIN,
+    ROLE_IDS.SYSTEM_SUPERVISOR,
+    ROLE_IDS.CUSTOMER_SERVICE_MANAGER,
+    ROLE_IDS.CUSTOMER_SERVICE,
+  ];
+  const canCreateAdjustment = !!currentRoleId && ADJUSTMENT_CREATOR_ROLES.includes(currentRoleId);
+  const canDecideAdjustment = isManagerOrAbove(currentRoleId);
 
   // Load audit logs and listen for real-time updates
   useEffect(() => {
@@ -294,6 +330,28 @@ export default function OrderDetailModal({ order, onClose }: Props) {
 
     const handleNotifs = () => fetchOrderNotifications();
 
+    // Phase 25A — fetch adjustments tied to this order.
+    const fetchAdjustments = async () => {
+      try {
+        const supabase = createClient();
+        const { data, error } = await supabase
+          .from('turath_masr_order_adjustments')
+          .select('*')
+          .eq('order_id', order.id)
+          .order('created_at', { ascending: false });
+        if (!error && data) {
+          setAdjustments(data as OrderAdjustment[]);
+        }
+      } catch (err) {
+        // The table may not yet be applied in non-prod environments;
+        // failure here is non-fatal. Suppress noise.
+        console.debug('[OrderDetailModal] adjustments fetch skipped:', err);
+      }
+    };
+    fetchAdjustments();
+    const handleAdjustments = () => fetchAdjustments();
+    window.addEventListener('turath_masr_order_adjustments_updated', handleAdjustments);
+
     // Phase 13C: kick off one fetch on mount so liveOrder picks up
     // tracking_token (parent table queries do not yet select it). Without
     // this the first paint of the "tracking link" tab would fall back to
@@ -322,6 +380,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
     return () => {
       window.removeEventListener('turath_masr_audit_updated', handleAudit);
       window.removeEventListener('turath_masr_orders_updated', handleOrders);
+      window.removeEventListener('turath_masr_order_adjustments_updated', handleAdjustments);
       supabase.removeChannel(notifSub);
     };
   }, [order.id]);
@@ -355,6 +414,68 @@ export default function OrderDetailModal({ order, onClose }: Props) {
     navigator.clipboard.writeText(trackingLink).then(() => {
       toast.success('تم نسخ رابط التتبع');
     });
+  };
+
+  // Phase 25A — drive an adjustment through its state machine. Only
+  // managers (r1/r2) are allowed via `canDecideAdjustment` + the RLS
+  // policy on `turath_masr_order_adjustments`.
+  const handleAdjustmentDecision = async (
+    adjustment: OrderAdjustment,
+    nextState: AdjustmentState,
+    decisionNote?: string
+  ) => {
+    if (!canDecideAdjustment) {
+      toast.error('ليس لديك صلاحية اتخاذ هذا القرار.');
+      return;
+    }
+    setAdjustmentBusyId(adjustment.id);
+    try {
+      const supabase = createClient();
+      const decidedByName = (profileFullName ?? '').trim() || user?.email || 'مستخدم غير معروف';
+      const { error: updateErr } = await supabase
+        .from('turath_masr_order_adjustments')
+        .update({
+          state: nextState,
+          decided_by: decidedByName,
+          decided_by_role: currentRoleId ?? null,
+          decided_at: new Date().toISOString(),
+          decision_note: decisionNote?.trim() || null,
+        })
+        .eq('id', adjustment.id);
+      if (updateErr) {
+        toast.error(updateErr.message || 'تعذر تحديث حالة التسوية.');
+        return;
+      }
+      try {
+        await supabase.from('turath_masr_audit_logs').insert({
+          order_id: adjustment.order_id,
+          order_num: adjustment.order_num,
+          action: `adjustment_${nextState}`,
+          field_changed: 'adjustment_state',
+          old_value: adjustment.state,
+          new_value: nextState,
+          changed_by: decidedByName,
+          changed_by_role: currentRoleId ?? null,
+          note: JSON.stringify({
+            adjustment_id: adjustment.id,
+            kind: adjustment.kind,
+            ...(decisionNote?.trim() ? { note: decisionNote.trim() } : {}),
+          }),
+        });
+      } catch (auditErr) {
+        console.warn('[OrderDetailModal] audit log mirror failed:', auditErr);
+      }
+      toast.success('تم تحديث حالة التسوية.');
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('turath_masr_order_adjustments_updated'));
+        window.dispatchEvent(new Event('turath_masr_audit_updated'));
+      }
+    } catch (err) {
+      console.error('[OrderDetailModal] adjustment decision failed:', err);
+      toast.error('حدث خطأ غير متوقع.');
+    } finally {
+      setAdjustmentBusyId(null);
+    }
   };
 
   const handlePrintInvoice = () => {
@@ -542,6 +663,18 @@ export default function OrderDetailModal({ order, onClose }: Props) {
             <Printer size={13} />
             طباعة / PDF
           </button>
+          {/* Phase 25A — returns & exchanges entry point. Shown only
+              when the order is `delivered` and the current role is
+              allowed to raise an adjustment. */}
+          {isOrderAdjustable(liveOrder.status) && canCreateAdjustment && (
+            <button
+              onClick={() => setShowAdjustmentModal(true)}
+              className="flex items-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-white text-xs px-3 py-1.5 rounded-xl font-semibold transition-colors"
+            >
+              <RotateCcw size={13} />
+              إنشاء مرتجع / استبدال
+            </button>
+          )}
         </div>
 
         {/* Tabs */}
@@ -819,6 +952,180 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
                   <p className="text-xs font-bold text-amber-700 mb-1">ملاحظات</p>
                   <p className="text-sm text-[hsl(var(--foreground))]">{liveOrder.notes}</p>
+                </div>
+              )}
+
+              {/* Phase 25A — Returns & Exchanges section. Only shown
+                  when at least one adjustment exists OR the order is
+                  eligible to receive one. */}
+              {(adjustments.length > 0 || isOrderAdjustable(liveOrder.status)) && (
+                <div className="card-section p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <RotateCcw size={15} className="text-amber-600" />
+                      <h4 className="text-sm font-bold">المرتجعات والاستبدالات</h4>
+                      {adjustments.length > 0 && (
+                        <span className="text-[10px] bg-[hsl(var(--muted))]/60 px-2 py-0.5 rounded-full font-bold">
+                          {adjustments.length}
+                        </span>
+                      )}
+                    </div>
+                    {isOrderAdjustable(liveOrder.status) && canCreateAdjustment && (
+                      <button
+                        onClick={() => setShowAdjustmentModal(true)}
+                        className="text-xs text-[hsl(var(--primary))] hover:underline flex items-center gap-1"
+                      >
+                        <RotateCcw size={11} /> طلب جديد
+                      </button>
+                    )}
+                  </div>
+                  {adjustments.length === 0 ? (
+                    <p className="text-xs text-[hsl(var(--muted-foreground))]">
+                      لا توجد تسويات مسجلة لهذا الطلب.
+                    </p>
+                  ) : (
+                    <div className="space-y-3">
+                      {adjustments.map((adj) => {
+                        const nextStates = allowedNextStates(adj.state);
+                        const actionable = isAdjustmentActionable(adj.state) && canDecideAdjustment;
+                        return (
+                          <div
+                            key={adj.id}
+                            className="rounded-xl border border-[hsl(var(--border))] p-3 bg-white"
+                          >
+                            <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
+                              <div className="flex items-center gap-2">
+                                <span
+                                  className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${ADJUSTMENT_KIND_TONE[adj.kind]}`}
+                                >
+                                  {ADJUSTMENT_KIND_LABEL_AR[adj.kind]}
+                                </span>
+                                <span
+                                  className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${ADJUSTMENT_STATE_TONE[adj.state]}`}
+                                >
+                                  {ADJUSTMENT_STATE_LABEL_AR[adj.state]}
+                                </span>
+                              </div>
+                              <span className="text-[11px] text-[hsl(var(--muted-foreground))] font-mono">
+                                {new Date(adj.created_at).toLocaleString('en-GB')}
+                              </span>
+                            </div>
+                            <p className="text-sm">
+                              <span className="font-bold">السبب: </span>
+                              <span className="text-[hsl(var(--foreground))]">{adj.reason}</span>
+                            </p>
+                            <div className="grid grid-cols-2 gap-2 mt-2 text-[11px]">
+                              <div className="text-[hsl(var(--muted-foreground))]">
+                                <span className="font-bold">الاسترداد: </span>
+                                {REFUND_MODE_LABEL_AR[adj.refund_mode]} —{' '}
+                                <span className="font-mono">
+                                  {Number(adj.refund_amount).toLocaleString('en-US')} ج.م
+                                </span>
+                              </div>
+                              <div className="text-[hsl(var(--muted-foreground))]">
+                                <span className="font-bold">الشحن: </span>
+                                {SHIPPING_PAYER_LABEL_AR[adj.shipping_payer]}
+                              </div>
+                              {Number(adj.price_difference) !== 0 && (
+                                <div
+                                  className={`col-span-2 ${
+                                    Number(adj.price_difference) > 0
+                                      ? 'text-amber-700'
+                                      : 'text-emerald-700'
+                                  }`}
+                                >
+                                  <span className="font-bold">فرق السعر: </span>
+                                  <span className="font-mono">
+                                    {Math.abs(Number(adj.price_difference)).toLocaleString('en-US')}{' '}
+                                    ج.م
+                                  </span>
+                                  {Number(adj.price_difference) > 0
+                                    ? ' (يدفعه العميل)'
+                                    : ' (يرد للعميل)'}
+                                </div>
+                              )}
+                              <div className="col-span-2 text-[hsl(var(--muted-foreground))]">
+                                <span className="font-bold">أنشأ بواسطة: </span>
+                                {adj.created_by || '—'}
+                                {adj.decided_by && (
+                                  <>
+                                    <span className="mx-1">•</span>
+                                    <span className="font-bold">قرار: </span>
+                                    {adj.decided_by}
+                                    {adj.decided_at && (
+                                      <span className="font-mono ml-1">
+                                        ({new Date(adj.decided_at).toLocaleDateString('en-GB')})
+                                      </span>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                              {adj.notes && (
+                                <div className="col-span-2 text-[hsl(var(--muted-foreground))]">
+                                  <span className="font-bold">ملاحظات: </span>
+                                  <span className="italic">{adj.notes}</span>
+                                </div>
+                              )}
+                              {adj.decision_note && (
+                                <div className="col-span-2 text-[hsl(var(--muted-foreground))]">
+                                  <span className="font-bold">ملاحظة القرار: </span>
+                                  <span className="italic">{adj.decision_note}</span>
+                                </div>
+                              )}
+                            </div>
+                            {actionable && (
+                              <div className="flex flex-wrap gap-2 mt-3">
+                                {nextStates.includes('approved') && (
+                                  <button
+                                    disabled={adjustmentBusyId === adj.id}
+                                    onClick={() => handleAdjustmentDecision(adj, 'approved')}
+                                    className="text-xs px-3 py-1.5 rounded-lg bg-indigo-500 hover:bg-indigo-600 text-white font-semibold disabled:opacity-50 flex items-center gap-1"
+                                  >
+                                    <CheckCircle size={12} /> الموافقة
+                                  </button>
+                                )}
+                                {nextStates.includes('rejected') && (
+                                  <button
+                                    disabled={adjustmentBusyId === adj.id}
+                                    onClick={() => {
+                                      const note =
+                                        window.prompt('سبب الرفض (اختياري):') ?? undefined;
+                                      handleAdjustmentDecision(adj, 'rejected', note);
+                                    }}
+                                    className="text-xs px-3 py-1.5 rounded-lg bg-slate-500 hover:bg-slate-600 text-white font-semibold disabled:opacity-50 flex items-center gap-1"
+                                  >
+                                    <XCircle size={12} /> رفض
+                                  </button>
+                                )}
+                                {nextStates.includes('completed') && (
+                                  <button
+                                    disabled={adjustmentBusyId === adj.id}
+                                    onClick={() => handleAdjustmentDecision(adj, 'completed')}
+                                    className="text-xs px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white font-semibold disabled:opacity-50 flex items-center gap-1"
+                                  >
+                                    <PlayCircle size={12} /> تنفيذ
+                                  </button>
+                                )}
+                                {nextStates.includes('cancelled') && (
+                                  <button
+                                    disabled={adjustmentBusyId === adj.id}
+                                    onClick={() => {
+                                      const note =
+                                        window.prompt('سبب الإلغاء (اختياري):') ?? undefined;
+                                      handleAdjustmentDecision(adj, 'cancelled', note);
+                                    }}
+                                    className="text-xs px-3 py-1.5 rounded-lg btn-secondary font-semibold disabled:opacity-50 flex items-center gap-1"
+                                  >
+                                    <X size={12} /> إلغاء
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1487,6 +1794,21 @@ export default function OrderDetailModal({ order, onClose }: Props) {
           orderId={order.id}
           orderNum={order.orderNum}
           onClose={() => setShowAuditModal(false)}
+        />
+      )}
+
+      {/* Phase 25A — create return / exchange modal */}
+      {showAdjustmentModal && (
+        <OrderAdjustmentModal
+          order={{
+            id: liveOrder.id,
+            orderNum: liveOrder.orderNum,
+            customer: liveOrder.customer,
+            phone: liveOrder.phone,
+            total: liveOrder.total,
+            lines: liveOrder.lines ?? [],
+          }}
+          onClose={() => setShowAdjustmentModal(false)}
         />
       )}
     </div>
