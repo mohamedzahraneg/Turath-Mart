@@ -44,6 +44,9 @@ import {
   ChevronsLeft,
   ChevronsRight,
   X,
+  // Phase 24B — duplicate KPI / badge iconography.
+  Copy as CopyIcon,
+  AlertTriangle,
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import { createClient } from '@/lib/supabase/client';
@@ -62,6 +65,11 @@ import {
   customerStatusTone,
   customerTypeLabel,
   customerTypeTone,
+  // Phase 24B — duplicate-detection helpers + Egypt-mobile validator.
+  countDuplicatePhones,
+  detectDuplicateGroups,
+  isLikelyEgyptMobile,
+  type DuplicateGroup,
   customersCsvFilename,
   customersToCsv,
   downloadCsv,
@@ -241,6 +249,17 @@ export default function CustomersPage() {
     [customers, orders, complaints, delegateNotesCount]
   );
 
+  // Phase 24B — duplicate-phone map (only phones shared by 2+ rows)
+  // and the KPI count. Computed client-side over the loaded slice;
+  // a future server-side RPC is flagged as a follow-up if the
+  // customer base outgrows the 2,000-row cap.
+  const duplicateGroups = useMemo(
+    () => detectDuplicateGroups(customers, orders),
+    [customers, orders]
+  );
+  const duplicatePhoneCount = useMemo(() => countDuplicatePhones(customers), [customers]);
+  const [duplicatesOnly, setDuplicatesOnly] = useState(false);
+
   // Phase 24A-Fix1 — filter options now derive from `rows` (which
   // already carry the Fix1 derived classification + status) instead
   // of the raw customers table; that way the dropdown options match
@@ -265,20 +284,28 @@ export default function CustomersPage() {
     // Phase 24A-Fix1 — accept both "1001" and "C-1001" in the search
     // box. The stored code is numeric-only after Fix1 but legacy
     // muscle memory might still type the prefix.
+    // Phase 24B — also accept any reasonable phone shape (Arabic
+    // digits, +20…, 002…, 100… without leading 0). We compare the
+    // row's phone twice: as-typed and via the normaliser.
     const rawQ = search.trim().toLowerCase();
     const q = rawQ.replace(/^c-/, '');
+    const qDigits = q ? normalisePhone(q) : null;
     return rows.filter((r) => {
       if (typeFilter !== 'all' && (r.type || '') !== typeFilter) return false;
       if (statusFilter !== 'all' && (r.status || '') !== statusFilter) return false;
+      if (duplicatesOnly && !duplicateGroups.has(r.phone)) return false;
       if (!q) return true;
+      const rowPhoneNorm = normalisePhone(r.phone) || '';
       return (
         r.name.toLowerCase().includes(q) ||
         r.phone.toLowerCase().includes(q) ||
+        rowPhoneNorm.includes(q) ||
+        (qDigits != null && rowPhoneNorm.includes(qDigits)) ||
         (r.email || '').toLowerCase().includes(q) ||
         r.customerCode.toLowerCase().includes(q)
       );
     });
-  }, [rows, search, typeFilter, statusFilter]);
+  }, [rows, search, typeFilter, statusFilter, duplicatesOnly, duplicateGroups]);
 
   const total = filteredRows.length;
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
@@ -360,8 +387,9 @@ export default function CustomersPage() {
             tone="amber"
           />
         </div>
-        {/* KPI grid — secondary row (rates + delegate-notes) */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {/* KPI grid — secondary row (rates + delegate-notes + Phase 24B
+            duplicate counter) */}
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
           <DashboardKpiCard
             icon={<CheckCircle size={22} />}
             label="نسبة استلام العميل"
@@ -386,7 +414,40 @@ export default function CustomersPage() {
             value={kpis.delegateNotesCount.toLocaleString('en-US')}
             tone="slate"
           />
+          {/* Phase 24B — duplicates KPI. Same shape as the others; the
+              count is the number of NORMALISED phones that appear on
+              more than one customer row. */}
+          <DashboardKpiCard
+            icon={<CopyIcon size={22} />}
+            label="عملاء مكررين"
+            value={duplicatePhoneCount.toLocaleString('en-US')}
+            tone="amber"
+          />
         </div>
+
+        {/* Phase 24B — warning banner. Surfaced only when at least
+            one duplicate group exists. Clicking "عرض المكررين" sets
+            the "duplicates only" filter so the table narrows in one
+            click. */}
+        {duplicatePhoneCount > 0 && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex flex-wrap items-center gap-3 justify-between">
+            <p className="text-sm text-amber-800 flex items-center gap-2">
+              <AlertTriangle size={16} />
+              يوجد {duplicatePhoneCount.toLocaleString('en-US')} رقم هاتف مكرر يحتاج مراجعة.
+            </p>
+            <button
+              type="button"
+              onClick={() => setDuplicatesOnly((v) => !v)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                duplicatesOnly
+                  ? 'bg-amber-700 text-white hover:bg-amber-800'
+                  : 'bg-white text-amber-800 border border-amber-300 hover:bg-amber-100'
+              }`}
+            >
+              {duplicatesOnly ? 'عرض الكل' : 'عرض المكررين فقط'}
+            </button>
+          </div>
+        )}
 
         {/* Customer list section */}
         <div className="bg-white rounded-2xl border border-[hsl(var(--border))] overflow-hidden">
@@ -466,12 +527,34 @@ export default function CustomersPage() {
                   ))}
                 </select>
               </div>
-              {(typeFilter !== 'all' || statusFilter !== 'all') && (
+              {/* Phase 24B — duplicates filter pill. Keeps the panel
+                  symmetric with the existing select pickers and stays
+                  in sync with the banner button above. */}
+              <div>
+                <label className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] block mb-1">
+                  أرقام مكررة
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setDuplicatesOnly((v) => !v)}
+                  className={`flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${
+                    duplicatesOnly
+                      ? 'bg-amber-50 border-amber-300 text-amber-800'
+                      : 'bg-white border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted))]/40'
+                  }`}
+                  aria-pressed={duplicatesOnly}
+                >
+                  <CopyIcon size={12} />
+                  {duplicatesOnly ? 'إظهار المكررين فقط' : 'فلترة'}
+                </button>
+              </div>
+              {(typeFilter !== 'all' || statusFilter !== 'all' || duplicatesOnly) && (
                 <button
                   type="button"
                   onClick={() => {
                     setTypeFilter('all');
                     setStatusFilter('all');
+                    setDuplicatesOnly(false);
                   }}
                   className="text-xs text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"
                 >
@@ -538,7 +621,13 @@ export default function CustomersPage() {
                     </td>
                   </tr>
                 ) : (
-                  paged.map((row) => <CustomerListRow key={row.key} row={row} />)
+                  paged.map((row) => (
+                    <CustomerListRow
+                      key={row.key}
+                      row={row}
+                      duplicateGroup={duplicateGroups.get(row.phone) || null}
+                    />
+                  ))
                 )}
               </tbody>
             </table>
@@ -611,6 +700,20 @@ export default function CustomersPage() {
 
       {addOpen && (
         <NewCustomerModal
+          existingPhones={
+            // Phase 24B — build the set ON OPEN so the modal blocks
+            // duplicates before the network round-trip. Map values are
+            // the customer-route keys so the "فتح ملف العميل" button
+            // can navigate straight to the existing profile.
+            new Map(
+              customers
+                .map((c) => {
+                  const n = normalisePhone(c.phone);
+                  return n ? ([n, customerKeyFromPhone(n) || n] as [string, string]) : null;
+                })
+                .filter((x): x is [string, string] => x !== null)
+            )
+          }
           onClose={() => setAddOpen(false)}
           onCreated={() => {
             setAddOpen(false);
@@ -624,10 +727,22 @@ export default function CustomersPage() {
 
 // ─── Row component ───────────────────────────────────────────────────────
 
-function CustomerListRow({ row }: { row: DashboardCustomerRow }) {
+function CustomerListRow({
+  row,
+  duplicateGroup,
+}: {
+  row: DashboardCustomerRow;
+  duplicateGroup: DuplicateGroup | null;
+}) {
   const key = customerKeyFromPhone(row.phone) || row.phone;
   const wa = buildWhatsAppHref(row.phone);
   const tel = buildTelHref(row.phone);
+  // Phase 24B — duplicate context for the tooltip. "مرتبط بـ N سجلات"
+  // counts both other customer rows that share the phone AND order
+  // rows that point at the same normalised number.
+  const linkedRecords = duplicateGroup
+    ? duplicateGroup.customers.length + duplicateGroup.orderCount
+    : 0;
   return (
     <tr className="border-t border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/15">
       <td className="px-3 py-3 font-semibold text-[hsl(var(--foreground))] whitespace-nowrap">
@@ -642,7 +757,18 @@ function CustomerListRow({ row }: { row: DashboardCustomerRow }) {
         {row.customerCode}
       </td>
       <td className="px-3 py-3 font-mono whitespace-nowrap" dir="ltr">
-        {row.phone || '—'}
+        <span className="inline-flex items-center gap-1.5">
+          <span>{row.phone || '—'}</span>
+          {duplicateGroup && (
+            <span
+              className="inline-flex items-center gap-0.5 rounded-full border bg-amber-50 text-amber-700 border-amber-200 text-[9px] font-semibold px-1.5 py-0.5"
+              title={`مرتبط بـ ${linkedRecords} سجلات`}
+              dir="rtl"
+            >
+              <CopyIcon size={9} /> مكرر
+            </span>
+          )}
+        </span>
       </td>
       <td className="px-3 py-3 text-center whitespace-nowrap">
         {row.type ? (
@@ -730,7 +856,19 @@ function CustomerListRow({ row }: { row: DashboardCustomerRow }) {
 
 // ─── New customer modal ──────────────────────────────────────────────────
 
-function NewCustomerModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+function NewCustomerModal({
+  onClose,
+  onCreated,
+  existingPhones,
+}: {
+  onClose: () => void;
+  onCreated: () => void;
+  /** Phase 24B — normalised phone → customer-route key map of all
+   *  loaded customers. Drives the in-modal duplicate guard so the
+   *  user gets a clear Arabic message + a one-click jump to the
+   *  existing profile, BEFORE the network insert. */
+  existingPhones: Map<string, string>;
+}) {
   const [form, setForm] = useState({
     full_name: '',
     phone: '',
@@ -743,6 +881,21 @@ function NewCustomerModal({ onClose, onCreated }: { onClose: () => void; onCreat
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Phase 24B — when the typed phone matches an existing customer we
+  // surface a "فتح ملف العميل" button that routes straight to the
+  // existing profile (instead of just blocking the submit).
+  const [duplicateKey, setDuplicateKey] = useState<string | null>(null);
+
+  // Live duplicate detection while typing — runs on every change so
+  // the user sees the warning before they hit Submit.
+  useEffect(() => {
+    const np = normalisePhone(form.phone);
+    if (!np) {
+      setDuplicateKey(null);
+      return;
+    }
+    setDuplicateKey(existingPhones.get(np) ?? null);
+  }, [form.phone, existingPhones]);
 
   const update = (k: keyof typeof form, v: string) => {
     setForm((p) => ({ ...p, [k]: v }));
@@ -754,6 +907,21 @@ function NewCustomerModal({ onClose, onCreated }: { onClose: () => void; onCreat
     const phone = normalisePhone(form.phone);
     if (!phone) {
       setError('رقم الهاتف غير صحيح.');
+      return;
+    }
+    // Phase 24B — Egypt mobile validator. Strict 11-digit pattern
+    // (`01[0125]XXXXXXXX`). Catches landlines, foreign numbers, and
+    // typos that survive normalisation.
+    if (!isLikelyEgyptMobile(phone)) {
+      setError('الرقم لا يطابق صيغة الموبايل المصري (11 رقم تبدأ بـ 010 / 011 / 012 / 015).');
+      return;
+    }
+    // Phase 24B — client-side duplicate guard. The dashboard set is
+    // built off the loaded customers slice; this catches the common
+    // case where the same number is re-entered for a different name.
+    if (existingPhones.has(phone)) {
+      setError('هذا الرقم مسجل بالفعل لعميل آخر.');
+      setDuplicateKey(existingPhones.get(phone) ?? null);
       return;
     }
     if (!form.full_name.trim()) {
@@ -808,6 +976,22 @@ function NewCustomerModal({ onClose, onCreated }: { onClose: () => void; onCreat
           {error && (
             <div className="rounded-xl bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">
               {error}
+            </div>
+          )}
+          {/* Phase 24B — duplicate-phone notice surfaces as the user
+              types. Renders even without a hard error so the user can
+              jump to the existing profile in one click. */}
+          {duplicateKey && (
+            <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800 flex flex-wrap items-center justify-between gap-2">
+              <span className="flex items-center gap-2">
+                <AlertTriangle size={14} /> هذا الرقم مسجل بالفعل لعميل آخر.
+              </span>
+              <Link
+                href={`/customers/${duplicateKey}`}
+                className="px-2 py-1 rounded-lg bg-white border border-amber-300 hover:bg-amber-100 font-bold"
+              >
+                فتح ملف العميل
+              </Link>
             </div>
           )}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

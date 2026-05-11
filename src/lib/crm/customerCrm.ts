@@ -15,13 +15,33 @@
 
 // ─── Phone normalisation + customer key ──────────────────────────────────
 
-/** Normalise an Egyptian-mobile-shaped phone into a stable comparable
- *  string: strip whitespace, drop a leading + or country prefix
- *  (002 / 0020 / 20), and keep only digits. Returns null on input
- *  that can't represent a phone (less than 5 digits after stripping). */
+/**
+ * Phase 24B — Egyptian-mobile aware normaliser. Converts Arabic-Indic
+ * and Persian digits to ASCII, strips whitespace / dashes / parens,
+ * drops a leading `+` / `00` / `002` / `0020` / `20` country prefix,
+ * and re-applies the canonical local prefix `0` so two writes of the
+ * same number (one as `+20 100 …`, one as `0100 …`) hash to the same
+ * key in the dashboard's duplicate scan.
+ *
+ *   01012345678         → 01012345678
+ *   +201012345678       → 01012345678
+ *   00201012345678      → 01012345678
+ *   ٠١٠١٢٣٤٥٦٧٨        → 01012345678  (Arabic-Indic digits)
+ *   ۰۱۰۱۲۳۴۵۶۷۸        → 01012345678  (Persian digits)
+ *   1012345678          → 01012345678
+ *
+ * Anything that yields fewer than 5 digits returns `null`.
+ */
 export function normalisePhone(input: string | null | undefined): string | null {
   if (!input) return null;
-  let digits = input.replace(/\D+/g, '');
+  // Arabic-Indic 0660-0669 + Persian 06F0-06F9 → ASCII 0-9
+  const ascii = String(input).replace(/[٠-٩۰-۹]/g, (ch) => {
+    const code = ch.charCodeAt(0);
+    if (code >= 0x0660 && code <= 0x0669) return String(code - 0x0660);
+    if (code >= 0x06f0 && code <= 0x06f9) return String(code - 0x06f0);
+    return ch;
+  });
+  let digits = ascii.replace(/\D+/g, '');
   if (digits.length === 0) return null;
   if (digits.startsWith('0020')) digits = digits.slice(4);
   else if (digits.startsWith('002')) digits = digits.slice(3);
@@ -31,6 +51,29 @@ export function normalisePhone(input: string | null | undefined): string | null 
   // (01XXXXXXXXX) if the local 9- or 10-digit form was passed.
   if (digits.length === 10 && digits.startsWith('1')) digits = '0' + digits;
   return digits;
+}
+
+/**
+ * Phase 24B — alias for the duplicate-detection / add-customer flow
+ * that wants a single, explicit name in the public API. Same behaviour
+ * as `normalisePhone`; kept distinct so future tightening (e.g.
+ * accepting only `^01[0-2,5][0-9]{8}$` mobile prefixes) doesn't break
+ * the broader `normalisePhone` callers across the app.
+ */
+export function normalizeEgyptPhone(input: string | null | undefined): string | null {
+  return normalisePhone(input);
+}
+
+/**
+ * Phase 24B — returns `true` only when the normalised value matches
+ * the canonical Egyptian mobile pattern: 11 digits, leading `01`, and
+ * the second digit in the carrier-prefix set {0, 1, 2, 5}. The dashboard
+ * uses this for the "new customer" modal's invalid-phone guard.
+ */
+export function isLikelyEgyptMobile(input: string | null | undefined): boolean {
+  const n = normalisePhone(input);
+  if (!n) return false;
+  return /^01[0125][0-9]{8}$/.test(n);
 }
 
 /** URL-safe encoding of a phone into a route key. We never use the
@@ -412,6 +455,72 @@ export function computeMetricsByPhone(
     out.set(phone, computeCustomerMetrics(slice));
   }
   return out;
+}
+
+// ─── Phase 24B — Duplicate detection ─────────────────────────────────────
+//
+// Surfaces customers + orders that resolve to the SAME normalised
+// phone. Two distinct customer rows (e.g. one created in the legacy
+// CRM and one from /track signup) for the same number both end up in
+// the duplicate group — we never merge automatically; the dashboard
+// just flags the group so a human can decide.
+
+export interface DuplicateGroup {
+  /** The normalised phone key all rows in this group share. */
+  phone: string;
+  /** Every customer row whose normalised phone hashes to `phone`. */
+  customers: CustomerRow[];
+  /** Total order rows whose `phone` or `phone2` hashes to `phone`.
+   *  Used for the "مرتبط بـ N سجلات" tooltip. */
+  orderCount: number;
+}
+
+/**
+ * Build a phone → duplicate-group map from the loaded customer + order
+ * slices. A group is only emitted when MORE THAN ONE customer row
+ * resolves to the same normalised phone — single customers with many
+ * orders are NOT duplicates, that's just regular history.
+ *
+ * Phase 24B contract: pure read, no mutation, no DB writes.
+ */
+export function detectDuplicateGroups(
+  customers: ReadonlyArray<CustomerRow>,
+  orders: ReadonlyArray<OrderRow>
+): Map<string, DuplicateGroup> {
+  const byPhone = new Map<string, CustomerRow[]>();
+  for (const c of customers) {
+    const np = normalisePhone(c.phone);
+    if (!np) continue;
+    const bucket = byPhone.get(np);
+    if (bucket) bucket.push(c);
+    else byPhone.set(np, [c]);
+  }
+  const out = new Map<string, DuplicateGroup>();
+  for (const [phone, rows] of byPhone) {
+    if (rows.length < 2) continue;
+    let orderCount = 0;
+    for (const o of orders) {
+      const np1 = normalisePhone(o.phone);
+      const np2 = normalisePhone(o.phone2);
+      if (np1 === phone || np2 === phone) orderCount += 1;
+    }
+    out.set(phone, { phone, customers: rows, orderCount });
+  }
+  return out;
+}
+
+/** Count of distinct normalised phones that appear on more than one
+ *  customer row. Drives the dashboard's "عملاء مكررين" KPI card. */
+export function countDuplicatePhones(customers: ReadonlyArray<CustomerRow>): number {
+  const byPhone = new Map<string, number>();
+  for (const c of customers) {
+    const np = normalisePhone(c.phone);
+    if (!np) continue;
+    byPhone.set(np, (byPhone.get(np) ?? 0) + 1);
+  }
+  let n = 0;
+  for (const v of byPhone.values()) if (v > 1) n += 1;
+  return n;
 }
 
 // ─── Customer table row (dashboard) ──────────────────────────────────────
