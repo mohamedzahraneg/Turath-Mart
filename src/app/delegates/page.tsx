@@ -196,6 +196,10 @@ import {
   type ChangeRequestField,
   type ChangeRequestStatus,
 } from '@/lib/delegates/changeRequest';
+// Phase 26D-2 — fire-and-forget staff audit writer for delegate
+// management + delegate finance mutations. All writes are wrapped
+// in try/catch so audit failures never block the underlying op.
+import { writeStaffAuditLog } from '@/lib/security/staffAudit';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 interface DelegateRow {
@@ -511,7 +515,7 @@ const IN_FLIGHT_STATUSES = new Set(['preparing', 'warehouse', 'shipping']);
 // ─── Page component ────────────────────────────────────────────────────────
 export default function DelegatesPage() {
   const perms = usePermissions();
-  const { user, profileFullName } = useAuth();
+  const { user, profileFullName, currentRoleId } = useAuth();
   // Phase 23F — capability gates restructured around three concepts:
   //   • canManageDelegates  → add / edit / activate / deactivate
   //                           delegate profiles. Admin only.
@@ -1975,7 +1979,30 @@ export default function DelegatesPage() {
       {wizardOpen && (
         <AddDelegateWizard
           onClose={() => setWizardOpen(false)}
-          onCreated={() => {
+          onCreated={async (newProfile) => {
+            // Phase 26D-2 — staff audit: delegate created
+            try {
+              const supabase = createClient();
+              await writeStaffAuditLog(supabase, {
+                action: 'delegate.created',
+                actorId: user?.id ?? null,
+                actorName: (profileFullName ?? '').trim() || user?.email || null,
+                actorRoleId: currentRoleId ?? null,
+                entity: {
+                  type: 'delegate_profile',
+                  id: newProfile.id,
+                  label: newProfile.name,
+                },
+                description: `تم إنشاء مندوب جديد: ${newProfile.name}`,
+                metadata: {
+                  delegate_profile_id: newProfile.id,
+                  delegate_name: newProfile.name,
+                  role_id: 'r4',
+                },
+              });
+            } catch (auditErr) {
+              console.warn('[delegate.created] staff audit failed:', auditErr);
+            }
             setWizardOpen(false);
             setReloadTick((n) => n + 1);
             setToast({ kind: 'success', message: 'تم إنشاء المندوب بنجاح.' });
@@ -2008,6 +2035,11 @@ export default function DelegatesPage() {
       {changeRequestsOpen && (
         <DelegateChangeRequestsAdminModal
           canActOnRequests={canManageDelegates}
+          auditActor={{
+            id: user?.id ?? null,
+            name: (profileFullName ?? '').trim() || user?.email || null,
+            roleId: currentRoleId ?? null,
+          }}
           onClose={() => setChangeRequestsOpen(false)}
           onChanged={() => setReloadTick((n) => n + 1)}
         />
@@ -2022,6 +2054,11 @@ export default function DelegatesPage() {
       {editing && editing.delegate.hasProfile && editing.delegate.profileId && (
         <EditDelegateModal
           delegate={editing.delegate}
+          auditActor={{
+            id: user?.id ?? null,
+            name: (profileFullName ?? '').trim() || user?.email || null,
+            roleId: currentRoleId ?? null,
+          }}
           onClose={() => setEditKey(null)}
           onSaved={(message) => {
             setEditKey(null);
@@ -2059,6 +2096,30 @@ export default function DelegatesPage() {
                 message: `تعذر تحديث حالة المندوب: ${error.message}`,
               });
               return;
+            }
+            // Phase 26D-2 — staff audit: enable / disable
+            try {
+              await writeStaffAuditLog(supabase, {
+                action: toggleTarget.nextActive ? 'delegate.enabled' : 'delegate.disabled',
+                actorId: user?.id ?? null,
+                actorName: (profileFullName ?? '').trim() || user?.email || null,
+                actorRoleId: currentRoleId ?? null,
+                entity: {
+                  type: 'delegate_profile',
+                  id: toggling.delegate.profileId,
+                  label: toggling.delegate.name,
+                },
+                description: toggleTarget.nextActive
+                  ? `تم تفعيل المندوب ${toggling.delegate.name}`
+                  : `تم تعطيل المندوب ${toggling.delegate.name}`,
+                metadata: {
+                  delegate_profile_id: toggling.delegate.profileId,
+                  delegate_name: toggling.delegate.name,
+                  next_active: toggleTarget.nextActive,
+                },
+              });
+            } catch (auditErr) {
+              console.warn('[delegate.toggle_active] staff audit failed:', auditErr);
             }
             setToggleTarget(null);
             setReloadTick((n) => n + 1);
@@ -2182,6 +2243,55 @@ export default function DelegatesPage() {
                 .eq('id', sourceProfileId);
               if (deactErr) throw deactErr;
 
+              // Phase 26D-2 — staff audit: reassign (if orders moved)
+              // + the resulting disable.
+              try {
+                if (!deactivateWithoutMove && replacementProfileId && replacementName) {
+                  await writeStaffAuditLog(supabase, {
+                    action: 'delegate.reassigned',
+                    actorId: user?.id ?? null,
+                    actorName: (profileFullName ?? '').trim() || user?.email || null,
+                    actorRoleId: currentRoleId ?? null,
+                    entity: {
+                      type: 'delegate_profile',
+                      id: sourceProfileId,
+                      label: sourceName,
+                    },
+                    description: `تم نقل ${movingOrders.length} طلب من ${sourceName} إلى ${replacementName} ثم تعطيل المندوب`,
+                    metadata: {
+                      source_profile_id: sourceProfileId,
+                      source_name: sourceName,
+                      replacement_profile_id: replacementProfileId,
+                      replacement_name: replacementName,
+                      orders_count: movingOrders.length,
+                    },
+                  });
+                }
+                await writeStaffAuditLog(supabase, {
+                  action: 'delegate.disabled',
+                  actorId: user?.id ?? null,
+                  actorName: (profileFullName ?? '').trim() || user?.email || null,
+                  actorRoleId: currentRoleId ?? null,
+                  entity: {
+                    type: 'delegate_profile',
+                    id: sourceProfileId,
+                    label: sourceName,
+                  },
+                  description: deactivateWithoutMove
+                    ? `تم تعطيل المندوب ${sourceName} بدون نقل الطلبات`
+                    : `تم تعطيل المندوب ${sourceName} بعد نقل ${movingOrders.length} طلب`,
+                  metadata: {
+                    delegate_profile_id: sourceProfileId,
+                    delegate_name: sourceName,
+                    next_active: false,
+                    deactivate_without_move: deactivateWithoutMove,
+                    orders_moved: deactivateWithoutMove ? 0 : movingOrders.length,
+                  },
+                });
+              } catch (auditErr) {
+                console.warn('[delegate.reassign+disable] staff audit failed:', auditErr);
+              }
+
               setReassignSubmitting(false);
               setReassignTargetKey(null);
               setReloadTick((n) => n + 1);
@@ -2214,6 +2324,11 @@ export default function DelegatesPage() {
           delegate={settlementTarget.delegate}
           remainingDue={settlementTarget.remainingDue}
           receivedBy={{ id: user?.id ?? null, name: profileFullName ?? null }}
+          auditActor={{
+            id: user?.id ?? null,
+            name: (profileFullName ?? '').trim() || user?.email || null,
+            roleId: currentRoleId ?? null,
+          }}
           onClose={() => setSettlementTargetKey(null)}
           onSaved={(message) => {
             setSettlementTargetKey(null);
@@ -2231,6 +2346,11 @@ export default function DelegatesPage() {
         <AddCustodyModal
           delegate={custodyTarget.delegate}
           handedBy={{ id: user?.id ?? null, name: profileFullName ?? null }}
+          auditActor={{
+            id: user?.id ?? null,
+            name: (profileFullName ?? '').trim() || user?.email || null,
+            roleId: currentRoleId ?? null,
+          }}
           onClose={() => setCustodyTargetKey(null)}
           onSaved={(message) => {
             setCustodyTargetKey(null);
@@ -2245,6 +2365,11 @@ export default function DelegatesPage() {
         <AddExpenseModal
           delegate={expenseTarget.delegate}
           approvedBy={{ id: user?.id ?? null, name: profileFullName ?? null }}
+          auditActor={{
+            id: user?.id ?? null,
+            name: (profileFullName ?? '').trim() || user?.email || null,
+            roleId: currentRoleId ?? null,
+          }}
           onClose={() => setExpenseTargetKey(null)}
           onSaved={(message) => {
             setExpenseTargetKey(null);
@@ -2288,6 +2413,36 @@ export default function DelegatesPage() {
               setToast({ kind: 'error', message: msg });
               return;
             }
+            // Phase 26D-2 — staff audit: custody returned (covers
+            // returned/settled/lost terminal transitions).
+            try {
+              await writeStaffAuditLog(supabase, {
+                action: 'delegate.custody_returned',
+                actorId: user?.id ?? null,
+                actorName: (profileFullName ?? '').trim() || user?.email || null,
+                actorRoleId: currentRoleId ?? null,
+                entity: {
+                  type: 'delegate_custody',
+                  id: custodyStatusTarget.row.id,
+                  label: custodyStatusTarget.row.description ?? null,
+                },
+                description:
+                  custodyStatusTarget.nextStatus === 'returned'
+                    ? `تم استلام الأمانة (${custodyStatusTarget.row.description ?? ''})`
+                    : custodyStatusTarget.nextStatus === 'settled'
+                      ? `تمت تسوية الأمانة (${custodyStatusTarget.row.description ?? ''})`
+                      : `تم تسجيل الأمانة كمفقودة (${custodyStatusTarget.row.description ?? ''})`,
+                metadata: {
+                  custody_id: custodyStatusTarget.row.id,
+                  delegate_profile_id: custodyStatusTarget.row.delegate_profile_id,
+                  custody_type: custodyStatusTarget.row.custody_type,
+                  prev_status: custodyStatusTarget.row.status,
+                  next_status: custodyStatusTarget.nextStatus,
+                },
+              });
+            } catch (auditErr) {
+              console.warn('[delegate.custody_returned] staff audit failed:', auditErr);
+            }
             setCustodyStatusTarget(null);
             setReloadTick((n) => n + 1);
             const successByStatus: Record<'returned' | 'settled' | 'lost', string> = {
@@ -2310,6 +2465,11 @@ export default function DelegatesPage() {
       {settlementMutation && settlementMutation.kind === 'edit' && (
         <EditSettlementModal
           row={settlementMutation.row}
+          auditActor={{
+            id: user?.id ?? null,
+            name: (profileFullName ?? '').trim() || user?.email || null,
+            roleId: currentRoleId ?? null,
+          }}
           onClose={() => setSettlementMutation(null)}
           onSaved={(message) => {
             setSettlementMutation(null);
@@ -2348,6 +2508,30 @@ export default function DelegatesPage() {
               });
               return;
             }
+            // Phase 26D-2 — staff audit: settlement void
+            try {
+              await writeStaffAuditLog(supabase, {
+                action: 'delegate.settlement_voided',
+                actorId: user?.id ?? null,
+                actorName: (profileFullName ?? '').trim() || user?.email || null,
+                actorRoleId: currentRoleId ?? null,
+                entity: {
+                  type: 'delegate_settlement',
+                  id: settlementMutation.row.id,
+                  label: settlementMutation.row.delegate_name ?? null,
+                },
+                description: `تم إلغاء توريد بمبلغ ${Number(settlementMutation.row.amount ?? 0).toLocaleString('en-US')} ج.م للمندوب ${settlementMutation.row.delegate_name ?? ''}`,
+                metadata: {
+                  settlement_id: settlementMutation.row.id,
+                  delegate_profile_id: settlementMutation.row.delegate_profile_id,
+                  amount: Number(settlementMutation.row.amount ?? 0),
+                  method: settlementMutation.row.method,
+                  void_reason: reason,
+                },
+              });
+            } catch (auditErr) {
+              console.warn('[delegate.settlement_voided] staff audit failed:', auditErr);
+            }
             setSettlementMutation(null);
             setReloadTick((n) => n + 1);
             setToast({ kind: 'success', message: 'تم إلغاء التوريد.' });
@@ -2359,6 +2543,11 @@ export default function DelegatesPage() {
       {expenseMutation && expenseMutation.kind === 'edit' && (
         <EditExpenseModal
           row={expenseMutation.row}
+          auditActor={{
+            id: user?.id ?? null,
+            name: (profileFullName ?? '').trim() || user?.email || null,
+            roleId: currentRoleId ?? null,
+          }}
           onClose={() => setExpenseMutation(null)}
           onSaved={(message) => {
             setExpenseMutation(null);
@@ -2396,6 +2585,30 @@ export default function DelegatesPage() {
                     : `تعذر إلغاء المصروف: ${error.message}`,
               });
               return;
+            }
+            // Phase 26D-2 — staff audit: expense void
+            try {
+              await writeStaffAuditLog(supabase, {
+                action: 'delegate.expense_voided',
+                actorId: user?.id ?? null,
+                actorName: (profileFullName ?? '').trim() || user?.email || null,
+                actorRoleId: currentRoleId ?? null,
+                entity: {
+                  type: 'delegate_expense',
+                  id: expenseMutation.row.id,
+                  label: expenseMutation.row.delegate_name ?? null,
+                },
+                description: `تم إلغاء مصروف بمبلغ ${Number(expenseMutation.row.amount ?? 0).toLocaleString('en-US')} ج.م للمندوب ${expenseMutation.row.delegate_name ?? ''}`,
+                metadata: {
+                  expense_id: expenseMutation.row.id,
+                  delegate_profile_id: expenseMutation.row.delegate_profile_id,
+                  expense_type: expenseMutation.row.expense_type,
+                  amount: Number(expenseMutation.row.amount ?? 0),
+                  void_reason: reason,
+                },
+              });
+            } catch (auditErr) {
+              console.warn('[delegate.expense_voided] staff audit failed:', auditErr);
             }
             setExpenseMutation(null);
             setReloadTick((n) => n + 1);
@@ -2443,6 +2656,30 @@ export default function DelegatesPage() {
               });
               return;
             }
+            // Phase 26D-2 — staff audit: expense approve
+            try {
+              await writeStaffAuditLog(supabase, {
+                action: 'delegate.expense_approved',
+                actorId: reviewerId,
+                actorName: (reviewerName ?? '').trim() || user?.email || null,
+                actorRoleId: currentRoleId ?? null,
+                entity: {
+                  type: 'delegate_expense',
+                  id: expenseMutation.row.id,
+                  label: expenseMutation.row.delegate_name ?? null,
+                },
+                description: `تم اعتماد مصروف بقيمة ${Number(expenseMutation.row.amount ?? 0).toLocaleString('en-US')} ج.م للمندوب ${expenseMutation.row.delegate_name ?? ''}`,
+                metadata: {
+                  expense_id: expenseMutation.row.id,
+                  delegate_profile_id: expenseMutation.row.delegate_profile_id,
+                  expense_type: expenseMutation.row.expense_type,
+                  amount: Number(expenseMutation.row.amount ?? 0),
+                  review_reason: note ?? null,
+                },
+              });
+            } catch (auditErr) {
+              console.warn('[delegate.expense_approved] staff audit failed:', auditErr);
+            }
             setExpenseMutation(null);
             setReloadTick((n) => n + 1);
             setToast({ kind: 'success', message: 'تم اعتماد المصروف.' });
@@ -2487,6 +2724,30 @@ export default function DelegatesPage() {
               });
               return;
             }
+            // Phase 26D-2 — staff audit: expense reject
+            try {
+              await writeStaffAuditLog(supabase, {
+                action: 'delegate.expense_rejected',
+                actorId: user?.id ?? null,
+                actorName: (profileFullName ?? '').trim() || user?.email || null,
+                actorRoleId: currentRoleId ?? null,
+                entity: {
+                  type: 'delegate_expense',
+                  id: expenseMutation.row.id,
+                  label: expenseMutation.row.delegate_name ?? null,
+                },
+                description: `تم رفض مصروف بقيمة ${Number(expenseMutation.row.amount ?? 0).toLocaleString('en-US')} ج.م للمندوب ${expenseMutation.row.delegate_name ?? ''}`,
+                metadata: {
+                  expense_id: expenseMutation.row.id,
+                  delegate_profile_id: expenseMutation.row.delegate_profile_id,
+                  expense_type: expenseMutation.row.expense_type,
+                  amount: Number(expenseMutation.row.amount ?? 0),
+                  review_reason: reason,
+                },
+              });
+            } catch (auditErr) {
+              console.warn('[delegate.expense_rejected] staff audit failed:', auditErr);
+            }
             setExpenseMutation(null);
             setReloadTick((n) => n + 1);
             setToast({ kind: 'success', message: 'تم رفض المصروف.' });
@@ -2501,6 +2762,11 @@ export default function DelegatesPage() {
       {custodyMutation && custodyMutation.kind === 'edit' && (
         <EditCustodyModal
           row={custodyMutation.row}
+          auditActor={{
+            id: user?.id ?? null,
+            name: (profileFullName ?? '').trim() || user?.email || null,
+            roleId: currentRoleId ?? null,
+          }}
           onClose={() => setCustodyMutation(null)}
           onSaved={(message) => {
             setCustodyMutation(null);
@@ -2544,6 +2810,30 @@ export default function DelegatesPage() {
                     : `تعذر إلغاء الأمانة: ${error.message}`,
               });
               return;
+            }
+            // Phase 26D-2 — staff audit: custody void
+            try {
+              await writeStaffAuditLog(supabase, {
+                action: 'delegate.custody_voided',
+                actorId: user?.id ?? null,
+                actorName: (profileFullName ?? '').trim() || user?.email || null,
+                actorRoleId: currentRoleId ?? null,
+                entity: {
+                  type: 'delegate_custody',
+                  id: custodyMutation.row.id,
+                  label: custodyMutation.row.description ?? null,
+                },
+                description: `تم إلغاء أمانة (${custodyTypeLabel(custodyMutation.row.custody_type)}) للمندوب ${custodyMutation.row.delegate_name ?? ''}`,
+                metadata: {
+                  custody_id: custodyMutation.row.id,
+                  delegate_profile_id: custodyMutation.row.delegate_profile_id,
+                  custody_type: custodyMutation.row.custody_type,
+                  prev_status: custodyMutation.row.status,
+                  void_reason: reason,
+                },
+              });
+            } catch (auditErr) {
+              console.warn('[delegate.custody_voided] staff audit failed:', auditErr);
             }
             setCustodyMutation(null);
             setReloadTick((n) => n + 1);
@@ -3229,7 +3519,10 @@ function PlaceholderTab({ kind }: { kind: string }) {
 //     button" explicitly so they aren't left guessing.
 interface AddDelegateWizardProps {
   onClose: () => void;
-  onCreated: () => void;
+  /** Phase 26D-2 — receives the new profile so the parent can
+   *  write the staff-audit row (audit writer needs the actor
+   *  context only the parent has via useAuth). */
+  onCreated: (newProfile: { id: string; name: string }) => void;
 }
 
 function AddDelegateWizard({ onClose, onCreated }: AddDelegateWizardProps) {
@@ -3362,7 +3655,7 @@ function AddDelegateWizard({ onClose, onCreated }: AddDelegateWizardProps) {
         setSubmitting(false);
         return;
       }
-      onCreated();
+      onCreated({ id: newUserId, name: name.trim() });
     } catch (e) {
       setError(`حدث خطأ غير متوقع: ${e instanceof Error ? e.message : String(e)}`);
       setSubmitting(false);
@@ -3634,14 +3927,32 @@ function Field({ label, value, onChange, placeholder, type = 'text', dir = 'rtl'
 //     means a non-admin caller will hit a 42501. The page already
 //     gates the trigger button on `isAdmin`, but we surface any
 //     unexpected RLS error here clearly.
+/** Phase 26D-2 — actor context passed into mutating modals so they
+ *  can fire-and-forget a staff-audit row alongside the underlying
+ *  insert/update. Lives at the page level (via useAuth) and is
+ *  threaded through each modal's props. */
+interface AuditActor {
+  id: string | null;
+  name: string | null;
+  roleId: string | null;
+}
+
 interface EditDelegateModalProps {
   delegate: DelegateRow;
+  /** Phase 26D-2 — staff-audit actor (the dispatcher saving the edit). */
+  auditActor: AuditActor;
   onClose: () => void;
   onSaved: (message: string) => void;
   onError: (message: string) => void;
 }
 
-function EditDelegateModal({ delegate, onClose, onSaved, onError }: EditDelegateModalProps) {
+function EditDelegateModal({
+  delegate,
+  auditActor,
+  onClose,
+  onSaved,
+  onError,
+}: EditDelegateModalProps) {
   // Prefill every field from the source row. State is local — we
   // only push to the DB on Save.
   const [name, setName] = useState(delegate.name);
@@ -3733,6 +4044,52 @@ function EditDelegateModal({ delegate, onClose, onSaved, onError }: EditDelegate
         onError(msg);
         setSubmitting(false);
         return;
+      }
+      // Phase 26D-2 — staff audit: delegate updated. Compute the
+      // list of fields that actually changed (compare against the
+      // snapshot the modal was opened with) so the audit row tells
+      // an admin WHICH fields moved without leaking values.
+      const changedFields: string[] = [];
+      if (name.trim() !== delegate.name) changedFields.push('full_name');
+      if (phone.trim() !== (delegate.phone ?? '')) changedFields.push('phone');
+      if (nationalId.trim() !== (delegate.nationalId ?? '')) changedFields.push('national_id');
+      if (transportType !== (delegate.transportType ?? '')) changedFields.push('transport_type');
+      if (vehicleLicenseNumber.trim() !== (delegate.vehicleLicenseNumber ?? ''))
+        changedFields.push('vehicle_license_number');
+      if (vehicleStarts !== (delegate.vehicleLicenseStartsAt ?? ''))
+        changedFields.push('vehicle_license_starts_at');
+      if (vehicleExpires !== (delegate.vehicleLicenseExpiresAt ?? ''))
+        changedFields.push('vehicle_license_expires_at');
+      if (drivingLicenseNumber.trim() !== (delegate.drivingLicenseNumber ?? ''))
+        changedFields.push('driving_license_number');
+      if (drivingStarts !== (delegate.drivingLicenseStartsAt ?? ''))
+        changedFields.push('driving_license_starts_at');
+      if (drivingExpires !== (delegate.drivingLicenseExpiresAt ?? ''))
+        changedFields.push('driving_license_expires_at');
+      if (delegateActive !== (delegate.delegateIsActive !== false))
+        changedFields.push('delegate_is_active');
+      try {
+        await writeStaffAuditLog(supabase, {
+          action: 'delegate.updated',
+          actorId: auditActor.id,
+          actorName: auditActor.name,
+          actorRoleId: auditActor.roleId,
+          entity: {
+            type: 'delegate_profile',
+            id: delegate.profileId,
+            label: name.trim(),
+          },
+          description: `تم تعديل بيانات المندوب ${name.trim()}${
+            changedFields.length ? ` (${changedFields.length} حقل)` : ''
+          }`,
+          metadata: {
+            delegate_profile_id: delegate.profileId,
+            delegate_name: name.trim(),
+            changed_fields: changedFields,
+          },
+        });
+      } catch (auditErr) {
+        console.warn('[delegate.updated] staff audit failed:', auditErr);
       }
       onSaved('تم حفظ تعديلات المندوب.');
     } catch (e) {
@@ -4555,6 +4912,9 @@ interface RegisterSettlementModalProps {
   delegate: DelegateRow;
   remainingDue: number;
   receivedBy: { id: string | null; name: string | null };
+  /** Phase 26D-2 — staff-audit actor. Carries roleId, which the
+   *  finance `received_by_*` columns deliberately do not store. */
+  auditActor: AuditActor;
   onClose: () => void;
   onSaved: (message: string) => void;
   onError: (message: string) => void;
@@ -4564,6 +4924,7 @@ function RegisterSettlementModal({
   delegate,
   remainingDue,
   receivedBy,
+  auditActor,
   onClose,
   onSaved,
   onError,
@@ -4620,7 +4981,7 @@ function RegisterSettlementModal({
     setSubmitting(true);
     try {
       const supabase = createClient();
-      const { error: insertError } = await supabase
+      const { data: insertedRow, error: insertError } = await supabase
         .from('turath_masr_delegate_settlements')
         .insert({
           delegate_profile_id: delegate.profileId,
@@ -4635,7 +4996,9 @@ function RegisterSettlementModal({
           // browser's local TZ wins — same convention as scheduled
           // delivery in Phase 22Q.
           settled_at: new Date(settledAt).toISOString(),
-        });
+        })
+        .select('id')
+        .single();
       if (insertError) {
         console.error('[delegates] register settlement failed', insertError);
         let msg = `تعذر تسجيل التوريد: ${insertError.message}`;
@@ -4650,6 +5013,30 @@ function RegisterSettlementModal({
         onError(msg);
         setSubmitting(false);
         return;
+      }
+      // Phase 26D-2 — staff audit: settlement created
+      try {
+        await writeStaffAuditLog(supabase, {
+          action: 'delegate.settlement_created',
+          actorId: auditActor.id,
+          actorName: auditActor.name,
+          actorRoleId: auditActor.roleId,
+          entity: {
+            type: 'delegate_settlement',
+            id: (insertedRow as { id?: string } | null)?.id ?? null,
+            label: delegate.name,
+          },
+          description: `تم تسجيل توريد بمبلغ ${parsedAmount.toLocaleString('en-US')} ج.م للمندوب ${delegate.name} (${settlementMethodLabel(method)})`,
+          metadata: {
+            settlement_id: (insertedRow as { id?: string } | null)?.id ?? null,
+            delegate_profile_id: delegate.profileId,
+            amount: parsedAmount,
+            method,
+            settled_at: new Date(settledAt).toISOString(),
+          },
+        });
+      } catch (auditErr) {
+        console.warn('[delegate.settlement_created] staff audit failed:', auditErr);
       }
       onSaved('تم تسجيل التوريد بنجاح.');
     } catch (e) {
@@ -5374,12 +5761,21 @@ function ExpensesTab({
 interface AddCustodyModalProps {
   delegate: DelegateRow;
   handedBy: { id: string | null; name: string | null };
+  /** Phase 26D-2 — staff-audit actor. */
+  auditActor: AuditActor;
   onClose: () => void;
   onSaved: (message: string) => void;
   onError: (message: string) => void;
 }
 
-function AddCustodyModal({ delegate, handedBy, onClose, onSaved, onError }: AddCustodyModalProps) {
+function AddCustodyModal({
+  delegate,
+  handedBy,
+  auditActor,
+  onClose,
+  onSaved,
+  onError,
+}: AddCustodyModalProps) {
   const nowLocal = (() => {
     const d = new Date();
     const pad = (n: number) => String(n).padStart(2, '0');
@@ -5425,19 +5821,23 @@ function AddCustodyModal({ delegate, handedBy, onClose, onSaved, onError }: AddC
     setSubmitting(true);
     try {
       const supabase = createClient();
-      const { error: insertError } = await supabase.from('turath_masr_delegate_custody').insert({
-        delegate_profile_id: delegate.profileId,
-        delegate_name: delegate.name,
-        custody_type: custodyType,
-        description: description.trim(),
-        quantity: parsedQty,
-        estimated_value: parsedValue,
-        status: 'with_delegate',
-        handed_by: handedBy.id,
-        handed_by_name: handedBy.name,
-        handed_at: new Date(handedAt).toISOString(),
-        note: note.trim() || null,
-      });
+      const { data: insertedRow, error: insertError } = await supabase
+        .from('turath_masr_delegate_custody')
+        .insert({
+          delegate_profile_id: delegate.profileId,
+          delegate_name: delegate.name,
+          custody_type: custodyType,
+          description: description.trim(),
+          quantity: parsedQty,
+          estimated_value: parsedValue,
+          status: 'with_delegate',
+          handed_by: handedBy.id,
+          handed_by_name: handedBy.name,
+          handed_at: new Date(handedAt).toISOString(),
+          note: note.trim() || null,
+        })
+        .select('id')
+        .single();
       if (insertError) {
         console.error('[delegates] add custody failed', insertError);
         let msg = `تعذر تسجيل الأمانة: ${insertError.message}`;
@@ -5452,6 +5852,31 @@ function AddCustodyModal({ delegate, handedBy, onClose, onSaved, onError }: AddC
         onError(msg);
         setSubmitting(false);
         return;
+      }
+      // Phase 26D-2 — staff audit: custody created
+      try {
+        await writeStaffAuditLog(supabase, {
+          action: 'delegate.custody_created',
+          actorId: auditActor.id,
+          actorName: auditActor.name,
+          actorRoleId: auditActor.roleId,
+          entity: {
+            type: 'delegate_custody',
+            id: (insertedRow as { id?: string } | null)?.id ?? null,
+            label: delegate.name,
+          },
+          description: `تم تسجيل أمانة (${custodyTypeLabel(custodyType)}) للمندوب ${delegate.name}`,
+          metadata: {
+            custody_id: (insertedRow as { id?: string } | null)?.id ?? null,
+            delegate_profile_id: delegate.profileId,
+            custody_type: custodyType,
+            quantity: parsedQty,
+            estimated_value: parsedValue,
+            handed_at: new Date(handedAt).toISOString(),
+          },
+        });
+      } catch (auditErr) {
+        console.warn('[delegate.custody_created] staff audit failed:', auditErr);
       }
       onSaved('تم تسجيل الأمانة بنجاح.');
     } catch (e) {
@@ -5599,6 +6024,8 @@ function AddCustodyModal({ delegate, handedBy, onClose, onSaved, onError }: AddC
 interface AddExpenseModalProps {
   delegate: DelegateRow;
   approvedBy: { id: string | null; name: string | null };
+  /** Phase 26D-2 — staff-audit actor. */
+  auditActor: AuditActor;
   onClose: () => void;
   onSaved: (message: string) => void;
   onError: (message: string) => void;
@@ -5607,6 +6034,7 @@ interface AddExpenseModalProps {
 function AddExpenseModal({
   delegate,
   approvedBy,
+  auditActor,
   onClose,
   onSaved,
   onError,
@@ -5672,18 +6100,22 @@ function AddExpenseModal({
       // and existing readers depend on a non-null value. The new
       // `reviewed_*` pair stays NULL until an admin makes a
       // decision via the approve/reject flow.
-      const { error: insertError } = await supabase.from('turath_masr_delegate_expenses').insert({
-        delegate_profile_id: delegate.profileId,
-        delegate_name: delegate.name,
-        order_id: orderId.trim() || null,
-        expense_type: expenseType,
-        amount: parsedAmount,
-        status: initialStatus,
-        approved_by: approvedBy.id,
-        approved_by_name: approvedBy.name,
-        note: note.trim() || null,
-        expense_at: new Date(expenseAt).toISOString(),
-      });
+      const { data: insertedRow, error: insertError } = await supabase
+        .from('turath_masr_delegate_expenses')
+        .insert({
+          delegate_profile_id: delegate.profileId,
+          delegate_name: delegate.name,
+          order_id: orderId.trim() || null,
+          expense_type: expenseType,
+          amount: parsedAmount,
+          status: initialStatus,
+          approved_by: approvedBy.id,
+          approved_by_name: approvedBy.name,
+          note: note.trim() || null,
+          expense_at: new Date(expenseAt).toISOString(),
+        })
+        .select('id')
+        .single();
       if (insertError) {
         console.error('[delegates] add expense failed', insertError);
         let msg = `تعذر تسجيل المصروف: ${insertError.message}`;
@@ -5698,6 +6130,32 @@ function AddExpenseModal({
         onError(msg);
         setSubmitting(false);
         return;
+      }
+      // Phase 26D-2 — staff audit: expense created
+      try {
+        await writeStaffAuditLog(supabase, {
+          action: 'delegate.expense_created',
+          actorId: auditActor.id,
+          actorName: auditActor.name,
+          actorRoleId: auditActor.roleId,
+          entity: {
+            type: 'delegate_expense',
+            id: (insertedRow as { id?: string } | null)?.id ?? null,
+            label: delegate.name,
+          },
+          description: `تم تسجيل مصروف بقيمة ${parsedAmount.toLocaleString('en-US')} ج.م (${expenseTypeLabel(expenseType)}) للمندوب ${delegate.name}${initialStatus === 'pending' ? ' (معلق للمراجعة)' : ''}`,
+          metadata: {
+            expense_id: (insertedRow as { id?: string } | null)?.id ?? null,
+            delegate_profile_id: delegate.profileId,
+            expense_type: expenseType,
+            amount: parsedAmount,
+            status: initialStatus,
+            order_id: orderId.trim() || null,
+            expense_at: new Date(expenseAt).toISOString(),
+          },
+        });
+      } catch (auditErr) {
+        console.warn('[delegate.expense_created] staff audit failed:', auditErr);
       }
       onSaved(
         initialStatus === 'pending' ? 'تم تسجيل المصروف كمعلق للمراجعة.' : 'تم تسجيل المصروف بنجاح.'
@@ -6987,12 +7445,20 @@ function VoidMovementDialog({
 // are deliberately untouched — the audit trail stays honest.
 interface EditSettlementModalProps {
   row: SettlementRow;
+  /** Phase 26D-2 — staff-audit actor. */
+  auditActor: AuditActor;
   onClose: () => void;
   onSaved: (message: string) => void;
   onError: (message: string) => void;
 }
 
-function EditSettlementModal({ row, onClose, onSaved, onError }: EditSettlementModalProps) {
+function EditSettlementModal({
+  row,
+  auditActor,
+  onClose,
+  onSaved,
+  onError,
+}: EditSettlementModalProps) {
   const initialSettledAt = (() => {
     const d = new Date(row.settled_at);
     if (Number.isNaN(d.getTime())) return '';
@@ -7052,6 +7518,36 @@ function EditSettlementModal({ row, onClose, onSaved, onError }: EditSettlementM
         onError(msg);
         setSubmitting(false);
         return;
+      }
+      // Phase 26D-2 — staff audit: settlement updated
+      try {
+        const changedFields: string[] = [];
+        if (parsedAmount !== Number(row.amount ?? 0)) changedFields.push('amount');
+        if (method !== row.method) changedFields.push('method');
+        if (new Date(settledAt).toISOString() !== new Date(row.settled_at).toISOString())
+          changedFields.push('settled_at');
+        if ((note.trim() || null) !== (row.note ?? null)) changedFields.push('note');
+        await writeStaffAuditLog(supabase, {
+          action: 'delegate.settlement_updated',
+          actorId: auditActor.id,
+          actorName: auditActor.name,
+          actorRoleId: auditActor.roleId,
+          entity: {
+            type: 'delegate_settlement',
+            id: row.id,
+            label: row.delegate_name ?? null,
+          },
+          description: `تم تعديل توريد للمندوب ${row.delegate_name ?? ''} (${changedFields.length} حقل)`,
+          metadata: {
+            settlement_id: row.id,
+            delegate_profile_id: row.delegate_profile_id,
+            changed_fields: changedFields,
+            new_amount: parsedAmount,
+            new_method: method,
+          },
+        });
+      } catch (auditErr) {
+        console.warn('[delegate.settlement_updated] staff audit failed:', auditErr);
       }
       onSaved('تم تعديل التوريد.');
     } catch (e) {
@@ -7161,12 +7657,14 @@ function EditSettlementModal({ row, onClose, onSaved, onError }: EditSettlementM
 // ─── Phase 23E — Edit Expense modal ───────────────────────────────────────
 interface EditExpenseModalProps {
   row: ExpenseRow;
+  /** Phase 26D-2 — staff-audit actor. */
+  auditActor: AuditActor;
   onClose: () => void;
   onSaved: (message: string) => void;
   onError: (message: string) => void;
 }
 
-function EditExpenseModal({ row, onClose, onSaved, onError }: EditExpenseModalProps) {
+function EditExpenseModal({ row, auditActor, onClose, onSaved, onError }: EditExpenseModalProps) {
   const initialAt = (() => {
     const d = new Date(row.expense_at);
     if (Number.isNaN(d.getTime())) return '';
@@ -7228,6 +7726,37 @@ function EditExpenseModal({ row, onClose, onSaved, onError }: EditExpenseModalPr
         onError(msg);
         setSubmitting(false);
         return;
+      }
+      // Phase 26D-2 — staff audit: expense updated
+      try {
+        const changedFields: string[] = [];
+        if (expenseType !== row.expense_type) changedFields.push('expense_type');
+        if (parsedAmount !== Number(row.amount ?? 0)) changedFields.push('amount');
+        if ((orderId.trim() || null) !== (row.order_id ?? null)) changedFields.push('order_id');
+        if (new Date(expenseAt).toISOString() !== new Date(row.expense_at).toISOString())
+          changedFields.push('expense_at');
+        if ((note.trim() || null) !== (row.note ?? null)) changedFields.push('note');
+        await writeStaffAuditLog(supabase, {
+          action: 'delegate.expense_updated',
+          actorId: auditActor.id,
+          actorName: auditActor.name,
+          actorRoleId: auditActor.roleId,
+          entity: {
+            type: 'delegate_expense',
+            id: row.id,
+            label: row.delegate_name ?? null,
+          },
+          description: `تم تعديل مصروف للمندوب ${row.delegate_name ?? ''} (${changedFields.length} حقل)`,
+          metadata: {
+            expense_id: row.id,
+            delegate_profile_id: row.delegate_profile_id,
+            changed_fields: changedFields,
+            new_expense_type: expenseType,
+            new_amount: parsedAmount,
+          },
+        });
+      } catch (auditErr) {
+        console.warn('[delegate.expense_updated] staff audit failed:', auditErr);
       }
       onSaved('تم تعديل المصروف.');
     } catch (e) {
@@ -7343,12 +7872,14 @@ function EditExpenseModal({ row, onClose, onSaved, onError }: EditExpenseModalPr
 // ─── Phase 23E — Edit Custody modal ───────────────────────────────────────
 interface EditCustodyModalProps {
   row: CustodyRow;
+  /** Phase 26D-2 — staff-audit actor. */
+  auditActor: AuditActor;
   onClose: () => void;
   onSaved: (message: string) => void;
   onError: (message: string) => void;
 }
 
-function EditCustodyModal({ row, onClose, onSaved, onError }: EditCustodyModalProps) {
+function EditCustodyModal({ row, auditActor, onClose, onSaved, onError }: EditCustodyModalProps) {
   const initialAt = (() => {
     const d = new Date(row.handed_at);
     if (Number.isNaN(d.getTime())) return '';
@@ -7418,6 +7949,39 @@ function EditCustodyModal({ row, onClose, onSaved, onError }: EditCustodyModalPr
         onError(msg);
         setSubmitting(false);
         return;
+      }
+      // Phase 26D-2 — staff audit: custody updated
+      try {
+        const changedFields: string[] = [];
+        if (custodyType !== row.custody_type) changedFields.push('custody_type');
+        if (description.trim() !== (row.description ?? '')) changedFields.push('description');
+        if (parsedQty !== Number(row.quantity ?? 0)) changedFields.push('quantity');
+        if (parsedValue !== Number(row.estimated_value ?? 0)) changedFields.push('estimated_value');
+        if (new Date(handedAt).toISOString() !== new Date(row.handed_at).toISOString())
+          changedFields.push('handed_at');
+        if ((note.trim() || null) !== (row.note ?? null)) changedFields.push('note');
+        await writeStaffAuditLog(supabase, {
+          action: 'delegate.custody_updated',
+          actorId: auditActor.id,
+          actorName: auditActor.name,
+          actorRoleId: auditActor.roleId,
+          entity: {
+            type: 'delegate_custody',
+            id: row.id,
+            label: row.delegate_name ?? null,
+          },
+          description: `تم تعديل أمانة للمندوب ${row.delegate_name ?? ''} (${changedFields.length} حقل)`,
+          metadata: {
+            custody_id: row.id,
+            delegate_profile_id: row.delegate_profile_id,
+            changed_fields: changedFields,
+            new_custody_type: custodyType,
+            new_quantity: parsedQty,
+            new_estimated_value: parsedValue,
+          },
+        });
+      } catch (auditErr) {
+        console.warn('[delegate.custody_updated] staff audit failed:', auditErr);
       }
       onSaved('تم تعديل الأمانة.');
     } catch (e) {
@@ -8967,12 +9531,15 @@ interface ChangeRequestRow {
 
 interface DelegateChangeRequestsAdminModalProps {
   canActOnRequests: boolean;
+  /** Phase 26D-2 — staff-audit actor (the admin approving / rejecting). */
+  auditActor: AuditActor;
   onClose: () => void;
   onChanged: () => void;
 }
 
 function DelegateChangeRequestsAdminModal({
   canActOnRequests,
+  auditActor,
   onClose,
   onChanged,
 }: DelegateChangeRequestsAdminModalProps) {
@@ -9116,6 +9683,7 @@ function DelegateChangeRequestsAdminModal({
         <ChangeRequestReviewModal
           row={selected}
           canActOnRequests={canActOnRequests}
+          auditActor={auditActor}
           onClose={() => setSelectedId(null)}
           onChanged={() => {
             setSelectedId(null);
@@ -9190,11 +9758,13 @@ function ChangeRequestRowCard({ row, onOpen }: { row: ChangeRequestRow; onOpen: 
 function ChangeRequestReviewModal({
   row,
   canActOnRequests,
+  auditActor,
   onClose,
   onChanged,
 }: {
   row: ChangeRequestRow;
   canActOnRequests: boolean;
+  auditActor: AuditActor;
   onClose: () => void;
   onChanged: () => void;
 }) {
@@ -9226,6 +9796,28 @@ function ChangeRequestReviewModal({
         setSubmitting(false);
         return;
       }
+      // Phase 26D-2 — staff audit: change-request approved
+      try {
+        await writeStaffAuditLog(supabase, {
+          action: 'delegate.change_request_approved',
+          actorId: auditActor.id,
+          actorName: auditActor.name,
+          actorRoleId: auditActor.roleId,
+          entity: {
+            type: 'delegate_change_request',
+            id: row.id,
+            label: row.delegate_name ?? null,
+          },
+          description: `تم اعتماد طلب تعديل بيانات المندوب ${row.delegate_name ?? ''}`,
+          metadata: {
+            change_request_id: row.id,
+            delegate_profile_id: row.delegate_profile_id,
+            requested_fields: Object.keys(row.requested_changes || {}),
+          },
+        });
+      } catch (auditErr) {
+        console.warn('[delegate.change_request_approved] staff audit failed:', auditErr);
+      }
       onChanged();
     } catch {
       setErrorBanner('تعذر إكمال العملية. حاول مرة أخرى.');
@@ -9252,6 +9844,29 @@ function ChangeRequestReviewModal({
         setErrorBanner(changeRequestErrorMessage((error as { message?: string }).message || ''));
         setSubmitting(false);
         return;
+      }
+      // Phase 26D-2 — staff audit: change-request rejected
+      try {
+        await writeStaffAuditLog(supabase, {
+          action: 'delegate.change_request_rejected',
+          actorId: auditActor.id,
+          actorName: auditActor.name,
+          actorRoleId: auditActor.roleId,
+          entity: {
+            type: 'delegate_change_request',
+            id: row.id,
+            label: row.delegate_name ?? null,
+          },
+          description: `تم رفض طلب تعديل بيانات المندوب ${row.delegate_name ?? ''}`,
+          metadata: {
+            change_request_id: row.id,
+            delegate_profile_id: row.delegate_profile_id,
+            requested_fields: Object.keys(row.requested_changes || {}),
+            reason,
+          },
+        });
+      } catch (auditErr) {
+        console.warn('[delegate.change_request_rejected] staff audit failed:', auditErr);
       }
       onChanged();
     } catch {
