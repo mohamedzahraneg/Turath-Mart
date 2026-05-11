@@ -51,9 +51,12 @@ import {
   ADJUSTMENT_KIND_TONE,
   ADJUSTMENT_STATE_LABEL_AR,
   ADJUSTMENT_STATE_TONE,
+  PRICE_DIFFERENCE_DIRECTION_LABEL_AR,
   REFUND_MODE_LABEL_AR,
   SHIPPING_PAYER_LABEL_AR,
   allowedNextStates,
+  buildChildOrderNum,
+  humanizeAdjustmentAuditEntry,
   isAdjustmentActionable,
   isOrderAdjustable,
   type AdjustmentState,
@@ -345,7 +348,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
       } catch (err) {
         // The table may not yet be applied in non-prod environments;
         // failure here is non-fatal. Suppress noise.
-        console.debug('[OrderDetailModal] adjustments fetch skipped:', err);
+        console.info('[OrderDetailModal] adjustments fetch skipped:', err);
       }
     };
     fetchAdjustments();
@@ -416,9 +419,14 @@ export default function OrderDetailModal({ order, onClose }: Props) {
     });
   };
 
-  // Phase 25A — drive an adjustment through its state machine. Only
-  // managers (r1/r2) are allowed via `canDecideAdjustment` + the RLS
-  // policy on `turath_masr_order_adjustments`.
+  // Phase 25A → 25B — drive an adjustment through its state machine.
+  // On `approved` we additionally:
+  //   • create an operational child order in `turath_masr_orders`
+  //   • create / link a complaint row in `turath_masr_crm_complaints`
+  // Both side effects are best-effort — a failure on the child-order
+  // insert short-circuits and surfaces an error; a failure on the
+  // complaint insert is logged but the approval still completes (the
+  // child order is the operational source of truth).
   const handleAdjustmentDecision = async (
     adjustment: OrderAdjustment,
     nextState: AdjustmentState,
@@ -432,6 +440,154 @@ export default function OrderDetailModal({ order, onClose }: Props) {
     try {
       const supabase = createClient();
       const decidedByName = (profileFullName ?? '').trim() || user?.email || 'مستخدم غير معروف';
+
+      // ─── Phase 25B — on approve: create child order + complaint ───
+      let childOrderId: string | null = adjustment.child_order_id ?? null;
+      let childOrderNum: string | null = adjustment.child_order_num ?? null;
+      let linkedComplaintId: string | null = adjustment.linked_complaint_id ?? null;
+
+      if (nextState === 'approved' && !adjustment.child_order_id) {
+        try {
+          // Count existing siblings for the suffix (R1/R2/E1/E2 …)
+          const childPrefix =
+            adjustment.kind === 'exchange_full' || adjustment.kind === 'exchange_partial'
+              ? `${adjustment.order_num}-E`
+              : `${adjustment.order_num}-R`;
+          const { count: siblingCount } = await supabase
+            .from('turath_masr_order_adjustments')
+            .select('child_order_num', { count: 'exact', head: true })
+            .like('child_order_num', `${childPrefix}%`);
+          childOrderNum = buildChildOrderNum(
+            adjustment.order_num,
+            adjustment.kind,
+            siblingCount ?? 0
+          );
+
+          const isExchange =
+            adjustment.kind === 'exchange_full' || adjustment.kind === 'exchange_partial';
+          const productsLabel = isExchange
+            ? `طلب استبدال للطلب ${adjustment.order_num}`
+            : `طلب مرتجع للطلب ${adjustment.order_num}`;
+
+          // For exchanges the child order carries the replacement lines
+          // (what we ship OUT to the customer). For returns the child
+          // order is the pickup leg carrying the returned items.
+          const childLines = isExchange
+            ? ((adjustment.replacement_lines as unknown as Array<Record<string, unknown>>) ?? [])
+            : ((adjustment.return_lines as unknown as Array<Record<string, unknown>>) ?? []);
+          const childQty = childLines.reduce(
+            (sum, ln) => sum + (Number((ln as { quantity?: number }).quantity) || 0),
+            0
+          );
+
+          // Subtotal: only the chargeable price-difference amount when
+          // the customer is paying it; otherwise 0. The child order is
+          // an operational shipment, not a product sale.
+          const priceDirection = adjustment.price_difference_direction ?? 'none';
+          const subtotal =
+            priceDirection === 'customer_pays'
+              ? Math.abs(Number(adjustment.price_difference) || 0)
+              : 0;
+          const shippingForChild = Number(adjustment.shipping_customer_amount) || 0;
+          const customerCollect =
+            Number(adjustment.customer_collect_amount) || subtotal + shippingForChild;
+
+          const childOrderRow = {
+            id: `order-${Date.now()}`,
+            order_num: childOrderNum,
+            created_by: decidedByName,
+            created_by_user_id: user?.id ?? null,
+            customer: liveOrder.customer,
+            phone: liveOrder.phone,
+            phone2: liveOrder.phone2 ?? null,
+            region: liveOrder.region,
+            district: liveOrder.district ?? null,
+            neighborhood: liveOrder.neighborhood ?? null,
+            address: liveOrder.address,
+            products: productsLabel,
+            quantity: childQty || 1,
+            subtotal,
+            shipping_fee: shippingForChild,
+            extra_shipping_fee: 0,
+            express_shipping: false,
+            free_shipping: shippingForChild === 0,
+            total: customerCollect,
+            status: 'new' as const,
+            date: new Date().toLocaleDateString('en-GB').replace(/\//g, '/'),
+            time: new Date().toLocaleTimeString('en-GB', { hour12: false }),
+            day: new Date().toLocaleDateString('ar-EG', { weekday: 'long' }),
+            notes: adjustment.operational_note ?? null,
+            warranty: liveOrder.warranty ?? null,
+            lines: childLines as unknown,
+          };
+
+          const { data: childOrderInserted, error: childErr } = await supabase
+            .from('turath_masr_orders')
+            .insert(childOrderRow)
+            .select('id, order_num')
+            .single();
+          if (childErr) {
+            toast.error(`تعذر إنشاء الطلب الفرعي: ${childErr.message}`);
+            console.error('[OrderDetailModal] child order insert failed:', childErr);
+            return;
+          }
+          childOrderId = (childOrderInserted as { id?: string } | null)?.id ?? null;
+          childOrderNum =
+            (childOrderInserted as { order_num?: string } | null)?.order_num ?? childOrderNum;
+        } catch (childCreateErr) {
+          console.error('[OrderDetailModal] child order create exception:', childCreateErr);
+          toast.error('فشل إنشاء الطلب الفرعي.');
+          return;
+        }
+
+        // Best-effort complaint creation. Failure is logged but the
+        // approval transition still proceeds.
+        try {
+          const subject =
+            adjustment.kind === 'exchange_full' || adjustment.kind === 'exchange_partial'
+              ? `طلب استبدال للطلب ${adjustment.order_num}`
+              : `طلب مرتجع للطلب ${adjustment.order_num}`;
+          const complaintType: 'return' | 'exchange' =
+            adjustment.kind === 'exchange_full' || adjustment.kind === 'exchange_partial'
+              ? 'exchange'
+              : 'return';
+          const complaintNotes = [
+            `السبب: ${adjustment.reason}`,
+            childOrderNum ? `الطلب الفرعي: #${childOrderNum}` : null,
+            adjustment.operational_note ? `ملاحظات: ${adjustment.operational_note}` : null,
+          ]
+            .filter(Boolean)
+            .join('\n');
+          const { data: complaintInserted, error: complaintErr } = await supabase
+            .from('turath_masr_crm_complaints')
+            .insert({
+              customer_phone: liveOrder.phone,
+              subject,
+              status: 'open',
+              notes: complaintNotes,
+              created_by: decidedByName,
+              order_id: adjustment.order_id,
+              order_num: adjustment.order_num,
+              child_order_id: childOrderId,
+              child_order_num: childOrderNum,
+              adjustment_id: adjustment.id,
+              complaint_type: complaintType,
+              resolution_status: 'open',
+              priority: 'medium',
+            })
+            .select('id')
+            .single();
+          if (complaintErr) {
+            console.warn('[OrderDetailModal] complaint create failed:', complaintErr);
+          } else {
+            linkedComplaintId = (complaintInserted as { id?: string } | null)?.id ?? null;
+          }
+        } catch (complaintExc) {
+          console.warn('[OrderDetailModal] complaint create exception:', complaintExc);
+        }
+      }
+
+      // Move the adjustment forward + persist child/complaint links.
       const { error: updateErr } = await supabase
         .from('turath_masr_order_adjustments')
         .update({
@@ -440,6 +596,9 @@ export default function OrderDetailModal({ order, onClose }: Props) {
           decided_by_role: currentRoleId ?? null,
           decided_at: new Date().toISOString(),
           decision_note: decisionNote?.trim() || null,
+          ...(childOrderId ? { child_order_id: childOrderId } : {}),
+          ...(childOrderNum ? { child_order_num: childOrderNum } : {}),
+          ...(linkedComplaintId ? { linked_complaint_id: linkedComplaintId } : {}),
         })
         .eq('id', adjustment.id);
       if (updateErr) {
@@ -459,15 +618,31 @@ export default function OrderDetailModal({ order, onClose }: Props) {
           note: JSON.stringify({
             adjustment_id: adjustment.id,
             kind: adjustment.kind,
+            reason: adjustment.reason,
+            refund_mode: adjustment.refund_mode,
+            refund_amount: adjustment.refund_amount,
+            price_difference: adjustment.price_difference,
+            price_difference_direction: adjustment.price_difference_direction,
+            shipping_payer: adjustment.shipping_payer,
+            shipping_customer_amount: adjustment.shipping_customer_amount,
+            shipping_company_amount: adjustment.shipping_company_amount,
+            customer_collect_amount: adjustment.customer_collect_amount,
+            ...(childOrderNum ? { child_order_num: childOrderNum } : {}),
+            ...(linkedComplaintId ? { linked_complaint_id: linkedComplaintId } : {}),
             ...(decisionNote?.trim() ? { note: decisionNote.trim() } : {}),
           }),
         });
       } catch (auditErr) {
         console.warn('[OrderDetailModal] audit log mirror failed:', auditErr);
       }
-      toast.success('تم تحديث حالة التسوية.');
+      toast.success(
+        nextState === 'approved' && childOrderNum
+          ? `تمت الموافقة، وإنشاء الطلب الفرعي #${childOrderNum}`
+          : 'تم تحديث حالة التسوية.'
+      );
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new Event('turath_masr_order_adjustments_updated'));
+        window.dispatchEvent(new Event('turath_masr_orders_updated'));
         window.dispatchEvent(new Event('turath_masr_audit_updated'));
       }
     } catch (err) {
@@ -1014,6 +1189,22 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                               <span className="font-bold">السبب: </span>
                               <span className="text-[hsl(var(--foreground))]">{adj.reason}</span>
                             </p>
+                            {/* Phase 25B — child order + complaint quick links */}
+                            {(adj.child_order_num || adj.linked_complaint_id) && (
+                              <div className="flex flex-wrap items-center gap-2 mt-2 text-[11px]">
+                                {adj.child_order_num && (
+                                  <span className="inline-flex items-center gap-1 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-full px-2 py-0.5 font-bold">
+                                    <RotateCcw size={10} />
+                                    الطلب الفرعي #{adj.child_order_num}
+                                  </span>
+                                )}
+                                {adj.linked_complaint_id && (
+                                  <span className="inline-flex items-center gap-1 bg-amber-50 border border-amber-200 text-amber-700 rounded-full px-2 py-0.5 font-bold">
+                                    شكوى مرتبطة
+                                  </span>
+                                )}
+                              </div>
+                            )}
                             <div className="grid grid-cols-2 gap-2 mt-2 text-[11px]">
                               <div className="text-[hsl(var(--muted-foreground))]">
                                 <span className="font-bold">الاسترداد: </span>
@@ -1024,14 +1215,18 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                               </div>
                               <div className="text-[hsl(var(--muted-foreground))]">
                                 <span className="font-bold">الشحن: </span>
-                                {SHIPPING_PAYER_LABEL_AR[adj.shipping_payer]}
+                                {adj.shipping_payer === 'split'
+                                  ? `العميل ${Number(adj.shipping_customer_amount ?? 0).toLocaleString('en-US')} ج.م / الشركة ${Number(adj.shipping_company_amount ?? 0).toLocaleString('en-US')} ج.م`
+                                  : SHIPPING_PAYER_LABEL_AR[adj.shipping_payer]}
                               </div>
                               {Number(adj.price_difference) !== 0 && (
                                 <div
                                   className={`col-span-2 ${
-                                    Number(adj.price_difference) > 0
+                                    adj.price_difference_direction === 'customer_pays'
                                       ? 'text-amber-700'
-                                      : 'text-emerald-700'
+                                      : adj.price_difference_direction === 'company_refunds'
+                                        ? 'text-emerald-700'
+                                        : 'text-[hsl(var(--muted-foreground))]'
                                   }`}
                                 >
                                   <span className="font-bold">فرق السعر: </span>
@@ -1039,9 +1234,21 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                                     {Math.abs(Number(adj.price_difference)).toLocaleString('en-US')}{' '}
                                     ج.م
                                   </span>
-                                  {Number(adj.price_difference) > 0
-                                    ? ' (يدفعه العميل)'
-                                    : ' (يرد للعميل)'}
+                                  {adj.price_difference_direction
+                                    ? ` — ${PRICE_DIFFERENCE_DIRECTION_LABEL_AR[adj.price_difference_direction]}`
+                                    : Number(adj.price_difference) > 0
+                                      ? ' (يدفعه العميل)'
+                                      : ' (يرد للعميل)'}
+                                </div>
+                              )}
+                              {/* Phase 25B — delegate collection breakdown */}
+                              {(adj.customer_collect_amount ?? 0) > 0 && (
+                                <div className="col-span-2 text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-lg px-2 py-1">
+                                  <span className="font-bold">إجمالي التحصيل من العميل: </span>
+                                  <span className="font-mono font-bold">
+                                    {Number(adj.customer_collect_amount).toLocaleString('en-US')}{' '}
+                                    ج.م
+                                  </span>
                                 </div>
                               )}
                               <div className="col-span-2 text-[hsl(var(--muted-foreground))]">
@@ -1064,6 +1271,12 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                                 <div className="col-span-2 text-[hsl(var(--muted-foreground))]">
                                   <span className="font-bold">ملاحظات: </span>
                                   <span className="italic">{adj.notes}</span>
+                                </div>
+                              )}
+                              {adj.operational_note && (
+                                <div className="col-span-2 text-[hsl(var(--muted-foreground))]">
+                                  <span className="font-bold">تعليمات للمندوب: </span>
+                                  <span className="italic">{adj.operational_note}</span>
                                 </div>
                               )}
                               {adj.decision_note && (
@@ -1235,7 +1448,9 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 <div className="absolute right-4 top-0 bottom-0 w-0.5 bg-[hsl(var(--border))]" />
                 <div className="space-y-4">
                   {auditLogs
-                    .filter((l) => l.action === 'status_change')
+                    .filter(
+                      (l) => l.action === 'status_change' || l.action.startsWith('adjustment_')
+                    )
                     .map((h, i, arr) => {
                       const d = new Date(h.createdAt);
                       const days = [
@@ -1278,8 +1493,23 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                               <span>بواسطة:</span>
                               <UserStamp name={h.changedBy} role={h.changedByRole} size="sm" />
                             </div>
-                            {/* Phase 22P / 22Q — split structured note. */}
+                            {/* Phase 22P / 22Q — split structured note.
+                                Phase 25B — when the action is an
+                                adjustment event, render the humanised
+                                Arabic paragraph instead of the raw
+                                JSON envelope. */}
                             {(() => {
+                              const humanised = humanizeAdjustmentAuditEntry({
+                                action: h.action,
+                                note: h.note,
+                              });
+                              if (humanised) {
+                                return (
+                                  <div className="text-xs text-[hsl(var(--foreground))] mt-1.5 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1 whitespace-pre-line leading-relaxed">
+                                    {humanised}
+                                  </div>
+                                );
+                              }
                               const parsed = parseAuditNote(h.note);
                               if (
                                 !parsed.reason &&
@@ -1713,8 +1943,21 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                                     ? 'مندوب'
                                     : log.changedByRole}
                             </p>
-                            {/* Phase 22P / 22Q — split structured note. */}
+                            {/* Phase 22P / 22Q — split structured note.
+                                Phase 25B — render adjustment events as
+                                Arabic paragraphs. */}
                             {(() => {
+                              const humanised = humanizeAdjustmentAuditEntry({
+                                action: log.action,
+                                note: log.note,
+                              });
+                              if (humanised) {
+                                return (
+                                  <div className="text-xs mt-1 opacity-90 whitespace-pre-line leading-relaxed">
+                                    {humanised}
+                                  </div>
+                                );
+                              }
                               const parsed = parseAuditNote(log.note);
                               if (
                                 !parsed.reason &&
@@ -1807,6 +2050,12 @@ export default function OrderDetailModal({ order, onClose }: Props) {
             phone: liveOrder.phone,
             total: liveOrder.total,
             lines: liveOrder.lines ?? [],
+            // Phase 25B — pass region + base shipping so the modal can
+            // seed the new shipment leg automatically.
+            shippingFee: liveOrder.shippingFee,
+            region: liveOrder.region,
+            district: liveOrder.district ?? null,
+            neighborhood: liveOrder.neighborhood ?? null,
           }}
           onClose={() => setShowAdjustmentModal(false)}
         />

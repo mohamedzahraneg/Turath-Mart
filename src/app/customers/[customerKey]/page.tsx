@@ -1645,35 +1645,63 @@ function OrdersTab({
           </tr>
         </thead>
         <tbody>
-          {filtered.map((o) => (
-            <tr
-              key={o.id}
-              className="border-t border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/15"
-            >
-              <td className="px-3 py-2 font-mono">{o.order_num}</td>
-              <td className="px-3 py-2 whitespace-nowrap">{fmtDateYmd(o.created_at)}</td>
-              <td className="px-3 py-2 text-center">
-                <StatusBadge status={o.status} />
-              </td>
-              <td className="px-3 py-2 text-center num">{fmtMoney(o.total)}</td>
-              <td className="px-3 py-2 whitespace-nowrap">{o.delegate_name || '—'}</td>
-              <td className="px-3 py-2 whitespace-nowrap text-[hsl(var(--muted-foreground))]">
-                {o.scheduled_delivery_date ? fmtDateYmd(o.scheduled_delivery_date) : '—'}
-              </td>
-              <td className="px-3 py-2 text-center">
-                {/* Phase 24A-Fix1 — open the order in a modal instead
+          {filtered.map((o) => {
+            // Phase 25B — detect child orders by their `-R{n}` / `-E{n}`
+            // suffix and render a small badge + parent link.
+            const childMatch = o.order_num.match(/^(.+)-([RE])(\d+)$/);
+            const isExchangeChild = childMatch?.[2] === 'E';
+            const isReturnChild = childMatch?.[2] === 'R';
+            const parentNum = childMatch?.[1];
+            return (
+              <tr
+                key={o.id}
+                className="border-t border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/15"
+              >
+                <td className="px-3 py-2 font-mono">
+                  <div className="flex flex-col gap-0.5">
+                    <span>{o.order_num}</span>
+                    {childMatch && (
+                      <div className="flex items-center gap-1 flex-wrap">
+                        <span
+                          className={`text-[9px] font-bold px-1 py-px rounded-full border ${
+                            isExchangeChild
+                              ? 'bg-amber-50 text-amber-700 border-amber-200'
+                              : 'bg-rose-50 text-rose-700 border-rose-200'
+                          }`}
+                        >
+                          {isExchangeChild ? 'استبدال' : isReturnChild ? 'مرتجع' : 'فرعي'}
+                        </span>
+                        <span className="text-[9px] text-[hsl(var(--muted-foreground))]">
+                          مرتبط بـ {parentNum}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </td>
+                <td className="px-3 py-2 whitespace-nowrap">{fmtDateYmd(o.created_at)}</td>
+                <td className="px-3 py-2 text-center">
+                  <StatusBadge status={o.status} />
+                </td>
+                <td className="px-3 py-2 text-center num">{fmtMoney(o.total)}</td>
+                <td className="px-3 py-2 whitespace-nowrap">{o.delegate_name || '—'}</td>
+                <td className="px-3 py-2 whitespace-nowrap text-[hsl(var(--muted-foreground))]">
+                  {o.scheduled_delivery_date ? fmtDateYmd(o.scheduled_delivery_date) : '—'}
+                </td>
+                <td className="px-3 py-2 text-center">
+                  {/* Phase 24A-Fix1 — open the order in a modal instead
                     of navigating to /orders-management (which would
                     drop the user out of the profile context). */}
-                <button
-                  type="button"
-                  onClick={() => onOpenOrder(o.id)}
-                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-[hsl(var(--primary))] hover:underline"
-                >
-                  <Eye size={11} /> عرض
-                </button>
-              </td>
-            </tr>
-          ))}
+                  <button
+                    type="button"
+                    onClick={() => onOpenOrder(o.id)}
+                    className="inline-flex items-center gap-1 text-[10px] font-semibold text-[hsl(var(--primary))] hover:underline"
+                  >
+                    <Eye size={11} /> عرض
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

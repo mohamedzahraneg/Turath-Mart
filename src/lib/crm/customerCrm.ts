@@ -31,6 +31,8 @@ export {
   formatPhoneDisplay,
 } from '@/lib/phone/egyptPhone';
 import { normalizeEgyptPhone as _normalizeEgyptPhone } from '@/lib/phone/egyptPhone';
+// Phase 25B — humanise adjustment audit events on the timeline.
+import { humanizeAdjustmentAuditEntry } from '@/lib/orders/orderAdjustments';
 
 /**
  * Phase 24B-Fix1 — alias for the legacy `normalisePhone` callers
@@ -1149,18 +1151,26 @@ export function buildTimeline(input: {
   }
   for (const a of input.audits) {
     if (a.created_at && a.action) {
+      // Phase 25B — adjustment events render as a fully Arabic
+      // paragraph (no raw JSON in the customer profile).
+      const adjustmentDescription = humanizeAdjustmentAuditEntry({
+        action: a.action,
+        note: a.note,
+      });
+      const description = adjustmentDescription
+        ? adjustmentDescription
+        : a.note ||
+          (a.field_changed
+            ? `${a.field_changed}: ${a.old_value || '—'} → ${a.new_value || '—'}`
+            : a.action);
       out.push({
         id: `audit:${a.id}`,
         kind: 'order_status',
         date: a.created_at,
-        label: 'تحديث طلب',
+        label: a.action.startsWith('adjustment_') ? 'مرتجع / استبدال' : 'تحديث طلب',
         reference: a.order_num ?? undefined,
-        description:
-          a.note ||
-          (a.field_changed
-            ? `${a.field_changed}: ${a.old_value || '—'} → ${a.new_value || '—'}`
-            : a.action),
-        tone: 'slate',
+        description,
+        tone: a.action.startsWith('adjustment_') ? 'amber' : 'slate',
       });
     }
   }
