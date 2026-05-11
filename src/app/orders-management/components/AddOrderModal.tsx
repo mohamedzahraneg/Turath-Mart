@@ -30,6 +30,11 @@ import { useAuth } from '@/contexts/AuthContext';
 import { canUseAdminOnlyFinancialFields } from '@/lib/constants/roles';
 import { isValidEgyptianMobile } from '@/lib/validators/phone';
 import { normalizeArabic } from '@/lib/utils/arabic';
+// Phase 24B-Fix1 — shared Egyptian-phone helper. Every phone-writing
+// surface (Add Order, Edit Order, customer CRM, complaints + chat
+// API routes) now goes through these helpers so we never persist
+// Arabic-Indic or Persian digits anywhere downstream.
+import { sanitizePhoneInput, normalizeEgyptPhone, toEnglishDigits } from '@/lib/phone/egyptPhone';
 // Phase 22N — true hierarchy. The hierarchy transformer converts the
 // raw `settings_regions` array (mixed legacy strings + Phase 22M
 // objects) into nested top-level areas with `children`, applies the
@@ -1676,6 +1681,16 @@ export default function AddOrderModal({ onClose }: Props) {
     const min = now.getMinutes().toString().padStart(2, '0');
     const sec = now.getSeconds().toString().padStart(2, '0');
 
+    // Phase 24B-Fix1 — canonicalise phones to the 01XXXXXXXXX form
+    // before the insert. The onChange handlers already convert
+    // Arabic / Persian digits to ASCII as the user types, but a
+    // paste at submit time could still slip through; this step is
+    // the belt-and-braces guarantee that `orders.phone` /
+    // `orders.phone2` / the customer upsert below all see the same
+    // canonical key.
+    const phoneCanonical = normalizeEgyptPhone(phone) ?? toEnglishDigits(phone);
+    const phone2Canonical = phone2 ? (normalizeEgyptPhone(phone2) ?? toEnglishDigits(phone2)) : '';
+
     const newOrder = {
       id: `order-${Date.now()}`,
       orderNum,
@@ -1686,8 +1701,8 @@ export default function AddOrderModal({ onClose }: Props) {
       createdBy: createdByDisplayName,
       createdByDevice: deviceType,
       customer: customerName,
-      phone,
-      phone2: phone2 || undefined,
+      phone: phoneCanonical,
+      phone2: phone2Canonical || undefined,
       region: governorate,
       // Phase 22K-Fix1 — persist the CANONICAL district name from
       // shipping settings, not the raw input. validateStep1 above has
@@ -2121,11 +2136,16 @@ export default function AddOrderModal({ onClose }: Props) {
                         />
                         <input
                           type="tel"
+                          inputMode="tel"
                           className={`input-field pr-8 ${errors.phone ? 'border-red-400' : ''}`}
                           placeholder="01XXXXXXXXX"
                           dir="ltr"
                           value={phone}
-                          onChange={(e) => setPhone(e.target.value)}
+                          // Phase 24B-Fix1 — Arabic / Persian digits are
+                          // converted to ASCII as the user types so the
+                          // returning-customer lookup and the eventual
+                          // insert never see non-Latin glyphs.
+                          onChange={(e) => setPhone(sanitizePhoneInput(e.target.value))}
                         />
                       </div>
                       {errors.phone && <p className="text-red-500 text-xs mt-1">{errors.phone}</p>}
@@ -2153,11 +2173,15 @@ export default function AddOrderModal({ onClose }: Props) {
                         />
                         <input
                           type="tel"
+                          inputMode="tel"
                           className={`input-field pr-8 ${errors.phone2 ? 'border-red-400' : ''}`}
                           placeholder="01XXXXXXXXX (اختياري)"
                           dir="ltr"
                           value={phone2}
-                          onChange={(e) => setPhone2(e.target.value)}
+                          // Phase 24B-Fix1 — same digit-conversion rule
+                          // as the primary phone so phone2 also lands
+                          // as ASCII before insert.
+                          onChange={(e) => setPhone2(sanitizePhoneInput(e.target.value))}
                         />
                       </div>
                       {errors.phone2 && (

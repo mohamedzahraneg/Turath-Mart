@@ -470,7 +470,17 @@ function formatAddressLine(a: PastAddress): string {
  */
 export function normalizePhone(raw: string | null | undefined): string {
   if (!raw) return '';
-  let digits = String(raw).replace(/\D/g, '');
+  // Phase 24B-Fix1 — convert Arabic-Indic (U+0660..U+0669) and
+  // Persian (U+06F0..U+06F9) digit glyphs to ASCII BEFORE stripping
+  // non-digits, otherwise the digits the user actually typed would
+  // be lost and we'd compare against an empty string.
+  const ascii = String(raw).replace(/[٠-٩۰-۹]/g, (ch) => {
+    const code = ch.charCodeAt(0);
+    if (code >= 0x0660 && code <= 0x0669) return String(code - 0x0660);
+    if (code >= 0x06f0 && code <= 0x06f9) return String(code - 0x06f0);
+    return ch;
+  });
+  let digits = ascii.replace(/\D/g, '');
   // Strip leading "00" (international prefix) or "20" (Egypt country
   // code) so the comparator only sees the local 11-digit form.
   if (digits.startsWith('0020')) digits = digits.slice(4);

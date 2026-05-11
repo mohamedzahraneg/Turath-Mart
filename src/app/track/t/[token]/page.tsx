@@ -20,6 +20,10 @@
 'use client';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
+// Phase 24B-Fix1 — convert Arabic-Indic / Persian digits to ASCII as
+// the customer types the complaint phone, matching the rule applied
+// across the admin-facing Add Order modal + customer CRM dashboard.
+import { sanitizePhoneInput } from '@/lib/phone/egyptPhone';
 import Image from 'next/image';
 import {
   Package,
@@ -1146,7 +1150,11 @@ function ComplaintModal({ order, onClose }: ComplaintModalProps) {
               className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-400"
               placeholder="مثال: 01012345678"
               value={phone}
-              onChange={(e) => setPhone(e.target.value)}
+              // Phase 24B-Fix1 — convert Arabic / Persian digits to
+              // ASCII live so the PHONE_RE validator below + the API
+              // route + the SECURITY DEFINER RPC all see the same
+              // normalised digits.
+              onChange={(e) => setPhone(sanitizePhoneInput(e.target.value))}
               maxLength={32}
               disabled={submitting}
             />

@@ -14,66 +14,32 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─── Phone normalisation + customer key ──────────────────────────────────
+//
+// Phase 24B-Fix1 — the canonical implementation now lives in
+// `src/lib/phone/egyptPhone.ts` so every phone-writing surface in
+// the app (Add Order, Edit Order, complaints + chat API routes,
+// customer CRM) shares one normaliser and one validator. We
+// re-export here under the legacy `normalisePhone` name so the rest
+// of the customer-CRM helpers keep compiling without churn.
+
+export {
+  toEnglishDigits,
+  normalizeEgyptPhone,
+  normalizeEgyptPhoneLoose,
+  isLikelyEgyptMobile,
+  sanitizePhoneInput,
+  formatPhoneDisplay,
+} from '@/lib/phone/egyptPhone';
+import { normalizeEgyptPhone as _normalizeEgyptPhone } from '@/lib/phone/egyptPhone';
 
 /**
- * Phase 24B — Egyptian-mobile aware normaliser. Converts Arabic-Indic
- * and Persian digits to ASCII, strips whitespace / dashes / parens,
- * drops a leading `+` / `00` / `002` / `0020` / `20` country prefix,
- * and re-applies the canonical local prefix `0` so two writes of the
- * same number (one as `+20 100 …`, one as `0100 …`) hash to the same
- * key in the dashboard's duplicate scan.
- *
- *   01012345678         → 01012345678
- *   +201012345678       → 01012345678
- *   00201012345678      → 01012345678
- *   ٠١٠١٢٣٤٥٦٧٨        → 01012345678  (Arabic-Indic digits)
- *   ۰۱۰۱۲۳۴۵۶۷۸        → 01012345678  (Persian digits)
- *   1012345678          → 01012345678
- *
- * Anything that yields fewer than 5 digits returns `null`.
+ * Phase 24B-Fix1 — alias for the legacy `normalisePhone` callers
+ * elsewhere in the CRM module. Identical to `normalizeEgyptPhone`;
+ * preserved so the dashboard, profile, and helper signatures don't
+ * need a sweeping rename in this fix-up phase.
  */
 export function normalisePhone(input: string | null | undefined): string | null {
-  if (!input) return null;
-  // Arabic-Indic 0660-0669 + Persian 06F0-06F9 → ASCII 0-9
-  const ascii = String(input).replace(/[٠-٩۰-۹]/g, (ch) => {
-    const code = ch.charCodeAt(0);
-    if (code >= 0x0660 && code <= 0x0669) return String(code - 0x0660);
-    if (code >= 0x06f0 && code <= 0x06f9) return String(code - 0x06f0);
-    return ch;
-  });
-  let digits = ascii.replace(/\D+/g, '');
-  if (digits.length === 0) return null;
-  if (digits.startsWith('0020')) digits = digits.slice(4);
-  else if (digits.startsWith('002')) digits = digits.slice(3);
-  else if (digits.startsWith('20') && digits.length >= 12) digits = digits.slice(2);
-  if (digits.length < 5) return null;
-  // Re-prefix with a leading 0 for the canonical EG mobile pattern
-  // (01XXXXXXXXX) if the local 9- or 10-digit form was passed.
-  if (digits.length === 10 && digits.startsWith('1')) digits = '0' + digits;
-  return digits;
-}
-
-/**
- * Phase 24B — alias for the duplicate-detection / add-customer flow
- * that wants a single, explicit name in the public API. Same behaviour
- * as `normalisePhone`; kept distinct so future tightening (e.g.
- * accepting only `^01[0-2,5][0-9]{8}$` mobile prefixes) doesn't break
- * the broader `normalisePhone` callers across the app.
- */
-export function normalizeEgyptPhone(input: string | null | undefined): string | null {
-  return normalisePhone(input);
-}
-
-/**
- * Phase 24B — returns `true` only when the normalised value matches
- * the canonical Egyptian mobile pattern: 11 digits, leading `01`, and
- * the second digit in the carrier-prefix set {0, 1, 2, 5}. The dashboard
- * uses this for the "new customer" modal's invalid-phone guard.
- */
-export function isLikelyEgyptMobile(input: string | null | undefined): boolean {
-  const n = normalisePhone(input);
-  if (!n) return false;
-  return /^01[0125][0-9]{8}$/.test(n);
+  return _normalizeEgyptPhone(input);
 }
 
 /** URL-safe encoding of a phone into a route key. We never use the
@@ -94,13 +60,10 @@ export function phoneFromCustomerKey(key: string | null | undefined): string | n
   return normalisePhone(decodeURIComponent(key));
 }
 
-/** Phone shown to the user — non-destructive (keeps original format
- *  if it can; otherwise falls back to the normalised digits). */
-export function formatPhoneDisplay(input: string | null | undefined): string {
-  if (!input) return '—';
-  const t = input.trim();
-  return t.length > 0 ? t : '—';
-}
+// Phase 24B-Fix1 — `formatPhoneDisplay` now lives in the shared
+// `@/lib/phone/egyptPhone` module and is re-exported above. The
+// shared version converts Arabic-Indic / Persian glyphs to ASCII
+// before rendering so UI never paints non-Latin digits.
 
 /** WhatsApp `wa.me` URL builder. Uses normalised digits with EG
  *  country code prepended if the local form has 10–11 digits. */
