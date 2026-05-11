@@ -17,20 +17,6 @@ import {
   UserPlus,
   Camera,
   Upload,
-  Monitor,
-  Smartphone,
-  Tablet,
-  LogIn,
-  LogOut,
-  Calendar,
-  Clock,
-  Search,
-  CheckCircle,
-  XCircle,
-  ChevronDown,
-  ChevronUp,
-  Lock,
-  Unlock,
   ShieldAlert,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
@@ -39,6 +25,10 @@ import SecurityTab from './components/SecurityTab';
 // Phase 26C — permissions matrix tab (role × permission grid with
 // filters, dirty state, sensitive guard, and audit logging).
 import PermissionsMatrixTab from './components/PermissionsMatrixTab';
+// Phase 26E — users tab (security/account-focused management of
+// real staff accounts). Replaces the legacy inline users table
+// that hardcoded login/device counts and silently deleted rows.
+import UsersTab from './components/UsersTab';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface Permission {
@@ -345,12 +335,9 @@ async function saveUsersToStorage(_users: AppUser[]) {
   // No-op: users are loaded from Supabase profiles
   return;
 }
-// ─── Device Icon ───────────────────────────────────────────────────────────────
-function DeviceIcon({ device, size = 14 }: { device?: string; size?: number }) {
-  if (device === 'موبايل') return <Smartphone size={size} />;
-  if (device === 'تابلت') return <Tablet size={size} />;
-  return <Monitor size={size} />;
-}
+// Phase 26E — `DeviceIcon` helper removed alongside the inline
+// users tab. The new UsersTab component has its own device-icon
+// helper scoped to that component.
 
 // ─── Role Modal ────────────────────────────────────────────────────────────────
 interface RoleModalProps {
@@ -777,162 +764,9 @@ function UnifiedMemberModal({ employee, roles, onClose, onSave }: UnifiedMemberM
   );
 }
 
-// ─── Sessions Panel ────────────────────────────────────────────────────────────
-function SessionsPanel({ user, onClose }: { user: AppUser; onClose: () => void }) {
-  return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" dir="rtl">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
-        <div className="flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-[hsl(var(--primary))] flex items-center justify-center text-white font-bold">
-              {user.avatar}
-            </div>
-            <div>
-              <h2 className="text-base font-bold">{user.name}</h2>
-              <p className="text-xs text-[hsl(var(--muted-foreground))]">سجل الدخول والخروج</p>
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-[hsl(var(--muted))] rounded-xl transition-colors"
-          >
-            <X size={18} />
-          </button>
-        </div>
-        <div className="p-4 grid grid-cols-3 gap-3 border-b border-[hsl(var(--border))]">
-          <div className="bg-green-50 rounded-xl p-3 text-center">
-            <p className="text-xl font-bold text-green-700">{user.loginCount}</p>
-            <p className="text-xs text-green-600 mt-0.5">مرات الدخول</p>
-          </div>
-          <div className="bg-red-50 rounded-xl p-3 text-center">
-            <p className="text-xl font-bold text-red-700">{user.logoutCount}</p>
-            <p className="text-xs text-red-600 mt-0.5">مرات الخروج</p>
-          </div>
-          <div className="bg-blue-50 rounded-xl p-3 text-center">
-            <div className="flex items-center justify-center gap-1 text-blue-700">
-              <DeviceIcon device={user.lastDevice} size={16} />
-              <p className="text-sm font-bold">{user.lastDevice || '—'}</p>
-            </div>
-            <p className="text-xs text-blue-600 mt-0.5">آخر جهاز</p>
-          </div>
-        </div>
-        <div className="overflow-y-auto flex-1">
-          <table className="w-full text-sm" dir="rtl">
-            <thead className="sticky top-0 bg-[hsl(var(--muted))]/80 backdrop-blur-sm">
-              <tr className="text-[hsl(var(--muted-foreground))] text-xs">
-                <th className="text-right px-4 py-3 font-semibold">النوع</th>
-                <th className="text-right px-4 py-3 font-semibold">الجهاز</th>
-                <th className="text-right px-4 py-3 font-semibold">اليوم</th>
-                <th className="text-right px-4 py-3 font-semibold">التاريخ</th>
-                <th className="text-right px-4 py-3 font-semibold">الوقت</th>
-              </tr>
-            </thead>
-            <tbody>
-              {user.sessions
-                .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-                .map((s) => (
-                  <tr
-                    key={s.id}
-                    className="border-t border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/30 transition-colors"
-                  >
-                    <td className="px-4 py-3">
-                      <span
-                        className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-semibold ${s.type === 'login' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}
-                      >
-                        {s.type === 'login' ? <LogIn size={11} /> : <LogOut size={11} />}
-                        {s.type === 'login' ? 'دخول' : 'خروج'}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="inline-flex items-center gap-1.5 text-xs text-[hsl(var(--foreground))]">
-                        <DeviceIcon device={s.device} size={13} />
-                        {s.device}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
-                      {s.day}
-                    </td>
-                    <td className="px-4 py-3 text-xs text-[hsl(var(--foreground))]">{s.date}</td>
-                    <td
-                      className="px-4 py-3 text-xs font-mono text-[hsl(var(--foreground))]"
-                      dir="ltr"
-                    >
-                      {s.time}
-                    </td>
-                  </tr>
-                ))}
-              {user.sessions.length === 0 && (
-                <tr>
-                  <td
-                    colSpan={5}
-                    className="px-4 py-8 text-center text-[hsl(var(--muted-foreground))] text-sm"
-                  >
-                    لا يوجد سجل جلسات
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── User Permissions Panel (inline) ──────────────────────────────────────────
-function UserPermissionsPanel({ user, role }: { user: AppUser; role: Role | undefined }) {
-  if (!role)
-    return (
-      <div className="px-6 py-3 text-xs text-[hsl(var(--muted-foreground))]">لا يوجد دور محدد</div>
-    );
-  const colors = colorMap[role.color] || colorMap.blue;
-  const grouped = permGroups.map((g) => ({
-    group: g,
-    perms: allPermissions.filter((p) => p.group === g),
-  }));
-  return (
-    <div className="px-6 py-4 bg-[hsl(var(--muted))]/20">
-      <div className="flex items-center gap-2 mb-3">
-        <ShieldCheck size={14} className={colors.text} />
-        <span className="text-xs font-bold text-[hsl(var(--foreground))]">
-          صلاحيات دور "{role.name}" المطبقة على هذا المستخدم
-        </span>
-        <span
-          className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${colors.bg} ${colors.text}`}
-        >
-          {role.permissions.length} صلاحية
-        </span>
-      </div>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-        {grouped.map(({ group, perms }) => (
-          <div key={group} className="bg-white rounded-xl border border-[hsl(var(--border))] p-2.5">
-            <p className="text-[10px] font-bold text-[hsl(var(--muted-foreground))] mb-1.5 uppercase tracking-wide">
-              {group}
-            </p>
-            <div className="space-y-1">
-              {perms.map((perm) => {
-                const has = role.permissions.includes(perm.id);
-                return (
-                  <div
-                    key={perm.id}
-                    className={`flex items-center gap-1.5 text-[10px] ${has ? 'text-[hsl(var(--foreground))]' : 'text-gray-300'}`}
-                  >
-                    {has ? (
-                      <Unlock size={9} className={colors.text} />
-                    ) : (
-                      <Lock size={9} className="text-gray-300" />
-                    )}
-                    <span className={has ? 'font-semibold' : ''}>{perm.label}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+// Phase 26E — SessionsPanel and UserPermissionsPanel removed
+// alongside the inline users tab. Their replacements live inside
+// UsersTab.tsx (drawer sections).
 
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 export default function RolesPage() {
@@ -1023,15 +857,13 @@ export default function RolesPage() {
   const [editRole, setEditRole] = useState<Role | null | undefined>(undefined);
   // unified modal: undefined = closed, null = new, Employee = edit
   const [editMember, setEditMember] = useState<Employee | null | undefined>(undefined);
-  const [viewSessionsUser, setViewSessionsUser] = useState<AppUser | null>(null);
   const [activeTab, setActiveTab] = useState<
     'roles' | 'employees' | 'users' | 'security' | 'matrix'
   >('roles');
   const [showPasswords, setShowPasswords] = useState<Set<string>>(new Set());
-  const [userSearch, setUserSearch] = useState('');
-  const [userFilter, setUserFilter] = useState<'all' | 'active' | 'inactive'>('all');
-  const [expandedUser, setExpandedUser] = useState<string | null>(null);
-  const [expandedUserPerms, setExpandedUserPerms] = useState<string | null>(null);
+  // Phase 26E — users-tab state moved into UsersTab.tsx. The page
+  // keeps `appUsers` because the roles tab summary + tab-count
+  // badge still read from it.
 
   const handleSaveRole = async (role: Role) => {
     // 1. Update local state
@@ -1226,17 +1058,11 @@ export default function RolesPage() {
     return colorMap[role?.color || 'blue'] || colorMap.blue;
   };
 
-  const filteredUsers = appUsers.filter((u) => {
-    const roleName = getRoleName(u.roleId);
-    const displayEmail = u.email.startsWith('emp:') ? '' : u.email;
-    const matchSearch =
-      u.name.includes(userSearch) ||
-      displayEmail.includes(userSearch) ||
-      roleName.includes(userSearch);
-    const matchStatus = userFilter === 'all' || u.status === userFilter;
-    return matchSearch && matchStatus;
-  });
-
+  // Phase 26E — `filteredUsers` removed alongside the inline users
+  // tab; UsersTab.tsx now owns search/filter state internally.
+  // `activeUsersCount` is still consumed by the roles-tab summary
+  // card below so we keep it (it reads from appUsers which the
+  // page-level loader populates).
   const activeUsersCount = appUsers.filter((u) => u.status === 'active').length;
 
   return (
@@ -1610,334 +1436,14 @@ export default function RolesPage() {
           </div>
         )}
 
-        {/* ── Users Tab ── */}
-        {activeTab === 'users' && (
-          <div className="space-y-4">
-            {/* KPIs */}
-            <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-              {[
-                {
-                  label: 'إجمالي المستخدمين',
-                  value: appUsers.length,
-                  icon: <Users size={20} />,
-                  color: 'blue',
-                },
-                {
-                  label: 'نشطون',
-                  value: activeUsersCount,
-                  icon: <CheckCircle size={20} />,
-                  color: 'green',
-                },
-                {
-                  label: 'غير نشطين',
-                  value: appUsers.length - activeUsersCount,
-                  icon: <XCircle size={20} />,
-                  color: 'red',
-                },
-                {
-                  label: 'إجمالي الدخول',
-                  value: appUsers.reduce((s, u) => s + u.loginCount, 0),
-                  icon: <LogIn size={20} />,
-                  color: 'purple',
-                },
-              ].map((card, i) => (
-                <div key={i} className="kpi-card">
-                  <div
-                    className={`w-10 h-10 rounded-xl flex items-center justify-center mb-3 ${card.color === 'blue' ? 'bg-blue-50 text-blue-600' : card.color === 'green' ? 'bg-green-50 text-green-600' : card.color === 'red' ? 'bg-red-50 text-red-600' : 'bg-purple-50 text-purple-600'}`}
-                  >
-                    {card.icon}
-                  </div>
-                  <p className="text-xs text-[hsl(var(--muted-foreground))] mb-1">{card.label}</p>
-                  <p className="text-2xl font-bold text-[hsl(var(--foreground))] font-mono">
-                    {card.value}
-                  </p>
-                </div>
-              ))}
-            </div>
-
-            {/* Search & Filter */}
-            <div className="card-section p-4 flex flex-col sm:flex-row gap-3">
-              <div className="relative flex-1">
-                <Search
-                  size={16}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]"
-                />
-                <input
-                  type="text"
-                  placeholder="بحث بالاسم أو الدور..."
-                  value={userSearch}
-                  onChange={(e) => setUserSearch(e.target.value)}
-                  className="w-full pr-9 pl-4 py-2.5 border border-[hsl(var(--border))] rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30"
-                />
-              </div>
-              <div className="flex bg-[hsl(var(--muted))] rounded-xl p-1 gap-1">
-                {[
-                  { key: 'all', label: 'الكل' },
-                  { key: 'active', label: 'نشط' },
-                  { key: 'inactive', label: 'غير نشط' },
-                ].map((opt) => (
-                  <button
-                    key={opt.key}
-                    onClick={() => setUserFilter(opt.key as 'all' | 'active' | 'inactive')}
-                    className={`text-xs px-3 py-1.5 rounded-lg font-semibold transition-all ${userFilter === opt.key ? 'bg-white text-[hsl(var(--primary))] shadow-sm' : 'text-[hsl(var(--muted-foreground))]'}`}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Users Table */}
-            <div className="card-section overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm" dir="rtl">
-                  <thead>
-                    <tr className="bg-[hsl(var(--muted))]/50 text-[hsl(var(--muted-foreground))] text-xs">
-                      <th className="text-right px-4 py-3 font-semibold">المستخدم</th>
-                      <th className="text-right px-4 py-3 font-semibold">الدور والصلاحيات</th>
-                      <th className="text-right px-4 py-3 font-semibold">الجهاز</th>
-                      <th className="text-right px-4 py-3 font-semibold">مرات الدخول</th>
-                      <th className="text-right px-4 py-3 font-semibold">مرات الخروج</th>
-                      <th className="text-right px-4 py-3 font-semibold">آخر دخول</th>
-                      <th className="text-right px-4 py-3 font-semibold">الحالة</th>
-                      <th className="text-right px-4 py-3 font-semibold">إجراءات</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredUsers.map((user) => {
-                      const userRole = getRoleById(user.roleId);
-                      const rc = getRoleColors(user.roleId);
-                      const lastSession =
-                        user.sessions.length > 0
-                          ? user.sessions.sort(
-                              (a, b) =>
-                                new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-                            )[0]
-                          : null;
-                      const isExpanded = expandedUser === user.id;
-                      const isPermsExpanded = expandedUserPerms === user.id;
-                      const displayEmail = user.email.startsWith('emp:') ? '' : user.email;
-                      return (
-                        <React.Fragment key={user.id}>
-                          <tr className="border-t border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/30 transition-colors">
-                            <td className="px-4 py-3">
-                              <div className="flex items-center gap-3">
-                                <div
-                                  className={`w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-bold flex-shrink-0 ${rc.avatar}`}
-                                >
-                                  {user.avatar}
-                                </div>
-                                <div>
-                                  <p className="font-semibold text-[hsl(var(--foreground))]">
-                                    {user.name}
-                                  </p>
-                                  {displayEmail && (
-                                    <p
-                                      className="text-xs text-[hsl(var(--muted-foreground))]"
-                                      dir="ltr"
-                                    >
-                                      {displayEmail}
-                                    </p>
-                                  )}
-                                </div>
-                              </div>
-                            </td>
-                            <td className="px-4 py-3">
-                              <div className="flex flex-col gap-1">
-                                <span
-                                  className={`text-xs px-2.5 py-1 rounded-full font-semibold ${rc.bg} ${rc.text}`}
-                                >
-                                  {getRoleName(user.roleId)}
-                                </span>
-                                {userRole && (
-                                  <button
-                                    onClick={() =>
-                                      setExpandedUserPerms(isPermsExpanded ? null : user.id)
-                                    }
-                                    className={`flex items-center gap-1 text-[10px] font-semibold transition-colors w-fit ${isPermsExpanded ? rc.text : 'text-[hsl(var(--muted-foreground))]'}`}
-                                  >
-                                    <ShieldCheck size={10} />
-                                    {userRole.permissions.length} صلاحية
-                                    {isPermsExpanded ? (
-                                      <ChevronUp size={9} />
-                                    ) : (
-                                      <ChevronDown size={9} />
-                                    )}
-                                  </button>
-                                )}
-                              </div>
-                            </td>
-                            <td className="px-4 py-3">
-                              <span className="inline-flex items-center gap-1.5 text-xs text-[hsl(var(--foreground))] bg-[hsl(var(--muted))] px-2.5 py-1 rounded-lg">
-                                <DeviceIcon device={user.lastDevice} size={13} />
-                                {user.lastDevice || '—'}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3">
-                              <span className="inline-flex items-center gap-1 text-xs font-bold text-green-700 bg-green-50 px-2.5 py-1 rounded-lg">
-                                <LogIn size={12} />
-                                {user.loginCount}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3">
-                              <span className="inline-flex items-center gap-1 text-xs font-bold text-red-700 bg-red-50 px-2.5 py-1 rounded-lg">
-                                <LogOut size={12} />
-                                {user.logoutCount}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3">
-                              {lastSession ? (
-                                <div className="text-xs">
-                                  <div className="flex items-center gap-1 text-[hsl(var(--foreground))]">
-                                    <Calendar
-                                      size={11}
-                                      className="text-[hsl(var(--muted-foreground))]"
-                                    />
-                                    {lastSession.date}
-                                  </div>
-                                  <div className="flex items-center gap-1 text-[hsl(var(--muted-foreground))] mt-0.5">
-                                    <Clock size={11} />
-                                    <span dir="ltr">{lastSession.time}</span>
-                                    <span className="mr-1">({lastSession.day})</span>
-                                  </div>
-                                </div>
-                              ) : (
-                                <span className="text-xs text-[hsl(var(--muted-foreground))]">
-                                  —
-                                </span>
-                              )}
-                            </td>
-                            <td className="px-4 py-3">
-                              <span
-                                className={`text-xs px-2.5 py-1 rounded-full font-semibold ${user.status === 'active' ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-500'}`}
-                              >
-                                {user.status === 'active' ? 'نشط' : 'غير نشط'}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3">
-                              <div className="flex gap-1">
-                                <button
-                                  onClick={() => setExpandedUser(isExpanded ? null : user.id)}
-                                  className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-blue-50 text-blue-600 transition-colors"
-                                  title="عرض السجل"
-                                >
-                                  {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                                </button>
-                                <button
-                                  onClick={() => setViewSessionsUser(user)}
-                                  className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted))] transition-colors"
-                                  title="سجل الجلسات الكامل"
-                                >
-                                  <Clock size={14} />
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    // Find linked employee and open unified modal
-                                    const linkedEmp = employees.find(
-                                      (e) => `emp:${e.id}` === user.email || e.name === user.name
-                                    );
-                                    if (linkedEmp) setEditMember(linkedEmp);
-                                  }}
-                                  className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted))] transition-colors"
-                                  title="تعديل"
-                                >
-                                  <Edit2 size={14} />
-                                </button>
-                                <button
-                                  onClick={async () => {
-                                    setAppUsers((prev) => prev.filter((u) => u.id !== user.id));
-                                    // Delete from Supabase profiles
-                                    try {
-                                      const supabase = createClient();
-                                      if (supabase) {
-                                        await supabase.from('profiles').delete().eq('id', user.id);
-                                      }
-                                    } catch (e) {
-                                      console.error('Delete user error:', e);
-                                    }
-                                  }}
-                                  className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
-                                  title="حذف"
-                                >
-                                  <Trash2 size={14} />
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                          {/* Permissions panel */}
-                          {isPermsExpanded && (
-                            <tr className="border-t border-[hsl(var(--border))]">
-                              <td colSpan={8} className="p-0">
-                                <UserPermissionsPanel user={user} role={userRole} />
-                              </td>
-                            </tr>
-                          )}
-                          {/* Inline sessions preview */}
-                          {isExpanded && (
-                            <tr className="bg-[hsl(var(--muted))]/20 border-t border-[hsl(var(--border))]">
-                              <td colSpan={8} className="px-6 py-3">
-                                <p className="text-xs font-semibold text-[hsl(var(--muted-foreground))] mb-2">
-                                  آخر 5 جلسات:
-                                </p>
-                                {user.sessions.length === 0 ? (
-                                  <p className="text-xs text-[hsl(var(--muted-foreground))]">
-                                    لا يوجد سجل جلسات بعد
-                                  </p>
-                                ) : (
-                                  <div className="flex flex-wrap gap-2">
-                                    {user.sessions
-                                      .sort(
-                                        (a, b) =>
-                                          new Date(b.timestamp).getTime() -
-                                          new Date(a.timestamp).getTime()
-                                      )
-                                      .slice(0, 5)
-                                      .map((s) => (
-                                        <div
-                                          key={s.id}
-                                          className={`flex items-center gap-2 text-xs px-3 py-1.5 rounded-xl border ${s.type === 'login' ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'}`}
-                                        >
-                                          {s.type === 'login' ? (
-                                            <LogIn size={11} />
-                                          ) : (
-                                            <LogOut size={11} />
-                                          )}
-                                          <DeviceIcon device={s.device} size={11} />
-                                          <span>{s.device}</span>
-                                          <span className="text-[hsl(var(--muted-foreground))]">
-                                            ·
-                                          </span>
-                                          <span>{s.day}</span>
-                                          <span className="text-[hsl(var(--muted-foreground))]">
-                                            ·
-                                          </span>
-                                          <span dir="ltr">{s.time}</span>
-                                        </div>
-                                      ))}
-                                  </div>
-                                )}
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
-                      );
-                    })}
-                    {filteredUsers.length === 0 && (
-                      <tr>
-                        <td
-                          colSpan={8}
-                          className="px-4 py-8 text-center text-[hsl(var(--muted-foreground))] text-sm"
-                        >
-                          لا يوجد مستخدمون مطابقون
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
+        {/* ── Users Tab (Phase 26E redesign) ──
+            Security/account-focused: joins profiles with devices +
+            login events + staff audit log via the new UsersTab
+            component. Replaces the legacy inline table that
+            hardcoded login/device counts and silently deleted rows
+            on click. Hard delete is intentionally removed from
+            here; see UsersTab.tsx for the explanation banner. */}
+        {activeTab === 'users' && <UsersTab onOpenSecurityTab={() => setActiveTab('security')} />}
 
         {/* Phase 26A — Security tab */}
         {activeTab === 'security' && <SecurityTab />}
@@ -1957,9 +1463,6 @@ export default function RolesPage() {
           onClose={() => setEditMember(undefined)}
           onSave={handleSaveMember}
         />
-      )}
-      {viewSessionsUser && (
-        <SessionsPanel user={viewSessionsUser} onClose={() => setViewSessionsUser(null)} />
       )}
     </AppLayout>
   );
