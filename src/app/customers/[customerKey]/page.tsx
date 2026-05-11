@@ -101,6 +101,7 @@ import {
   fmtRate,
   normalisePhone,
   phoneFromCustomerKey,
+  customerKeyFromPhone,
 } from '@/lib/crm/customerCrm';
 
 type TabId =
@@ -136,6 +137,10 @@ export default function CustomerProfilePage() {
   const canEdit = perms.isAdmin;
 
   const [customer, setCustomer] = useState<CustomerRow | null>(null);
+  // Phase 24B — additional customer rows that share the same
+  // normalised phone. Drives the "يوجد أكثر من سجل لهذا الرقم"
+  // banner near the header. Empty array when no duplicates exist.
+  const [duplicateSiblings, setDuplicateSiblings] = useState<CustomerRow[]>([]);
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [complaints, setComplaints] = useState<ComplaintRow[]>([]);
   const [chat, setChat] = useState<ChatRow[]>([]);
@@ -178,16 +183,24 @@ export default function CustomerProfilePage() {
         attRes,
         auditRes,
       ] = await Promise.all([
+        // Phase 24B — fetch ALL customer rows whose phone hashes to
+        // the same normalised number (common stored variants:
+        // 01XXXXXXXXX / +201XXXXXXXXX / 201XXXXXXXXX / 1XXXXXXXXX).
+        // The first matching row is the primary profile; any extras
+        // surface in the "duplicate sibling" banner. `.in(phone, [...])`
+        // catches the common stored shapes without needing a full
+        // 2,000-row pull.
         supabase
           .from('turath_masr_customers')
           .select(
             'phone, full_name, email, address, segment, city, customer_type, customer_status, account_manager_id, account_manager_name, vip_level, notes, total_spent, total_orders, created_at, updated_at'
           )
-          .eq('phone', phone)
-          .maybeSingle()
+          .in('phone', buildPhoneVariants(phone))
+          .order('updated_at', { ascending: false, nullsFirst: false })
+          .limit(50)
           .then(
-            (r: { data: CustomerRow | null; error: unknown }) => r,
-            (err: unknown) => ({ data: null as CustomerRow | null, error: err })
+            (r: { data: CustomerRow[] | null; error: unknown }) => r,
+            (err: unknown) => ({ data: null as CustomerRow[] | null, error: err })
           ),
         supabase
           .from('turath_masr_orders')
@@ -274,8 +287,14 @@ export default function CustomerProfilePage() {
       }
       const orderRows = (ordersRes.data ?? []) as OrderRow[];
       setOrders(orderRows);
+      // Phase 24B — the fetch now returns an array (potentially with
+      // duplicate sibling rows). Pick the freshest as primary and
+      // surface the rest in the duplicate-notice card.
+      const allMatching = ((custRes.data as CustomerRow[] | null) || []).filter(
+        (c) => normalisePhone(c.phone) === phone
+      );
       setCustomer(
-        (custRes.data as CustomerRow | null) ??
+        allMatching[0] ??
           (orderRows[0]
             ? {
                 phone,
@@ -297,6 +316,7 @@ export default function CustomerProfilePage() {
               }
             : null)
       );
+      setDuplicateSiblings(allMatching.length > 1 ? allMatching.slice(1) : []);
 
       setComplaints((complaintsRes.data ?? []) as ComplaintRow[]);
       // Chat rows: only show ones with order_id (Phase 23K — order-scoped)
@@ -596,6 +616,52 @@ export default function CustomerProfilePage() {
           </div>
         )}
 
+        {/* Phase 24B — duplicate-sibling banner. Surfaced only when
+            additional customer rows share this normalised phone. We
+            never auto-merge — the dispatcher decides. */}
+        {duplicateSiblings.length > 0 && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-3">
+            <div className="flex items-center gap-2 text-sm font-bold text-amber-800">
+              <AlertCircle size={16} />
+              يوجد {duplicateSiblings.length + 1} سجل لهذا الرقم
+            </div>
+            <p className="text-xs text-amber-700 leading-relaxed">
+              نفس الرقم يظهر في أكثر من بطاقة عميل. راجع السجلات أدناه — لم يتم الدمج تلقائيًا.
+            </p>
+            <ul className="space-y-2">
+              {duplicateSiblings.map((sib) => {
+                const sibKey = customerKeyFromPhone(sib.phone) || sib.phone;
+                return (
+                  <li
+                    key={sib.phone + (sib.created_at || '')}
+                    className="flex flex-wrap items-center justify-between gap-2 bg-white rounded-xl border border-amber-200 px-3 py-2 text-xs"
+                  >
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <span className="font-semibold text-[hsl(var(--foreground))]">
+                        {sib.full_name || 'بدون اسم'}
+                      </span>
+                      <span className="font-mono text-[hsl(var(--muted-foreground))]" dir="ltr">
+                        {sib.phone}
+                      </span>
+                      {sib.created_at && (
+                        <span className="text-[10px] text-[hsl(var(--muted-foreground))]">
+                          أنشئ {fmtDateYmd(sib.created_at)}
+                        </span>
+                      )}
+                    </div>
+                    <Link
+                      href={`/customers/${sibKey}`}
+                      className="px-2 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 font-bold"
+                    >
+                      فتح الملف
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
+
         {/* Tabs */}
         <div className="bg-white rounded-2xl border border-[hsl(var(--border))] overflow-hidden">
           <div className="flex flex-wrap gap-1 px-3 pt-3 border-b border-[hsl(var(--border))] overflow-x-auto">
@@ -835,6 +901,24 @@ interface RawOrderRowFromDb {
   scheduled_delivery_updated_at?: string | null;
   scheduled_delivery_updated_by?: string | null;
   created_at?: string | null;
+}
+
+// Phase 24B — common stored phone shapes for a single normalised
+// number. The Supabase fetch uses `.in('phone', […])` over this list,
+// which catches `01XXXXXXXXX`, `+201XXXXXXXXX`, `201XXXXXXXXX`, and
+// the leading-zero-stripped form. A client-side `normalisePhone`
+// equality check then narrows the result to true siblings only.
+function buildPhoneVariants(normalised: string): string[] {
+  const variants = new Set<string>();
+  variants.add(normalised);
+  if (normalised.startsWith('0')) {
+    const noZero = normalised.slice(1);
+    variants.add(noZero);
+    variants.add('+20' + noZero);
+    variants.add('20' + noZero);
+    variants.add('0020' + noZero);
+  }
+  return Array.from(variants);
 }
 
 function mapToOrderModalShape(row: RawOrderRowFromDb): OrderModalShape {
