@@ -63,12 +63,18 @@ import {
   type OrderAdjustment,
 } from '@/lib/orders/orderAdjustments';
 import OrderAdjustmentModal from './OrderAdjustmentModal';
+// Phase Egress-Fix1 — resolve line image URL across legacy / inventory /
+// storage sources so consumers stop hard-coding `line.image`.
+import { resolveLineImageUrl } from '@/lib/orders/lineImage';
 import { UserStamp } from '@/components/UserStamp';
 
 interface OrderLine {
   productType: string;
   label: string;
   image?: string | null;
+  /** Phase Egress-Fix1 — set by the cleanup script. */
+  image_source?: 'inventory' | 'storage' | 'none';
+  image_path?: string | null;
   emoji?: string;
   color?: string | null;
   quantity: number;
@@ -668,13 +674,12 @@ export default function OrderDetailModal({ order, onClose }: Props) {
       liveOrder.lines && liveOrder.lines.length > 0
         ? liveOrder.lines
             .map((line) => {
-              const hasImg =
-                line.image &&
-                (line.image.startsWith('data:') ||
-                  line.image.startsWith('http') ||
-                  line.image.startsWith('/'));
-              const imgHtml = hasImg
-                ? `<img src="${line.image}" alt="${line.label}" style="width:40px;height:40px;object-fit:cover;border-radius:6px;border:1px solid #e5e7eb;" />`
+              // Phase Egress-Fix1 — resolve through helper so this
+              // path handles legacy data URLs, the inventory-thumbnail
+              // pointer, and the storage proxy uniformly.
+              const imgUrl = resolveLineImageUrl(line);
+              const imgHtml = imgUrl
+                ? `<img src="${imgUrl}" alt="${line.label}" style="width:40px;height:40px;object-fit:cover;border-radius:6px;border:1px solid #e5e7eb;" />`
                 : `<span style="font-size:24px;">${line.emoji || '📦'}</span>`;
               const noteHtml = line.note
                 ? `<br/><span style="font-size:11px;color:#d97706;font-style:italic;">ملاحظة: ${line.note}</span>`
@@ -970,24 +975,22 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 {liveOrder.lines && liveOrder.lines.length > 0 ? (
                   <div className="space-y-2">
                     {liveOrder.lines.map((line, idx) => {
-                      const hasImg =
-                        line.image &&
-                        (line.image.startsWith('data:') ||
-                          line.image.startsWith('http') ||
-                          line.image.startsWith('/'));
+                      // Phase Egress-Fix1 — resolve image through helper.
+                      const imgUrl = resolveLineImageUrl(line);
                       return (
                         <div
                           key={`detail-line-${idx}`}
                           className="flex items-center gap-3 bg-[hsl(var(--muted))]/40 rounded-xl p-3 border border-[hsl(var(--border))]"
                         >
                           <div className="w-12 h-12 rounded-xl overflow-hidden flex-shrink-0 bg-white border border-[hsl(var(--border))] flex items-center justify-center">
-                            {hasImg ? (
+                            {imgUrl ? (
                               <Image
-                                src={line.image!}
+                                src={imgUrl}
                                 alt={line.label}
                                 width={48}
                                 height={48}
                                 className="w-full h-full object-cover"
+                                unoptimized
                               />
                             ) : (
                               <span className="text-2xl">{line.emoji || '📦'}</span>

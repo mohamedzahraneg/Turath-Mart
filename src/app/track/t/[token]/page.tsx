@@ -20,6 +20,10 @@
 'use client';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
+// Phase Egress-Fix1 — unified line-image URL resolution (uses the
+// existing /api/track-token/<token>/line-image/<idx> proxy for
+// storage-backed lines on this surface).
+import { resolveLineImageUrl } from '@/lib/orders/lineImage';
 // Phase 24B-Fix1 — convert Arabic-Indic / Persian digits to ASCII as
 // the customer types the complaint phone, matching the rule applied
 // across the admin-facing Add Order modal + customer CRM dashboard.
@@ -110,6 +114,9 @@ interface TrackingOrder {
     // invoice/warranty PDF builder which still consumes the same shape
     // when populated from staff-side flows.
     image?: string | null;
+    // Phase Egress-Fix1 — replaces inline `image` for cleaned rows.
+    image_source?: 'inventory' | 'storage' | 'none';
+    image_path?: string | null;
     emoji?: string;
     color?: string | null;
     quantity: number;
@@ -1465,14 +1472,13 @@ function generateInvoiceHTML(order: TrackingOrder, token: string): string {
   const productRows =
     order.lines && order.lines.length > 0
       ? order.lines
-          .map((line) => {
-            const hasImg =
-              line.image &&
-              (line.image.startsWith('data:') ||
-                line.image.startsWith('http') ||
-                line.image.startsWith('/'));
-            const imgHtml = hasImg
-              ? `<img src="${line.image}" alt="${line.label}" style="width:40px;height:40px;object-fit:cover;border-radius:6px;border:1px solid #e5e7eb;" />`
+          .map((line, idx) => {
+            // Phase Egress-Fix1 — resolve via helper; pass the token
+            // + line index so storage-backed lines hit the existing
+            // /api/track-token/<token>/line-image/<idx> proxy.
+            const imgUrl = resolveLineImageUrl(line, { trackingToken: token, lineIndex: idx });
+            const imgHtml = imgUrl
+              ? `<img src="${imgUrl}" alt="${line.label}" style="width:40px;height:40px;object-fit:cover;border-radius:6px;border:1px solid #e5e7eb;" />`
               : `<span style="font-size:24px;">${line.emoji || '📦'}</span>`;
             const noteHtml = line.note
               ? `<br/><span style="font-size:11px;color:#d97706;font-style:italic;">ملاحظة: ${line.note}</span>`

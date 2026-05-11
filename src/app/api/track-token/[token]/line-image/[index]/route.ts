@@ -102,12 +102,65 @@ export async function GET(
     return NextResponse.json({ error: 'not_found' }, { status: 404 });
   }
 
-  const line = lines[idx] as { image?: unknown } | null;
+  const line = lines[idx] as {
+    image?: unknown;
+    image_source?: unknown;
+    image_path?: unknown;
+    productType?: unknown;
+  } | null;
+
+  // Phase Egress-Fix1 — after the cleanup script runs, `image` is no
+  // longer a base64 data URL. Lines now carry one of:
+  //
+  //   • `image_source: 'inventory'` + `productType` — 302 to the
+  //     existing inventory thumbnail endpoint (raw bytes, hard cache).
+  //   • `image_source: 'storage'` + `image_path` — 302 to a 60-s
+  //     signed URL on the private `order-line-images` bucket.
+  //   • Legacy: `image` still holds a `data:image/...` URL because
+  //     the cleanup hasn't run for this row yet. We decode + serve
+  //     bytes as we did pre-Phase-Egress-Fix1 (backward compat).
+  //
+  // The 60-s cache header on the redirect keeps the browser following
+  // the 302 only when the underlying signed URL is fresh, which
+  // matches the signed-URL TTL.
+
+  if (line && line.image_source === 'inventory' && typeof line.productType === 'string') {
+    return NextResponse.redirect(
+      new URL(
+        `/api/inventory/${encodeURIComponent(line.productType)}/thumbnail`,
+        new URL(_request.url)
+      ),
+      {
+        status: 302,
+        headers: { 'Cache-Control': 'public, max-age=86400' },
+      }
+    );
+  }
+
+  if (line && line.image_source === 'storage' && typeof line.image_path === 'string') {
+    const path = line.image_path;
+    if (!path.startsWith('order-line-images/')) {
+      return NextResponse.json({ error: 'not_found' }, { status: 404 });
+    }
+    const objectPath = path.slice('order-line-images/'.length);
+    const { data: signed, error: signedErr } = await supabase.storage
+      .from('order-line-images')
+      .createSignedUrl(objectPath, 60);
+    if (signedErr || !signed?.signedUrl) {
+      console.error('[track-token-line-image] storage signed URL failed', signedErr);
+      return NextResponse.json({ error: 'not_found' }, { status: 404 });
+    }
+    return NextResponse.redirect(signed.signedUrl, {
+      status: 302,
+      headers: { 'Cache-Control': 'public, max-age=55' },
+    });
+  }
+
+  // Legacy `data:image/...` path — kept until every row is cleaned up.
   const dataUrl = line && typeof line.image === 'string' ? line.image : '';
   if (!dataUrl.startsWith('data:image/')) {
     return NextResponse.json({ error: 'not_found' }, { status: 404 });
   }
-
   // Parse `data:image/<subtype>[;params];base64,<payload>`. We accept
   // optional ;charset= or other params before the base64 marker.
   const match = dataUrl.match(/^data:(image\/[a-zA-Z0-9+.-]+)(?:;[^,]+)?;base64,([\s\S]+)$/);
