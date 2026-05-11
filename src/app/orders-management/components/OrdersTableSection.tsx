@@ -33,6 +33,27 @@ const AuditLogModal = dynamic(() => import('./AuditLogModal'), { ssr: false });
 import { createClient } from '@/lib/supabase/client';
 import { useAuth, getPermissionsForRoleId } from '@/contexts/AuthContext';
 import { canBulkManageOrders } from '@/lib/constants/roles';
+// Phase 25A — surface a small badge next to the order status when one
+// or more return / exchange adjustments are open against the order.
+import {
+  ADJUSTMENT_KIND_SHORT_AR,
+  ADJUSTMENT_KIND_TONE,
+  ADJUSTMENT_STATE_LABEL_AR,
+  ADJUSTMENT_STATE_TONE,
+  type AdjustmentKind,
+  type AdjustmentState,
+} from '@/lib/orders/orderAdjustments';
+
+/**
+ * Per-order summary derived from `turath_masr_order_adjustments`. We
+ * lift only the active (non-terminal) adjustments into the row badge
+ * — terminal `rejected` and `cancelled` rows live in the OrderDetail
+ * modal but don't deserve a noisy table-level badge.
+ */
+interface AdjustmentRowSummary {
+  total: number;
+  highlight?: { kind: AdjustmentKind; state: AdjustmentState };
+}
 
 interface Order {
   id: string;
@@ -216,6 +237,8 @@ export default function OrdersTableSection() {
   const [allOrders, setAllOrders] = useState<Order[]>([]);
   const [liveUpdateCount, setLiveUpdateCount] = useState(0);
   const [lastUpdateTime, setLastUpdateTime] = useState<string | null>(null);
+  // Phase 25A — order_id → summary of active adjustments
+  const [adjustmentMap, setAdjustmentMap] = useState<Record<string, AdjustmentRowSummary>>({});
 
   // --- صلاحيات المستخدم (من AuthContext - المصدر الموثوق) ---
   const { user, currentRoleId, customPermissions: authPermissions } = useAuth();
@@ -311,10 +334,59 @@ export default function OrdersTableSection() {
     }
   }, []);
 
+  // Phase 25A — pull active adjustment summaries so the table can
+  // render the small مرتجع / استبدال chip next to the status badge.
+  // Falls back silently if the table doesn't exist yet (migration
+  // staged but not applied in this environment).
+  const loadAdjustmentSummaries = useCallback(async () => {
+    try {
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from('turath_masr_order_adjustments')
+        .select('order_id, kind, state')
+        .in('state', ['pending', 'approved', 'completed']);
+      if (error || !data) {
+        return;
+      }
+      const acc: Record<string, AdjustmentRowSummary> = {};
+      // Priority: completed > approved > pending — we surface the
+      // "freshest" terminal-ish state that still warrants a badge.
+      // Within the loop the *last* qualifying entry wins; we order
+      // the priority via a numeric weight.
+      const weight: Record<string, number> = {
+        completed: 3,
+        approved: 2,
+        pending: 1,
+      };
+      for (const row of data as {
+        order_id: string;
+        kind: AdjustmentKind;
+        state: AdjustmentState;
+      }[]) {
+        const existing = acc[row.order_id];
+        if (!existing) {
+          acc[row.order_id] = { total: 1, highlight: { kind: row.kind, state: row.state } };
+          continue;
+        }
+        existing.total += 1;
+        const newWeight = weight[row.state] ?? 0;
+        const oldWeight = existing.highlight ? (weight[existing.highlight.state] ?? 0) : 0;
+        if (newWeight > oldWeight) {
+          existing.highlight = { kind: row.kind, state: row.state };
+        }
+      }
+      setAdjustmentMap(acc);
+    } catch (err) {
+      console.debug('[OrdersTableSection] adjustments summary skipped:', err);
+    }
+  }, []);
+
   useEffect(() => {
     loadOrders();
+    loadAdjustmentSummaries();
     const handleUpdate = () => {
       loadOrders();
+      loadAdjustmentSummaries();
       setLiveUpdateCount((prev) => prev + 1);
       setLastUpdateTime(
         new Date().toLocaleTimeString('en-US', {
@@ -324,7 +396,11 @@ export default function OrdersTableSection() {
         })
       );
     };
+    const handleAdjustments = () => {
+      loadAdjustmentSummaries();
+    };
     window.addEventListener('turath_masr_orders_updated', handleUpdate);
+    window.addEventListener('turath_masr_order_adjustments_updated', handleAdjustments);
     // Supabase Realtime subscription — fires handleUpdate on every
     // INSERT/UPDATE/DELETE, which already triggers a full refresh of the
     // orders table.
@@ -353,9 +429,10 @@ export default function OrdersTableSection() {
       .subscribe();
     return () => {
       window.removeEventListener('turath_masr_orders_updated', handleUpdate);
+      window.removeEventListener('turath_masr_order_adjustments_updated', handleAdjustments);
       supabase.removeChannel(channel);
     };
-  }, [loadOrders]);
+  }, [loadOrders, loadAdjustmentSummaries]);
 
   const handleBulkDelete = async () => {
     if (selectedRows.size === 0) return;
@@ -992,6 +1069,35 @@ export default function OrdersTableSection() {
                         >
                           {st.label}
                         </button>
+                        {/* Phase 25A — adjustment chip. Shown only
+                            when this order has at least one open
+                            (pending / approved / completed) return or
+                            exchange. Click does nothing here; the
+                            full details live inside OrderDetailModal. */}
+                        {adjustmentMap[order.id]?.highlight && (
+                          <div className="mt-1 flex items-center gap-1 flex-wrap">
+                            <span
+                              className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full border ${
+                                ADJUSTMENT_KIND_TONE[adjustmentMap[order.id].highlight!.kind]
+                              }`}
+                              title={`${ADJUSTMENT_KIND_SHORT_AR[adjustmentMap[order.id].highlight!.kind]} — ${ADJUSTMENT_STATE_LABEL_AR[adjustmentMap[order.id].highlight!.state]}`}
+                            >
+                              {ADJUSTMENT_KIND_SHORT_AR[adjustmentMap[order.id].highlight!.kind]}
+                            </span>
+                            <span
+                              className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full border ${
+                                ADJUSTMENT_STATE_TONE[adjustmentMap[order.id].highlight!.state]
+                              }`}
+                            >
+                              {ADJUSTMENT_STATE_LABEL_AR[adjustmentMap[order.id].highlight!.state]}
+                            </span>
+                            {adjustmentMap[order.id].total > 1 && (
+                              <span className="text-[9px] text-[hsl(var(--muted-foreground))] font-mono">
+                                +{adjustmentMap[order.id].total - 1}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </td>
                       <td className="table-cell">
                         <div>
