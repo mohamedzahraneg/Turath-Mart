@@ -51,6 +51,47 @@ export const PERMISSION_ROUTE_MAP: Record<string, string[]> = {
   manage_customers: ['/customers', '/crm'],
   customer_support: ['/customers', '/crm'],
   system_settings: ['/settings'],
+  // Phase 26A — new permissions (additive). Routes are best-fit:
+  // returns / complaints + customer-attachments use the customer
+  // surfaces; staff / security permissions resolve to /roles, which is
+  // the staff & security workspace.
+  view_returns_exchanges: ['/customers', '/customers/returns-exchanges', '/orders-management'],
+  manage_returns_exchanges: ['/customers', '/customers/returns-exchanges', '/orders-management'],
+  approve_returns_exchanges: ['/customers/returns-exchanges', '/orders-management'],
+  view_complaints: ['/customers'],
+  manage_complaints: ['/customers'],
+  view_customer_chat: ['/customers'],
+  reply_customer_chat: ['/customers'],
+  manage_customer_notes: ['/customers'],
+  manage_customer_tasks: ['/customers'],
+  manage_customer_attachments: ['/customers'],
+  view_customer_attachments: ['/customers'],
+  schedule_delivery: ['/orders-management', '/shipping'],
+  view_order_audit: ['/orders-management'],
+  assign_delegate: ['/orders-management', '/shipping'],
+  view_delegate_finance: ['/delegates'],
+  manage_delegate_settlements: ['/delegates'],
+  manage_delegate_custody: ['/delegates'],
+  manage_delegate_expenses: ['/delegates'],
+  approve_delegate_expenses: ['/delegates'],
+  view_delegate_reports: ['/delegates', '/reports'],
+  export_delegate_reports: ['/delegates', '/reports'],
+  manage_delegates: ['/delegates'],
+  manage_inventory: ['/inventory'],
+  view_products: ['/inventory'],
+  manage_products: ['/inventory'],
+  view_settings: ['/settings'],
+  manage_settings: ['/settings'],
+  view_roles: ['/roles'],
+  view_staff: ['/roles'],
+  manage_staff: ['/roles'],
+  manage_permissions: ['/roles'],
+  view_security_audit: ['/roles'],
+  view_login_sessions: ['/roles'],
+  manage_device_access: ['/roles'],
+  block_devices: ['/roles'],
+  view_staff_activity: ['/roles'],
+  export_audit_logs: ['/roles'],
 };
 
 export const ALL_PERMISSIONS = Object.keys(PERMISSION_ROUTE_MAP);
@@ -270,4 +311,160 @@ export function hasPermission(
       ? customPermissions
       : getPermissionsForRoleId(roleId);
   return effective.includes(permission);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 26A — permission catalog
+//
+// One place that lists every permission known to the system, grouped
+// the way the staff/roles page renders the matrix. Adding a new
+// permission means appending it here AND mapping it to a route in
+// PERMISSION_ROUTE_MAP. The roles UI iterates this list to draw the
+// checkbox grid, and the DB role rows are kept in sync via the Phase
+// 26A migration's `array_agg(DISTINCT … || ARRAY[…])` seed.
+//
+// Each entry carries:
+//   • `key`   — stable identifier (matches DB + RLS helpers)
+//   • `label` — Arabic UI label
+//   • `group` — section header in the matrix
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface PermissionCatalogEntry {
+  key: string;
+  label: string;
+  group: PermissionGroup;
+}
+
+export type PermissionGroup =
+  | 'dashboard'
+  | 'orders'
+  | 'returns'
+  | 'shipping'
+  | 'delegates'
+  | 'customers'
+  | 'complaints'
+  | 'inventory'
+  | 'reports'
+  | 'staff'
+  | 'security'
+  | 'settings';
+
+export const PERMISSION_GROUP_LABEL_AR: Record<PermissionGroup, string> = {
+  dashboard: 'لوحة التحكم',
+  orders: 'الأوردرات',
+  returns: 'المرتجعات والاستبدالات',
+  shipping: 'الشحن',
+  delegates: 'المناديب',
+  customers: 'العملاء',
+  complaints: 'الشكاوى والمحادثات',
+  inventory: 'المخزون',
+  reports: 'التقارير',
+  staff: 'الموظفون والأدوار',
+  security: 'الأمان والتدقيق',
+  settings: 'الإعدادات',
+};
+
+export const PERMISSION_CATALOG: PermissionCatalogEntry[] = [
+  { key: 'view_dashboard', label: 'عرض لوحة التحكم', group: 'dashboard' },
+
+  // Orders
+  { key: 'view_orders', label: 'عرض الأوردرات', group: 'orders' },
+  { key: 'create_orders', label: 'إنشاء أوردر', group: 'orders' },
+  { key: 'edit_orders', label: 'تعديل أوردر', group: 'orders' },
+  { key: 'delete_orders', label: 'حذف أوردر', group: 'orders' },
+  { key: 'orders_manage', label: 'إدارة الأوردرات', group: 'orders' },
+  { key: 'update_status', label: 'تحديث حالة الأوردر', group: 'orders' },
+  { key: 'assign_delegate', label: 'تعيين مندوب', group: 'orders' },
+  { key: 'schedule_delivery', label: 'جدولة التسليم', group: 'orders' },
+  { key: 'view_order_audit', label: 'عرض سجل تعديلات الأوردر', group: 'orders' },
+
+  // Returns / exchanges
+  { key: 'view_returns_exchanges', label: 'عرض المرتجعات والاستبدالات', group: 'returns' },
+  { key: 'manage_returns_exchanges', label: 'إدارة المرتجعات والاستبدالات', group: 'returns' },
+  { key: 'approve_returns_exchanges', label: 'اعتماد المرتجعات والاستبدالات', group: 'returns' },
+
+  // Shipping
+  { key: 'view_shipping', label: 'عرض الشحن', group: 'shipping' },
+  { key: 'manage_shipping', label: 'إدارة الشحن', group: 'shipping' },
+  { key: 'assign_courier', label: 'إسناد المندوب', group: 'shipping' },
+
+  // Delegates
+  { key: 'view_delegates', label: 'عرض المناديب', group: 'delegates' },
+  { key: 'manage_delegates', label: 'إدارة المناديب', group: 'delegates' },
+  { key: 'view_delegate_finance', label: 'عرض مالية المناديب', group: 'delegates' },
+  { key: 'manage_delegate_settlements', label: 'إدارة تسويات المناديب', group: 'delegates' },
+  { key: 'manage_delegate_custody', label: 'إدارة عُهد المناديب', group: 'delegates' },
+  { key: 'manage_delegate_expenses', label: 'إدارة مصروفات المناديب', group: 'delegates' },
+  { key: 'approve_delegate_expenses', label: 'اعتماد مصروفات المناديب', group: 'delegates' },
+  { key: 'view_delegate_reports', label: 'عرض تقارير المناديب', group: 'delegates' },
+  { key: 'export_delegate_reports', label: 'تصدير تقارير المناديب', group: 'delegates' },
+
+  // Customers
+  { key: 'view_customers', label: 'عرض العملاء', group: 'customers' },
+  { key: 'manage_customers', label: 'إدارة العملاء', group: 'customers' },
+  { key: 'customer_support', label: 'دعم العملاء', group: 'customers' },
+  { key: 'manage_customer_notes', label: 'إدارة ملاحظات العملاء', group: 'customers' },
+  { key: 'manage_customer_tasks', label: 'إدارة مهام العملاء', group: 'customers' },
+  { key: 'manage_customer_attachments', label: 'إدارة مرفقات العملاء', group: 'customers' },
+  { key: 'view_customer_attachments', label: 'عرض مرفقات العملاء', group: 'customers' },
+
+  // Complaints / chat
+  { key: 'view_complaints', label: 'عرض الشكاوى', group: 'complaints' },
+  { key: 'manage_complaints', label: 'إدارة الشكاوى', group: 'complaints' },
+  { key: 'view_customer_chat', label: 'عرض محادثات العملاء', group: 'complaints' },
+  { key: 'reply_customer_chat', label: 'الرد على محادثات العملاء', group: 'complaints' },
+
+  // Inventory / products
+  { key: 'view_inventory', label: 'عرض المخزون', group: 'inventory' },
+  { key: 'edit_inventory', label: 'تعديل المخزون', group: 'inventory' },
+  { key: 'manage_inventory', label: 'إدارة المخزون', group: 'inventory' },
+  { key: 'view_products', label: 'عرض المنتجات', group: 'inventory' },
+  { key: 'manage_products', label: 'إدارة المنتجات', group: 'inventory' },
+
+  // Reports
+  { key: 'view_reports', label: 'عرض التقارير', group: 'reports' },
+  { key: 'export_reports', label: 'تصدير التقارير', group: 'reports' },
+
+  // Staff / roles
+  { key: 'manage_users', label: 'إدارة المستخدمين', group: 'staff' },
+  { key: 'manage_roles', label: 'إدارة الأدوار', group: 'staff' },
+  { key: 'view_roles', label: 'عرض الأدوار', group: 'staff' },
+  { key: 'view_staff', label: 'عرض الموظفين', group: 'staff' },
+  { key: 'manage_staff', label: 'إدارة الموظفين', group: 'staff' },
+  { key: 'manage_permissions', label: 'إدارة الصلاحيات', group: 'staff' },
+
+  // Security
+  { key: 'view_security_audit', label: 'عرض سجل التدقيق الأمني', group: 'security' },
+  { key: 'view_login_sessions', label: 'عرض جلسات الدخول', group: 'security' },
+  { key: 'view_staff_activity', label: 'عرض نشاط الموظفين', group: 'security' },
+  { key: 'manage_device_access', label: 'إدارة الوصول من الأجهزة', group: 'security' },
+  { key: 'block_devices', label: 'حظر الأجهزة', group: 'security' },
+  { key: 'export_audit_logs', label: 'تصدير سجلات التدقيق', group: 'security' },
+
+  // Settings
+  { key: 'system_settings', label: 'إعدادات النظام', group: 'settings' },
+  { key: 'view_settings', label: 'عرض الإعدادات', group: 'settings' },
+  { key: 'manage_settings', label: 'تعديل الإعدادات', group: 'settings' },
+];
+
+/**
+ * Grouped catalog for the staff/roles permission matrix UI. Keeps the
+ * Arabic group labels next to the permission rows.
+ */
+export function getGroupedPermissionCatalog(): {
+  group: PermissionGroup;
+  label: string;
+  permissions: PermissionCatalogEntry[];
+}[] {
+  const out = new Map<PermissionGroup, PermissionCatalogEntry[]>();
+  for (const entry of PERMISSION_CATALOG) {
+    const bucket = out.get(entry.group) ?? [];
+    bucket.push(entry);
+    out.set(entry.group, bucket);
+  }
+  return Array.from(out.entries()).map(([group, permissions]) => ({
+    group,
+    label: PERMISSION_GROUP_LABEL_AR[group],
+    permissions,
+  }));
 }

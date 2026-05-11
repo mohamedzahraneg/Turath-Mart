@@ -31,8 +31,11 @@ import {
   ChevronUp,
   Lock,
   Unlock,
+  ShieldAlert,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
+// Phase 26A — security tab (devices, login events, staff audit log).
+import SecurityTab from './components/SecurityTab';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface Permission {
@@ -1018,7 +1021,7 @@ export default function RolesPage() {
   // unified modal: undefined = closed, null = new, Employee = edit
   const [editMember, setEditMember] = useState<Employee | null | undefined>(undefined);
   const [viewSessionsUser, setViewSessionsUser] = useState<AppUser | null>(null);
-  const [activeTab, setActiveTab] = useState<'roles' | 'employees' | 'users'>('roles');
+  const [activeTab, setActiveTab] = useState<'roles' | 'employees' | 'users' | 'security'>('roles');
   const [showPasswords, setShowPasswords] = useState<Set<string>>(new Set());
   const [userSearch, setUserSearch] = useState('');
   const [userFilter, setUserFilter] = useState<'all' | 'active' | 'inactive'>('all');
@@ -1288,10 +1291,15 @@ export default function RolesPage() {
               icon: <UserPlus size={15} />,
             },
             { key: 'users', label: `المستخدمون (${appUsers.length})`, icon: <Users size={15} /> },
+            // Phase 26A — new security tab. Shows orphan-account
+            // banner, per-user status controls, devices, login events,
+            // and the staff audit log. RLS gates the data server-side
+            // to admins only.
+            { key: 'security', label: 'الأمان والتدقيق', icon: <ShieldAlert size={15} /> },
           ].map((tab) => (
             <button
               key={tab.key}
-              onClick={() => setActiveTab(tab.key as 'roles' | 'employees' | 'users')}
+              onClick={() => setActiveTab(tab.key as 'roles' | 'employees' | 'users' | 'security')}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${activeTab === tab.key ? 'bg-white text-[hsl(var(--primary))] shadow-sm' : 'text-[hsl(var(--muted-foreground))]'}`}
             >
               {tab.icon}
@@ -1914,6 +1922,9 @@ export default function RolesPage() {
             </div>
           </div>
         )}
+
+        {/* Phase 26A — Security tab */}
+        {activeTab === 'security' && <SecurityTab />}
       </div>
 
       {/* Modals */}
