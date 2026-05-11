@@ -11,6 +11,9 @@ import {
   getPermissionsForRoleId,
 } from '@/lib/permissions/permissions';
 import { useIdleLogout } from '@/hooks/useIdleLogout';
+// Phase 26A — device-aware session-event ping. The helper module
+// only touches the browser; on SSR it returns null fingerprints.
+import { collectDeviceContext } from '@/lib/security/deviceFingerprint';
 
 // Phase 22G — idle auto-logout threshold.
 // Confirmed 180 s (3 min) on PR #24 review. Single named constant so
@@ -223,6 +226,12 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         setCustomPermissions(null);
         setProfileFullName(null);
         setRoleLoading(false);
+      } else if (_event === 'SIGNED_IN') {
+        // Phase 26A — best-effort security ping. Records the login
+        // event + upserts the device row + enforces account_status
+        // and per-user device policies. If the server says blocked,
+        // we sign out and surface an Arabic toast.
+        void pingSessionEventAndMaybeSignOut('login');
       }
     });
 
@@ -390,6 +399,71 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   };
 
   // ═══════════════════════════════════════════════════════════════════════════════
+  // Phase 26A — POST /api/security/session-event with the device
+  // fingerprint, and force a sign-out if the server says the device
+  // or account is blocked. Best-effort: a network failure does NOT
+  // disrupt the user's session.
+  // ═══════════════════════════════════════════════════════════════════════════════
+  const pingSessionEventAndMaybeSignOut = async (
+    eventType: 'login' | 'logout' | 'refresh'
+  ): Promise<void> => {
+    try {
+      const ctx = collectDeviceContext();
+      const res = await fetch('/api/security/session-event', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: eventType,
+          fingerprint: ctx.fingerprint,
+          label: ctx.label,
+          userAgent: ctx.userAgent,
+        }),
+        credentials: 'same-origin',
+      });
+      if (!res.ok) {
+        // 401 here means the cookie wasn't picked up — happens
+        // briefly on first-paint after sign-in. Try one retry on
+        // 'login' only, then give up silently.
+        if (res.status === 401 && eventType === 'login') {
+          setTimeout(() => {
+            void pingSessionEventAndMaybeSignOut('login');
+          }, 800);
+        }
+        return;
+      }
+      const json = (await res.json()) as { ok?: boolean; blocked?: boolean; reason?: string };
+      if (json?.blocked) {
+        if (typeof window !== 'undefined') {
+          const reason = json.reason ?? '';
+          let message = 'تعذر تسجيل الدخول من هذا الجهاز.';
+          if (reason === 'device_blocked') {
+            message = 'تم حظر هذا الجهاز من الدخول لهذا الحساب.';
+          } else if (reason === 'device_pending_review') {
+            message = 'الجهاز يحتاج إلى موافقة الإدارة قبل الاستخدام. الرجاء التواصل مع المسؤول.';
+          } else if (reason.startsWith('account_')) {
+            const status = reason.replace('account_', '');
+            if (status === 'disabled') message = 'الحساب معطّل. الرجاء التواصل مع الإدارة.';
+            else if (status === 'suspended') message = 'الحساب موقوف مؤقتًا.';
+            else if (status === 'pending') message = 'الحساب بانتظار موافقة الإدارة.';
+          }
+          try {
+            window.alert(message);
+          } catch {
+            /* alert can be blocked in tests / SSR */
+          }
+        }
+        try {
+          await signOut();
+        } catch {
+          /* signOut errors already logged inside signOut() */
+        }
+      }
+    } catch (err) {
+      console.warn('[session-event] ping failed:', err);
+    }
+  };
+
+  // ═══════════════════════════════════════════════════════════════════════════════
   // signIn - login user
   // ═══════════════════════════════════════════════════════════════════════════════
   const signIn = async (email: string, password: string) => {
@@ -404,7 +478,36 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   // signOut - COMPLETE cleanup: React state + localStorage + Supabase
   // ═══════════════════════════════════════════════════════════════════════════════
   const signOut = async () => {
-    // 1. Log the session end
+    // 1a. Phase 26A — record a logout via the new security pipeline
+    //     (login_events + audit). Fire-and-forget; if the cookie is
+    //     already gone we just skip the log.
+    try {
+      if (user && typeof window !== 'undefined') {
+        const ctx = collectDeviceContext();
+        // Skip the response — we're tearing down. `keepalive: true`
+        // lets the fetch survive the navigation that's about to
+        // happen.
+        await fetch('/api/security/session-event', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'logout',
+            fingerprint: ctx.fingerprint,
+            label: ctx.label,
+            userAgent: ctx.userAgent,
+          }),
+          credentials: 'same-origin',
+          keepalive: true,
+        });
+      }
+    } catch (e) {
+      console.warn('[session-event] logout ping failed:', e);
+    }
+
+    // 1. Log the session end (legacy `turath_masr_sessions` table —
+    //    keep writing for backward compatibility with the existing
+    //    /roles "Sessions" tab. New code reads from
+    //    `turath_masr_login_events` instead.)
     try {
       if (user) {
         const supabase = getSupabaseClient();
