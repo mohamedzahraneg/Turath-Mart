@@ -66,10 +66,13 @@ const navItems: NavItem[] = [
     group: 'إدارة',
   },
   {
-    id: 'nav-crm',
+    // Phase 24A — relocated from /crm to /customers as part of the
+    // customer-service CRM redesign. The /crm route still works (it
+    // redirects server-side) so any saved bookmarks survive.
+    id: 'nav-customers',
     label: 'إدارة العملاء (CRM)',
     icon: <Users size={20} />,
-    href: '/crm',
+    href: '/customers',
     group: 'إدارة',
   },
   {

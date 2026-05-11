@@ -43,9 +43,13 @@ export const PERMISSION_ROUTE_MAP: Record<string, string[]> = {
   export_reports: ['/reports'],
   manage_users: ['/users', '/roles'],
   manage_roles: ['/roles'],
-  view_customers: ['/crm'],
-  manage_customers: ['/crm'],
-  customer_support: ['/crm'],
+  // Phase 24A — customer-service CRM was relocated from /crm to
+  // /customers. Both paths are listed so legacy bookmarks (the /crm
+  // route now redirects server-side) still resolve to a permitted
+  // route during permission checks.
+  view_customers: ['/customers', '/crm'],
+  manage_customers: ['/customers', '/crm'],
+  customer_support: ['/customers', '/crm'],
   system_settings: ['/settings'],
 };
 
@@ -167,7 +171,10 @@ const ROUTE_DEFAULT_PRIORITY: ReadonlyArray<{
   },
   { route: '/reports', permissions: ['view_reports', 'export_reports'] },
   { route: '/inventory', permissions: ['view_inventory', 'edit_inventory'] },
-  { route: '/crm', permissions: ['view_customers', 'manage_customers', 'customer_support'] },
+  // Phase 24A — default landing for CRM permission holders is now
+  // /customers (the new dashboard). /crm still resolves because it
+  // redirects to /customers server-side.
+  { route: '/customers', permissions: ['view_customers', 'manage_customers', 'customer_support'] },
   { route: '/users', permissions: ['manage_users'] },
   { route: '/roles', permissions: ['manage_roles'] },
   { route: '/settings', permissions: ['system_settings'] },
