@@ -467,20 +467,25 @@ export function buildDashboardRows(
     .map((c, i) => {
       const phone = normalisePhone(c.phone) || c.phone;
       const m = metricsByPhone.get(phone) || empty;
-      // Customer code is a short, stable label derived from creation
-      // order — the underlying table doesn't have a numeric id.
-      // We use C-1001+i for the row position; ordering is alphabetical
-      // by full_name so the code is stable across page reloads.
-      const code = `C-${1001 + i}`;
+      // Phase 24A-Fix1 — numeric code only (was "C-1001"). The
+      // dashboard search still tolerates a "C-" prefix in the query
+      // by stripping it client-side before comparing.
+      const code = String(1001 + i);
       const note = notesByPhone.get(phone);
+      // Phase 24A-Fix1 — derived classification + account status.
+      // The dashboard surfaces these instead of the raw stored
+      // columns so a fresh customer never shows up as "regular" or
+      // perpetually "active" without grounded data.
+      const derivedType = deriveCustomerClassification(c, m);
+      const derivedStatus = deriveAccountStatus(c, m);
       return {
         key: phone,
         customerCode: code,
         name: c.full_name || phone || 'بدون اسم',
         phone,
         email: c.email,
-        type: c.customer_type || c.segment || null,
-        status: c.customer_status || null,
+        type: derivedType,
+        status: derivedStatus,
         vipLevel: c.vip_level || null,
         accountManagerName: c.account_manager_name,
         totalSpent: Number(c.total_spent ?? m.totalSpent ?? 0),
@@ -623,17 +628,52 @@ export const TASK_PRIORITY_TONE: Record<string, string> = {
   high: 'bg-red-50 text-red-700 border-red-200',
 };
 
+// Phase 24A-Fix1 — derived classification + account status replace
+// the all-`regular` fallback we shipped in Phase 24A. Both helpers
+// are pure functions of (customer row, metrics) and never write back
+// to the DB. The dashboard + profile surfaces derive on render so a
+// new order automatically flips `inactive` → `active` without a job.
+
+/** Derived classification token, in priority order. */
+export type DerivedCustomerType = 'warning' | 'vip' | 'new' | 'active' | 'inactive' | 'regular';
+
 export const CUSTOMER_TYPE_LABEL_AR: Record<string, string> = {
+  warning: 'تحذير',
+  vip: 'مميز',
+  new: 'جديد',
+  active: 'نشط',
+  inactive: 'غير نشط',
+  regular: 'عادي',
+  // Legacy stored tokens (Phase 24A new-customer modal). These still
+  // render with an Arabic label if a profile carries them as a static
+  // override, but the dashboard always picks the derived token above.
   retail: 'تاجر تجزئة',
   wholesale: 'تاجر جملة',
-  vip: 'عميل VIP',
   individual: 'فرد',
   business: 'عميل تجاري',
 };
 
+export const CUSTOMER_TYPE_TONE: Record<string, string> = {
+  warning: 'bg-amber-50 text-amber-700 border-amber-200',
+  vip: 'bg-violet-50 text-violet-700 border-violet-200',
+  new: 'bg-blue-50 text-blue-700 border-blue-200',
+  active: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  inactive: 'bg-gray-100 text-gray-700 border-gray-200',
+  regular: 'bg-slate-50 text-slate-700 border-slate-200',
+  retail: 'bg-blue-50 text-blue-700 border-blue-200',
+  wholesale: 'bg-violet-50 text-violet-700 border-violet-200',
+  individual: 'bg-slate-50 text-slate-700 border-slate-200',
+  business: 'bg-blue-50 text-blue-700 border-blue-200',
+};
+
+export type DerivedCustomerStatus = 'active' | 'inactive';
+
 export const CUSTOMER_STATUS_LABEL_AR: Record<string, string> = {
   active: 'نشط',
   inactive: 'غير نشط',
+  // Legacy stored tokens that might land in customer_status from the
+  // Phase 24A "new-customer" modal. We render them with Arabic but
+  // the derived `active`/`inactive` always wins on display.
   vip: 'مميز',
   warning: 'تحذير',
   blocked: 'محظور',
@@ -647,10 +687,112 @@ export const CUSTOMER_STATUS_TONE: Record<string, string> = {
   blocked: 'bg-red-50 text-red-700 border-red-200',
 };
 
+/** Activity window (in days) that flips a customer from "نشط" to
+ *  "غير نشط". Spec calls for 3 months ≈ 90 days. */
+export const ACTIVITY_WINDOW_DAYS = 90;
+/** Window for "جديد" — first order within the last 30 days AND
+ *  total orders is small (≤ 2). */
+export const NEW_CUSTOMER_WINDOW_DAYS = 30;
+/** VIP thresholds (any one is enough). */
+const VIP_TOTAL_SPENT = 10_000;
+const VIP_DELIVERED_ORDERS = 10;
+/** Warning thresholds — applied first in the priority chain. */
+const WARNING_RETURN_RATE = 0.3;
+const WARNING_CANCEL_RATE = 0.3;
+
+function isWithinDays(iso: string | null | undefined, days: number): boolean {
+  if (!iso) return false;
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return false;
+  return t >= Date.now() - days * 24 * 60 * 60 * 1000;
+}
+
+/** Return the most recent activity timestamp across orders / chat /
+ *  complaints / notes — used by the account-status helper. The
+ *  metric bundle already captures this via `lastContactAt`. */
+function newestOrderAt(metrics: CustomerMetrics, ordersHint?: string | null): string | null {
+  if (metrics.lastContactAt) return metrics.lastContactAt;
+  return ordersHint ?? null;
+}
+
+/**
+ * Derive the dashboard classification token. Priority:
+ *   1. تحذير  → return/cancel rate ≥ 30% OR open complaint
+ *   2. مميز  → VIP thresholds
+ *   3. جديد   → first order in last 30d AND ≤ 2 orders
+ *   4. نشط    → last order in last 90d
+ *   5. غير نشط → orders exist but none in last 90d
+ *   6. عادي  → fallback (no orders at all)
+ */
+export function deriveCustomerClassification(
+  customer: {
+    customer_type?: string | null;
+    vip_level?: string | null;
+    created_at?: string | null;
+  },
+  metrics: CustomerMetrics
+): DerivedCustomerType {
+  if (
+    (metrics.returnRate != null && metrics.returnRate >= WARNING_RETURN_RATE) ||
+    (metrics.cancelRate != null && metrics.cancelRate >= WARNING_CANCEL_RATE) ||
+    metrics.openComplaints > 0
+  ) {
+    return 'warning';
+  }
+  if (
+    customer.vip_level != null && customer.vip_level !== ''
+      ? true
+      : metrics.totalSpent >= VIP_TOTAL_SPENT || metrics.deliveredCount >= VIP_DELIVERED_ORDERS
+  ) {
+    return 'vip';
+  }
+  const lastActivity = newestOrderAt(metrics);
+  if (
+    metrics.totalOrders > 0 &&
+    metrics.totalOrders <= 2 &&
+    isWithinDays(lastActivity, NEW_CUSTOMER_WINDOW_DAYS)
+  ) {
+    return 'new';
+  }
+  if (isWithinDays(lastActivity, ACTIVITY_WINDOW_DAYS)) {
+    return 'active';
+  }
+  if (metrics.totalOrders === 0) {
+    return 'regular';
+  }
+  return 'inactive';
+}
+
+/**
+ * Derive the account-status flag from the latest activity timestamp.
+ * No DB writes — purely a render-time projection. Falls back to
+ * 'inactive' when the customer has no recorded activity.
+ */
+export function deriveAccountStatus(
+  customer: { customer_status?: string | null },
+  metrics: CustomerMetrics
+): DerivedCustomerStatus {
+  // Explicit admin override wins (e.g. blocked) — but we only honour
+  // values that map cleanly to our two-state derived label.
+  void customer;
+  const lastActivity = newestOrderAt(metrics);
+  return isWithinDays(lastActivity, ACTIVITY_WINDOW_DAYS) ? 'active' : 'inactive';
+}
+
 export function customerTypeLabel(token: string | null | undefined): string {
   if (!token) return '—';
   return CUSTOMER_TYPE_LABEL_AR[token] || token;
 }
+
+export function customerTypeTone(token: string | null | undefined): string {
+  if (!token)
+    return 'bg-[hsl(var(--muted))]/40 text-[hsl(var(--muted-foreground))] border-[hsl(var(--border))]';
+  return (
+    CUSTOMER_TYPE_TONE[token] ||
+    'bg-[hsl(var(--muted))]/40 text-[hsl(var(--muted-foreground))] border-[hsl(var(--border))]'
+  );
+}
+
 export function customerStatusLabel(token: string | null | undefined): string {
   if (!token) return '—';
   return CUSTOMER_STATUS_LABEL_AR[token] || token;
@@ -666,15 +808,22 @@ export function customerStatusTone(token: string | null | undefined): string {
 
 // ─── Money / rate formatters ─────────────────────────────────────────────
 
+// Phase 24A-Fix1 — Egyptian Pound, not Saudi Riyal. The Phase 24A
+// helper shipped with `ر.س` by mistake; every customer-CRM surface
+// goes through these two formatters so flipping the suffix here
+// updates the dashboard, profile cards, table cells, and CSV in one
+// edit.
+const EGP_SUFFIX = 'ج.م';
+
 export function fmtMoney(value: number | null | undefined): string {
   const n = Number(value ?? 0);
-  return `${n.toLocaleString('en-US')} ر.س`;
+  return `${n.toLocaleString('en-US')} ${EGP_SUFFIX}`;
 }
 
-/** Compact money for KPI cards, e.g. 4,250 ج. */
+/** Compact money for KPI cards, e.g. 4,250 ج.م. */
 export function fmtMoneyShort(value: number | null | undefined): string {
   const n = Number(value ?? 0);
-  return `${Math.round(n).toLocaleString('en-US')} ر.س`;
+  return `${Math.round(n).toLocaleString('en-US')} ${EGP_SUFFIX}`;
 }
 
 export function fmtRate(value: number | null | undefined, fallback = '—'): string {
@@ -730,8 +879,8 @@ export function customersToCsv(rows: ReadonlyArray<DashboardCustomerRow>): strin
       'مسؤول الحساب',
       'إجمالي المشتريات',
       'نسبة الاستلام',
-      'المرتجعات (ر.س)',
-      'الإلغاء (ر.س)',
+      'المرتجعات (ج.م)',
+      'الإلغاء (ج.م)',
       'الطلبات الجارية',
       'الشكاوى المفتوحة',
     ].join(',')

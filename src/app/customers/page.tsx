@@ -61,6 +61,7 @@ import {
   customerStatusLabel,
   customerStatusTone,
   customerTypeLabel,
+  customerTypeTone,
   customersCsvFilename,
   customersToCsv,
   downloadCsv,
@@ -240,25 +241,32 @@ export default function CustomersPage() {
     [customers, orders, complaints, delegateNotesCount]
   );
 
+  // Phase 24A-Fix1 — filter options now derive from `rows` (which
+  // already carry the Fix1 derived classification + status) instead
+  // of the raw customers table; that way the dropdown options match
+  // the badges the user sees.
   const typeOptions = useMemo(() => {
     const s = new Set<string>();
-    for (const c of customers) {
-      const v = c.customer_type || c.segment;
-      if (v) s.add(v);
+    for (const r of rows) {
+      if (r.type) s.add(r.type);
     }
     return Array.from(s).sort();
-  }, [customers]);
+  }, [rows]);
 
   const statusOptions = useMemo(() => {
     const s = new Set<string>();
-    for (const c of customers) {
-      if (c.customer_status) s.add(c.customer_status);
+    for (const r of rows) {
+      if (r.status) s.add(r.status);
     }
     return Array.from(s).sort();
-  }, [customers]);
+  }, [rows]);
 
   const filteredRows = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    // Phase 24A-Fix1 — accept both "1001" and "C-1001" in the search
+    // box. The stored code is numeric-only after Fix1 but legacy
+    // muscle memory might still type the prefix.
+    const rawQ = search.trim().toLowerCase();
+    const q = rawQ.replace(/^c-/, '');
     return rows.filter((r) => {
       if (typeFilter !== 'all' && (r.type || '') !== typeFilter) return false;
       if (statusFilter !== 'all' && (r.status || '') !== statusFilter) return false;
@@ -638,7 +646,9 @@ function CustomerListRow({ row }: { row: DashboardCustomerRow }) {
       </td>
       <td className="px-3 py-3 text-center whitespace-nowrap">
         {row.type ? (
-          <span className="inline-flex rounded-full border bg-violet-50 text-violet-700 border-violet-200 text-[10px] font-semibold px-2 py-0.5">
+          <span
+            className={`inline-flex rounded-full border text-[10px] font-semibold px-2 py-0.5 ${customerTypeTone(row.type)}`}
+          >
             {customerTypeLabel(row.type)}
           </span>
         ) : (
