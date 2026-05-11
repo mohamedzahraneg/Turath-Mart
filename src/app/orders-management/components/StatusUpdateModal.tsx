@@ -15,8 +15,12 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { useAuth, getPermissionsForRoleId } from '@/contexts/AuthContext';
-import { addAuditLog, getAuditLogs } from './AuditLogModal';
+import { addAuditLog, getAuditLogs, STATUS_LABELS } from './AuditLogModal';
 import { createClient } from '@/lib/supabase/client';
+// Phase 26D-1 — mirror order mutations into the staff audit log
+// so /roles → الأمان والتدقيق shows operational activity beside
+// the existing per-order timeline.
+import { writeStaffAuditLog } from '@/lib/security/staffAudit';
 // Phase 22P — structured `note` payload. The audit-log `note`
 // column carries `JSON.stringify({ reason?, note?, schedule? })` so
 // cancellation / return reasons, free-form admin notes, AND the
@@ -453,6 +457,76 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
 
       if (error) {
         throw error;
+      }
+
+      // Phase 26D-1 — mirror this mutation to the staff audit log
+      // alongside the existing per-order `turath_masr_audit_logs`
+      // entry. Three distinct rows when relevant: status change,
+      // delegate (re-)assignment, delivery schedule. Best-effort:
+      // any single insert can fail without disrupting the user.
+      try {
+        const prevStatus = (order.status ?? '').trim();
+        const nextStatus = (data.newStatus ?? '').trim();
+        const statusChanged = nextStatus && nextStatus !== prevStatus;
+        const prevDelegate = (order.delegateName ?? '').trim();
+        const delegateChanged = selectedDelegate.trim() !== prevDelegate;
+        if (statusChanged) {
+          const labelAr = STATUS_LABELS[nextStatus] ?? nextStatus;
+          const fromLabel = STATUS_LABELS[prevStatus] ?? prevStatus;
+          await writeStaffAuditLog(supabase, {
+            action: 'order.status_changed',
+            actorId: authUser?.id ?? null,
+            actorName: user.name ?? null,
+            actorRoleId: currentRoleId ?? null,
+            entity: { type: 'order', id: order.id, label: `#${order.orderNum}` },
+            description: `تم تغيير حالة الطلب #${order.orderNum} من "${fromLabel || '—'}" إلى "${labelAr}"`,
+            metadata: {
+              order_id: order.id,
+              order_num: order.orderNum,
+              before: prevStatus,
+              after: nextStatus,
+              ...(data.reason ? { reason: data.reason } : {}),
+            },
+          });
+        }
+        if (delegateChanged && selectedDelegate.trim()) {
+          await writeStaffAuditLog(supabase, {
+            action: 'order.delegate_assigned',
+            actorId: authUser?.id ?? null,
+            actorName: user.name ?? null,
+            actorRoleId: currentRoleId ?? null,
+            entity: { type: 'order', id: order.id, label: `#${order.orderNum}` },
+            description: `تم تعيين المندوب "${selectedDelegate.trim()}" للطلب #${order.orderNum}`,
+            metadata: {
+              order_id: order.id,
+              order_num: order.orderNum,
+              before: prevDelegate || null,
+              after: selectedDelegate.trim(),
+            },
+          });
+        }
+        if (scheduleAllSet) {
+          await writeStaffAuditLog(supabase, {
+            action: 'order.delivery_scheduled',
+            actorId: authUser?.id ?? null,
+            actorName: user.name ?? null,
+            actorRoleId: currentRoleId ?? null,
+            entity: { type: 'order', id: order.id, label: `#${order.orderNum}` },
+            description: `تم جدولة تسليم الطلب #${order.orderNum} يوم ${scheduleDate} من ${scheduleFrom} إلى ${scheduleTo}`,
+            metadata: {
+              order_id: order.id,
+              order_num: order.orderNum,
+              date: scheduleDate,
+              from: scheduleFrom,
+              to: scheduleTo,
+              ...(isEditingExistingSchedule && scheduleChanged
+                ? { reschedule_reason: rescheduleReason.trim() }
+                : {}),
+            },
+          });
+        }
+      } catch (auditErr) {
+        console.warn('[StatusUpdateModal] staff audit write failed:', auditErr);
       }
 
       // The "status_change" system notification is now produced by the

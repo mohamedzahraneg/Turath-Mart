@@ -40,7 +40,10 @@ import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   STAFF_AUDIT_ACTION_LABEL_AR,
+  STAFF_AUDIT_GROUP_LABEL_AR,
+  groupForAction,
   type StaffAuditAction,
+  type StaffAuditActionGroup,
   writeStaffAuditLog,
 } from '@/lib/security/staffAudit';
 // Phase 26B — orphan auth users + suspicious profiles panel.
@@ -101,6 +104,7 @@ interface StaffAuditRow {
   entity_id: string | null;
   entity_label: string | null;
   description: string | null;
+  metadata: Record<string, unknown> | null;
   ip_address: string | null;
   device_fingerprint: string | null;
   created_at: string;
@@ -161,6 +165,11 @@ export default function SecurityTab() {
   const [loginEvents, setLoginEvents] = useState<LoginEventRow[]>([]);
   const [devices, setDevices] = useState<DeviceRow[]>([]);
   const [auditRows, setAuditRows] = useState<StaffAuditRow[]>([]);
+  // Phase 26D-1 — filter state for the audit list.
+  const [auditGroupFilter, setAuditGroupFilter] = useState<'all' | StaffAuditActionGroup>('all');
+  const [auditUserFilter, setAuditUserFilter] = useState<string>('all');
+  const [auditSearch, setAuditSearch] = useState('');
+  const [auditExpandedId, setAuditExpandedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -193,7 +202,7 @@ export default function SecurityTab() {
           supabase
             .from('turath_masr_staff_audit_logs')
             .select(
-              'id, actor_id, actor_name, actor_role_id, action, entity_type, entity_id, entity_label, description, ip_address, device_fingerprint, created_at'
+              'id, actor_id, actor_name, actor_role_id, action, entity_type, entity_id, entity_label, description, metadata, ip_address, device_fingerprint, created_at'
             )
             .order('created_at', { ascending: false })
             .limit(100),
@@ -253,6 +262,42 @@ export default function SecurityTab() {
     }
     return Array.from(byEmail.values());
   }, [profiles, loginEvents]);
+
+  // Phase 26D-1 — derived audit list (group + user + free-text filters)
+  // + the unique actor set for the user dropdown.
+  const auditActors = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const a of auditRows) {
+      if (!a.actor_id) continue;
+      const label = (a.actor_name ?? '').trim() || a.actor_id.slice(0, 8);
+      if (!map.has(a.actor_id)) map.set(a.actor_id, label);
+    }
+    return Array.from(map.entries()).map(([id, label]) => ({ id, label }));
+  }, [auditRows]);
+
+  const filteredAudit = useMemo(() => {
+    const q = auditSearch.trim().toLowerCase();
+    return auditRows.filter((a) => {
+      if (auditGroupFilter !== 'all' && groupForAction(a.action) !== auditGroupFilter) {
+        return false;
+      }
+      if (auditUserFilter !== 'all' && a.actor_id !== auditUserFilter) {
+        return false;
+      }
+      if (!q) return true;
+      const hay = [
+        a.actor_name,
+        a.entity_label,
+        a.entity_id,
+        a.description,
+        STAFF_AUDIT_ACTION_LABEL_AR[a.action as StaffAuditAction] ?? a.action,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [auditRows, auditGroupFilter, auditUserFilter, auditSearch]);
 
   // ─── Mutations ───
 
@@ -701,15 +746,64 @@ export default function SecurityTab() {
         )}
       </section>
 
-      {/* Staff audit log */}
+      {/* Staff audit log (Phase 26D-1 — filters + Arabic-first rendering) */}
       <section className="card-section overflow-hidden">
-        <div className="p-3 border-b border-[hsl(var(--border))] flex items-center gap-2">
+        <div className="p-3 border-b border-[hsl(var(--border))] flex items-center gap-2 flex-wrap">
           <ShieldAlert size={15} />
-          <h3 className="text-sm font-bold">سجل التدقيق الإداري ({auditRows.length})</h3>
+          <h3 className="text-sm font-bold flex-1">
+            سجل التدقيق الإداري ({filteredAudit.length} / {auditRows.length})
+          </h3>
         </div>
-        {auditRows.length === 0 ? (
+        <div className="p-3 border-b border-[hsl(var(--border))] flex flex-wrap items-center gap-2 bg-[hsl(var(--muted))]/20">
+          <select
+            value={auditGroupFilter}
+            onChange={(e) => setAuditGroupFilter(e.target.value as 'all' | StaffAuditActionGroup)}
+            className="input-field text-xs w-auto"
+          >
+            <option value="all">كل الأقسام</option>
+            {(Object.keys(STAFF_AUDIT_GROUP_LABEL_AR) as StaffAuditActionGroup[]).map((g) => (
+              <option key={g} value={g}>
+                {STAFF_AUDIT_GROUP_LABEL_AR[g]}
+              </option>
+            ))}
+          </select>
+          <select
+            value={auditUserFilter}
+            onChange={(e) => setAuditUserFilter(e.target.value)}
+            className="input-field text-xs w-auto max-w-[200px]"
+          >
+            <option value="all">كل المستخدمين</option>
+            {auditActors.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.label}
+              </option>
+            ))}
+          </select>
+          <input
+            type="text"
+            value={auditSearch}
+            onChange={(e) => setAuditSearch(e.target.value)}
+            placeholder="ابحث في الوصف، الكيان، أو الإجراء..."
+            className="input-field text-xs flex-1 min-w-[200px]"
+          />
+          {(auditGroupFilter !== 'all' || auditUserFilter !== 'all' || auditSearch) && (
+            <button
+              onClick={() => {
+                setAuditGroupFilter('all');
+                setAuditUserFilter('all');
+                setAuditSearch('');
+              }}
+              className="text-[10px] text-[hsl(var(--primary))] hover:underline"
+            >
+              مسح الفلاتر
+            </button>
+          )}
+        </div>
+        {filteredAudit.length === 0 ? (
           <p className="p-4 text-xs text-[hsl(var(--muted-foreground))]">
-            لا توجد إدخالات بعد. ستظهر هنا عند تعطيل حسابات، حظر أجهزة، أو تغيير صلاحيات.
+            {auditRows.length === 0
+              ? 'لا توجد إدخالات بعد. ستظهر هنا عند إنشاء طلب، تغيير حالة، اعتماد تسوية، أو تعديل صلاحيات.'
+              : 'لا توجد إدخالات مطابقة لهذه الفلاتر.'}
           </p>
         ) : (
           <div className="overflow-x-auto">
@@ -719,35 +813,76 @@ export default function SecurityTab() {
                   <th className="text-right px-3 py-2 font-semibold">التاريخ</th>
                   <th className="text-right px-3 py-2 font-semibold">المنفّذ</th>
                   <th className="text-right px-3 py-2 font-semibold">الإجراء</th>
+                  <th className="text-right px-3 py-2 font-semibold">الوصف</th>
                   <th className="text-right px-3 py-2 font-semibold">العنصر</th>
-                  <th className="text-right px-3 py-2 font-semibold">التفاصيل</th>
                 </tr>
               </thead>
               <tbody>
-                {auditRows.map((a) => (
-                  <tr key={a.id} className="border-t border-[hsl(var(--border))]">
-                    <td className="px-3 py-2 text-[10px] font-mono">{fmtDateTime(a.created_at)}</td>
-                    <td className="px-3 py-2">{a.actor_name || a.actor_id?.slice(0, 8) || '—'}</td>
-                    <td className="px-3 py-2">
-                      <span className="text-[10px] bg-indigo-50 text-indigo-800 border border-indigo-200 px-2 py-0.5 rounded-full font-bold">
-                        {STAFF_AUDIT_ACTION_LABEL_AR[a.action as StaffAuditAction] ?? a.action}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2">
-                      <div className="leading-tight">
-                        <p className="font-semibold">{a.entity_label || a.entity_type || '—'}</p>
-                        {a.entity_id && (
-                          <p className="text-[10px] text-[hsl(var(--muted-foreground))] font-mono">
-                            {a.entity_id.slice(0, 12)}
+                {filteredAudit.map((a) => {
+                  const group = groupForAction(a.action);
+                  const isExpanded = auditExpandedId === a.id;
+                  const hasMetadata =
+                    a.metadata &&
+                    typeof a.metadata === 'object' &&
+                    Object.keys(a.metadata as Record<string, unknown>).length > 0;
+                  return (
+                    <React.Fragment key={a.id}>
+                      <tr className="border-t border-[hsl(var(--border))]">
+                        <td className="px-3 py-2 text-[10px] font-mono align-top">
+                          {fmtDateTime(a.created_at)}
+                        </td>
+                        <td className="px-3 py-2 align-top">
+                          {a.actor_name || a.actor_id?.slice(0, 8) || '—'}
+                        </td>
+                        <td className="px-3 py-2 align-top">
+                          <div className="flex flex-col gap-0.5 items-start">
+                            <span className="text-[10px] bg-indigo-50 text-indigo-800 border border-indigo-200 px-2 py-0.5 rounded-full font-bold">
+                              {STAFF_AUDIT_ACTION_LABEL_AR[a.action as StaffAuditAction] ??
+                                a.action}
+                            </span>
+                            <span className="text-[9px] text-[hsl(var(--muted-foreground))]">
+                              {STAFF_AUDIT_GROUP_LABEL_AR[group]}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-3 py-2 align-top">
+                          <p className="leading-snug text-[hsl(var(--foreground))]">
+                            {a.description || '—'}
                           </p>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-3 py-2 text-[hsl(var(--muted-foreground))]">
-                      {a.description || '—'}
-                    </td>
-                  </tr>
-                ))}
+                          {hasMetadata && (
+                            <button
+                              onClick={() => setAuditExpandedId(isExpanded ? null : a.id)}
+                              className="text-[10px] text-[hsl(var(--primary))] hover:underline mt-1"
+                            >
+                              {isExpanded ? 'إخفاء التفاصيل' : 'تفاصيل إضافية'}
+                            </button>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 align-top">
+                          <div className="leading-tight">
+                            <p className="font-semibold text-[11px]">
+                              {a.entity_label || a.entity_type || '—'}
+                            </p>
+                            {a.entity_id && (
+                              <p className="text-[10px] text-[hsl(var(--muted-foreground))] font-mono">
+                                {a.entity_id.slice(0, 12)}
+                              </p>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                      {isExpanded && hasMetadata && (
+                        <tr className="bg-[hsl(var(--muted))]/20">
+                          <td colSpan={5} className="px-3 py-2">
+                            <pre className="text-[10px] font-mono overflow-x-auto leading-tight whitespace-pre-wrap">
+                              {JSON.stringify(a.metadata, null, 2)}
+                            </pre>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>

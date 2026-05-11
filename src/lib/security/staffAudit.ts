@@ -27,6 +27,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 export type StaffAuditAction =
+  // ─── Staff & role surface (Phase 26A + 26C) ───
   | 'staff.role_changed'
   | 'staff.account_disabled'
   | 'staff.account_suspended'
@@ -34,6 +35,7 @@ export type StaffAuditAction =
   | 'staff.account_pending'
   | 'staff.created'
   | 'staff.deleted'
+  // ─── Security infrastructure (Phase 26A + 26B) ───
   | 'security.device_blocked'
   | 'security.device_unblocked'
   | 'security.device_renamed'
@@ -41,10 +43,38 @@ export type StaffAuditAction =
   | 'security.login_succeeded'
   | 'security.login_blocked'
   | 'security.logout'
+  | 'auth_orphan_profile_created'
+  | 'auth_user_deleted'
+  | 'auth_user_delete_failed'
   | 'role.created'
   | 'role.updated'
   | 'role.deleted'
-  | 'role.permissions_changed';
+  | 'role.permissions_changed'
+  // ─── Phase 26D-1 — orders ───
+  | 'order.created'
+  | 'order.updated'
+  | 'order.status_changed'
+  | 'order.delegate_assigned'
+  | 'order.delivery_scheduled'
+  | 'order.note_updated'
+  // ─── Phase 26D-1 — returns / exchanges ───
+  | 'adjustment.created'
+  | 'adjustment.approved'
+  | 'adjustment.rejected'
+  | 'adjustment.completed'
+  | 'adjustment.cancelled'
+  | 'adjustment.child_order_created'
+  // ─── Phase 26D-1 — customers / CRM ───
+  | 'customer.created'
+  | 'customer.updated'
+  | 'customer.note_created'
+  | 'customer.task_created'
+  | 'customer.task_updated'
+  | 'customer.task_status_changed'
+  | 'customer.attachment_uploaded'
+  | 'customer.complaint_created'
+  | 'customer.complaint_updated'
+  | 'customer.complaint_closed';
 
 export const STAFF_AUDIT_ACTION_LABEL_AR: Record<StaffAuditAction, string> = {
   'staff.role_changed': 'تغيير الدور',
@@ -61,11 +91,69 @@ export const STAFF_AUDIT_ACTION_LABEL_AR: Record<StaffAuditAction, string> = {
   'security.login_succeeded': 'تسجيل دخول ناجح',
   'security.login_blocked': 'محاولة دخول محظورة',
   'security.logout': 'تسجيل خروج',
+  auth_orphan_profile_created: 'إنشاء ملف لحساب Auth مفقود',
+  auth_user_deleted: 'حذف نهائي لحساب Auth',
+  auth_user_delete_failed: 'فشل حذف حساب Auth',
   'role.created': 'إنشاء دور',
   'role.updated': 'تعديل دور',
   'role.deleted': 'حذف دور',
   'role.permissions_changed': 'تعديل صلاحيات دور',
+  // Orders
+  'order.created': 'إنشاء طلب',
+  'order.updated': 'تعديل طلب',
+  'order.status_changed': 'تغيير حالة طلب',
+  'order.delegate_assigned': 'تعيين مندوب للطلب',
+  'order.delivery_scheduled': 'جدولة موعد التسليم',
+  'order.note_updated': 'تحديث ملاحظة الطلب',
+  // Returns / exchanges
+  'adjustment.created': 'إنشاء تسوية / مرتجع / استبدال',
+  'adjustment.approved': 'اعتماد تسوية',
+  'adjustment.rejected': 'رفض تسوية',
+  'adjustment.completed': 'تنفيذ تسوية',
+  'adjustment.cancelled': 'إلغاء تسوية',
+  'adjustment.child_order_created': 'إنشاء طلب فرعي للتسوية',
+  // Customers
+  'customer.created': 'إنشاء عميل',
+  'customer.updated': 'تعديل بيانات عميل',
+  'customer.note_created': 'إضافة ملاحظة لعميل',
+  'customer.task_created': 'إنشاء مهمة عميل',
+  'customer.task_updated': 'تعديل مهمة عميل',
+  'customer.task_status_changed': 'تغيير حالة مهمة عميل',
+  'customer.attachment_uploaded': 'رفع مرفق لعميل',
+  'customer.complaint_created': 'إنشاء شكوى عميل',
+  'customer.complaint_updated': 'تعديل شكوى عميل',
+  'customer.complaint_closed': 'إغلاق شكوى عميل',
 };
+
+/**
+ * Phase 26D-1 — group an action into a high-level bucket for the
+ * audit-tab filter pills. Keys map to short Arabic labels.
+ */
+export type StaffAuditActionGroup =
+  | 'orders'
+  | 'returns'
+  | 'customers'
+  | 'delegates'
+  | 'staff'
+  | 'security';
+
+export const STAFF_AUDIT_GROUP_LABEL_AR: Record<StaffAuditActionGroup, string> = {
+  orders: 'الطلبات',
+  returns: 'المرتجعات والاستبدالات',
+  customers: 'العملاء',
+  delegates: 'المناديب',
+  staff: 'الموظفون والأدوار',
+  security: 'الأمان',
+};
+
+export function groupForAction(action: string): StaffAuditActionGroup {
+  if (action.startsWith('order.')) return 'orders';
+  if (action.startsWith('adjustment.')) return 'returns';
+  if (action.startsWith('customer.')) return 'customers';
+  if (action.startsWith('delegate.')) return 'delegates';
+  if (action.startsWith('staff.') || action.startsWith('role.')) return 'staff';
+  return 'security';
+}
 
 export interface StaffAuditEntity {
   /** `profile`, `device`, `role`, `policy`, etc. */
