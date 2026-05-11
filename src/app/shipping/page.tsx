@@ -372,14 +372,50 @@ function DelegateChatWithDetails({
               <p className="text-xs text-gray-500 mt-1">الكمية: {order.quantity}</p>
             </div>
 
+            {/* Phase 25B — child-order banner (return / exchange) */}
+            {(() => {
+              const childMatch = order.orderNum.match(/^(.+)-([RE])(\d+)$/);
+              if (!childMatch) return null;
+              const [, parentNum, prefix] = childMatch;
+              const isExchange = prefix === 'E';
+              return (
+                <div
+                  className={`rounded-xl p-3 border ${
+                    isExchange ? 'bg-amber-50 border-amber-200' : 'bg-rose-50 border-rose-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                        isExchange ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'
+                      }`}
+                    >
+                      {isExchange ? 'طلب استبدال' : 'طلب مرتجع'}
+                    </span>
+                    <span className="text-xs text-gray-700">
+                      مرتبط بالطلب الأصلي <span className="font-mono font-bold">#{parentNum}</span>
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-700">
+                    الإجمالي المعروض أدناه هو{' '}
+                    <span className="font-bold">المبلغ المطلوب تحصيله من العميل</span> لهذا الطلب
+                    الفرعي فقط.
+                  </p>
+                </div>
+              );
+            })()}
+
             {/* Financial */}
             <div className="bg-white rounded-xl p-3 border border-gray-100">
               <h4 className="text-xs font-bold text-gray-500 mb-2 flex items-center gap-1">
-                <DollarSign size={12} /> المبالغ
+                <DollarSign size={12} />{' '}
+                {order.orderNum.match(/-([RE])\d+$/) ? 'تحصيل من العميل لهذا الطلب' : 'المبالغ'}
               </h4>
               <div className="grid grid-cols-3 gap-2 text-center">
                 <div className="bg-gray-50 rounded-lg p-2">
-                  <p className="text-xs text-gray-500">المنتجات</p>
+                  <p className="text-xs text-gray-500">
+                    {order.orderNum.match(/-([RE])\d+$/) ? 'فرق سعر' : 'المنتجات'}
+                  </p>
                   <p className="font-bold text-sm font-mono">
                     {order.subtotal.toLocaleString('en-US')} ج.م
                   </p>

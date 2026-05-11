@@ -50,13 +50,17 @@ import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   ADJUSTMENT_KIND_LABEL_AR,
+  PRICE_DIFFERENCE_DIRECTION_LABEL_AR,
   REFUND_MODE_LABEL_AR,
   SHIPPING_PAYER_LABEL_AR,
   computeAdjustmentTotals,
+  computeOperationalSettlement,
+  sumChargeableReplacementLines,
   validateAdjustmentDraft,
   type AdjustmentDraft,
   type AdjustmentKind,
   type AdjustmentLine,
+  type PriceDifferenceDirection,
   type RefundMode,
   type ShippingPayer,
 } from '@/lib/orders/orderAdjustments';
@@ -86,6 +90,11 @@ interface OrderSummary {
   phone: string;
   total: number;
   lines: OrderLine[];
+  /** Phase 25B — used to seed base shipping for the new shipment leg. */
+  shippingFee?: number;
+  region?: string;
+  district?: string | null;
+  neighborhood?: string | null;
 }
 
 interface Props {
@@ -169,14 +178,24 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
   const [refundMode, setRefundMode] = useState<RefundMode>('full');
   const [refundAmount, setRefundAmount] = useState<number>(0);
 
-  // ── 5) Shipping
+  // ── 5) Shipping — Phase 25B: base comes from the original order's
+  //     region fee (read-only). Only the customer share is editable
+  //     (when the payer is `customer` or `split`); the company share
+  //     is always derived as `base − customer share`.
   const [shippingPayer, setShippingPayer] = useState<ShippingPayer>('company');
-  const [shippingCustomerAmount, setShippingCustomerAmount] = useState<number>(0);
-  const [shippingCompanyAmount, setShippingCompanyAmount] = useState<number>(0);
+  const initialBase = Math.max(0, Number(order.shippingFee) || 0);
+  const [shippingBaseAmount, setShippingBaseAmount] = useState<number>(initialBase);
+  const [shippingCustomerShare, setShippingCustomerShare] = useState<number>(0);
+
+  // ── 5b) Price difference direction (Phase 25B). Explicit settlement
+  //       direction for exchanges replacing the old implicit
+  //       `refund_mode: price_diff` behaviour.
+  const [priceDirection, setPriceDirection] = useState<PriceDifferenceDirection>('none');
 
   // ── 6) Reason + notes
   const [reason, setReason] = useState<string>('');
   const [notes, setNotes] = useState<string>('');
+  const [operationalNote, setOperationalNote] = useState<string>('');
 
   // Submission state
   const [saving, setSaving] = useState(false);
@@ -226,7 +245,9 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
       }));
   }, [returnRows]);
 
-  // Live totals preview
+  // Live totals preview (Phase 25A math: returned / replacement value
+  // + suggested refund). Phase 25B adds `sumChargeableReplacementLines`
+  // so free replacement items don't inflate the price difference.
   const totals = useMemo(
     () =>
       computeAdjustmentTotals({
@@ -236,6 +257,55 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
       }),
     [returnLinesPayload, replacementLines, refundMode]
   );
+  const chargeableReplacementValue = useMemo(
+    () => sumChargeableReplacementLines(replacementLines),
+    [replacementLines]
+  );
+  // Recompute the price difference using *only* chargeable replacement
+  // lines so a courtesy replacement doesn't show as company-refundable.
+  const chargeablePriceDifference = useMemo(
+    () => chargeableReplacementValue - totals.returnedValue,
+    [chargeableReplacementValue, totals.returnedValue]
+  );
+
+  // Phase 25B — operational settlement preview. Drives both the
+  // sub-section and the final submit payload.
+  const settlement = useMemo(
+    () =>
+      computeOperationalSettlement({
+        shippingBaseAmount,
+        shippingCustomerShare:
+          shippingPayer === 'company'
+            ? 0
+            : shippingPayer === 'customer'
+              ? shippingBaseAmount
+              : Math.min(shippingCustomerShare, shippingBaseAmount),
+        priceDifferenceAbs: Math.abs(chargeablePriceDifference),
+        priceDifferenceDirection: priceDirection,
+      }),
+    [
+      shippingBaseAmount,
+      shippingCustomerShare,
+      shippingPayer,
+      chargeablePriceDifference,
+      priceDirection,
+    ]
+  );
+
+  // Auto-pick a sensible default direction when the user changes the
+  // returned / replacement mix, but don't trample an explicit choice.
+  // The user can override any time.
+  const [priceDirectionTouched, setPriceDirectionTouched] = useState(false);
+  useEffect(() => {
+    if (priceDirectionTouched) return;
+    if (!isExchange || chargeablePriceDifference === 0) {
+      setPriceDirection('none');
+    } else if (chargeablePriceDifference > 0) {
+      setPriceDirection('customer_pays');
+    } else {
+      setPriceDirection('company_refunds');
+    }
+  }, [chargeablePriceDifference, isExchange, priceDirectionTouched]);
 
   // When the refund mode produces a suggested value, auto-fill the
   // amount field (the user can still override for `partial`).
@@ -249,9 +319,28 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refundMode, totals.suggestedRefund]);
 
+  // Clamp customer share when base or payer changes
+  useEffect(() => {
+    setShippingCustomerShare((cur) => Math.min(Math.max(0, cur), shippingBaseAmount));
+  }, [shippingBaseAmount]);
+  useEffect(() => {
+    if (shippingPayer === 'company') setShippingCustomerShare(0);
+    if (shippingPayer === 'customer') setShippingCustomerShare(shippingBaseAmount);
+  }, [shippingPayer, shippingBaseAmount]);
+
   // ── Submit
   const handleSubmit = async () => {
     setError(null);
+
+    // Phase 25B — store the signed price difference (positive when
+    // customer pays, negative when company refunds, 0 otherwise). The
+    // *operational* direction lives in `price_difference_direction`.
+    const signedPriceDiff =
+      priceDirection === 'customer_pays'
+        ? Math.abs(chargeablePriceDifference)
+        : priceDirection === 'company_refunds'
+          ? -Math.abs(chargeablePriceDifference)
+          : 0;
 
     const draft: AdjustmentDraft = {
       order_id: order.id,
@@ -264,22 +353,28 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
       original_total: order.total ?? 0,
       refund_mode: refundMode,
       refund_amount: Number.isFinite(refundAmount) ? Math.max(0, refundAmount) : 0,
-      price_difference: totals.priceDifference,
+      price_difference: signedPriceDiff,
       shipping_payer: shippingPayer,
-      shipping_customer_amount:
-        shippingPayer === 'split' || shippingPayer === 'customer'
-          ? Math.max(0, shippingCustomerAmount)
-          : 0,
-      shipping_company_amount:
-        shippingPayer === 'split' || shippingPayer === 'company'
-          ? Math.max(0, shippingCompanyAmount)
-          : 0,
+      shipping_customer_amount: settlement.shippingCustomerShare,
+      shipping_company_amount: settlement.shippingCompanyShare,
+      shipping_base_amount: settlement.shippingBaseAmount,
+      customer_collect_amount: settlement.customerCollectAmount,
+      price_difference_direction: priceDirection,
+      operational_note: operationalNote.trim() || null,
     };
 
     const validationError = validateAdjustmentDraft(draft);
     if (validationError) {
       setError(validationError);
       toast.error(validationError);
+      return;
+    }
+
+    // Phase 25B — extra validation: customer share must be ≤ base.
+    if (shippingPayer === 'split' && shippingCustomerShare > shippingBaseAmount) {
+      const msg = 'حصة العميل من الشحن لا يمكن أن تتجاوز تكلفة الشحن الأساسية.';
+      setError(msg);
+      toast.error(msg);
       return;
     }
 
@@ -303,6 +398,11 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
         shipping_payer: draft.shipping_payer,
         shipping_customer_amount: draft.shipping_customer_amount,
         shipping_company_amount: draft.shipping_company_amount,
+        // Phase 25B — operational columns
+        shipping_base_amount: draft.shipping_base_amount ?? 0,
+        customer_collect_amount: draft.customer_collect_amount ?? 0,
+        price_difference_direction: draft.price_difference_direction ?? 'none',
+        operational_note: draft.operational_note,
         created_by: createdByName,
         created_by_role: currentRoleId ?? null,
       };
@@ -340,7 +440,12 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
             refund_mode: draft.refund_mode,
             refund_amount: draft.refund_amount,
             price_difference: draft.price_difference,
+            price_difference_direction: draft.price_difference_direction,
             shipping_payer: draft.shipping_payer,
+            shipping_customer_amount: draft.shipping_customer_amount,
+            shipping_company_amount: draft.shipping_company_amount,
+            shipping_base_amount: draft.shipping_base_amount,
+            customer_collect_amount: draft.customer_collect_amount,
             reason: draft.reason,
           }),
         });
@@ -367,10 +472,12 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
   };
 
   // ─── Replacement line editor helpers ───
-  const addReplacementLine = () => {
+  const addReplacementLine = (presetIsFree = false) => {
     setReplacementLines((arr) => [
       ...arr,
       {
+        itemType: 'product',
+        isFree: presetIsFree,
         productType: '',
         label: '',
         color: '',
@@ -539,15 +646,24 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
           {/* 3 — Replacement lines (exchanges only) */}
           {isExchange && (
             <section className="card-section p-4">
-              <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center justify-between mb-2 flex-wrap gap-1">
                 <h4 className="text-sm font-bold">العناصر البديلة</h4>
-                <button
-                  type="button"
-                  onClick={addReplacementLine}
-                  className="text-xs flex items-center gap-1 text-[hsl(var(--primary))] hover:underline"
-                >
-                  <Plus size={12} /> إضافة بديل
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => addReplacementLine(false)}
+                    className="text-xs flex items-center gap-1 text-[hsl(var(--primary))] hover:underline"
+                  >
+                    <Plus size={12} /> إضافة بديل
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => addReplacementLine(true)}
+                    className="text-xs flex items-center gap-1 text-emerald-700 hover:underline"
+                  >
+                    <Plus size={12} /> إضافة بديل مجاني
+                  </button>
+                </div>
               </div>
               {replacementLines.length === 0 ? (
                 <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
@@ -563,11 +679,62 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
                         ? Math.max(0, Number(line.quantity) || 0) *
                           Math.max(0, Number(line.flashlightPrice) || 0)
                         : 0);
+                    const chargeableSubtotal = line.isFree ? 0 : subtotal;
                     return (
                       <div
                         key={`replace-${idx}`}
-                        className="rounded-xl border border-[hsl(var(--border))] p-3 space-y-2"
+                        className={`rounded-xl border p-3 space-y-2 ${
+                          line.isFree
+                            ? 'border-emerald-200 bg-emerald-50/40'
+                            : 'border-[hsl(var(--border))]'
+                        }`}
                       >
+                        {/* Phase 25B — item type + free checkbox row */}
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <div className="flex bg-[hsl(var(--muted))]/50 rounded-lg p-0.5 text-[11px]">
+                            <button
+                              type="button"
+                              onClick={() => updateReplacementLine(idx, { itemType: 'product' })}
+                              className={`px-2 py-0.5 rounded-md transition-colors ${
+                                (line.itemType ?? 'product') === 'product'
+                                  ? 'bg-white shadow-sm font-bold text-[hsl(var(--foreground))]'
+                                  : 'text-[hsl(var(--muted-foreground))]'
+                              }`}
+                            >
+                              منتج
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => updateReplacementLine(idx, { itemType: 'part' })}
+                              className={`px-2 py-0.5 rounded-md transition-colors ${
+                                line.itemType === 'part'
+                                  ? 'bg-white shadow-sm font-bold text-[hsl(var(--foreground))]'
+                                  : 'text-[hsl(var(--muted-foreground))]'
+                              }`}
+                            >
+                              قطعة
+                            </button>
+                          </div>
+                          <label className="flex items-center gap-1 text-[11px] cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(line.isFree)}
+                              onChange={(e) =>
+                                updateReplacementLine(idx, { isFree: e.target.checked })
+                              }
+                            />
+                            <span
+                              className={
+                                line.isFree
+                                  ? 'text-emerald-700 font-bold'
+                                  : 'text-[hsl(var(--muted-foreground))]'
+                              }
+                            >
+                              مجاني
+                            </span>
+                          </label>
+                        </div>
+
                         <div className="grid grid-cols-2 gap-2">
                           <input
                             type="text"
@@ -575,7 +742,9 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
                             onChange={(e) =>
                               updateReplacementLine(idx, { productType: e.target.value })
                             }
-                            placeholder="نوع المنتج (productType)"
+                            placeholder={
+                              line.itemType === 'part' ? 'نوع القطعة' : 'نوع المنتج (productType)'
+                            }
                             className="form-input text-sm"
                           />
                           <input
@@ -668,37 +837,45 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
                           >
                             <Trash2 size={12} /> حذف هذا البديل
                           </button>
-                          <span className="font-mono text-[hsl(var(--foreground))] font-bold">
-                            {fmtEgp(subtotal)}
-                          </span>
+                          {line.isFree ? (
+                            <span className="flex items-center gap-1">
+                              <span className="font-mono text-emerald-700 font-bold">
+                                {fmtEgp(0)}
+                              </span>
+                              <span className="text-[10px] text-[hsl(var(--muted-foreground))] line-through">
+                                {fmtEgp(subtotal)}
+                              </span>
+                            </span>
+                          ) : (
+                            <span className="font-mono text-[hsl(var(--foreground))] font-bold">
+                              {fmtEgp(chargeableSubtotal)}
+                            </span>
+                          )}
                         </div>
                       </div>
                     );
                   })}
                   <div className="flex justify-between text-xs text-[hsl(var(--muted-foreground))]">
-                    <span>قيمة البدائل</span>
+                    <span>قيمة البدائل (المدفوعة)</span>
                     <span className="font-bold text-[hsl(var(--foreground))] font-mono">
-                      {fmtEgp(totals.replacementValue)}
+                      {fmtEgp(chargeableReplacementValue)}
                     </span>
                   </div>
-                  <div
-                    className={`flex justify-between text-xs font-semibold mt-1 ${
-                      totals.priceDifference > 0
-                        ? 'text-amber-700'
-                        : totals.priceDifference < 0
-                          ? 'text-emerald-700'
-                          : 'text-[hsl(var(--muted-foreground))]'
-                    }`}
-                  >
-                    <span>
-                      {totals.priceDifference > 0
-                        ? 'العميل يدفع فرق السعر'
-                        : totals.priceDifference < 0
-                          ? 'الشركة ترد فرق السعر للعميل'
-                          : 'لا يوجد فرق سعر'}
-                    </span>
-                    <span className="font-mono">{fmtEgp(Math.abs(totals.priceDifference))}</span>
-                  </div>
+                  {chargeablePriceDifference !== 0 && (
+                    <div
+                      className={`flex justify-between text-xs font-semibold mt-1 ${
+                        chargeablePriceDifference > 0 ? 'text-amber-700' : 'text-emerald-700'
+                      }`}
+                    >
+                      <span>فرق السعر الناتج عن البدائل (المدفوعة فقط):</span>
+                      <span className="font-mono">
+                        {fmtEgp(Math.abs(chargeablePriceDifference))}
+                      </span>
+                    </div>
+                  )}
+                  <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1 italic">
+                    اختر اتجاه فرق السعر في قسم &laquo;اتجاه فرق السعر&raquo; أدناه.
+                  </p>
                 </div>
               )}
             </section>
@@ -756,12 +933,37 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
             )}
           </section>
 
-          {/* 5 — Shipping */}
+          {/* 5 — Shipping (Phase 25B) */}
           <section className="card-section p-4">
             <h4 className="text-sm font-bold mb-2 flex items-center gap-1.5">
-              <Truck size={14} /> من يتحمل تكلفة الشحن؟
+              <Truck size={14} /> الشحن للطلب الفرعي
             </h4>
-            <div className="grid grid-cols-3 gap-2">
+
+            {/* Base shipping — auto from order region, read-only by default */}
+            <label className="flex flex-col">
+              <span className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">
+                تكلفة الشحن حسب المنطقة
+                {order.region && (
+                  <span className="mr-1 text-[10px]">
+                    ({order.region}
+                    {order.district ? ` — ${order.district}` : ''})
+                  </span>
+                )}
+              </span>
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={shippingBaseAmount}
+                onChange={(e) => setShippingBaseAmount(Math.max(0, Number(e.target.value) || 0))}
+                className="form-input text-sm bg-[hsl(var(--muted))]/40 font-mono"
+              />
+              <span className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1">
+                مأخوذة تلقائيًا من سعر شحن الطلب الأصلي. يمكن تعديلها يدويًا للحالات الخاصة.
+              </span>
+            </label>
+
+            <div className="mt-3 grid grid-cols-3 gap-2">
               {SHIPPING_OPTIONS.map((opt) => (
                 <button
                   key={opt.value}
@@ -777,45 +979,149 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
                 </button>
               ))}
             </div>
-            {shippingPayer !== 'company' && (
+
+            {/* Split: only the customer-share input is editable. Company
+                share is derived (base − customer share). */}
+            {shippingPayer === 'split' && (
               <label className="mt-3 flex flex-col">
                 <span className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">
-                  ما يدفعه العميل (ج.م)
+                  ما يدفعه العميل من الشحن (ج.م)
                 </span>
                 <input
                   type="number"
                   min={0}
+                  max={shippingBaseAmount}
                   step="0.01"
-                  value={shippingCustomerAmount}
+                  value={shippingCustomerShare}
                   onChange={(e) =>
-                    setShippingCustomerAmount(Math.max(0, Number(e.target.value) || 0))
+                    setShippingCustomerShare(
+                      Math.min(shippingBaseAmount, Math.max(0, Number(e.target.value) || 0))
+                    )
                   }
                   className="form-input text-sm"
                 />
-              </label>
-            )}
-            {shippingPayer !== 'customer' && (
-              <label className="mt-2 flex flex-col">
-                <span className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">
-                  ما تتحمله الشركة (ج.م)
+                <span className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1">
+                  تتحمل الشركة الباقي تلقائيًا:{' '}
+                  <span className="font-mono font-bold text-[hsl(var(--foreground))]">
+                    {fmtEgp(settlement.shippingCompanyShare)}
+                  </span>
                 </span>
-                <input
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  value={shippingCompanyAmount}
-                  onChange={(e) =>
-                    setShippingCompanyAmount(Math.max(0, Number(e.target.value) || 0))
-                  }
-                  className="form-input text-sm"
-                />
               </label>
             )}
-            {shippingPayer === 'split' && (
-              <p className="text-[11px] text-amber-700 mt-2">
-                التقسيم يتطلب أن يدفع كل طرف مبلغ أكبر من صفر.
-              </p>
-            )}
+
+            {/* Live preview */}
+            <div className="mt-3 rounded-xl bg-[hsl(var(--muted))]/40 p-3 text-xs space-y-1">
+              <div className="flex justify-between">
+                <span className="text-[hsl(var(--muted-foreground))]">شحن العميل</span>
+                <span className="font-mono font-bold">
+                  {fmtEgp(settlement.shippingCustomerShare)}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[hsl(var(--muted-foreground))]">شحن الشركة</span>
+                <span className="font-mono font-bold">
+                  {fmtEgp(settlement.shippingCompanyShare)}
+                </span>
+              </div>
+            </div>
+          </section>
+
+          {/* 5b — Price-difference direction (exchanges only) */}
+          {isExchange && (
+            <section className="card-section p-4">
+              <h4 className="text-sm font-bold mb-2">اتجاه فرق السعر</h4>
+              <div className="grid grid-cols-3 gap-2">
+                {(['customer_pays', 'company_refunds', 'none'] as const).map((dir) => (
+                  <button
+                    key={dir}
+                    type="button"
+                    onClick={() => {
+                      setPriceDirection(dir);
+                      setPriceDirectionTouched(true);
+                    }}
+                    className={`text-xs rounded-xl border px-3 py-2 transition-colors ${
+                      priceDirection === dir
+                        ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/5 text-[hsl(var(--primary))] font-semibold'
+                        : 'border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/40'
+                    }`}
+                  >
+                    {PRICE_DIFFERENCE_DIRECTION_LABEL_AR[dir]}
+                  </button>
+                ))}
+              </div>
+              <div
+                className={`mt-3 text-xs ${
+                  priceDirection === 'customer_pays'
+                    ? 'text-amber-700'
+                    : priceDirection === 'company_refunds'
+                      ? 'text-emerald-700'
+                      : 'text-[hsl(var(--muted-foreground))]'
+                }`}
+              >
+                {priceDirection === 'customer_pays' && (
+                  <>
+                    فرق سعر مستحق على العميل:{' '}
+                    <span className="font-mono font-bold">
+                      {fmtEgp(settlement.priceDifferenceAbs)}
+                    </span>
+                  </>
+                )}
+                {priceDirection === 'company_refunds' && (
+                  <>
+                    فرق سعر لصالح العميل:{' '}
+                    <span className="font-mono font-bold">
+                      {fmtEgp(settlement.companyRefundAmount)}
+                    </span>
+                  </>
+                )}
+                {priceDirection === 'none' && <>لن يتم تسوية فرق السعر في هذا الطلب.</>}
+              </div>
+            </section>
+          )}
+
+          {/* 5c — Collection breakdown shown to the delegate */}
+          <section className="card-section p-4 bg-emerald-50/30 border border-emerald-100">
+            <h4 className="text-sm font-bold mb-2 text-emerald-800 flex items-center gap-1.5">
+              <Wallet size={14} /> إجمالي التحصيل من العميل
+            </h4>
+            <div className="text-xs space-y-1">
+              {settlement.shippingCustomerShare > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-[hsl(var(--muted-foreground))]">شحن</span>
+                  <span className="font-mono font-bold">
+                    {fmtEgp(settlement.shippingCustomerShare)}
+                  </span>
+                </div>
+              )}
+              {priceDirection === 'customer_pays' && settlement.priceDifferenceAbs > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-[hsl(var(--muted-foreground))]">فرق سعر</span>
+                  <span className="font-mono font-bold">
+                    {fmtEgp(settlement.priceDifferenceAbs)}
+                  </span>
+                </div>
+              )}
+              <div className="flex justify-between border-t border-emerald-200 pt-1 mt-1">
+                <span className="font-bold text-emerald-800">الإجمالي</span>
+                <span className="font-mono font-bold text-emerald-800">
+                  {fmtEgp(settlement.customerCollectAmount)}
+                </span>
+              </div>
+              {settlement.companyRefundAmount > 0 && (
+                <p className="text-[11px] text-emerald-700 mt-2 italic">
+                  ⚠ هناك مبلغ{' '}
+                  <span className="font-mono font-bold">
+                    {fmtEgp(settlement.companyRefundAmount)}
+                  </span>{' '}
+                  لصالح العميل، لا يقوم المندوب بتحصيله — تسوية مالية لاحقة.
+                </p>
+              )}
+              {settlement.customerCollectAmount === 0 && settlement.companyRefundAmount === 0 && (
+                <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1 italic">
+                  لا يتم تحصيل أي مبلغ من العميل لهذا الطلب.
+                </p>
+              )}
+            </div>
           </section>
 
           {/* 6 — Reason + notes */}
@@ -844,6 +1150,19 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
                 placeholder="ملاحظات اختيارية للفريق"
                 className="form-input text-sm"
               />
+            </label>
+            <label className="flex flex-col mt-3">
+              <span className="text-sm font-bold mb-1">تعليمات للمندوب (اختياري)</span>
+              <textarea
+                rows={2}
+                value={operationalNote}
+                onChange={(e) => setOperationalNote(e.target.value)}
+                placeholder="مثال: اتصل بالعميل قبل الذهاب — الباب الخلفي"
+                className="form-input text-sm"
+              />
+              <span className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1">
+                هذه التعليمات ستظهر في صفحة المندوب عند تنفيذ الطلب الفرعي.
+              </span>
             </label>
           </section>
 

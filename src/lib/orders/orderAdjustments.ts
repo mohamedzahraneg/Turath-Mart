@@ -120,6 +120,19 @@ export interface AdjustmentLine {
    * Always recompute on read if you don't trust the source.
    */
   total?: number;
+  /**
+   * Phase 25B — type of replacement item: a whole product or a single
+   * piece / spare part. Only meaningful on `replacement_lines`. The
+   * UI uses this to decide whether to surface SKU-level fields.
+   */
+  itemType?: 'product' | 'part';
+  /**
+   * Phase 25B — when `true`, this line is provided to the customer at
+   * no charge (e.g. courtesy replacement). It still appears in the
+   * shipment but contributes 0 to `replacementValue` so the price
+   * difference math reflects only chargeable items.
+   */
+  isFree?: boolean;
 }
 
 /**
@@ -152,6 +165,15 @@ export interface OrderAdjustment {
   decided_by_role: string | null;
   decided_at: string | null;
   decision_note: string | null;
+  // Phase 25B — operational fields. Nullable so historical Phase-25A
+  // rows continue to read fine before the migration is applied.
+  child_order_id?: string | null;
+  child_order_num?: string | null;
+  linked_complaint_id?: string | null;
+  customer_collect_amount?: number;
+  shipping_base_amount?: number;
+  price_difference_direction?: PriceDifferenceDirection;
+  operational_note?: string | null;
 }
 
 /**
@@ -174,6 +196,11 @@ export interface AdjustmentDraft {
   shipping_payer: ShippingPayer;
   shipping_customer_amount: number;
   shipping_company_amount: number;
+  // Phase 25B — operational fields
+  shipping_base_amount?: number;
+  customer_collect_amount?: number;
+  price_difference_direction?: PriceDifferenceDirection;
+  operational_note?: string | null;
 }
 
 // =============================================================================
@@ -474,4 +501,306 @@ export function allowedNextStates(state: AdjustmentState): AdjustmentState[] {
  */
 export function isAdjustmentActionable(state: AdjustmentState): boolean {
   return allowedNextStates(state).length > 0;
+}
+
+// =============================================================================
+// Phase 25B — Operational types + helpers
+// =============================================================================
+
+/**
+ * Settlement direction for the price difference on an exchange:
+ *   customer_pays   → customer owes the difference; delegate collects it
+ *   company_refunds → company owes the customer the difference (no collection)
+ *   none            → no money flows for the price difference
+ */
+export type PriceDifferenceDirection = 'customer_pays' | 'company_refunds' | 'none';
+
+export const PRICE_DIFFERENCE_DIRECTION_LABEL_AR: Record<PriceDifferenceDirection, string> = {
+  customer_pays: 'العميل يدفع الفرق',
+  company_refunds: 'الشركة ترد الفرق للعميل',
+  none: 'بدون فرق سعر',
+};
+
+/** Complaint operational status (the new `resolution_status` column). */
+export type ComplaintResolutionStatus =
+  | 'open'
+  | 'in_progress'
+  | 'resolved'
+  | 'closed'
+  | 'cancelled';
+
+export const COMPLAINT_RESOLUTION_LABEL_AR: Record<ComplaintResolutionStatus, string> = {
+  open: 'مفتوحة',
+  in_progress: 'قيد المعالجة',
+  resolved: 'تم الحل',
+  closed: 'مغلقة',
+  cancelled: 'ملغاة',
+};
+
+export type ComplaintType = 'general' | 'return' | 'exchange' | 'delivery' | 'other';
+
+export const COMPLAINT_TYPE_LABEL_AR: Record<ComplaintType, string> = {
+  general: 'عام',
+  return: 'مرتجع',
+  exchange: 'استبدال',
+  delivery: 'تسليم',
+  other: 'أخرى',
+};
+
+/**
+ * Build the child-order number from the parent + an existing-sibling
+ * count. The suffix is `-R` for returns and `-E` for exchanges. The
+ * sequence starts at 1 so the first child of order `2605082` is
+ * `2605082-E1`, the second `2605082-E2`, etc.
+ *
+ * The caller is responsible for counting siblings — typically a
+ * supabase query that filters `child_order_num` like `${parent}-${prefix}%`.
+ */
+export function buildChildOrderNum(
+  parentOrderNum: string,
+  kind: AdjustmentKind,
+  existingSiblings: number
+): string {
+  const prefix = kind === 'exchange_full' || kind === 'exchange_partial' ? 'E' : 'R';
+  const next = Math.max(0, existingSiblings) + 1;
+  return `${parentOrderNum}-${prefix}${next}`;
+}
+
+/**
+ * Compute the operational settlement amounts. Single source of truth
+ * for the modal preview, the child-order totals, and the delegate
+ * collection card.
+ *
+ *   shippingBaseAmount     — fee resolved from the region of the original order
+ *   shippingCustomerShare  — what the customer pays for shipping (≤ base)
+ *   shippingCompanyShare   — base − customer share, always derived
+ *   priceDifference        — absolute price difference between replacement and returned items
+ *   priceDifferenceDirection — who pays the price difference (or none)
+ *   customerCollectAmount  — what the delegate must collect from the customer
+ *   companyRefundAmount    — what the company owes the customer (informational, never collected)
+ */
+export interface OperationalSettlement {
+  shippingBaseAmount: number;
+  shippingCustomerShare: number;
+  shippingCompanyShare: number;
+  priceDifferenceAbs: number;
+  priceDifferenceDirection: PriceDifferenceDirection;
+  customerCollectAmount: number;
+  companyRefundAmount: number;
+}
+
+export function computeOperationalSettlement(input: {
+  shippingBaseAmount: number;
+  shippingCustomerShare: number;
+  priceDifferenceAbs: number;
+  priceDifferenceDirection: PriceDifferenceDirection;
+}): OperationalSettlement {
+  const base = Math.max(0, Number(input.shippingBaseAmount) || 0);
+  // Customer share clamped to [0, base]
+  const customerShareRaw = Math.max(0, Number(input.shippingCustomerShare) || 0);
+  const customerShare = Math.min(customerShareRaw, base);
+  const companyShare = round2(base - customerShare);
+  const diffAbs = Math.max(0, Number(input.priceDifferenceAbs) || 0);
+  const direction: PriceDifferenceDirection = input.priceDifferenceDirection ?? 'none';
+
+  const collect = customerShare + (direction === 'customer_pays' ? diffAbs : 0);
+  const refund = direction === 'company_refunds' ? diffAbs : 0;
+
+  return {
+    shippingBaseAmount: round2(base),
+    shippingCustomerShare: round2(customerShare),
+    shippingCompanyShare: round2(companyShare),
+    priceDifferenceAbs: round2(diffAbs),
+    priceDifferenceDirection: direction,
+    customerCollectAmount: round2(collect),
+    companyRefundAmount: round2(refund),
+  };
+}
+
+/**
+ * Format the customer-facing breakdown (Arabic, single-line items).
+ * Used by the delegate / shipping view and customer profile.
+ */
+export function formatCollectionBreakdownAr(settlement: OperationalSettlement): {
+  lines: { label: string; amount: number }[];
+  total: number;
+  hasRefund: boolean;
+} {
+  const lines: { label: string; amount: number }[] = [];
+  if (settlement.shippingCustomerShare > 0) {
+    lines.push({ label: 'شحن', amount: settlement.shippingCustomerShare });
+  }
+  if (
+    settlement.priceDifferenceDirection === 'customer_pays' &&
+    settlement.priceDifferenceAbs > 0
+  ) {
+    lines.push({ label: 'فرق سعر', amount: settlement.priceDifferenceAbs });
+  }
+  return {
+    lines,
+    total: settlement.customerCollectAmount,
+    hasRefund:
+      settlement.priceDifferenceDirection === 'company_refunds' &&
+      settlement.companyRefundAmount > 0,
+  };
+}
+
+/**
+ * Sum only the *chargeable* replacement items. Free items
+ * (`isFree=true`) contribute 0 — they ship to the customer at no
+ * cost. This is what the modal uses to compute the price difference
+ * for an exchange.
+ */
+export function sumChargeableReplacementLines(lines: AdjustmentLine[]): number {
+  let total = 0;
+  for (const line of lines) {
+    if (line.isFree) continue;
+    total += computeLineTotal(line);
+  }
+  return round2(total);
+}
+
+// ─── Audit-note humaniser ────────────────────────────────────────────────────
+//
+// Phase 25A wrote rich JSON envelopes into `turath_masr_audit_logs.note`
+// for `adjustment_created` and `adjustment_<state>` rows. Reading sites
+// were rendering that raw JSON verbatim, which is hostile in any UI.
+// The humaniser parses the envelope and returns a fully localised
+// Arabic paragraph the timeline / history surfaces can drop in.
+
+/**
+ * Structured payload we recognise in `audit_logs.note` for adjustment
+ * actions. All fields are optional — we render whatever's there and
+ * fall back gracefully when keys are missing.
+ */
+export interface AdjustmentAuditPayload {
+  adjustment_id?: string;
+  kind?: AdjustmentKind;
+  reason?: string;
+  note?: string;
+  refund_mode?: RefundMode;
+  refund_amount?: number;
+  price_difference?: number;
+  price_difference_direction?: PriceDifferenceDirection;
+  shipping_payer?: ShippingPayer;
+  shipping_customer_amount?: number;
+  shipping_company_amount?: number;
+  child_order_num?: string;
+  linked_complaint_id?: string;
+  customer_collect_amount?: number;
+  shipping_base_amount?: number;
+}
+
+/**
+ * Parse a free-form audit `note` field that *might* be a JSON
+ * envelope. We're permissive — anything that isn't a JSON object
+ * literal is returned as `null` and the caller renders the raw text
+ * (which is the legacy behaviour for ad-hoc notes).
+ */
+export function tryParseAdjustmentAuditPayload(
+  raw: string | null | undefined
+): AdjustmentAuditPayload | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('{')) return null;
+  try {
+    const obj = JSON.parse(trimmed);
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+    return obj as AdjustmentAuditPayload;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Render an audit_logs row about a return / exchange as a clean
+ * Arabic paragraph (or `null` if the row is not an adjustment event).
+ *
+ *   action: `adjustment_created` | `adjustment_approved` | …
+ *   note:   JSON envelope as written by OrderAdjustmentModal /
+ *           OrderDetailModal's decision handler.
+ */
+export function humanizeAdjustmentAuditEntry(input: {
+  action: string;
+  note?: string | null;
+  changedBy?: string | null;
+}): string | null {
+  const action = (input.action ?? '').trim();
+  if (!action.startsWith('adjustment_')) return null;
+  const payload = tryParseAdjustmentAuditPayload(input.note);
+  const kindLabel = payload?.kind ? ADJUSTMENT_KIND_LABEL_AR[payload.kind] : 'تسوية';
+
+  const headers: Record<string, string> = {
+    adjustment_created: `تم إنشاء طلب ${kindLabel}`,
+    adjustment_approved: `تمت الموافقة على طلب ${kindLabel}`,
+    adjustment_rejected: `تم رفض طلب ${kindLabel}`,
+    adjustment_completed: `تم تنفيذ طلب ${kindLabel}`,
+    adjustment_cancelled: `تم إلغاء طلب ${kindLabel}`,
+  };
+  const header = headers[action] ?? `حدث على ${kindLabel}`;
+  if (!payload) {
+    // Action recognised but no JSON envelope — return just the header.
+    return header;
+  }
+
+  const parts: string[] = [header];
+  if (payload.reason) {
+    parts.push(`السبب: ${payload.reason}`);
+  }
+  if (payload.note) {
+    parts.push(`ملاحظة: ${payload.note}`);
+  }
+  if (payload.child_order_num) {
+    parts.push(`الطلب الفرعي: #${payload.child_order_num}`);
+  }
+  if (
+    typeof payload.refund_amount === 'number' &&
+    payload.refund_amount > 0 &&
+    payload.refund_mode &&
+    payload.refund_mode !== 'none'
+  ) {
+    parts.push(
+      `استرداد: ${REFUND_MODE_LABEL_AR[payload.refund_mode]} — ${payload.refund_amount.toLocaleString('en-US')} ج.م`
+    );
+  }
+  if (typeof payload.price_difference === 'number' && Math.abs(payload.price_difference) > 0) {
+    const dir = payload.price_difference_direction;
+    const amt = Math.abs(payload.price_difference).toLocaleString('en-US');
+    if (dir === 'customer_pays') {
+      parts.push(`فرق سعر على العميل: ${amt} ج.م`);
+    } else if (dir === 'company_refunds') {
+      parts.push(`فرق سعر لصالح العميل: ${amt} ج.م`);
+    } else {
+      parts.push(`فرق السعر: ${amt} ج.م`);
+    }
+  }
+  if (payload.shipping_payer) {
+    const payerLabel = SHIPPING_PAYER_LABEL_AR[payload.shipping_payer];
+    if (payload.shipping_payer === 'split') {
+      const cs = (payload.shipping_customer_amount ?? 0).toLocaleString('en-US');
+      const cp = (payload.shipping_company_amount ?? 0).toLocaleString('en-US');
+      parts.push(`الشحن: العميل يدفع ${cs} ج.م، الشركة تتحمل ${cp} ج.م`);
+    } else {
+      parts.push(`الشحن: ${payerLabel}`);
+    }
+  }
+  if (typeof payload.customer_collect_amount === 'number' && payload.customer_collect_amount > 0) {
+    parts.push(
+      `إجمالي التحصيل من العميل: ${payload.customer_collect_amount.toLocaleString('en-US')} ج.م`
+    );
+  }
+  return parts.join('\n');
+}
+
+/**
+ * Convenience for surfaces that want a single-line summary (e.g.
+ * orders table tooltip).
+ */
+export function humanizeAdjustmentAuditEntryShort(input: {
+  action: string;
+  note?: string | null;
+}): string | null {
+  const full = humanizeAdjustmentAuditEntry({ action: input.action, note: input.note });
+  if (!full) return null;
+  return full.split('\n').slice(0, 1)[0];
 }

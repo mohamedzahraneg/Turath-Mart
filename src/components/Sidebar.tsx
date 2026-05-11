@@ -17,6 +17,7 @@ import {
   LogOut,
   ShieldCheck,
   Users,
+  RotateCcw,
 } from 'lucide-react';
 import { useNotifications } from '@/contexts/NotificationContext';
 import NotificationDropdown from '@/components/NotificationDropdown';
@@ -73,6 +74,14 @@ const navItems: NavItem[] = [
     label: 'إدارة العملاء (CRM)',
     icon: <Users size={20} />,
     href: '/customers',
+    group: 'إدارة',
+  },
+  // Phase 25B — operational returns / exchanges overview.
+  {
+    id: 'nav-returns-exchanges',
+    label: 'المرتجعات والاستبدالات',
+    icon: <RotateCcw size={20} />,
+    href: '/customers/returns-exchanges',
     group: 'إدارة',
   },
   {

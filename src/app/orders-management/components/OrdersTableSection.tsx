@@ -219,6 +219,12 @@ export default function OrdersTableSection() {
   const [regionFilter, setRegionFilter] = useState('الكل');
   const [statusFilter, setStatusFilter] = useState('الكل');
   const [productFilter, setProductFilter] = useState('الكل');
+  // Phase 25B — filter by adjustment type (all / parent / return-child /
+  // exchange-child). Operates purely on the order_num pattern so we
+  // don't need to JOIN the adjustments table.
+  const [adjustmentFilter, setAdjustmentFilter] = useState<
+    'all' | 'parents' | 'returns' | 'exchanges'
+  >('all');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [sortField, setSortField] = useState<SortField>('orderNum');
@@ -377,7 +383,7 @@ export default function OrdersTableSection() {
       }
       setAdjustmentMap(acc);
     } catch (err) {
-      console.debug('[OrdersTableSection] adjustments summary skipped:', err);
+      console.info('[OrdersTableSection] adjustments summary skipped:', err);
     }
   }, []);
 
@@ -499,6 +505,15 @@ export default function OrdersTableSection() {
         const matchRegion = regionFilter === 'الكل' || o.region === regionFilter;
         const matchStatus = statusFilter === 'الكل' || o.status === statusFilter;
         const matchProduct = productFilter === 'الكل' || o.products.includes(productFilter);
+        // Phase 25B — adjustment filter (parents vs return-child vs exchange-child)
+        const childMatch = o.orderNum.match(/-([RE])\d+$/);
+        const isReturnChild = childMatch?.[1] === 'R';
+        const isExchangeChild = childMatch?.[1] === 'E';
+        const matchAdjustment =
+          adjustmentFilter === 'all' ||
+          (adjustmentFilter === 'parents' && !childMatch) ||
+          (adjustmentFilter === 'returns' && isReturnChild) ||
+          (adjustmentFilter === 'exchanges' && isExchangeChild);
         let matchDate = true;
         if (dateFrom || dateTo) {
           const orderDate = parseDateStr(o.date);
@@ -512,7 +527,9 @@ export default function OrdersTableSection() {
             if (orderDate > to) matchDate = false;
           }
         }
-        return matchSearch && matchRegion && matchStatus && matchProduct && matchDate;
+        return (
+          matchSearch && matchRegion && matchStatus && matchProduct && matchDate && matchAdjustment
+        );
       })
       .sort((a, b) => {
         let cmp = 0;
@@ -535,6 +552,7 @@ export default function OrdersTableSection() {
     sortField,
     sortDir,
     productFilter,
+    adjustmentFilter,
   ]);
 
   const totalPages = Math.ceil(filtered.length / perPage);
@@ -780,6 +798,22 @@ export default function OrdersTableSection() {
                   </option>
                 ))}
               </select>
+              {/* Phase 25B — adjustment filter */}
+              <select
+                className="input-field w-auto text-sm"
+                value={adjustmentFilter}
+                onChange={(e) => {
+                  setAdjustmentFilter(
+                    e.target.value as 'all' | 'parents' | 'returns' | 'exchanges'
+                  );
+                  setPage(1);
+                }}
+              >
+                <option value="all">كل الطلبات</option>
+                <option value="parents">الطلبات الأصلية فقط</option>
+                <option value="returns">طلبات المرتجع</option>
+                <option value="exchanges">طلبات الاستبدال</option>
+              </select>
               <div className="relative">
                 <button
                   className="flex items-center gap-1.5 px-3 py-2 bg-[hsl(var(--primary))] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
@@ -1001,6 +1035,32 @@ export default function OrdersTableSection() {
                         <span className="font-mono text-xs font-bold text-[hsl(var(--primary))]">
                           {order.orderNum}
                         </span>
+                        {/* Phase 25B — child order chip + parent link */}
+                        {(() => {
+                          const childMatch = order.orderNum.match(/^(.+)-([RE])(\d+)$/);
+                          if (!childMatch) return null;
+                          const [, parent, prefix] = childMatch;
+                          const isExchange = prefix === 'E';
+                          return (
+                            <div className="mt-1 flex items-center gap-1 flex-wrap">
+                              <span
+                                className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full border ${
+                                  isExchange
+                                    ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                    : 'bg-rose-50 text-rose-700 border-rose-200'
+                                }`}
+                              >
+                                {isExchange ? 'طلب استبدال' : 'طلب مرتجع'}
+                              </span>
+                              <span
+                                className="text-[10px] text-[hsl(var(--muted-foreground))]"
+                                title={`الطلب الأصلي ${parent}`}
+                              >
+                                مرتبط بـ #{parent}
+                              </span>
+                            </div>
+                          );
+                        })()}
                       </td>
                       <td className="table-cell">
                         <p className="text-xs font-medium">{order.createdBy}</p>
