@@ -317,8 +317,31 @@ interface ProductCard {
   colors?: string[];
 }
 
+// Phase 24C — prefill shape for the new "create order from customer
+// profile" entry point. Every field is optional; when omitted the
+// modal behaves exactly as it does for the /orders-management
+// header (legacy callers don't change). Phones land through the
+// shared `normalizeEgyptPhoneLoose` so Arabic / Persian glyphs never
+// make it into the form state.
+export interface AddOrderDefaultCustomer {
+  name?: string | null;
+  phone?: string | null;
+  phone2?: string | null;
+  region?: string | null;
+  district?: string | null;
+  neighborhood?: string | null;
+  address?: string | null;
+}
+
 interface Props {
   onClose: () => void;
+  /** Phase 24C — optional prefill from the customer-profile launcher.
+   *  Behaviour is fully back-compat when omitted. */
+  defaultCustomer?: AddOrderDefaultCustomer;
+  /** Phase 24C — fired exactly once after a successful insert + the
+   *  post-insert customer upsert. Used by the profile page to close
+   *  the modal early and refetch the per-customer orders list. */
+  onSuccess?: (info: { orderNum: string; phone: string }) => void;
 }
 
 // A single product line in the order
@@ -429,7 +452,7 @@ function lineTotal(line: OrderLine): number {
 // import lives at the top of this file alongside the other
 // `@/lib/...` imports.
 
-export default function AddOrderModal({ onClose }: Props) {
+export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: Props) {
   const { user, currentRoleId, currentRole, profileFullName } = useAuth();
   const IS_ADMIN = canUseAdminOnlyFinancialFields(currentRoleId);
 
@@ -462,19 +485,29 @@ export default function AddOrderModal({ onClose }: Props) {
   const [successTotal, setSuccessTotal] = useState(0);
   const [successLines, setSuccessLines] = useState<OrderLine[]>([]);
 
-  // Form fields
-  const [customerName, setCustomerName] = useState('');
-  const [phone, setPhone] = useState('');
-  const [phone2, setPhone2] = useState('');
-  const [governorate, setGovernorate] = useState('القاهرة');
-  const [district, setDistrict] = useState('');
+  // Form fields. Phase 24C — initial values can be seeded from the
+  // optional `defaultCustomer` prop so the "create order from
+  // customer profile" launcher in /customers/[customerKey] lands
+  // with the customer's name / phones / address prefilled. Phones
+  // pass through `sanitizePhoneInput` so any Arabic / Persian
+  // glyphs that slipped through upstream get converted to ASCII at
+  // the form layer.
+  const [customerName, setCustomerName] = useState(defaultCustomer?.name?.trim() || '');
+  const [phone, setPhone] = useState(
+    defaultCustomer?.phone ? sanitizePhoneInput(defaultCustomer.phone) : ''
+  );
+  const [phone2, setPhone2] = useState(
+    defaultCustomer?.phone2 ? sanitizePhoneInput(defaultCustomer.phone2) : ''
+  );
+  const [governorate, setGovernorate] = useState(defaultCustomer?.region?.trim() || 'القاهرة');
+  const [district, setDistrict] = useState(defaultCustomer?.district?.trim() || '');
   // Phase 22M-Fix1 — optional neighborhood / shiakha / village input.
   // When present and matches an entry under the selected area, validation
   // also requires it to be `enabled`. Persisted as part of the address
   // text only — see payload note in the PR description (no schema
   // change).
-  const [neighborhood, setNeighborhood] = useState('');
-  const [address, setAddress] = useState('');
+  const [neighborhood, setNeighborhood] = useState(defaultCustomer?.neighborhood?.trim() || '');
+  const [address, setAddress] = useState(defaultCustomer?.address?.trim() || '');
   const [expressShipping, setExpressShipping] = useState(false);
   const [freeShipping, setFreeShipping] = useState(false);
   const [extraShippingFee, setExtraShippingFee] = useState(0);
@@ -1849,6 +1882,18 @@ export default function AddOrderModal({ onClose }: Props) {
 
       // Notify other components that orders have been updated
       window.dispatchEvent(new CustomEvent('turath_masr_orders_updated'));
+
+      // Phase 24C — fire optional onSuccess so the customer-profile
+      // launcher can refetch THIS customer's orders + show a toast.
+      // The existing /orders-management header flow doesn't pass
+      // onSuccess so this is a no-op for the legacy entry point.
+      if (onSuccess) {
+        try {
+          onSuccess({ orderNum, phone: phoneCanonical });
+        } catch (cbErr) {
+          console.warn('[AddOrderModal] onSuccess callback threw', cbErr);
+        }
+      }
 
       await new Promise((r) => setTimeout(r, 800));
       setIsSubmitting(false);
