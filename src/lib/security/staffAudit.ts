@@ -74,7 +74,31 @@ export type StaffAuditAction =
   | 'customer.attachment_uploaded'
   | 'customer.complaint_created'
   | 'customer.complaint_updated'
-  | 'customer.complaint_closed';
+  | 'customer.complaint_closed'
+  | 'customer.complaint_reopened'
+  | 'customer.complaint_assigned'
+  // ─── Phase 26D-2 — delegate management ───
+  | 'delegate.created'
+  | 'delegate.updated'
+  | 'delegate.disabled'
+  | 'delegate.enabled'
+  | 'delegate.reassigned'
+  | 'delegate.change_request_created'
+  | 'delegate.change_request_approved'
+  | 'delegate.change_request_rejected'
+  // ─── Phase 26D-2 — delegate finance ───
+  | 'delegate.settlement_created'
+  | 'delegate.settlement_updated'
+  | 'delegate.settlement_voided'
+  | 'delegate.custody_created'
+  | 'delegate.custody_updated'
+  | 'delegate.custody_returned'
+  | 'delegate.custody_voided'
+  | 'delegate.expense_created'
+  | 'delegate.expense_updated'
+  | 'delegate.expense_approved'
+  | 'delegate.expense_rejected'
+  | 'delegate.expense_voided';
 
 export const STAFF_AUDIT_ACTION_LABEL_AR: Record<StaffAuditAction, string> = {
   'staff.role_changed': 'تغيير الدور',
@@ -123,6 +147,30 @@ export const STAFF_AUDIT_ACTION_LABEL_AR: Record<StaffAuditAction, string> = {
   'customer.complaint_created': 'إنشاء شكوى عميل',
   'customer.complaint_updated': 'تعديل شكوى عميل',
   'customer.complaint_closed': 'إغلاق شكوى عميل',
+  'customer.complaint_reopened': 'إعادة فتح شكوى عميل',
+  'customer.complaint_assigned': 'تعيين شكوى عميل',
+  // Phase 26D-2 — Delegate management
+  'delegate.created': 'إنشاء مندوب جديد',
+  'delegate.updated': 'تعديل بيانات مندوب',
+  'delegate.disabled': 'تعطيل مندوب',
+  'delegate.enabled': 'تفعيل مندوب',
+  'delegate.reassigned': 'استبدال مندوب',
+  'delegate.change_request_created': 'طلب تعديل بيانات مندوب',
+  'delegate.change_request_approved': 'اعتماد طلب تعديل مندوب',
+  'delegate.change_request_rejected': 'رفض طلب تعديل مندوب',
+  // Phase 26D-2 — Delegate finance
+  'delegate.settlement_created': 'تسجيل توريد مندوب',
+  'delegate.settlement_updated': 'تعديل توريد مندوب',
+  'delegate.settlement_voided': 'إلغاء توريد مندوب',
+  'delegate.custody_created': 'تسجيل عهدة للمندوب',
+  'delegate.custody_updated': 'تعديل عهدة المندوب',
+  'delegate.custody_returned': 'استرجاع عهدة المندوب',
+  'delegate.custody_voided': 'إلغاء عهدة المندوب',
+  'delegate.expense_created': 'تسجيل مصروف مندوب',
+  'delegate.expense_updated': 'تعديل مصروف مندوب',
+  'delegate.expense_approved': 'اعتماد مصروف مندوب',
+  'delegate.expense_rejected': 'رفض مصروف مندوب',
+  'delegate.expense_voided': 'إلغاء مصروف مندوب',
 };
 
 /**
@@ -133,7 +181,9 @@ export type StaffAuditActionGroup =
   | 'orders'
   | 'returns'
   | 'customers'
+  | 'complaints'
   | 'delegates'
+  | 'delegateFinance'
   | 'staff'
   | 'security';
 
@@ -141,15 +191,30 @@ export const STAFF_AUDIT_GROUP_LABEL_AR: Record<StaffAuditActionGroup, string> =
   orders: 'الطلبات',
   returns: 'المرتجعات والاستبدالات',
   customers: 'العملاء',
+  complaints: 'الشكاوى',
   delegates: 'المناديب',
+  delegateFinance: 'مالية المناديب',
   staff: 'الموظفون والأدوار',
   security: 'الأمان',
 };
 
+/**
+ * Phase 26D-2 — finance-specific delegate actions go to their own
+ * filter pill (مالية المناديب) so admins can isolate money-moving
+ * events from delegate-profile edits.
+ */
+const DELEGATE_FINANCE_PREFIXES = [
+  'delegate.settlement_',
+  'delegate.custody_',
+  'delegate.expense_',
+];
+
 export function groupForAction(action: string): StaffAuditActionGroup {
   if (action.startsWith('order.')) return 'orders';
   if (action.startsWith('adjustment.')) return 'returns';
+  if (action.startsWith('customer.complaint_')) return 'complaints';
   if (action.startsWith('customer.')) return 'customers';
+  if (DELEGATE_FINANCE_PREFIXES.some((p) => action.startsWith(p))) return 'delegateFinance';
   if (action.startsWith('delegate.')) return 'delegates';
   if (action.startsWith('staff.') || action.startsWith('role.')) return 'staff';
   return 'security';
@@ -157,11 +222,11 @@ export function groupForAction(action: string): StaffAuditActionGroup {
 
 export interface StaffAuditEntity {
   /** `profile`, `device`, `role`, `policy`, etc. */
-  type?: string;
+  type?: string | null;
   /** Stable identifier — UUID for profiles/devices, role id for roles. */
-  id?: string;
+  id?: string | null;
   /** Human-readable label for the audit viewer (e.g. the staff name). */
-  label?: string;
+  label?: string | null;
 }
 
 export interface StaffAuditInput {
