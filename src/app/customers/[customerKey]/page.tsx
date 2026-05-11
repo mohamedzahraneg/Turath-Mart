@@ -61,6 +61,10 @@ import AppLayout from '@/components/AppLayout';
 import { createClient } from '@/lib/supabase/client';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useAuth } from '@/contexts/AuthContext';
+// Phase 24A-Fix1 — reuse the canonical order-detail modal so the
+// profile-side "عرض" button opens the full order details in-place
+// instead of routing out to /orders-management.
+import OrderDetailModal from '@/app/orders-management/components/OrderDetailModal';
 import {
   type AttachmentRow,
   type AuditRow,
@@ -87,6 +91,9 @@ import {
   customerStatusLabel,
   customerStatusTone,
   customerTypeLabel,
+  customerTypeTone,
+  deriveAccountStatus,
+  deriveCustomerClassification,
   fmtDateTimeAr,
   fmtDateYmd,
   fmtMoney,
@@ -142,6 +149,14 @@ export default function CustomerProfilePage() {
   const [reloadTick, setReloadTick] = useState(0);
   const [activeTab, setActiveTab] = useState<TabId>('overview');
   const [search, setSearch] = useState('');
+  // Phase 24A-Fix1 — order-detail modal state. `openOrderId` is the
+  // turath_masr_orders.id the user clicked. `modalOrder` is the
+  // mapped full row we hand to <OrderDetailModal />. `modalLoading`
+  // is briefly true between click and fetch completion.
+  const [openOrderId, setOpenOrderId] = useState<string | null>(null);
+  const [modalOrder, setModalOrder] = useState<OrderModalShape | null>(null);
+  const [modalLoading, setModalLoading] = useState(false);
+  const [modalError, setModalError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!phone) return;
@@ -314,6 +329,44 @@ export default function CustomerProfilePage() {
     [orders, complaints, chat, ratings, notes]
   );
 
+  // Phase 24A-Fix1 — open-order fetch. Triggered when the orders-tab
+  // "عرض" button sets `openOrderId`. We pull the full row (narrow
+  // column list, `lines` jsonb included so the modal can render the
+  // line items — but we strip the `image` field per slot before
+  // handing the rows to the modal so heavy base64 / external images
+  // are never rendered from this surface).
+  useEffect(() => {
+    if (!openOrderId) {
+      setModalOrder(null);
+      setModalError(null);
+      return;
+    }
+    let cancelled = false;
+    setModalLoading(true);
+    setModalError(null);
+    (async () => {
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from('turath_masr_orders')
+        .select(
+          'id, order_num, tracking_token, created_by, created_by_device, created_by_ip, created_by_location, customer, phone, phone2, region, district, neighborhood, address, products, quantity, subtotal, shipping_fee, extra_shipping_fee, express_shipping, free_shipping, total, status, date, time, day, notes, warranty, delegate_name, lines, scheduled_delivery_date, scheduled_delivery_from, scheduled_delivery_to, scheduled_delivery_reason, scheduled_delivery_updated_at, scheduled_delivery_updated_by, created_at'
+        )
+        .eq('id', openOrderId)
+        .maybeSingle();
+      if (cancelled) return;
+      if (error || !data) {
+        setModalError('تعذر تحميل تفاصيل الطلب.');
+        setModalLoading(false);
+        return;
+      }
+      setModalOrder(mapToOrderModalShape(data));
+      setModalLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [openOrderId]);
+
   const initials = useMemo(() => {
     const name = customer?.full_name || phone || '?';
     return (name.trim().split(/\s+/)[0]?.charAt(0) || '?').toUpperCase();
@@ -323,13 +376,24 @@ export default function CustomerProfilePage() {
   const tel = buildTelHref(phone);
   const mailto = buildMailtoHref(customer?.email);
 
-  // Customer code derived from the row position alphabet — fall back to
-  // a short hash of the phone if we couldn't compute it.
+  // Customer code derived from the phone tail. Phase 24A-Fix1 — numeric
+  // only (was "C-XXXX"). The numeric form lines up with the dashboard
+  // table, and dashboard search still tolerates a "C-" prefix.
   const customerCode = useMemo(() => {
     if (!phone) return '—';
-    const tail = phone.slice(-4);
-    return `C-${tail}`;
+    return phone.slice(-4);
   }, [phone]);
+
+  // Phase 24A-Fix1 — derive classification + account status on render
+  // so a new order automatically flips the badge without a job.
+  const derivedType = useMemo(
+    () => deriveCustomerClassification(customer ?? {}, metrics),
+    [customer, metrics]
+  );
+  const derivedStatus = useMemo(
+    () => deriveAccountStatus(customer ?? {}, metrics),
+    [customer, metrics]
+  );
 
   const refresh = useCallback(() => setReloadTick((n) => n + 1), []);
 
@@ -407,22 +471,24 @@ export default function CustomerProfilePage() {
                   {customer?.full_name || phone || 'بدون اسم'}
                 </h1>
                 <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                  {/* Phase 24A-Fix1 — derived account status (نشط /
+                      غير نشط) + derived classification (مميز / جديد /
+                      نشط / تحذير / غير نشط / عادي). Both flip
+                      automatically when a new order lands. */}
                   <span
-                    className={`inline-flex items-center gap-1 rounded-full border text-[10px] font-semibold px-2 py-0.5 ${customerStatusTone(
-                      customer?.customer_status
-                    )}`}
+                    className={`inline-flex items-center gap-1 rounded-full border text-[10px] font-semibold px-2 py-0.5 ${customerStatusTone(derivedStatus)}`}
                   >
                     <CheckCircle2 size={10} />
-                    {customerStatusLabel(customer?.customer_status || 'active')}
+                    {customerStatusLabel(derivedStatus)}
+                  </span>
+                  <span
+                    className={`inline-flex items-center gap-1 rounded-full border text-[10px] font-semibold px-2 py-0.5 ${customerTypeTone(derivedType)}`}
+                  >
+                    {customerTypeLabel(derivedType)}
                   </span>
                   {customer?.vip_level && (
                     <span className="inline-flex rounded-full border bg-violet-50 text-violet-700 border-violet-200 text-[10px] font-semibold px-2 py-0.5">
                       VIP {customer.vip_level}
-                    </span>
-                  )}
-                  {customer?.customer_type && (
-                    <span className="inline-flex rounded-full border bg-blue-50 text-blue-700 border-blue-200 text-[10px] font-semibold px-2 py-0.5">
-                      {customerTypeLabel(customer.customer_type)}
                     </span>
                   )}
                 </div>
@@ -577,7 +643,9 @@ export default function CustomerProfilePage() {
                     onSaved={refresh}
                   />
                 )}
-                {activeTab === 'orders' && <OrdersTab orders={orders} search={search} />}
+                {activeTab === 'orders' && (
+                  <OrdersTab orders={orders} search={search} onOpenOrder={setOpenOrderId} />
+                )}
                 {activeTab === 'complaints' && (
                   <ComplaintsTab complaints={complaints} search={search} />
                 )}
@@ -623,8 +691,220 @@ export default function CustomerProfilePage() {
           </div>
         </div>
       </div>
+
+      {/* Phase 24A-Fix1 — order detail modal triggered from the
+          orders tab. Keeps the user in the customer-profile context
+          instead of routing out to /orders-management. */}
+      {openOrderId && (
+        <>
+          {modalLoading && !modalOrder && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+              dir="rtl"
+            >
+              <div className="bg-white rounded-2xl px-6 py-4 text-sm text-[hsl(var(--muted-foreground))]">
+                جارٍ تحميل تفاصيل الطلب…
+              </div>
+            </div>
+          )}
+          {modalError && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+              dir="rtl"
+              onClick={() => setOpenOrderId(null)}
+            >
+              <div className="bg-white rounded-2xl px-6 py-4 text-sm text-red-700 max-w-md">
+                <p className="font-semibold mb-2">تعذر تحميل تفاصيل الطلب</p>
+                <p className="text-xs">{modalError}</p>
+              </div>
+            </div>
+          )}
+          {modalOrder && (
+            <OrderDetailModal
+              order={modalOrder}
+              onClose={() => {
+                setOpenOrderId(null);
+                setModalOrder(null);
+                setModalError(null);
+              }}
+            />
+          )}
+        </>
+      )}
     </AppLayout>
   );
+}
+
+// ─── Phase 24A-Fix1 — Order → OrderDetailModal shape mapper ──────────────
+//
+// The canonical modal under `/orders-management/components` expects a
+// rich camelCase `Order` shape. We pass the slim profile-page row +
+// the full fetched row through this mapper so the modal renders
+// without crashing on missing fields. Line images are stripped before
+// the modal renders — even if a legacy line has a base64 blob in
+// jsonb, the customer profile never paints it.
+
+interface OrderModalLineShape {
+  productType: string;
+  label: string;
+  emoji?: string;
+  color?: string | null;
+  quantity: number;
+  unitPrice: number;
+  includeFlashlight?: boolean;
+  flashlightPrice?: number;
+  note?: string | null;
+  total: number;
+  // `image` intentionally omitted — Fix1 contract.
+}
+
+export interface OrderModalShape {
+  id: string;
+  orderNum: string;
+  trackingToken?: string | null;
+  createdBy: string;
+  createdByIp?: string;
+  createdByLocation?: string;
+  createdByDevice?: string;
+  customer: string;
+  phone: string;
+  phone2?: string;
+  region: string;
+  district?: string;
+  neighborhood?: string | null;
+  address: string;
+  products: string;
+  quantity: number;
+  subtotal: number;
+  shippingFee: number;
+  extraShippingFee?: number;
+  expressShipping?: boolean;
+  total: number;
+  status: string;
+  date: string;
+  time: string;
+  day: string;
+  notes?: string;
+  ip: string;
+  warranty?: string;
+  delegate?: string;
+  scheduledDeliveryDate?: string | null;
+  scheduledDeliveryFrom?: string | null;
+  scheduledDeliveryTo?: string | null;
+  scheduledDeliveryReason?: string | null;
+  scheduledDeliveryUpdatedAt?: string | null;
+  scheduledDeliveryUpdatedBy?: string | null;
+  lines?: OrderModalLineShape[];
+}
+
+interface RawOrderRowFromDb {
+  id: string;
+  order_num: string;
+  tracking_token?: string | null;
+  created_by?: string | null;
+  created_by_device?: string | null;
+  created_by_ip?: string | null;
+  created_by_location?: string | null;
+  customer?: string | null;
+  phone?: string | null;
+  phone2?: string | null;
+  region?: string | null;
+  district?: string | null;
+  neighborhood?: string | null;
+  address?: string | null;
+  products?: string | null;
+  quantity?: number | null;
+  subtotal?: number | null;
+  shipping_fee?: number | null;
+  extra_shipping_fee?: number | null;
+  express_shipping?: boolean | null;
+  free_shipping?: boolean | null;
+  total?: number | null;
+  status?: string | null;
+  date?: string | null;
+  time?: string | null;
+  day?: string | null;
+  notes?: string | null;
+  warranty?: string | null;
+  delegate_name?: string | null;
+  lines?: unknown;
+  scheduled_delivery_date?: string | null;
+  scheduled_delivery_from?: string | null;
+  scheduled_delivery_to?: string | null;
+  scheduled_delivery_reason?: string | null;
+  scheduled_delivery_updated_at?: string | null;
+  scheduled_delivery_updated_by?: string | null;
+  created_at?: string | null;
+}
+
+function mapToOrderModalShape(row: RawOrderRowFromDb): OrderModalShape {
+  const created = row.created_at || '';
+  const datePart = row.date || created.split('T')[0] || '';
+  const timePart = row.time || created.split('T')[1]?.substring(0, 5) || '';
+
+  // Strip `image` from every line slot. The DB jsonb may carry an
+  // `image` URL or (worse) a base64 blob — we never render it from
+  // the customer profile per the Fix1 contract.
+  const rawLines = Array.isArray(row.lines) ? row.lines : null;
+  const lines = rawLines
+    ? rawLines.map((l: Record<string, unknown>) => {
+        const out: OrderModalLineShape = {
+          productType: typeof l.productType === 'string' ? l.productType : '',
+          label: typeof l.label === 'string' ? l.label : '',
+          emoji: typeof l.emoji === 'string' ? l.emoji : undefined,
+          color: typeof l.color === 'string' ? l.color : null,
+          quantity: typeof l.quantity === 'number' ? l.quantity : Number(l.quantity || 1),
+          unitPrice: typeof l.unitPrice === 'number' ? l.unitPrice : Number(l.unitPrice || 0),
+          includeFlashlight: Boolean(l.includeFlashlight),
+          flashlightPrice:
+            typeof l.flashlightPrice === 'number'
+              ? l.flashlightPrice
+              : Number(l.flashlightPrice || 0),
+          note: typeof l.note === 'string' ? l.note : null,
+          total: typeof l.total === 'number' ? l.total : Number(l.total || 0),
+        };
+        return out;
+      })
+    : undefined;
+
+  return {
+    id: row.id,
+    orderNum: row.order_num,
+    trackingToken: row.tracking_token ?? null,
+    createdBy: row.created_by || 'غير معروف',
+    createdByIp: row.created_by_ip ?? undefined,
+    createdByLocation: row.created_by_location ?? undefined,
+    createdByDevice: row.created_by_device ?? undefined,
+    customer: row.customer || '',
+    phone: row.phone || '',
+    phone2: row.phone2 ?? undefined,
+    region: row.region || '',
+    district: row.district ?? undefined,
+    neighborhood: row.neighborhood ?? null,
+    address: row.address || '',
+    products: row.products || '',
+    quantity: Number(row.quantity ?? 1),
+    subtotal: Number(row.subtotal ?? (row.total ?? 0) - (row.shipping_fee ?? 0)),
+    shippingFee: Number(row.shipping_fee ?? 0),
+    extraShippingFee: row.extra_shipping_fee == null ? undefined : Number(row.extra_shipping_fee),
+    expressShipping: row.express_shipping ?? undefined,
+    total: Number(row.total ?? 0),
+    status: row.status || 'new',
+    date: datePart,
+    time: timePart,
+    day: row.day || '',
+    notes: row.notes ?? undefined,
+    ip: '',
+    warranty: row.warranty ?? undefined,
+    delegate: row.delegate_name ?? undefined,
+    scheduledDeliveryDate: row.scheduled_delivery_date ?? null,
+    scheduledDeliveryFrom: row.scheduled_delivery_from ?? null,
+    scheduledDeliveryTo: row.scheduled_delivery_to ?? null,
+    scheduledDeliveryReason: row.scheduled_delivery_reason ?? null,
+    scheduledDeliveryUpdatedAt: row.scheduled_delivery_updated_at ?? null,
+    scheduledDeliveryUpdatedBy: row.scheduled_delivery_updated_by ?? null,
+    lines,
+  };
 }
 
 // ─── Small reusable components ───────────────────────────────────────────
@@ -1119,7 +1399,15 @@ function DataField({
   );
 }
 
-function OrdersTab({ orders, search }: { orders: OrderRow[]; search: string }) {
+function OrdersTab({
+  orders,
+  search,
+  onOpenOrder,
+}: {
+  orders: OrderRow[];
+  search: string;
+  onOpenOrder: (orderId: string) => void;
+}) {
   const q = search.trim().toLowerCase();
   const filtered = q
     ? orders.filter(
@@ -1161,12 +1449,16 @@ function OrdersTab({ orders, search }: { orders: OrderRow[]; search: string }) {
                 {o.scheduled_delivery_date ? fmtDateYmd(o.scheduled_delivery_date) : '—'}
               </td>
               <td className="px-3 py-2 text-center">
-                <Link
-                  href={`/orders-management?order=${encodeURIComponent(o.order_num)}`}
+                {/* Phase 24A-Fix1 — open the order in a modal instead
+                    of navigating to /orders-management (which would
+                    drop the user out of the profile context). */}
+                <button
+                  type="button"
+                  onClick={() => onOpenOrder(o.id)}
                   className="inline-flex items-center gap-1 text-[10px] font-semibold text-[hsl(var(--primary))] hover:underline"
                 >
                   <Eye size={11} /> عرض
-                </Link>
+                </button>
               </td>
             </tr>
           ))}
