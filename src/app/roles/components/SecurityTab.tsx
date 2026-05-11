@@ -43,6 +43,8 @@ import {
   type StaffAuditAction,
   writeStaffAuditLog,
 } from '@/lib/security/staffAudit';
+// Phase 26B — orphan auth users + suspicious profiles panel.
+import OrphanAuthUsersPanel from './OrphanAuthUsersPanel';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -410,7 +412,14 @@ export default function SecurityTab() {
         ))}
       </div>
 
-      {/* Orphan accounts banner */}
+      {/* Phase 26B — orphan auth users + suspicious profiles panel
+          (authoritative data via /api/security/auth-users). Mounted
+          here so admins see the full picture in one tab. */}
+      <OrphanAuthUsersPanel />
+
+      {/* Legacy login-events proxy banner (Phase 26A). Kept as a
+          secondary signal; with the panel above, this is usually a
+          subset of the same orphans. */}
       {orphanCandidates.length > 0 && (
         <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
           <div className="flex items-start gap-2">
