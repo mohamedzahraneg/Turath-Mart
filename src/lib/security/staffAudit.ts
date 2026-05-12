@@ -53,6 +53,8 @@ export type StaffAuditAction =
   | 'security.login_blocked'
   | 'security.logout'
   | 'auth_orphan_profile_created'
+  | 'auth_user_delete_requested'
+  | 'auth_user_delete_blocked'
   | 'auth_user_deleted'
   | 'auth_user_delete_failed'
   | 'role.created'
@@ -134,6 +136,8 @@ export const STAFF_AUDIT_ACTION_LABEL_AR: Record<StaffAuditAction, string> = {
   'security.login_blocked': 'محاولة دخول محظورة',
   'security.logout': 'تسجيل خروج',
   auth_orphan_profile_created: 'إنشاء ملف لحساب Auth مفقود',
+  auth_user_delete_requested: 'تم طلب حذف حساب دخول نهائيًا',
+  auth_user_delete_blocked: 'تم منع حذف حساب الدخول لأسباب أمان',
   auth_user_deleted: 'حذف نهائي لحساب Auth',
   auth_user_delete_failed: 'فشل حذف حساب Auth',
   'role.created': 'إنشاء دور',

@@ -80,6 +80,18 @@ interface AuthUserRow {
     disabled_at: string | null;
     disabled_reason: string | null;
   } | null;
+  delete_safety?: {
+    allowed: boolean;
+    category: string | null;
+    blocked_reason: string | null;
+    activity_summary?: {
+      login_events: number | null;
+      devices: number | null;
+      staff_audit_actor_events: number | null;
+      operational_refs_total: number;
+      activity_unknown: boolean;
+    };
+  };
 }
 
 interface RoleOption {
@@ -134,6 +146,7 @@ export default function OrphanAuthUsersPanel() {
 
   const [deleteForUser, setDeleteForUser] = useState<AuthUserRow | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState('');
+  const [deleteReason, setDeleteReason] = useState('');
 
   const load = async () => {
     setLoading(true);
@@ -327,14 +340,14 @@ export default function OrphanAuthUsersPanel() {
     }
     setBusyId(deleteForUser.id);
     try {
-      const resp = await fetch('/api/security/auth-users', {
+      const resp = await fetch('/api/security/delete-auth-user', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
         body: JSON.stringify({
-          action: 'hard-delete',
           user_id: deleteForUser.id,
-          confirm: deleteConfirm.trim(),
+          confirmation: deleteConfirm.trim(),
+          reason: deleteReason.trim(),
         }),
       });
       const json = (await resp.json()) as { ok: boolean; code?: string; message?: string };
@@ -348,6 +361,7 @@ export default function OrphanAuthUsersPanel() {
       toast.success('تم الحذف النهائي للحساب.');
       setDeleteForUser(null);
       setDeleteConfirm('');
+      setDeleteReason('');
       await load();
     } catch (err) {
       console.error('[OrphanAuthUsersPanel] hard-delete failed:', err);
@@ -490,16 +504,22 @@ export default function OrphanAuthUsersPanel() {
                           <UserPlus size={11} /> إنشاء ملف
                         </button>
                         <button
-                          disabled={busyId === r.id || !serviceRoleAvailable}
+                          disabled={
+                            busyId === r.id || !serviceRoleAvailable || !r.delete_safety?.allowed
+                          }
                           className="text-[10px] bg-rose-100 text-rose-800 px-2 py-1 rounded-lg font-bold hover:bg-rose-200 disabled:opacity-40 inline-flex items-center gap-1"
                           title={
-                            serviceRoleAvailable
-                              ? 'حذف نهائي من Auth'
-                              : 'الحذف النهائي غير متاح من التطبيق الحالي'
+                            !serviceRoleAvailable
+                              ? 'الحذف النهائي غير متاح لأن مفتاح Service Role غير مفعّل على السيرفر'
+                              : r.delete_safety?.allowed
+                                ? 'حذف نهائي من Auth'
+                                : r.delete_safety?.blocked_reason ||
+                                  'الحذف النهائي غير مسموح لهذا الحساب'
                           }
                           onClick={() => {
                             setDeleteForUser(r);
                             setDeleteConfirm('');
+                            setDeleteReason('');
                           }}
                         >
                           <ShieldOff size={11} /> حذف نهائي
@@ -603,6 +623,29 @@ export default function OrphanAuthUsersPanel() {
                             <CheckCircle size={11} /> إعادة تفعيل
                           </button>
                         )}
+                        <button
+                          disabled={
+                            busyId === row.id ||
+                            !serviceRoleAvailable ||
+                            !row.delete_safety?.allowed
+                          }
+                          className="text-[10px] bg-rose-100 text-rose-800 px-2 py-1 rounded-lg font-bold hover:bg-rose-200 disabled:opacity-40 inline-flex items-center gap-1"
+                          title={
+                            !serviceRoleAvailable
+                              ? 'الحذف النهائي غير متاح لأن مفتاح Service Role غير مفعّل على السيرفر'
+                              : row.delete_safety?.allowed
+                                ? 'حذف نهائي آمن'
+                                : row.delete_safety?.blocked_reason ||
+                                  'الحذف النهائي غير مسموح لهذا الحساب'
+                          }
+                          onClick={() => {
+                            setDeleteForUser(row);
+                            setDeleteConfirm('');
+                            setDeleteReason('');
+                          }}
+                        >
+                          <ShieldOff size={11} /> حذف نهائي
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -693,6 +736,7 @@ export default function OrphanAuthUsersPanel() {
                   UUID: <code className="font-mono">{deleteForUser.id}</code>
                 </li>
                 <li>آخر دخول: {fmtDateTime(deleteForUser.last_sign_in_at)}</li>
+                <li>أُنشئ في: {fmtDateTime(deleteForUser.created_at)}</li>
                 <li>
                   ملف الموظف:{' '}
                   {deleteForUser.profile ? (
@@ -701,8 +745,27 @@ export default function OrphanAuthUsersPanel() {
                     <span>غير موجود</span>
                   )}
                 </li>
+                <li>
+                  النشاط: دخول {deleteForUser.delete_safety?.activity_summary?.login_events ?? '؟'}،
+                  أجهزة {deleteForUser.delete_safety?.activity_summary?.devices ?? '؟'}، تشغيل{' '}
+                  {deleteForUser.delete_safety?.activity_summary?.operational_refs_total ?? '؟'}
+                </li>
               </ul>
             </div>
+            <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-amber-900 leading-relaxed">
+              <p>الحذف النهائي لا يمكن التراجع عنه من ناحية تسجيل الدخول.</p>
+              <p>لن يتم حذف سجلات التشغيل أو التدقيق.</p>
+              <p>سيتم تعطيل ملف الموظف بدل حذفه للحفاظ على السجل.</p>
+            </div>
+            <label className="flex flex-col gap-1">
+              سبب الحذف
+              <textarea
+                value={deleteReason}
+                onChange={(e) => setDeleteReason(e.target.value)}
+                className="form-input text-sm min-h-[72px]"
+                placeholder="مثال: حساب وهمي جديد تم إنشاؤه بالخطأ"
+              />
+            </label>
             <label className="flex flex-col gap-1">
               <span>
                 للتأكيد، اكتب العبارة بالضبط:{' '}
@@ -728,7 +791,9 @@ export default function OrphanAuthUsersPanel() {
                 disabled={
                   busyId === deleteForUser.id ||
                   deleteConfirm.trim() !== HARD_DELETE_PHRASE ||
-                  !serviceRoleAvailable
+                  !deleteReason.trim() ||
+                  !serviceRoleAvailable ||
+                  !deleteForUser.delete_safety?.allowed
                 }
                 className="bg-rose-600 text-white text-xs py-1 px-3 rounded-lg font-bold inline-flex items-center gap-1 disabled:opacity-50"
               >
