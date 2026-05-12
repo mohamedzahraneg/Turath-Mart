@@ -129,6 +129,14 @@ COMMENT ON FUNCTION public.complete_password_change() IS
   'their own row.';
 
 REVOKE EXECUTE ON FUNCTION public.complete_password_change() FROM PUBLIC;
+-- Supabase's project-level default grants extend EXECUTE on any new
+-- function in `public` to the `anon` role automatically (alongside
+-- `authenticated` and `service_role`). REVOKE FROM PUBLIC alone is
+-- not enough to block anon here — verified post-apply on
+-- 2026-05-12. We REVOKE from anon explicitly so an unauthenticated
+-- caller can never reach this function even if the body's
+-- `auth.uid() IS NULL` guard is later relaxed.
+REVOKE EXECUTE ON FUNCTION public.complete_password_change() FROM anon;
 GRANT  EXECUTE ON FUNCTION public.complete_password_change() TO authenticated;
 
 
