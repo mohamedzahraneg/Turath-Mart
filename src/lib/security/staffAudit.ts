@@ -35,6 +35,10 @@ export type StaffAuditAction =
   | 'staff.account_pending'
   | 'staff.created'
   | 'staff.deleted'
+  | 'staff.profile_updated'
+  | 'staff.email_change_requested'
+  | 'staff.email_changed'
+  | 'staff.email_change_failed'
   // ─── Phase 26H-2 — password rotation lifecycle ───
   | 'staff.password_change_required'
   | 'staff.password_change_required_completed'
@@ -113,6 +117,10 @@ export const STAFF_AUDIT_ACTION_LABEL_AR: Record<StaffAuditAction, string> = {
   'staff.account_pending': 'تعليق الحساب للمراجعة',
   'staff.created': 'إنشاء حساب جديد',
   'staff.deleted': 'حذف حساب',
+  'staff.profile_updated': 'تم تعديل بيانات الموظف',
+  'staff.email_change_requested': 'تم طلب تغيير بريد تسجيل الدخول للموظف',
+  'staff.email_changed': 'تم تغيير بريد تسجيل الدخول للموظف',
+  'staff.email_change_failed': 'فشل تغيير بريد تسجيل الدخول للموظف',
   // Phase 26H-2 — password rotation lifecycle.
   'staff.password_change_required': 'إلزام الموظف بتغيير كلمة المرور',
   'staff.password_change_required_completed': 'اكتمال تغيير كلمة المرور الإجباري',
