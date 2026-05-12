@@ -18,8 +18,19 @@ import {
   Camera,
   Upload,
   ShieldAlert,
+  // Phase 26E-Fix1 — icons for the new safe-action buttons in the
+  // employees tab (disable / suspend / reactivate). Mirrors the
+  // pattern already used by UsersTab.tsx.
+  UserX,
+  Clock,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
+// Phase 26E-Fix1 — auth context + permission helper + staff-audit
+// writer so the employees tab can replace its silent .delete() with
+// gated status mutations that emit audit rows.
+import { useAuth } from '@/contexts/AuthContext';
+import { usePermissions } from '@/hooks/usePermissions';
+import { writeStaffAuditLog, type StaffAuditAction } from '@/lib/security/staffAudit';
 // Phase 26A — security tab (devices, login events, staff audit log).
 import SecurityTab from './components/SecurityTab';
 // Phase 26C — permissions matrix tab (role × permission grid with
@@ -49,11 +60,23 @@ interface Role {
 interface Employee {
   id: string;
   name: string;
+  /** Phase 26E-Fix1 — full canonical email. Kept alongside `username`
+   *  (the local-part) so audit rows and status updates can match the
+   *  real DB column, not a reconstructed `{username}@turathmasr.com`. */
+  email: string;
   username: string;
   password: string;
   roleId: string;
   roleName?: string;
+  /** Legacy `status` left in place for the role-summary card that
+   *  counts active employees; real Phase 26A status lives in
+   *  `accountStatus` below. */
   status: 'active' | 'inactive';
+  /** Phase 26E-Fix1 — real `profiles.account_status` so the employees
+   *  tab badge + safe actions track the same data as the users tab. */
+  accountStatus: 'active' | 'disabled' | 'suspended' | 'pending';
+  disabledAt: string | null;
+  disabledReason: string | null;
   createdAt: string;
   avatar?: string;
 }
@@ -508,10 +531,17 @@ function UnifiedMemberModal({ employee, roles, onClose, onSave }: UnifiedMemberM
     employee || {
       id: stableId.current,
       name: '',
+      email: '',
       username: '',
       password: '',
       roleId: roles[0]?.id || '',
       status: 'active',
+      // Phase 26E-Fix1 — new employees default to `active`; the
+      // disable / suspend / reactivate flow updates these from the
+      // employees-tab actions, never the create form.
+      accountStatus: 'active',
+      disabledAt: null,
+      disabledReason: null,
       createdAt: new Date().toLocaleDateString('en-GB'),
       avatar: '',
     }
@@ -777,6 +807,25 @@ export default function RolesPage() {
   const [appUsers, setAppUsers] = useState<AppUser[]>(defaultUsers);
   const [hydrated, setHydrated] = useState(false);
 
+  // Phase 26E-Fix1 — auth + permissions used by the employees-tab
+  // safe-action buttons (disable / suspend / reactivate) and the
+  // staff audit writer.
+  const { user, profileFullName, currentRoleId } = useAuth();
+  const perms = usePermissions();
+  const canManageStaff = perms.isAdmin || perms.can('manage_staff');
+  // Phase 26E-Fix1 — local toast for employees-tab feedback.
+  // UsersTab keeps its own toast; the inline employees tab gets a
+  // matching one so no mutation is silent.
+  const [employeesToast, setEmployeesToast] = useState<{
+    kind: 'success' | 'error';
+    message: string;
+  } | null>(null);
+  const [employeesBusyId, setEmployeesBusyId] = useState<string | null>(null);
+  const showEmployeesToast = (kind: 'success' | 'error', message: string) => {
+    setEmployeesToast({ kind, message });
+    window.setTimeout(() => setEmployeesToast(null), 4000);
+  };
+
   // Load ALL data from Supabase (source of truth) - roles, employees, users
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -811,24 +860,47 @@ export default function RolesPage() {
         }
 
         // 2. Load all users from Supabase profiles
+        // Phase 26E-Fix1 — extended SELECT to pull `account_status`,
+        // `disabled_at`, `disabled_reason` so the employees tab status
+        // badge reflects the real DB row instead of a hardcoded
+        // 'active' (matches the Phase 26E UsersTab fetch).
         const { data: profiles, error } = await supabase
           .from('profiles')
-          .select('id, email, full_name, role, role_id, role_name, permissions, created_at')
+          .select(
+            'id, email, full_name, role, role_id, role_name, permissions, created_at, account_status, disabled_at, disabled_reason'
+          )
           .order('created_at', { ascending: true });
 
         if (!error && profiles && profiles.length > 0) {
           const avatars = loadAvatars();
           // Map profiles to Employee format for the employees tab
-          const emps: Employee[] = profiles.map((p: any) => ({
-            id: p.id,
-            name: p.full_name || p.email?.split('@')[0] || 'مستخدم',
-            username: p.email?.split('@')[0] || p.id,
-            password: '••••••••',
-            roleId: p.role_id || 'r6',
-            status: 'active' as const,
-            createdAt: p.created_at ? new Date(p.created_at).toLocaleDateString('en-GB') : '',
-            avatar: avatars[p.id] || '',
-          }));
+          const emps: Employee[] = profiles.map((p: any) => {
+            const rawStatus = (p.account_status ?? 'active').toLowerCase();
+            const accountStatus: Employee['accountStatus'] =
+              rawStatus === 'disabled' ||
+              rawStatus === 'suspended' ||
+              rawStatus === 'pending' ||
+              rawStatus === 'active'
+                ? rawStatus
+                : 'active';
+            return {
+              id: p.id,
+              name: p.full_name || p.email?.split('@')[0] || 'مستخدم',
+              email: p.email || '',
+              username: p.email?.split('@')[0] || p.id,
+              password: '••••••••',
+              roleId: p.role_id || 'r6',
+              // Legacy `status` mirrors the real account status so the
+              // role-summary card's active-employees count stays
+              // honest now that account_status is loaded.
+              status: accountStatus === 'active' ? 'active' : 'inactive',
+              accountStatus,
+              disabledAt: p.disabled_at ?? null,
+              disabledReason: p.disabled_reason ?? null,
+              createdAt: p.created_at ? new Date(p.created_at).toLocaleDateString('en-GB') : '',
+              avatar: avatars[p.id] || '',
+            };
+          });
           setEmployees(emps);
           // Map profiles to AppUser format for the users tab
           const users: AppUser[] = profiles.map((p: any) => ({
@@ -908,6 +980,96 @@ export default function RolesPage() {
       console.error('Error saving role to Supabase:', err);
     }
     setEditRole(undefined);
+  };
+
+  // Phase 26E-Fix1 — safe replacement for the legacy silent delete
+  // button on the employees tab. Mirrors UsersTab.tsx's
+  // `updateAccountStatus`: updates `profiles.account_status` +
+  // disabled-meta columns, writes a `staff.account_*` audit row,
+  // refreshes local state, and toasts. Never deletes auth or
+  // profile rows.
+  const handleEmployeeStatusUpdate = async (
+    emp: Employee,
+    next: 'active' | 'disabled' | 'suspended',
+    reason?: string
+  ) => {
+    if (!canManageStaff) {
+      showEmployeesToast('error', 'لا تملك صلاحية إدارة حالة الحسابات.');
+      return;
+    }
+    setEmployeesBusyId(emp.id);
+    try {
+      const supabase = createClient();
+      if (!supabase) {
+        showEmployeesToast('error', 'تعذر الاتصال بقاعدة البيانات.');
+        setEmployeesBusyId(null);
+        return;
+      }
+      const update: Record<string, unknown> = { account_status: next };
+      if (next === 'active') {
+        update.disabled_at = null;
+        update.disabled_by = null;
+        update.disabled_reason = null;
+      } else {
+        update.disabled_at = new Date().toISOString();
+        update.disabled_by = user?.id ?? null;
+        update.disabled_reason = (reason ?? '').trim() || null;
+      }
+      const { error } = await supabase.from('profiles').update(update).eq('id', emp.id);
+      if (error) throw error;
+      const actionByNext: Record<typeof next, StaffAuditAction> = {
+        active: 'staff.account_reactivated',
+        disabled: 'staff.account_disabled',
+        suspended: 'staff.account_suspended',
+      };
+      try {
+        await writeStaffAuditLog(supabase, {
+          action: actionByNext[next],
+          description: (reason ?? '').trim() || null,
+          actorId: user?.id ?? null,
+          actorName: profileFullName ?? user?.email ?? null,
+          actorRoleId: currentRoleId,
+          entity: {
+            type: 'profile',
+            id: emp.id,
+            label: emp.name || emp.email || '',
+          },
+          metadata: { from: emp.accountStatus, to: next },
+        });
+      } catch (auditErr) {
+        console.warn('[employees] staff audit failed:', auditErr);
+      }
+      // Phase 26E-Fix1 — local state refresh so the tab reflects the
+      // new status without a full reload. We mirror the DB row shape
+      // updated above so the badge + action buttons re-render in one
+      // pass, matching the UsersTab `await load()` pattern.
+      const nowIso = new Date().toISOString();
+      setEmployees((prev) =>
+        prev.map((e) =>
+          e.id === emp.id
+            ? {
+                ...e,
+                accountStatus: next,
+                disabledAt: next === 'active' ? null : nowIso,
+                disabledReason: next === 'active' ? null : (reason ?? '').trim() || null,
+                status: next === 'active' ? 'active' : 'inactive',
+              }
+            : e
+        )
+      );
+      setAppUsers((prev) =>
+        prev.map((u) =>
+          u.id === emp.id ? { ...u, status: next === 'active' ? 'active' : 'inactive' } : u
+        )
+      );
+      const verb = next === 'active' ? 'إعادة تفعيل' : next === 'suspended' ? 'إيقاف' : 'تعطيل';
+      showEmployeesToast('success', `تم ${verb} الحساب.`);
+    } catch (err) {
+      console.error('[employees] account status update failed:', err);
+      showEmployeesToast('error', 'تعذر تحديث حالة الحساب. تواصل مع المدير إذا تكرر الخطأ.');
+    } finally {
+      setEmployeesBusyId(null);
+    }
   };
 
   // Unified save: persists employee for login AND syncs AppUser for the users tab
@@ -1286,152 +1448,248 @@ export default function RolesPage() {
 
         {/* ── Employees Tab ── */}
         {activeTab === 'employees' && (
-          <div className="card-section overflow-hidden">
-            <div className="p-4 border-b border-[hsl(var(--border))]">
-              <p className="text-sm font-semibold">قائمة الموظفين وبيانات الدخول</p>
-              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
-                يمكنك عرض وتعديل بيانات كل موظف وصورته الشخصية
-              </p>
+          <div className="space-y-3">
+            {/* Phase 26E-Fix1 — banner explaining the new safe-action
+                model. Mirrors the UsersTab notice so admins see the
+                same message in both tabs. */}
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 flex items-start gap-2">
+              <ShieldAlert size={16} className="text-amber-700 mt-0.5 flex-shrink-0" />
+              <div className="text-xs text-amber-900">
+                <p className="font-bold mb-0.5">الحذف النهائي غير متاح من هذا التبويب.</p>
+                <p>
+                  لحذف حساب نهائيًا يتطلب صلاحية Service Role ومرحلة منفصلة. للحفاظ على سجل التدقيق
+                  استخدم
+                  <span className="font-bold mx-1">تعطيل الحساب</span>
+                  أو
+                  <span className="font-bold mx-1">إيقاف مؤقت</span>.
+                </p>
+              </div>
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm" dir="rtl">
-                <thead>
-                  <tr className="bg-[hsl(var(--muted))]/50 text-[hsl(var(--muted-foreground))] text-xs">
-                    <th className="text-right px-4 py-3 font-semibold">الموظف</th>
-                    <th className="text-right px-4 py-3 font-semibold">اسم المستخدم</th>
-                    <th className="text-right px-4 py-3 font-semibold">كلمة المرور</th>
-                    <th className="text-right px-4 py-3 font-semibold">الدور</th>
-                    <th className="text-right px-4 py-3 font-semibold">الصلاحيات</th>
-                    <th className="text-right px-4 py-3 font-semibold">الحالة</th>
-                    <th className="text-right px-4 py-3 font-semibold">تاريخ الإنشاء</th>
-                    <th className="text-right px-4 py-3 font-semibold">إجراءات</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {employees.map((emp) => {
-                    const rc = getRoleColors(emp.roleId);
-                    const empRole = getRoleById(emp.roleId);
-                    const isShowingPass = showPasswords.has(emp.id);
-                    return (
-                      <tr
-                        key={emp.id}
-                        className="border-t border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/30 transition-colors"
-                      >
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-3">
-                            <div
-                              className={`w-9 h-9 rounded-full overflow-hidden flex items-center justify-center text-white text-sm font-bold flex-shrink-0 ${emp.avatar ? '' : rc.avatar}`}
-                            >
-                              {emp.avatar ? (
-                                <Image
-                                  src={emp.avatar}
-                                  alt={emp.name}
-                                  width={36}
-                                  height={36}
-                                  className="w-full h-full object-cover"
-                                  unoptimized={emp.avatar.startsWith('data:')}
-                                />
-                              ) : (
-                                <span>{emp.name.charAt(0)}</span>
-                              )}
+            <div className="card-section overflow-hidden">
+              <div className="p-4 border-b border-[hsl(var(--border))]">
+                <p className="text-sm font-semibold">قائمة الموظفين وبيانات الدخول</p>
+                <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
+                  يمكنك عرض وتعديل بيانات كل موظف. التحكم في حالة الحساب من خلال أزرار الإجراءات في
+                  كل صف؛ تفاصيل الأجهزة وتسجيلات الدخول في تبويب المستخدمون.
+                </p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm" dir="rtl">
+                  <thead>
+                    <tr className="bg-[hsl(var(--muted))]/50 text-[hsl(var(--muted-foreground))] text-xs">
+                      <th className="text-right px-4 py-3 font-semibold">الموظف</th>
+                      <th className="text-right px-4 py-3 font-semibold">اسم المستخدم</th>
+                      <th className="text-right px-4 py-3 font-semibold">كلمة المرور</th>
+                      <th className="text-right px-4 py-3 font-semibold">الدور</th>
+                      <th className="text-right px-4 py-3 font-semibold">الصلاحيات</th>
+                      <th className="text-right px-4 py-3 font-semibold">الحالة</th>
+                      <th className="text-right px-4 py-3 font-semibold">تاريخ الإنشاء</th>
+                      <th className="text-right px-4 py-3 font-semibold">إجراءات</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {employees.map((emp) => {
+                      const rc = getRoleColors(emp.roleId);
+                      const empRole = getRoleById(emp.roleId);
+                      const isShowingPass = showPasswords.has(emp.id);
+                      return (
+                        <tr
+                          key={emp.id}
+                          className="border-t border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/30 transition-colors"
+                        >
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-3">
+                              <div
+                                className={`w-9 h-9 rounded-full overflow-hidden flex items-center justify-center text-white text-sm font-bold flex-shrink-0 ${emp.avatar ? '' : rc.avatar}`}
+                              >
+                                {emp.avatar ? (
+                                  <Image
+                                    src={emp.avatar}
+                                    alt={emp.name}
+                                    width={36}
+                                    height={36}
+                                    className="w-full h-full object-cover"
+                                    unoptimized={emp.avatar.startsWith('data:')}
+                                  />
+                                ) : (
+                                  <span>{emp.name.charAt(0)}</span>
+                                )}
+                              </div>
+                              <span className="font-semibold">{emp.name}</span>
                             </div>
-                            <span className="font-semibold">{emp.name}</span>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-1.5">
-                            <Key size={13} className="text-[hsl(var(--muted-foreground))]" />
-                            <span className="font-mono text-xs bg-[hsl(var(--muted))] px-2 py-1 rounded-lg">
-                              {emp.username}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-mono text-xs bg-[hsl(var(--muted))] px-2 py-1 rounded-lg">
-                              {isShowingPass ? emp.password : '••••••••'}
-                            </span>
-                            <button
-                              onClick={() => toggleShowPassword(emp.id)}
-                              className="text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-1.5">
+                              <Key size={13} className="text-[hsl(var(--muted-foreground))]" />
+                              <span className="font-mono text-xs bg-[hsl(var(--muted))] px-2 py-1 rounded-lg">
+                                {emp.username}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-mono text-xs bg-[hsl(var(--muted))] px-2 py-1 rounded-lg">
+                                {isShowingPass ? emp.password : '••••••••'}
+                              </span>
+                              <button
+                                onClick={() => toggleShowPassword(emp.id)}
+                                className="text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"
+                              >
+                                {isShowingPass ? <EyeOff size={14} /> : <Eye size={14} />}
+                              </button>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <span
+                              className={`text-xs px-2.5 py-1 rounded-full font-semibold ${rc.bg} ${rc.text}`}
                             >
-                              {isShowingPass ? <EyeOff size={14} /> : <Eye size={14} />}
-                            </button>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <span
-                            className={`text-xs px-2.5 py-1 rounded-full font-semibold ${rc.bg} ${rc.text}`}
-                          >
-                            {getRoleName(emp.roleId)}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3">
-                          <span
-                            className={`text-xs px-2 py-0.5 rounded-full font-semibold ${rc.bg} ${rc.text}`}
-                          >
-                            {empRole ? `${empRole.permissions.length} صلاحية` : '—'}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3">
-                          <span
-                            className={`text-xs px-2.5 py-1 rounded-full font-semibold ${emp.status === 'active' ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-500'}`}
-                          >
-                            {emp.status === 'active' ? 'نشط' : 'غير نشط'}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
-                          {emp.createdAt}
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex gap-1">
-                            <button
-                              onClick={() => setEditMember(emp)}
-                              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted))] transition-colors"
+                              {getRoleName(emp.roleId)}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <span
+                              className={`text-xs px-2 py-0.5 rounded-full font-semibold ${rc.bg} ${rc.text}`}
                             >
-                              <Edit2 size={14} />
-                            </button>
-                            <button
-                              onClick={async () => {
-                                const updated = employees.filter((e) => e.id !== emp.id);
-                                setEmployees(updated);
-                                setAppUsers((prev) =>
-                                  prev.filter((u) => u.email !== `emp:${emp.id}`)
-                                );
-                                // Delete from Supabase profiles and auth.users
-                                try {
-                                  const supabase = createClient();
-                                  if (supabase) {
-                                    // Find the auth user by email
-                                    const empEmail = `${emp.username}@turathmasr.com`;
-                                    // Delete from profiles first (by email match)
-                                    await supabase.from('profiles').delete().eq('email', empEmail);
+                              {empRole ? `${empRole.permissions.length} صلاحية` : '—'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3">
+                            {/* Phase 26E-Fix1 — reads real `account_status`
+                              instead of hardcoded `active`. Includes a
+                              compact disabled-reason line so reviewers
+                              don't have to open the users tab to see why
+                              an account is off. */}
+                            {(() => {
+                              const tone =
+                                emp.accountStatus === 'active'
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                  : emp.accountStatus === 'disabled'
+                                    ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                    : emp.accountStatus === 'suspended'
+                                      ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                      : 'bg-slate-50 text-slate-700 border-slate-200';
+                              const label =
+                                emp.accountStatus === 'active'
+                                  ? 'نشط'
+                                  : emp.accountStatus === 'disabled'
+                                    ? 'معطّل'
+                                    : emp.accountStatus === 'suspended'
+                                      ? 'موقوف مؤقتًا'
+                                      : 'بانتظار المراجعة';
+                              return (
+                                <div className="flex flex-col gap-0.5">
+                                  <span
+                                    className={`text-xs px-2.5 py-1 rounded-full font-semibold border w-fit ${tone}`}
+                                  >
+                                    {label}
+                                  </span>
+                                  {emp.disabledReason && emp.accountStatus !== 'active' && (
+                                    <span className="text-[10px] text-[hsl(var(--muted-foreground))]">
+                                      {emp.disabledReason}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })()}
+                          </td>
+                          <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
+                            {emp.createdAt}
+                          </td>
+                          <td className="px-4 py-3">
+                            {/* Phase 26E-Fix1 — silent `.delete()` button
+                              replaced with three safe actions
+                              (disable / suspend / reactivate) plus a
+                              disabled Trash2 tooltip explaining that
+                              permanent deletion isn't available from
+                              the app. Mirrors the UsersTab pattern so
+                              both tabs offer the same status semantics. */}
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={() => setEditMember(emp)}
+                                className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted))] transition-colors"
+                                title="تعديل البيانات"
+                              >
+                                <Edit2 size={14} />
+                              </button>
+                              {emp.accountStatus !== 'disabled' && (
+                                <button
+                                  onClick={() => {
+                                    if (!canManageStaff) return;
+                                    const reason =
+                                      window.prompt('سبب التعطيل (اختياري):') ?? undefined;
+                                    void handleEmployeeStatusUpdate(emp, 'disabled', reason);
+                                  }}
+                                  className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-rose-50 text-rose-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                  title={
+                                    canManageStaff
+                                      ? 'تعطيل الحساب'
+                                      : 'لا تملك صلاحية تعطيل الحسابات'
                                   }
-                                } catch (e) {
-                                  console.error('Delete employee error:', e);
-                                }
-                              }}
-                              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          </div>
+                                  disabled={!canManageStaff || employeesBusyId === emp.id}
+                                >
+                                  <UserX size={14} />
+                                </button>
+                              )}
+                              {emp.accountStatus !== 'suspended' &&
+                                emp.accountStatus !== 'disabled' && (
+                                  <button
+                                    onClick={() => {
+                                      if (!canManageStaff) return;
+                                      const reason =
+                                        window.prompt('سبب الإيقاف المؤقت (اختياري):') ?? undefined;
+                                      void handleEmployeeStatusUpdate(emp, 'suspended', reason);
+                                    }}
+                                    className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-amber-50 text-amber-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                    title={
+                                      canManageStaff
+                                        ? 'إيقاف مؤقت'
+                                        : 'لا تملك صلاحية إيقاف الحسابات'
+                                    }
+                                    disabled={!canManageStaff || employeesBusyId === emp.id}
+                                  >
+                                    <Clock size={14} />
+                                  </button>
+                                )}
+                              {(emp.accountStatus === 'disabled' ||
+                                emp.accountStatus === 'suspended') && (
+                                <button
+                                  onClick={() => void handleEmployeeStatusUpdate(emp, 'active')}
+                                  className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-emerald-50 text-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                  title={
+                                    canManageStaff
+                                      ? 'إعادة تفعيل الحساب'
+                                      : 'لا تملك صلاحية إعادة التفعيل'
+                                  }
+                                  disabled={!canManageStaff || employeesBusyId === emp.id}
+                                >
+                                  <Check size={14} />
+                                </button>
+                              )}
+                              <button
+                                disabled
+                                className="w-8 h-8 flex items-center justify-center rounded-lg text-[hsl(var(--muted-foreground))]/40 cursor-not-allowed"
+                                title="الحذف النهائي غير متاح من التطبيق. استخدم تعطيل الحساب للحفاظ على سجل التدقيق."
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {employees.length === 0 && (
+                      <tr>
+                        <td
+                          colSpan={8}
+                          className="px-4 py-8 text-center text-[hsl(var(--muted-foreground))] text-sm"
+                        >
+                          لا يوجد موظفون
                         </td>
                       </tr>
-                    );
-                  })}
-                  {employees.length === 0 && (
-                    <tr>
-                      <td
-                        colSpan={8}
-                        className="px-4 py-8 text-center text-[hsl(var(--muted-foreground))] text-sm"
-                      >
-                        لا يوجد موظفون
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}
@@ -1463,6 +1721,22 @@ export default function RolesPage() {
           onClose={() => setEditMember(undefined)}
           onSave={handleSaveMember}
         />
+      )}
+      {/* Phase 26E-Fix1 — toast for the new employees-tab safe
+          actions. UsersTab keeps its own toast scoped to that
+          component; the inline employees tab needed one too so
+          success/error feedback isn't silent. */}
+      {employeesToast && (
+        <div
+          className={`fixed bottom-6 right-6 z-[80] max-w-sm rounded-2xl border px-4 py-3 shadow-lg ${
+            employeesToast.kind === 'success'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+              : 'bg-rose-50 border-rose-200 text-rose-800'
+          }`}
+          role="status"
+        >
+          <p className="text-sm font-semibold">{employeesToast.message}</p>
+        </div>
       )}
     </AppLayout>
   );
