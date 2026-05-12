@@ -11,15 +11,11 @@
 //         → create the missing `public.profiles` row for an existing
 //           auth user. Sets `account_status='active'` and writes an
 //           `auth_orphan_profile_created` row to the staff audit log.
-//   POST { action: 'hard-delete', user_id, confirm: 'حذف نهائي' }
-//         → only when `SUPABASE_SERVICE_ROLE_KEY` is set in the
-//           server env. Calls `supabase.auth.admin.deleteUser()`,
-//           refuses if the caller is not an admin, and writes
-//           `auth_user_deleted` (or `auth_user_delete_failed`) to
-//           the staff audit log. NEVER touches the matching profile
-//           row; the panel sets `account_status='disabled'` on it
-//           separately so audit trails for past actions remain
-//           intact.
+//   POST { action: 'hard-delete', ... }
+//         → deprecated in Phase 26I-Fix1. Auth deletion now lives in
+//           /api/security/delete-auth-user where fake/new cleanup is
+//           guarded by activity checks. This legacy action returns a
+//           clear block instead of retaining the wider old behavior.
 //
 // Service-role posture
 // --------------------
@@ -46,14 +42,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-const HARD_DELETE_PHRASE = 'حذف نهائي';
 
 interface AdminCheck {
   ok: boolean;
@@ -62,6 +55,18 @@ interface AdminCheck {
   email: string | null;
   roleId: string | null;
 }
+
+type ProfileLite = {
+  id: string;
+  email: string | null;
+  full_name: string | null;
+  role_id: string | null;
+  role_name: string | null;
+  account_status: string | null;
+  disabled_at: string | null;
+  disabled_reason: string | null;
+  created_at?: string | null;
+};
 
 function buildAuthedClient() {
   const cookieStore = cookies();
@@ -84,13 +89,6 @@ function buildAuthedClient() {
       },
     }
   );
-}
-
-function buildServiceClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) return null;
-  return createClient(url, key, { auth: { persistSession: false } });
 }
 
 async function requireAdmin(): Promise<AdminCheck> {
@@ -168,6 +166,125 @@ function readClientIp(request: Request): string | null {
   return null;
 }
 
+function normalizeEmail(email: string | null | undefined): string {
+  return (email ?? '').trim().toLowerCase();
+}
+
+function isFakeEmail(email: string | null | undefined): boolean {
+  const value = normalizeEmail(email);
+  if (!value) return false;
+  if (!value.includes('@')) return true;
+  const [local, domain = ''] = value.split('@');
+  if (!local || !domain || !domain.includes('.')) return true;
+  const tokens = ['test', 'fake', 'demo', 'placeholder', 'sample', 'dummy', 'tmp', 'tester'];
+  if (tokens.some((token) => value.includes(token))) return true;
+  return [
+    'turathmart.internal',
+    'zahranship.com',
+    'example.com',
+    'example.net',
+    'example.org',
+    'invalid.com',
+    'mailinator.com',
+  ].some((d) => domain === d || domain.endsWith(`.${d}`));
+}
+
+function hasPlaceholderName(name: string | null | undefined): boolean {
+  return /(test|demo|fake|sample|tmp|tester|user\s*\d+)/i.test((name ?? '').trim());
+}
+
+function isRecent(iso: string | null | undefined): boolean {
+  if (!iso) return false;
+  const time = new Date(iso).getTime();
+  if (Number.isNaN(time)) return false;
+  return Date.now() - time <= 14 * 24 * 60 * 60 * 1000;
+}
+
+async function safeCountMaybe(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+  table: string,
+  column: string,
+  value: string
+): Promise<number | null> {
+  try {
+    const { count, error } = await supabase
+      .from(table)
+      .select('id', { count: 'exact', head: true })
+      .eq(column, value);
+    if (error) return null;
+    return count ?? 0;
+  } catch {
+    return null;
+  }
+}
+
+async function summarizeDeleteSafety(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+  row: {
+    id: string;
+    email: string | null;
+    created_at: string | null;
+    last_sign_in_at: string | null;
+    profile: ProfileLite | null;
+  },
+  duplicateEmail: boolean
+) {
+  const checks = await Promise.all([
+    safeCountMaybe(supabase, 'turath_masr_login_events', 'user_id', row.id),
+    safeCountMaybe(supabase, 'turath_masr_user_devices', 'user_id', row.id),
+    safeCountMaybe(supabase, 'turath_masr_staff_audit_logs', 'actor_id', row.id),
+    safeCountMaybe(supabase, 'turath_masr_orders', 'created_by_user_id', row.id),
+    safeCountMaybe(supabase, 'turath_masr_orders', 'assigned_to', row.id),
+    safeCountMaybe(supabase, 'turath_masr_orders', 'updated_by', row.id),
+  ]);
+  const [loginEvents, devices, actorEvents, createdOrders, assignedOrders, updatedOrders] = checks;
+  const activityUnknown = checks.some((v) => v === null);
+  const operationalRefs = (createdOrders ?? 0) + (assignedOrders ?? 0) + (updatedOrders ?? 0);
+  const fake =
+    isFakeEmail(row.email) ||
+    isFakeEmail(row.profile?.email) ||
+    hasPlaceholderName(row.profile?.full_name);
+  const recent = isRecent(row.created_at) || isRecent(row.profile?.created_at);
+  const neverUsed = (loginEvents ?? 1) === 0 && (devices ?? 1) === 0 && !row.last_sign_in_at;
+  const noCritical = (actorEvents ?? 1) === 0 && operationalRefs === 0 && !activityUnknown;
+
+  let allowed = false;
+  let category: string | null = null;
+  let blockedReason = 'الحساب ليس ضمن نطاق الحذف الآمن. استخدم التعطيل بدلًا من الحذف.';
+  if (activityUnknown) {
+    blockedReason = 'تعذر التحقق من نشاط الحساب؛ الحذف محجوب احتياطيًا.';
+  } else if (!noCritical) {
+    blockedReason = 'يوجد نشاط تشغيلي أو تدقيق مرتبط بالحساب.';
+  } else if (!row.profile && (neverUsed || fake || recent)) {
+    allowed = true;
+    category = 'auth_only_orphan';
+    blockedReason = '';
+  } else if (row.profile && fake && (neverUsed || recent)) {
+    allowed = true;
+    category = 'new_fake_profile_backed';
+    blockedReason = '';
+  } else if (row.profile && duplicateEmail && neverUsed && recent) {
+    allowed = true;
+    category = 'new_duplicate_or_mistyped';
+    blockedReason = '';
+  }
+
+  return {
+    allowed,
+    category,
+    blocked_reason: blockedReason || null,
+    activity_summary: {
+      login_events: loginEvents,
+      devices,
+      staff_audit_actor_events: actorEvents,
+      operational_refs_total: operationalRefs,
+      activity_unknown: activityUnknown,
+    },
+  };
+}
+
 // ─── GET — list auth users + orphan flag ─────────────────────────────────────
 
 export async function GET() {
@@ -202,36 +319,52 @@ export async function GET() {
   const { data: profilesData } = await supabase
     .from('profiles')
     .select(
-      'id, email, full_name, role_id, role_name, account_status, disabled_at, disabled_reason'
+      'id, email, full_name, role_id, role_name, account_status, disabled_at, disabled_reason, created_at'
     );
-  type ProfileLite = {
-    id: string;
-    email: string | null;
-    full_name: string | null;
-    role_id: string | null;
-    role_name: string | null;
-    account_status: string | null;
-    disabled_at: string | null;
-    disabled_reason: string | null;
-  };
   const profiles = (profilesData as ProfileLite[]) ?? [];
   const profileById = new Map<string, ProfileLite>(profiles.map((p) => [p.id, p]));
 
+  const emailCounts = new Map<string, number>();
+  for (const u of authRows) {
+    const email = normalizeEmail(u.email);
+    if (email) emailCounts.set(email, (emailCounts.get(email) ?? 0) + 1);
+  }
+  for (const p of profiles) {
+    const email = normalizeEmail(p.email);
+    if (email) emailCounts.set(email, (emailCounts.get(email) ?? 0) + 1);
+  }
+
   // 3) Join + classify.
-  const rows = authRows.map((u) => {
-    const profile = profileById.get(u.id) ?? null;
-    return {
-      id: u.id,
-      email: u.email,
-      created_at: u.created_at,
-      last_sign_in_at: u.last_sign_in_at,
-      email_confirmed_at: u.email_confirmed_at,
-      banned_until: u.banned_until,
-      deleted_at: u.deleted_at,
-      has_profile: profile !== null,
-      profile,
-    };
-  });
+  const rows = await Promise.all(
+    authRows.map(async (u) => {
+      const profile = profileById.get(u.id) ?? null;
+      const emailKey = normalizeEmail(u.email ?? profile?.email);
+      const duplicateEmail = Boolean(emailKey && (emailCounts.get(emailKey) ?? 0) > 1);
+      const deleteSafety = await summarizeDeleteSafety(
+        supabase,
+        {
+          id: u.id,
+          email: u.email,
+          created_at: u.created_at,
+          last_sign_in_at: u.last_sign_in_at,
+          profile,
+        },
+        duplicateEmail
+      );
+      return {
+        id: u.id,
+        email: u.email,
+        created_at: u.created_at,
+        last_sign_in_at: u.last_sign_in_at,
+        email_confirmed_at: u.email_confirmed_at,
+        banned_until: u.banned_until,
+        deleted_at: u.deleted_at,
+        has_profile: profile !== null,
+        profile,
+        delete_safety: deleteSafety,
+      };
+    })
+  );
 
   return NextResponse.json(
     {
@@ -341,97 +474,30 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, code: 'created' }, { status: 200 });
   }
 
-  // ─── hard-delete ───────────────────────────────────────────────────────────
+  // ─── hard-delete deprecated ────────────────────────────────────────────────
   if (body.action === 'hard-delete') {
-    const userId = String(body.user_id ?? '').trim();
-    const confirm = String(body.confirm ?? '').trim();
-    if (!userId) {
-      return NextResponse.json({ ok: false, code: 'invalid_payload' }, { status: 400 });
-    }
-    if (confirm !== HARD_DELETE_PHRASE) {
-      return NextResponse.json({ ok: false, code: 'confirm_phrase_mismatch' }, { status: 400 });
-    }
-    const serviceClient = buildServiceClient();
-    if (!serviceClient) {
-      // Log the attempt for visibility.
-      await writeAudit(supabase, {
-        action: 'auth_user_delete_failed',
-        actorId: admin.userId,
-        actorName: admin.name,
-        actorRoleId: admin.roleId,
-        description: 'SUPABASE_SERVICE_ROLE_KEY غير متاح في البيئة.',
-        entity: { type: 'auth_user', id: userId },
-        metadata: { reason: 'service_role_unavailable' },
-        ipAddress: ip,
-        userAgent,
-      });
-      return NextResponse.json(
-        {
-          ok: false,
-          code: 'service_role_unavailable',
-          message: 'الحذف النهائي غير متاح من التطبيق الحالي. استخدم التعطيل أو أنشئ ملفًا للحساب.',
-        },
-        { status: 503 }
-      );
-    }
-    // Snapshot profile (if any) before the delete so the audit row
-    // captures who/what we removed.
-    const { data: snapshotData } = await supabase
-      .from('profiles')
-      .select('id, email, full_name, role_id, role_name, account_status')
-      .eq('id', userId)
-      .maybeSingle();
-    const hadProfile = Boolean(snapshotData);
-    // Phase 26B note: when a profile exists, we DO NOT delete it.
-    // Instead we flip account_status='disabled' with an explanatory
-    // reason so historical audit trails + linked rows stay intact.
-    if (hadProfile) {
-      await supabase
-        .from('profiles')
-        .update({
-          account_status: 'disabled',
-          disabled_at: new Date().toISOString(),
-          disabled_by: admin.userId,
-          disabled_reason: 'auth user deleted',
-        })
-        .eq('id', userId);
-    }
-    // Now the auth-side hard delete.
-    const { error: deleteErr } = await serviceClient.auth.admin.deleteUser(userId);
-    if (deleteErr) {
-      await writeAudit(supabase, {
-        action: 'auth_user_delete_failed',
-        actorId: admin.userId,
-        actorName: admin.name,
-        actorRoleId: admin.roleId,
-        description: deleteErr.message,
-        entity: { type: 'auth_user', id: userId },
-        metadata: { reason: 'admin_api_error', had_profile: hadProfile },
-        ipAddress: ip,
-        userAgent,
-      });
-      return NextResponse.json(
-        { ok: false, code: 'delete_failed', message: deleteErr.message },
-        { status: 500 }
-      );
-    }
     await writeAudit(supabase, {
-      action: 'auth_user_deleted',
+      action: 'auth_user_delete_blocked',
       actorId: admin.userId,
       actorName: admin.name,
       actorRoleId: admin.roleId,
-      description: `حذف نهائي من Supabase Auth`,
-      entity: { type: 'auth_user', id: userId, label: snapshotData?.email ?? userId },
+      description: 'تم منع مسار حذف قديم. استخدم /api/security/delete-auth-user.',
+      entity: { type: 'auth_user', id: String(body.user_id ?? '').trim() || undefined },
       metadata: {
-        auth_user_id: userId,
-        email: snapshotData?.email ?? null,
-        had_profile: hadProfile,
-        profile_disabled_instead_of_deleted: hadProfile,
+        target_user_id: String(body.user_id ?? '').trim() || null,
+        blocked_reason: 'legacy_hard_delete_route_disabled',
       },
       ipAddress: ip,
       userAgent,
     });
-    return NextResponse.json({ ok: true, code: 'deleted' }, { status: 200 });
+    return NextResponse.json(
+      {
+        ok: false,
+        code: 'legacy_route_disabled',
+        message: 'تم نقل الحذف النهائي إلى مسار أكثر أمانًا يتحقق من نشاط الحساب أولًا.',
+      },
+      { status: 410 }
+    );
   }
 
   return NextResponse.json({ ok: false, code: 'unknown_action' }, { status: 400 });

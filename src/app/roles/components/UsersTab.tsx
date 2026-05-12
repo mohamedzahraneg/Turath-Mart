@@ -51,6 +51,7 @@ import {
   Shield,
   ShieldAlert,
   ShieldCheck,
+  ShieldOff,
   Smartphone,
   Tablet,
   Trash2,
@@ -253,6 +254,13 @@ function emailsMismatch(
 
 function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+}
+
+function isRecentDate(iso: string | null | undefined): boolean {
+  if (!iso) return false;
+  const time = new Date(iso).getTime();
+  if (Number.isNaN(time)) return false;
+  return Date.now() - time <= 14 * 24 * 60 * 60 * 1000;
 }
 
 // ─── Component ──────────────────────────────────────────────────────────────
@@ -484,6 +492,7 @@ export default function UsersTab({
     hasAuthUser: boolean | null;
     emailMismatch: boolean;
     fakeEmail: boolean;
+    deleteCandidate: boolean;
     devicesCount: number;
     blockedDevicesCount: number;
     loginCount: number;
@@ -498,12 +507,20 @@ export default function UsersTab({
       const userLogins = loginsByUser.get(p.id) ?? [];
       const successLogins = userLogins.filter((e) => e.event_type === 'login' && e.success);
       const lastLogin = successLogins[0] ?? userLogins[0] ?? null;
+      const fakeEmail = isFakeEmail(p.email) || isFakeEmail(authUser?.email);
+      const deleteCandidate =
+        Boolean(authUser) &&
+        fakeEmail &&
+        userDevices.length === 0 &&
+        successLogins.length === 0 &&
+        isRecentDate(p.created_at);
       return {
         ...p,
         authEmail: authUser?.email ?? null,
         hasAuthUser: authUsersLoaded ? Boolean(authUser) : null,
         emailMismatch: authUsersLoaded ? emailsMismatch(authUser?.email, p.email) : false,
-        fakeEmail: isFakeEmail(p.email) || isFakeEmail(authUser?.email),
+        fakeEmail,
+        deleteCandidate,
         devicesCount: userDevices.length,
         blockedDevicesCount: userDevices.filter((d) => d.status === 'blocked').length,
         loginCount: successLogins.length,
@@ -647,6 +664,54 @@ export default function UsersTab({
     } catch (err) {
       console.error('[UsersTab] profile edit failed:', err);
       showToast('error', err instanceof Error ? err.message : 'تعذر حفظ بيانات الموظف.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const requestHardDelete = async (
+    profile: StaffProfileEditUser & { deleteCandidate?: boolean }
+  ) => {
+    if (!canManageStaff) {
+      showToast('error', 'لا تملك صلاحية حذف حسابات الدخول.');
+      return;
+    }
+    if (!serviceRoleAvailable) {
+      showToast('error', 'الحذف النهائي غير متاح لأن مفتاح Service Role غير مفعّل على السيرفر');
+      return;
+    }
+    if (!profile.deleteCandidate) {
+      showToast(
+        'error',
+        'الحذف النهائي غير مسموح لهذا الحساب. استخدم تعطيل الحساب للحفاظ على سجل التدقيق.'
+      );
+      return;
+    }
+    const reason = window.prompt('سبب الحذف النهائي:')?.trim() ?? '';
+    if (!reason) {
+      showToast('error', 'سبب الحذف مطلوب.');
+      return;
+    }
+    const confirmation = window.prompt('اكتب "حذف نهائي" للتأكيد:')?.trim() ?? '';
+    if (confirmation !== 'حذف نهائي') {
+      showToast('error', 'عبارة التأكيد غير مطابقة.');
+      return;
+    }
+
+    setBusyId(profile.id);
+    try {
+      const resp = await fetch('/api/security/delete-auth-user', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ user_id: profile.id, confirmation, reason }),
+      });
+      const payload = (await resp.json().catch(() => ({}))) as { message?: string };
+      if (!resp.ok) throw new Error(payload.message || 'تعذر الحذف النهائي.');
+      await load();
+      showToast('success', 'تم حذف حساب الدخول وتعطيل ملف الموظف للحفاظ على السجل.');
+    } catch (err) {
+      console.error('[UsersTab] hard delete failed:', err);
+      showToast('error', err instanceof Error ? err.message : 'تعذر الحذف النهائي.');
     } finally {
       setBusyId(null);
     }
@@ -1311,6 +1376,7 @@ export default function UsersTab({
               : undefined
           }
           onRequestEditProfile={() => setProfileEditUserId(drawerUser.id)}
+          onRequestHardDelete={() => requestHardDelete(drawerUser)}
         />
       )}
 
@@ -1383,6 +1449,7 @@ interface UserDetailsDrawerProps {
   /** Phase 26H-2 — sends a Supabase password-reset email. */
   onRequestSendResetEmail?: () => void;
   onRequestEditProfile?: () => void;
+  onRequestHardDelete?: () => void;
 }
 
 function UserDetailsDrawer({
@@ -1407,6 +1474,7 @@ function UserDetailsDrawer({
   onRequestForcePasswordChange,
   onRequestSendResetEmail,
   onRequestEditProfile,
+  onRequestHardDelete,
 }: UserDetailsDrawerProps) {
   const status = (user.account_status ?? 'active').toLowerCase();
   const tone = ACCOUNT_STATUS_TONE[status] ?? ACCOUNT_STATUS_TONE.active;
@@ -1494,6 +1562,7 @@ function UserDetailsDrawer({
               onBlockAllDevices={onBlockAllDevices}
               onRequestEditRole={onRequestEditRole}
               onRequestEditProfile={onRequestEditProfile}
+              onRequestHardDelete={onRequestHardDelete}
               onRequestForcePasswordChange={onRequestForcePasswordChange}
               onRequestSendResetEmail={onRequestSendResetEmail}
             />
@@ -1529,6 +1598,7 @@ function DrawerAccountTab({
   onBlockAllDevices,
   onRequestEditRole,
   onRequestEditProfile,
+  onRequestHardDelete,
   onRequestForcePasswordChange,
   onRequestSendResetEmail,
 }: {
@@ -1537,6 +1607,7 @@ function DrawerAccountTab({
     hasAuthUser?: boolean | null;
     emailMismatch?: boolean;
     fakeEmail?: boolean;
+    deleteCandidate?: boolean;
   };
   canManageStaff: boolean;
   canManageDevices: boolean;
@@ -1549,6 +1620,7 @@ function DrawerAccountTab({
   onBlockAllDevices: (reason: string) => Promise<void>;
   onRequestEditRole?: () => void;
   onRequestEditProfile?: () => void;
+  onRequestHardDelete?: () => void;
   onRequestForcePasswordChange?: () => void;
   onRequestSendResetEmail?: () => void;
 }) {
@@ -1738,8 +1810,32 @@ function DrawerAccountTab({
           )}
         </div>
         <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-2">
-          الحذف النهائي غير متاح من هذا التبويب — استخدم التعطيل للحفاظ على سجل التدقيق.
+          الحذف النهائي محدود بالحسابات الوهمية/الجديدة فقط ويظهر في المنطقة الخطرة عند السماح.
         </p>
+      </section>
+
+      <section className="rounded-2xl border border-rose-200 bg-rose-50 p-4 space-y-2">
+        <h4 className="text-xs font-bold text-rose-800">منطقة خطرة</h4>
+        {user.deleteCandidate ? (
+          <>
+            <p className="text-[11px] text-rose-900 leading-relaxed">
+              يظهر هذا الحساب كحساب وهمي/جديد بلا أجهزة أو دخول ناجح. الحذف النهائي لا يحذف ملف
+              الموظف أو سجلات التشغيل؛ سيتم تعطيل الملف للحفاظ على السجل.
+            </p>
+            <button
+              onClick={() => onRequestHardDelete?.()}
+              disabled={!canManageStaff || busy || !onRequestHardDelete}
+              className="text-xs px-3 py-1.5 rounded-xl bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1"
+            >
+              <ShieldOff size={12} />
+              حذف حساب الدخول نهائيًا
+            </button>
+          </>
+        ) : (
+          <p className="text-[11px] text-rose-900 leading-relaxed">
+            الحذف النهائي غير مسموح لهذا الحساب. استخدم تعطيل الحساب للحفاظ على سجل التدقيق.
+          </p>
+        )}
       </section>
     </>
   );
