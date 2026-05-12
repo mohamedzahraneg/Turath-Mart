@@ -35,10 +35,12 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   Ban,
   Check,
   ChevronLeft,
   Clock,
+  Edit3,
   ExternalLink,
   Eye,
   History,
@@ -71,6 +73,7 @@ interface ProfileRow {
   id: string;
   email: string | null;
   full_name: string | null;
+  phone?: string | null;
   role_id: string | null;
   role_name: string | null;
   account_status: string | null;
@@ -131,6 +134,24 @@ interface RoleRow {
   id: string;
   name: string;
 }
+
+interface AuthUserRow {
+  id: string;
+  email: string | null;
+  created_at: string | null;
+  last_sign_in_at: string | null;
+  email_confirmed_at: string | null;
+  banned_until: string | null;
+  deleted_at: string | null;
+  has_profile: boolean;
+}
+
+type StaffProfileEditUser = ProfileRow & {
+  authEmail: string | null;
+  hasAuthUser: boolean | null;
+  emailMismatch: boolean;
+  fakeEmail: boolean;
+};
 
 // ─── Labels / tone helpers ──────────────────────────────────────────────────
 
@@ -197,6 +218,43 @@ function deviceIconFor(label: string | null | undefined, size = 14) {
   return <Monitor size={size} />;
 }
 
+function normalizeEmail(email: string | null | undefined): string {
+  return (email ?? '').trim().toLowerCase();
+}
+
+function isFakeEmail(email: string | null | undefined): boolean {
+  const value = normalizeEmail(email);
+  if (!value) return false;
+  if (!value.includes('@')) return true;
+  const [local, domain = ''] = value.split('@');
+  if (!local || !domain || !domain.includes('.')) return true;
+  const obviousTokens = ['test', 'fake', 'demo', 'placeholder', 'example', 'dummy'];
+  if (obviousTokens.some((token) => value.includes(token))) return true;
+  const placeholderDomains = [
+    'turathmart.internal',
+    'zahranship.com',
+    'example.com',
+    'example.net',
+    'example.org',
+    'mailinator.com',
+    'invalid.com',
+  ];
+  return placeholderDomains.some((d) => domain === d || domain.endsWith(`.${d}`));
+}
+
+function emailsMismatch(
+  authEmail: string | null | undefined,
+  profileEmail: string | null | undefined
+) {
+  const authValue = normalizeEmail(authEmail);
+  const profileValue = normalizeEmail(profileEmail);
+  return Boolean(authValue && profileValue && authValue !== profileValue);
+}
+
+function isValidEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+}
+
 // ─── Component ──────────────────────────────────────────────────────────────
 
 export interface UsersTabRoleEditTarget {
@@ -261,6 +319,9 @@ export default function UsersTab({
   const [loginEvents, setLoginEvents] = useState<LoginEventRow[]>([]);
   const [auditRows, setAuditRows] = useState<AuditRow[]>([]);
   const [roles, setRoles] = useState<RoleRow[]>([]);
+  const [authUsers, setAuthUsers] = useState<AuthUserRow[]>([]);
+  const [authUsersLoaded, setAuthUsersLoaded] = useState(false);
+  const [serviceRoleAvailable, setServiceRoleAvailable] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -279,6 +340,7 @@ export default function UsersTab({
   // Details drawer
   const [drawerUserId, setDrawerUserId] = useState<string | null>(null);
   const [drawerTab, setDrawerTab] = useState<'account' | 'devices' | 'logins' | 'audit'>('account');
+  const [profileEditUserId, setProfileEditUserId] = useState<string | null>(null);
 
   // ─── Load ───────────────────────────────────────────────────────────────
 
@@ -297,7 +359,7 @@ export default function UsersTab({
         supabase
           .from('profiles')
           .select(
-            'id, email, full_name, role_id, role_name, account_status, disabled_at, disabled_reason, created_at, must_change_password, password_changed_at'
+            'id, email, full_name, phone, role_id, role_name, account_status, disabled_at, disabled_reason, created_at, must_change_password, password_changed_at'
           )
           .order('created_at', { ascending: true }),
         supabase
@@ -332,6 +394,28 @@ export default function UsersTab({
       setLoginEvents((events as LoginEventRow[]) ?? []);
       setAuditRows((audits as AuditRow[]) ?? []);
       setRoles((dbRoles as RoleRow[]) ?? []);
+
+      try {
+        const res = await fetch('/api/security/auth-users', { cache: 'no-store' });
+        if (res.ok) {
+          const payload = (await res.json()) as {
+            service_role_available?: boolean;
+            rows?: AuthUserRow[];
+          };
+          setAuthUsers(payload.rows ?? []);
+          setAuthUsersLoaded(true);
+          setServiceRoleAvailable(Boolean(payload.service_role_available));
+        } else {
+          setAuthUsers([]);
+          setAuthUsersLoaded(false);
+          setServiceRoleAvailable(false);
+        }
+      } catch (authErr) {
+        console.warn('[UsersTab] auth-users read failed:', authErr);
+        setAuthUsers([]);
+        setAuthUsersLoaded(false);
+        setServiceRoleAvailable(false);
+      }
     } catch (err) {
       console.error('[UsersTab] load failed:', err);
       setLoadError('تعذر تحميل بيانات المستخدمين. حاول التحديث.');
@@ -388,8 +472,18 @@ export default function UsersTab({
     return m;
   }, [auditRows]);
 
+  const authByUserId = useMemo(() => {
+    const m = new Map<string, AuthUserRow>();
+    for (const u of authUsers) m.set(u.id, u);
+    return m;
+  }, [authUsers]);
+
   // Per-profile rollup used by the table + the details drawer.
   interface UserRow extends ProfileRow {
+    authEmail: string | null;
+    hasAuthUser: boolean | null;
+    emailMismatch: boolean;
+    fakeEmail: boolean;
     devicesCount: number;
     blockedDevicesCount: number;
     loginCount: number;
@@ -399,12 +493,17 @@ export default function UsersTab({
 
   const userRows: UserRow[] = useMemo(() => {
     return profiles.map((p) => {
+      const authUser = authByUserId.get(p.id) ?? null;
       const userDevices = devicesByUser.get(p.id) ?? [];
       const userLogins = loginsByUser.get(p.id) ?? [];
       const successLogins = userLogins.filter((e) => e.event_type === 'login' && e.success);
       const lastLogin = successLogins[0] ?? userLogins[0] ?? null;
       return {
         ...p,
+        authEmail: authUser?.email ?? null,
+        hasAuthUser: authUsersLoaded ? Boolean(authUser) : null,
+        emailMismatch: authUsersLoaded ? emailsMismatch(authUser?.email, p.email) : false,
+        fakeEmail: isFakeEmail(p.email) || isFakeEmail(authUser?.email),
         devicesCount: userDevices.length,
         blockedDevicesCount: userDevices.filter((d) => d.status === 'blocked').length,
         loginCount: successLogins.length,
@@ -412,7 +511,7 @@ export default function UsersTab({
         lastDeviceLabel: lastLogin?.device_label ?? userDevices[0]?.device_label ?? null,
       };
     });
-  }, [profiles, devicesByUser, loginsByUser]);
+  }, [profiles, authByUserId, authUsersLoaded, devicesByUser, loginsByUser]);
 
   // ─── KPIs ───────────────────────────────────────────────────────────────
 
@@ -451,6 +550,106 @@ export default function UsersTab({
   const showToast = (kind: 'success' | 'error', message: string) => {
     setToast({ kind, message });
     window.setTimeout(() => setToast(null), 4000);
+  };
+
+  const saveProfileEdit = async (input: {
+    profile: StaffProfileEditUser;
+    fullName: string;
+    phone: string;
+    newEmail: string;
+    forcePasswordChange: boolean;
+  }) => {
+    if (!canManageStaff) {
+      showToast('error', 'لا تملك صلاحية تعديل بيانات الموظفين.');
+      return;
+    }
+
+    const nextFullName = input.fullName.trim();
+    const nextPhone = input.phone.trim();
+    const currentAuthEmail = input.profile.authEmail ?? input.profile.email ?? '';
+    const nextEmail = input.newEmail.trim().toLowerCase();
+    const wantsEmailChange = normalizeEmail(nextEmail) !== normalizeEmail(currentAuthEmail);
+
+    if (wantsEmailChange && !serviceRoleAvailable) {
+      showToast(
+        'error',
+        'تعديل بريد تسجيل الدخول يحتاج صلاحية Auth Admin / Service Role غير مفعلة حاليًا'
+      );
+      return;
+    }
+    if (wantsEmailChange && !isValidEmail(nextEmail)) {
+      showToast('error', 'صيغة البريد الإلكتروني غير صحيحة.');
+      return;
+    }
+
+    const safeChanges: Record<string, { old: string | null; new: string | null }> = {};
+    if ((input.profile.full_name ?? '') !== nextFullName) {
+      safeChanges.full_name = { old: input.profile.full_name, new: nextFullName || null };
+    }
+    if ((input.profile.phone ?? '') !== nextPhone) {
+      safeChanges.phone = { old: input.profile.phone ?? null, new: nextPhone || null };
+    }
+
+    setBusyId(input.profile.id);
+    try {
+      const supabase = createClient();
+      if (Object.keys(safeChanges).length > 0) {
+        const { error } = await supabase
+          .from('profiles')
+          .update({
+            full_name: nextFullName || null,
+            phone: nextPhone || null,
+          })
+          .eq('id', input.profile.id);
+        if (error) throw error;
+        await writeStaffAuditLog(supabase, {
+          action: 'staff.profile_updated',
+          description: 'تم تعديل بيانات الموظف.',
+          actorId: user?.id ?? null,
+          actorName: profileFullName ?? user?.email ?? null,
+          actorRoleId: currentRoleId,
+          entity: {
+            type: 'profile',
+            id: input.profile.id,
+            label: nextFullName || input.profile.email || '',
+          },
+          metadata: {
+            target_user_id: input.profile.id,
+            target_email: input.profile.email,
+            changed_fields: Object.keys(safeChanges),
+            changes: safeChanges,
+          },
+        });
+      }
+
+      if (wantsEmailChange) {
+        const res = await fetch('/api/security/update-user-email', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            user_id: input.profile.id,
+            new_email: nextEmail,
+            force_password_change: input.forcePasswordChange,
+          }),
+        });
+        const payload = (await res.json().catch(() => ({}))) as { message?: string };
+        if (!res.ok) {
+          throw new Error(payload.message || 'تعذر تغيير بريد تسجيل الدخول.');
+        }
+      }
+
+      await load();
+      setProfileEditUserId(null);
+      showToast(
+        'success',
+        wantsEmailChange ? 'تم حفظ البيانات وتحديث البريد.' : 'تم حفظ بيانات الموظف.'
+      );
+    } catch (err) {
+      console.error('[UsersTab] profile edit failed:', err);
+      showToast('error', err instanceof Error ? err.message : 'تعذر حفظ بيانات الموظف.');
+    } finally {
+      setBusyId(null);
+    }
   };
 
   const updateAccountStatus = async (
@@ -654,6 +853,9 @@ export default function UsersTab({
   }
 
   const drawerUser = drawerUserId ? (userRows.find((u) => u.id === drawerUserId) ?? null) : null;
+  const profileEditUser = profileEditUserId
+    ? (userRows.find((u) => u.id === profileEditUserId) ?? null)
+    : null;
 
   return (
     <div className="space-y-4" dir="rtl">
@@ -818,6 +1020,11 @@ export default function UsersTab({
                           {u.email}
                         </p>
                       )}
+                      <EmailWarningBadges
+                        fakeEmail={u.fakeEmail}
+                        mismatch={u.emailMismatch}
+                        missingAuth={u.hasAuthUser === false}
+                      />
                     </td>
                     <td className="px-4 py-3 text-xs">
                       {/* Phase 26G — canonical role label from live
@@ -929,6 +1136,18 @@ export default function UsersTab({
                             <ShieldCheck size={14} />
                           </button>
                         )}
+                        <button
+                          onClick={() => setProfileEditUserId(u.id)}
+                          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-sky-50 text-sky-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                          title={
+                            canManageStaff
+                              ? 'تعديل بيانات الموظف'
+                              : 'لا تملك صلاحية تعديل بيانات الموظفين'
+                          }
+                          disabled={!canManageStaff || busy}
+                        >
+                          <Edit3 size={14} />
+                        </button>
                         {status !== 'disabled' && (
                           <button
                             onClick={() => {
@@ -1091,6 +1310,17 @@ export default function UsersTab({
                   })
               : undefined
           }
+          onRequestEditProfile={() => setProfileEditUserId(drawerUser.id)}
+        />
+      )}
+
+      {profileEditUser && (
+        <EditStaffProfileModal
+          user={profileEditUser}
+          serviceRoleAvailable={serviceRoleAvailable}
+          busy={busyId === profileEditUser.id}
+          onClose={() => setProfileEditUserId(null)}
+          onSave={saveProfileEdit}
         />
       )}
 
@@ -1152,6 +1382,7 @@ interface UserDetailsDrawerProps {
   onRequestForcePasswordChange?: () => void;
   /** Phase 26H-2 — sends a Supabase password-reset email. */
   onRequestSendResetEmail?: () => void;
+  onRequestEditProfile?: () => void;
 }
 
 function UserDetailsDrawer({
@@ -1175,6 +1406,7 @@ function UserDetailsDrawer({
   onRequestEditRole,
   onRequestForcePasswordChange,
   onRequestSendResetEmail,
+  onRequestEditProfile,
 }: UserDetailsDrawerProps) {
   const status = (user.account_status ?? 'active').toLowerCase();
   const tone = ACCOUNT_STATUS_TONE[status] ?? ACCOUNT_STATUS_TONE.active;
@@ -1261,6 +1493,7 @@ function UserDetailsDrawer({
               onReactivate={onReactivate}
               onBlockAllDevices={onBlockAllDevices}
               onRequestEditRole={onRequestEditRole}
+              onRequestEditProfile={onRequestEditProfile}
               onRequestForcePasswordChange={onRequestForcePasswordChange}
               onRequestSendResetEmail={onRequestSendResetEmail}
             />
@@ -1295,10 +1528,16 @@ function DrawerAccountTab({
   onReactivate,
   onBlockAllDevices,
   onRequestEditRole,
+  onRequestEditProfile,
   onRequestForcePasswordChange,
   onRequestSendResetEmail,
 }: {
-  user: ProfileRow;
+  user: ProfileRow & {
+    authEmail?: string | null;
+    hasAuthUser?: boolean | null;
+    emailMismatch?: boolean;
+    fakeEmail?: boolean;
+  };
   canManageStaff: boolean;
   canManageDevices: boolean;
   busy: boolean;
@@ -1309,6 +1548,7 @@ function DrawerAccountTab({
   onReactivate: () => Promise<void>;
   onBlockAllDevices: (reason: string) => Promise<void>;
   onRequestEditRole?: () => void;
+  onRequestEditProfile?: () => void;
   onRequestForcePasswordChange?: () => void;
   onRequestSendResetEmail?: () => void;
 }) {
@@ -1319,7 +1559,14 @@ function DrawerAccountTab({
       <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-2">
         <h4 className="text-xs font-bold text-[hsl(var(--muted-foreground))]">بيانات الحساب</h4>
         <FieldRow label="الاسم" value={user.full_name ?? '—'} />
-        <FieldRow label="البريد" value={user.email ?? '—'} dir="ltr" />
+        {user.phone && <FieldRow label="الهاتف" value={user.phone} dir="ltr" />}
+        <FieldRow label="بريد Auth" value={user.authEmail ?? '—'} dir="ltr" />
+        <FieldRow label="بريد الملف" value={user.email ?? '—'} dir="ltr" />
+        <EmailWarningBadges
+          fakeEmail={Boolean(user.fakeEmail)}
+          mismatch={Boolean(user.emailMismatch)}
+          missingAuth={user.hasAuthUser === false}
+        />
         <FieldRow label="الدور" value={user.role_name || user.role_id || '—'} />
         <FieldRow label="الحالة" value={ACCOUNT_STATUS_LABEL_AR[status] ?? status} />
         <FieldRow label="تاريخ الإنشاء" value={fmtDate(user.created_at)} />
@@ -1349,6 +1596,17 @@ function DrawerAccountTab({
       <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-2">
         <h4 className="text-xs font-bold text-[hsl(var(--muted-foreground))]">الإجراءات</h4>
         <div className="flex flex-wrap gap-2">
+          {onRequestEditProfile && (
+            <button
+              onClick={() => onRequestEditProfile()}
+              className="text-xs px-3 py-1.5 rounded-xl bg-sky-50 border border-sky-200 text-sky-700 hover:bg-sky-100 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1"
+              disabled={!canManageStaff || busy}
+              title={canManageStaff ? '' : 'لا تملك صلاحية تعديل بيانات الموظفين'}
+            >
+              <Edit3 size={12} />
+              تعديل البيانات
+            </button>
+          )}
           {/* Phase 26G — role-edit launcher inside the drawer. Hidden
               when the parent didn't supply the callback. */}
           {onRequestEditRole && (
@@ -1484,6 +1742,197 @@ function DrawerAccountTab({
         </p>
       </section>
     </>
+  );
+}
+
+function EmailWarningBadges({
+  fakeEmail,
+  mismatch,
+  missingAuth,
+}: {
+  fakeEmail: boolean;
+  mismatch: boolean;
+  missingAuth: boolean;
+}) {
+  const badges = [
+    fakeEmail ? { label: 'بريد وهمي', tone: 'bg-amber-50 text-amber-700 border-amber-200' } : null,
+    mismatch
+      ? { label: 'بريد غير متطابق', tone: 'bg-rose-50 text-rose-700 border-rose-200' }
+      : null,
+    missingAuth
+      ? { label: 'حساب بدون Auth', tone: 'bg-slate-50 text-slate-700 border-slate-200' }
+      : null,
+  ].filter(Boolean) as Array<{ label: string; tone: string }>;
+
+  if (badges.length === 0) return null;
+  return (
+    <div className="mt-1 flex flex-wrap gap-1">
+      {badges.map((badge) => (
+        <span
+          key={badge.label}
+          className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-bold ${badge.tone}`}
+        >
+          <AlertTriangle size={10} />
+          {badge.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function EditStaffProfileModal({
+  user,
+  serviceRoleAvailable,
+  busy,
+  onClose,
+  onSave,
+}: {
+  user: StaffProfileEditUser;
+  serviceRoleAvailable: boolean;
+  busy: boolean;
+  onClose: () => void;
+  onSave: (input: {
+    profile: StaffProfileEditUser;
+    fullName: string;
+    phone: string;
+    newEmail: string;
+    forcePasswordChange: boolean;
+  }) => Promise<void>;
+}) {
+  const loginEmail = user.authEmail ?? user.email ?? '';
+  const [fullName, setFullName] = useState(user.full_name ?? '');
+  const [phone, setPhone] = useState(user.phone ?? '');
+  const [newEmail, setNewEmail] = useState(loginEmail);
+  const [forcePasswordChange, setForcePasswordChange] = useState(true);
+  const emailChanged = normalizeEmail(newEmail) !== normalizeEmail(loginEmail);
+
+  return (
+    <div
+      className="fixed inset-0 z-[80] flex items-center justify-center p-4"
+      dir="rtl"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div
+        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+        onClick={onClose}
+        aria-hidden
+      />
+      <div className="relative bg-white rounded-3xl shadow-modal w-full max-w-xl max-h-[90vh] flex flex-col fade-in">
+        <div className="flex-shrink-0 flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
+          <div className="flex items-center gap-2">
+            <Edit3 size={18} className="text-sky-600" />
+            <div>
+              <h3 className="text-base font-bold text-[hsl(var(--foreground))]">
+                تعديل بيانات الموظف
+              </h3>
+              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
+                لا يتم تعديل بريد الملف وحده. بريد Auth هو مصدر تسجيل الدخول.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))]"
+            aria-label="إغلاق"
+            disabled={busy}
+          >
+            <ChevronLeft size={16} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4 scrollbar-thin">
+          <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
+            <label className="block text-xs font-bold text-[hsl(var(--foreground))]">
+              الاسم الكامل
+              <input
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                className="mt-1 w-full rounded-xl border border-[hsl(var(--border))] px-3 py-2 text-sm font-normal focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30"
+              />
+            </label>
+            <label className="block text-xs font-bold text-[hsl(var(--foreground))]">
+              الهاتف
+              <input
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                dir="ltr"
+                className="mt-1 w-full rounded-xl border border-[hsl(var(--border))] px-3 py-2 text-sm font-normal focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30"
+              />
+            </label>
+          </section>
+
+          <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
+            <h4 className="text-xs font-bold text-[hsl(var(--muted-foreground))]">
+              البريد الإلكتروني
+            </h4>
+            <FieldRow label="بريد Auth" value={user.authEmail ?? '—'} dir="ltr" />
+            <FieldRow label="بريد الملف" value={user.email ?? '—'} dir="ltr" />
+            <EmailWarningBadges
+              fakeEmail={user.fakeEmail}
+              mismatch={user.emailMismatch}
+              missingAuth={user.hasAuthUser === false}
+            />
+            <label className="block text-xs font-bold text-[hsl(var(--foreground))]">
+              بريد تسجيل الدخول الجديد
+              <input
+                type="email"
+                value={newEmail}
+                onChange={(e) => setNewEmail(e.target.value)}
+                dir="ltr"
+                disabled={!serviceRoleAvailable || user.hasAuthUser === false}
+                className="mt-1 w-full rounded-xl border border-[hsl(var(--border))] px-3 py-2 text-sm font-normal focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 disabled:bg-slate-50 disabled:text-slate-400"
+              />
+            </label>
+            {(!serviceRoleAvailable || user.hasAuthUser === false) && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                تعديل بريد تسجيل الدخول يحتاج صلاحية Auth Admin / Service Role غير مفعلة حاليًا
+              </div>
+            )}
+            {emailChanged && serviceRoleAvailable && (
+              <label className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                <input
+                  type="checkbox"
+                  checked={forcePasswordChange}
+                  onChange={(e) => setForcePasswordChange(e.target.checked)}
+                />
+                إلزام الموظف بتغيير كلمة المرور بعد تصحيح البريد
+              </label>
+            )}
+          </section>
+        </div>
+
+        <div className="flex-shrink-0 border-t border-[hsl(var(--border))] p-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 rounded-xl border border-[hsl(var(--border))] text-sm hover:bg-[hsl(var(--muted))]"
+            disabled={busy}
+          >
+            إلغاء
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              void onSave({
+                profile: user,
+                fullName,
+                phone,
+                newEmail,
+                forcePasswordChange,
+              })
+            }
+            className="px-4 py-2 rounded-xl bg-[hsl(var(--primary))] text-white text-sm font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={
+              busy || (emailChanged && (!serviceRoleAvailable || user.hasAuthUser === false))
+            }
+          >
+            {busy ? 'جارٍ الحفظ...' : 'حفظ التعديلات'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
