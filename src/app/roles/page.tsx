@@ -10,19 +10,12 @@ import {
   X,
   Save,
   Check,
-  Users,
   Eye,
   EyeOff,
-  Key,
   UserPlus,
   Camera,
   Upload,
   ShieldAlert,
-  // Phase 26E-Fix1 — icons for the new safe-action buttons in the
-  // employees tab (disable / suspend / reactivate). Mirrors the
-  // pattern already used by UsersTab.tsx.
-  UserX,
-  Clock,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 // Phase 26E-Fix1 — auth context + permission helper + staff-audit
@@ -972,15 +965,21 @@ export default function RolesPage() {
   const [editRole, setEditRole] = useState<Role | null | undefined>(undefined);
   // unified modal: undefined = closed, null = new, Employee = edit
   const [editMember, setEditMember] = useState<Employee | null | undefined>(undefined);
-  const [activeTab, setActiveTab] = useState<
-    'roles' | 'employees' | 'users' | 'security' | 'matrix'
-  >('roles');
+  // Phase 26H-1 — consolidated tabs. `users` (duplicate of employees)
+  // and `matrix` (now folded into the roles tab) removed; default
+  // landing tab is الموظفون since it's the most-used surface.
+  const [activeTab, setActiveTab] = useState<'roles' | 'employees' | 'security'>('employees');
   const [showPasswords, setShowPasswords] = useState<Set<string>>(new Set());
   // Phase 26E — users-tab state moved into UsersTab.tsx. The page
   // keeps `appUsers` because the roles tab summary + tab-count
   // badge still read from it.
 
   const handleSaveRole = async (role: Role) => {
+    // Phase 26H-1 — capture pre-save state so we can detect
+    // create-vs-update + diff permissions for the audit row.
+    const previous = roles.find((r) => r.id === role.id);
+    const isNewRole = !previous;
+
     // 1. Update local state
     setRoles((prev) => {
       const exists = prev.find((r) => r.id === role.id);
@@ -1017,6 +1016,49 @@ export default function RolesPage() {
 
         if (profileError) {
           console.error('Failed to update profiles:', profileError);
+        }
+
+        // Phase 26H-1 — staff audit. RoleModal is the only `إضافة دور`
+        // / `تعديل دور` surface in the app, so emitting here covers
+        // every UI-driven role mutation. Permissions matrix tab
+        // already emits `role.permissions_changed` for the
+        // matrix-only path, so a permissions-only edit through the
+        // role modal also passes through this writer (the diff is
+        // explicit in metadata.permissions_count). Catalog entries
+        // `role.created` / `role.updated` already exist.
+        try {
+          const prevPerms = previous?.permissions ?? [];
+          const nextPerms = role.permissions ?? [];
+          const permsAdded = nextPerms.filter((p) => !prevPerms.includes(p));
+          const permsRemoved = prevPerms.filter((p) => !nextPerms.includes(p));
+          const nameChanged = !!previous && previous.name !== role.name;
+          await writeStaffAuditLog(supabase, {
+            action: isNewRole ? 'role.created' : 'role.updated',
+            description: isNewRole
+              ? `تم إنشاء دور جديد: ${role.name}`
+              : `تم تعديل دور ${role.name}${
+                  nameChanged ? ` (الاسم السابق: ${previous?.name ?? '—'})` : ''
+                }${
+                  permsAdded.length + permsRemoved.length > 0
+                    ? ` — تغيّرت ${permsAdded.length + permsRemoved.length} صلاحية`
+                    : ''
+                }`,
+            actorId: user?.id ?? null,
+            actorName: profileFullName ?? user?.email ?? null,
+            actorRoleId: currentRoleId,
+            entity: { type: 'role', id: role.id, label: role.name },
+            metadata: {
+              role_id: role.id,
+              role_name: role.name,
+              previous_role_name: previous?.name ?? null,
+              permissions_count: nextPerms.length,
+              permissions_added_count: permsAdded.length,
+              permissions_removed_count: permsRemoved.length,
+              name_changed: nameChanged,
+            },
+          });
+        } catch (auditErr) {
+          console.warn('[role-save] staff audit failed:', auditErr);
         }
       }
     } catch (err) {
@@ -1377,16 +1419,21 @@ export default function RolesPage() {
               إدارة موحدة للمستخدمين والأدوار وتفعيل الصلاحيات على كل مستخدم
             </p>
           </div>
-          <button
-            onClick={() => {
-              if (activeTab === 'roles') setEditRole(null);
-              else setEditMember(null); // both employees and users tabs use unified modal
-            }}
-            className="flex items-center gap-2 px-4 py-2.5 bg-[hsl(var(--primary))] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
-          >
-            <Plus size={18} />
-            {activeTab === 'roles' ? 'إضافة دور' : 'إضافة موظف / مستخدم'}
-          </button>
+          {/* Phase 26H-1 — top action button is context-aware. The
+              security tab has its own per-row controls so we hide the
+              button there entirely. */}
+          {activeTab !== 'security' && (
+            <button
+              onClick={() => {
+                if (activeTab === 'roles') setEditRole(null);
+                else if (activeTab === 'employees') setEditMember(null);
+              }}
+              className="flex items-center gap-2 px-4 py-2.5 bg-[hsl(var(--primary))] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
+            >
+              <Plus size={18} />
+              {activeTab === 'roles' ? 'إضافة دور' : 'إضافة موظف'}
+            </button>
+          )}
         </div>
 
         {/* Stats */}
@@ -1412,35 +1459,32 @@ export default function RolesPage() {
         </div>
 
         {/* Tabs */}
+        {/* Phase 26H-1 — consolidated tab nav. The previous five-tab
+            layout duplicated the same `profiles` data twice
+            (الموظفون / المستخدمون) and split role management across
+            two tabs (الأدوار / مصفوفة الصلاحيات). The new layout:
+              • الموظفون      — UsersTab as canonical staff list.
+              • الأدوار والصلاحيات — role overview cards + the
+                                permissions matrix inline.
+              • الأمان والتدقيق — unchanged. */}
         <div className="flex bg-[hsl(var(--muted))] rounded-xl p-1 gap-1 w-fit">
           {[
-            { key: 'roles', label: `الأدوار (${roles.length})`, icon: <ShieldCheck size={15} /> },
             {
               key: 'employees',
               label: `الموظفون (${employees.length})`,
               icon: <UserPlus size={15} />,
             },
-            { key: 'users', label: `المستخدمون (${appUsers.length})`, icon: <Users size={15} /> },
-            // Phase 26A — new security tab. Shows orphan-account
-            // banner, per-user status controls, devices, login events,
-            // and the staff audit log. RLS gates the data server-side
-            // to admins only.
-            { key: 'security', label: 'الأمان والتدقيق', icon: <ShieldAlert size={15} /> },
-            // Phase 26C — permissions matrix tab. Read/write grid that
-            // lets admins reshape role permissions with confirmation,
-            // sensitive-perm guards, last-admin lock protection, and a
-            // mandatory audit-log write on save.
             {
-              key: 'matrix',
-              label: 'مصفوفة الصلاحيات',
+              key: 'roles',
+              label: `الأدوار والصلاحيات (${roles.length})`,
               icon: <ShieldCheck size={15} />,
             },
+            // Phase 26A — security tab unchanged.
+            { key: 'security', label: 'الأمان والتدقيق', icon: <ShieldAlert size={15} /> },
           ].map((tab) => (
             <button
               key={tab.key}
-              onClick={() =>
-                setActiveTab(tab.key as 'roles' | 'employees' | 'users' | 'security' | 'matrix')
-              }
+              onClick={() => setActiveTab(tab.key as 'roles' | 'employees' | 'security')}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${activeTab === tab.key ? 'bg-white text-[hsl(var(--primary))] shadow-sm' : 'text-[hsl(var(--muted-foreground))]'}`}
             >
               {tab.icon}
@@ -1449,472 +1493,199 @@ export default function RolesPage() {
           ))}
         </div>
 
-        {/* ── Roles Tab ── */}
+        {/* ── Roles & Permissions Tab (Phase 26H-1) ──
+            Phase 26C's standalone matrix tab is folded in below the
+            role overview cards so admins can scan role metadata and
+            reshape permissions without switching surfaces. The two
+            sections share the same `roles` snapshot — the matrix
+            re-fetches independently for write semantics, the cards
+            read from the page-level state for tab-count parity. */}
         {activeTab === 'roles' && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">
-            {roles.map((role) => {
-              const colors = colorMap[role.color] || colorMap.blue;
-              const roleEmployees = employees.filter((e) => e.roleId === role.id);
-              const roleUsers = appUsers.filter((u) => u.roleId === role.id);
-              return (
-                <div
-                  key={role.id}
-                  className={`card-section p-5 border-2 ${colors.border} hover:shadow-md transition-shadow`}
-                >
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="flex items-center gap-3">
-                      <div
-                        className={`w-11 h-11 rounded-xl ${colors.bg} ${colors.text} flex items-center justify-center`}
-                      >
-                        <ShieldCheck size={22} />
+          <div className="space-y-6">
+            <section className="space-y-3">
+              <div className="flex items-baseline gap-2">
+                <h3 className="text-base font-bold text-[hsl(var(--foreground))]">الأدوار</h3>
+                <p className="text-xs text-[hsl(var(--muted-foreground))]">
+                  نظرة عامة على الأدوار وعدد الموظفين والصلاحيات في كل دور.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">
+                {roles.map((role) => {
+                  const colors = colorMap[role.color] || colorMap.blue;
+                  const roleEmployees = employees.filter((e) => e.roleId === role.id);
+                  const roleUsers = appUsers.filter((u) => u.roleId === role.id);
+                  return (
+                    <div
+                      key={role.id}
+                      className={`card-section p-5 border-2 ${colors.border} hover:shadow-md transition-shadow`}
+                    >
+                      <div className="flex items-start justify-between mb-4">
+                        <div className="flex items-center gap-3">
+                          <div
+                            className={`w-11 h-11 rounded-xl ${colors.bg} ${colors.text} flex items-center justify-center`}
+                          >
+                            <ShieldCheck size={22} />
+                          </div>
+                          <div>
+                            <p className="font-bold text-[hsl(var(--foreground))]">{role.name}</p>
+                            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">
+                              {roleEmployees.length + roleUsers.length} مستخدم
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex gap-1">
+                          <button
+                            onClick={() => setEditRole(role)}
+                            className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted))] transition-colors"
+                          >
+                            <Edit2 size={14} />
+                          </button>
+                          <button
+                            onClick={async () => {
+                              setRoles((prev) => prev.filter((r) => r.id !== role.id));
+                              try {
+                                const supabase = createClient();
+                                if (supabase) {
+                                  await supabase.from('turath_roles').delete().eq('id', role.id);
+                                }
+                              } catch (e) {
+                                console.error('Delete role error:', e);
+                              }
+                            }}
+                            className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
                       </div>
-                      <div>
-                        <p className="font-bold text-[hsl(var(--foreground))]">{role.name}</p>
-                        <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">
-                          {roleEmployees.length + roleUsers.length} مستخدم
-                        </p>
+                      <p className="text-xs text-[hsl(var(--muted-foreground))] mb-3">
+                        {role.description}
+                      </p>
+                      <div className="flex flex-wrap gap-1.5 mb-3">
+                        {role.permissions.slice(0, 3).map((p) => {
+                          const perm = allPermissions.find((ap) => ap.id === p);
+                          return perm ? (
+                            <span
+                              key={p}
+                              className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${colors.bg} ${colors.text}`}
+                            >
+                              {perm.label}
+                            </span>
+                          ) : null;
+                        })}
+                        {role.permissions.length > 3 && (
+                          <span
+                            className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${colors.bg} ${colors.text}`}
+                          >
+                            +{role.permissions.length - 3} أخرى
+                          </span>
+                        )}
+                        {role.permissions.length === 0 && (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-gray-100 text-gray-500">
+                            لا توجد صلاحيات
+                          </span>
+                        )}
                       </div>
-                    </div>
-                    <div className="flex gap-1">
-                      <button
-                        onClick={() => setEditRole(role)}
-                        className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted))] transition-colors"
-                      >
-                        <Edit2 size={14} />
-                      </button>
-                      <button
-                        onClick={async () => {
-                          setRoles((prev) => prev.filter((r) => r.id !== role.id));
-                          try {
-                            const supabase = createClient();
-                            if (supabase) {
-                              await supabase.from('turath_roles').delete().eq('id', role.id);
-                            }
-                          } catch (e) {
-                            console.error('Delete role error:', e);
-                          }
-                        }}
-                        className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  </div>
-                  <p className="text-xs text-[hsl(var(--muted-foreground))] mb-3">
-                    {role.description}
-                  </p>
-                  <div className="flex flex-wrap gap-1.5 mb-3">
-                    {role.permissions.slice(0, 3).map((p) => {
-                      const perm = allPermissions.find((ap) => ap.id === p);
-                      return perm ? (
-                        <span
-                          key={p}
-                          className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${colors.bg} ${colors.text}`}
-                        >
-                          {perm.label}
-                        </span>
-                      ) : null;
-                    })}
-                    {role.permissions.length > 3 && (
-                      <span
-                        className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${colors.bg} ${colors.text}`}
-                      >
-                        +{role.permissions.length - 3} أخرى
-                      </span>
-                    )}
-                    {role.permissions.length === 0 && (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-gray-100 text-gray-500">
-                        لا توجد صلاحيات
-                      </span>
-                    )}
-                  </div>
-                  {roleEmployees.length > 0 && (
-                    <div className="flex -space-x-2 space-x-reverse mb-3">
-                      {roleEmployees.slice(0, 4).map((emp) => (
-                        <div
-                          key={emp.id}
-                          className={`w-7 h-7 rounded-full border-2 border-white overflow-hidden flex items-center justify-center text-white text-xs font-bold ${colors.avatar}`}
-                        >
-                          {emp.avatar ? (
-                            <Image
-                              src={emp.avatar}
-                              alt={emp.name}
-                              width={28}
-                              height={28}
-                              className="w-full h-full object-cover"
-                              unoptimized={emp.avatar.startsWith('data:')}
-                            />
-                          ) : (
-                            <span>{emp.name.charAt(0)}</span>
+                      {roleEmployees.length > 0 && (
+                        <div className="flex -space-x-2 space-x-reverse mb-3">
+                          {roleEmployees.slice(0, 4).map((emp) => (
+                            <div
+                              key={emp.id}
+                              className={`w-7 h-7 rounded-full border-2 border-white overflow-hidden flex items-center justify-center text-white text-xs font-bold ${colors.avatar}`}
+                            >
+                              {emp.avatar ? (
+                                <Image
+                                  src={emp.avatar}
+                                  alt={emp.name}
+                                  width={28}
+                                  height={28}
+                                  className="w-full h-full object-cover"
+                                  unoptimized={emp.avatar.startsWith('data:')}
+                                />
+                              ) : (
+                                <span>{emp.name.charAt(0)}</span>
+                              )}
+                            </div>
+                          ))}
+                          {roleEmployees.length > 4 && (
+                            <div className="w-7 h-7 rounded-full border-2 border-white bg-gray-200 flex items-center justify-center text-gray-600 text-xs font-bold">
+                              +{roleEmployees.length - 4}
+                            </div>
                           )}
                         </div>
-                      ))}
-                      {roleEmployees.length > 4 && (
-                        <div className="w-7 h-7 rounded-full border-2 border-white bg-gray-200 flex items-center justify-center text-gray-600 text-xs font-bold">
-                          +{roleEmployees.length - 4}
-                        </div>
                       )}
+                      <button
+                        onClick={() => setEditRole(role)}
+                        className={`w-full flex items-center justify-center gap-1.5 text-xs py-2 rounded-xl border ${colors.border} ${colors.text} transition-colors font-semibold`}
+                      >
+                        <ShieldCheck size={13} />
+                        تعديل الصلاحيات
+                      </button>
                     </div>
-                  )}
-                  <button
-                    onClick={() => setEditRole(role)}
-                    className={`w-full flex items-center justify-center gap-1.5 text-xs py-2 rounded-xl border ${colors.border} ${colors.text} transition-colors font-semibold`}
-                  >
-                    <ShieldCheck size={13} />
-                    تعديل الصلاحيات
-                  </button>
-                </div>
-              );
-            })}
-            <button
-              onClick={() => setEditRole(null)}
-              className="card-section p-5 border-2 border-dashed border-[hsl(var(--border))] hover:border-[hsl(var(--primary))]/50 hover:bg-[hsl(var(--primary))]/5 transition-all flex flex-col items-center justify-center gap-3 min-h-[180px] group"
-            >
-              <div className="w-11 h-11 rounded-xl bg-[hsl(var(--muted))] group-hover:bg-[hsl(var(--primary))]/10 flex items-center justify-center transition-colors">
-                <Plus
-                  size={22}
-                  className="text-[hsl(var(--muted-foreground))] group-hover:text-[hsl(var(--primary))]"
-                />
+                  );
+                })}
+                <button
+                  onClick={() => setEditRole(null)}
+                  className="card-section p-5 border-2 border-dashed border-[hsl(var(--border))] hover:border-[hsl(var(--primary))]/50 hover:bg-[hsl(var(--primary))]/5 transition-all flex flex-col items-center justify-center gap-3 min-h-[180px] group"
+                >
+                  <div className="w-11 h-11 rounded-xl bg-[hsl(var(--muted))] group-hover:bg-[hsl(var(--primary))]/10 flex items-center justify-center transition-colors">
+                    <Plus
+                      size={22}
+                      className="text-[hsl(var(--muted-foreground))] group-hover:text-[hsl(var(--primary))]"
+                    />
+                  </div>
+                  <p className="text-sm font-semibold text-[hsl(var(--muted-foreground))] group-hover:text-[hsl(var(--primary))] transition-colors">
+                    إضافة دور جديد
+                  </p>
+                </button>
               </div>
-              <p className="text-sm font-semibold text-[hsl(var(--muted-foreground))] group-hover:text-[hsl(var(--primary))] transition-colors">
-                إضافة دور جديد
-              </p>
-            </button>
+            </section>
+            {/* Phase 26H-1 — Permissions matrix moved inline. The
+                Phase 26C component is self-contained (it reads/writes
+                its own data + writes role.permissions_changed audit
+                rows) so we just drop it in below the role cards
+                without ceremony. */}
+            <section className="space-y-3">
+              <div className="flex items-baseline gap-2">
+                <h3 className="text-base font-bold text-[hsl(var(--foreground))]">
+                  مصفوفة الصلاحيات
+                </h3>
+                <p className="text-xs text-[hsl(var(--muted-foreground))]">
+                  تعديل صلاحيات كل دور دفعة واحدة مع حماية الصلاحيات الحساسة وتسجيل التعديلات في سجل
+                  التدقيق.
+                </p>
+              </div>
+              <PermissionsMatrixTab />
+            </section>
           </div>
         )}
 
-        {/* ── Employees Tab ── */}
+        {/* ── Employees Tab (Phase 26H-1) ──
+            Consolidated with the old المستخدمون tab. UsersTab
+            already provides the joined data (devices / login
+            events / audit), real status badges, search +
+            filters, the details drawer, status actions (Phase
+            26E-Fix1), and the role-edit hook (Phase 26G). The
+            page-level handlers it consumes are owned here, so
+            the consolidation is a pure swap — no behaviour
+            lost, only the duplicate inline table removed. The
+            "إضافة موظف" affordance lives in the page-level top
+            button which opens the existing UnifiedMemberModal. */}
         {activeTab === 'employees' && (
-          <div className="space-y-3">
-            {/* Phase 26E-Fix1 — banner explaining the new safe-action
-                model. Mirrors the UsersTab notice so admins see the
-                same message in both tabs. */}
-            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 flex items-start gap-2">
-              <ShieldAlert size={16} className="text-amber-700 mt-0.5 flex-shrink-0" />
-              <div className="text-xs text-amber-900">
-                <p className="font-bold mb-0.5">الحذف النهائي غير متاح من هذا التبويب.</p>
-                <p>
-                  لحذف حساب نهائيًا يتطلب صلاحية Service Role ومرحلة منفصلة. للحفاظ على سجل التدقيق
-                  استخدم
-                  <span className="font-bold mx-1">تعطيل الحساب</span>
-                  أو
-                  <span className="font-bold mx-1">إيقاف مؤقت</span>.
-                </p>
-              </div>
-            </div>
-            <div className="card-section overflow-hidden">
-              <div className="p-4 border-b border-[hsl(var(--border))]">
-                <p className="text-sm font-semibold">قائمة الموظفين وبيانات الدخول</p>
-                <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
-                  يمكنك عرض وتعديل بيانات كل موظف. التحكم في حالة الحساب من خلال أزرار الإجراءات في
-                  كل صف؛ تفاصيل الأجهزة وتسجيلات الدخول في تبويب المستخدمون.
-                </p>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm" dir="rtl">
-                  <thead>
-                    <tr className="bg-[hsl(var(--muted))]/50 text-[hsl(var(--muted-foreground))] text-xs">
-                      <th className="text-right px-4 py-3 font-semibold">الموظف</th>
-                      <th className="text-right px-4 py-3 font-semibold">اسم المستخدم</th>
-                      <th className="text-right px-4 py-3 font-semibold">كلمة المرور</th>
-                      <th className="text-right px-4 py-3 font-semibold">الدور</th>
-                      <th className="text-right px-4 py-3 font-semibold">الصلاحيات</th>
-                      <th className="text-right px-4 py-3 font-semibold">الحالة</th>
-                      <th className="text-right px-4 py-3 font-semibold">تاريخ الإنشاء</th>
-                      <th className="text-right px-4 py-3 font-semibold">إجراءات</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {employees.map((emp) => {
-                      const rc = getRoleColors(emp.roleId);
-                      const empRole = getRoleById(emp.roleId);
-                      const isShowingPass = showPasswords.has(emp.id);
-                      return (
-                        <tr
-                          key={emp.id}
-                          className="border-t border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/30 transition-colors"
-                        >
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-3">
-                              <div
-                                className={`w-9 h-9 rounded-full overflow-hidden flex items-center justify-center text-white text-sm font-bold flex-shrink-0 ${emp.avatar ? '' : rc.avatar}`}
-                              >
-                                {emp.avatar ? (
-                                  <Image
-                                    src={emp.avatar}
-                                    alt={emp.name}
-                                    width={36}
-                                    height={36}
-                                    className="w-full h-full object-cover"
-                                    unoptimized={emp.avatar.startsWith('data:')}
-                                  />
-                                ) : (
-                                  <span>{emp.name.charAt(0)}</span>
-                                )}
-                              </div>
-                              <span className="font-semibold">{emp.name}</span>
-                            </div>
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-1.5">
-                              <Key size={13} className="text-[hsl(var(--muted-foreground))]" />
-                              <span className="font-mono text-xs bg-[hsl(var(--muted))] px-2 py-1 rounded-lg">
-                                {emp.username}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-1.5">
-                              <span className="font-mono text-xs bg-[hsl(var(--muted))] px-2 py-1 rounded-lg">
-                                {isShowingPass ? emp.password : '••••••••'}
-                              </span>
-                              <button
-                                onClick={() => toggleShowPassword(emp.id)}
-                                className="text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"
-                              >
-                                {isShowingPass ? <EyeOff size={14} /> : <Eye size={14} />}
-                              </button>
-                            </div>
-                          </td>
-                          <td className="px-4 py-3">
-                            {/* Phase 26G — canonical role display from live
-                                `turath_roles`. The stale-cache warning fires
-                                when the cached `profiles.role_name` (held in
-                                `emp.roleName`) doesn't match the live name —
-                                a side effect of pre-26G code paths that
-                                updated `role_id` without keeping
-                                `role_name` in sync. The save handler
-                                repairs it the moment the role is edited. */}
-                            {(() => {
-                              const canonicalRole = roles.find((r) => r.id === emp.roleId);
-                              const canonicalName = canonicalRole?.name ?? null;
-                              const isUnknownRoleId = !canonicalRole;
-                              const isStaleName =
-                                !!canonicalName &&
-                                !!emp.roleName &&
-                                emp.roleName.trim() !== canonicalName.trim();
-                              return (
-                                <div className="flex items-center gap-1 flex-wrap">
-                                  <span
-                                    className={`text-xs px-2.5 py-1 rounded-full font-semibold ${rc.bg} ${rc.text}`}
-                                  >
-                                    {canonicalName ?? emp.roleId}
-                                  </span>
-                                  {isUnknownRoleId && (
-                                    <span
-                                      className="text-[10px] px-1.5 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200"
-                                      title={`معرّف الدور (${emp.roleId}) غير موجود في جدول الأدوار`}
-                                    >
-                                      ⚠ غير معروف
-                                    </span>
-                                  )}
-                                  {isStaleName && !isUnknownRoleId && (
-                                    <span
-                                      className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200"
-                                      title={`اسم الدور المسجل (${emp.roleName}) قديم؛ الاسم الحالي: ${canonicalName}. سيتم تحديثه عند أي تعديل دور.`}
-                                    >
-                                      ⚠ اسم قديم
-                                    </span>
-                                  )}
-                                </div>
-                              );
-                            })()}
-                          </td>
-                          <td className="px-4 py-3">
-                            <span
-                              className={`text-xs px-2 py-0.5 rounded-full font-semibold ${rc.bg} ${rc.text}`}
-                            >
-                              {empRole ? `${empRole.permissions.length} صلاحية` : '—'}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3">
-                            {/* Phase 26E-Fix1 — reads real `account_status`
-                              instead of hardcoded `active`. Includes a
-                              compact disabled-reason line so reviewers
-                              don't have to open the users tab to see why
-                              an account is off. */}
-                            {(() => {
-                              const tone =
-                                emp.accountStatus === 'active'
-                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                  : emp.accountStatus === 'disabled'
-                                    ? 'bg-rose-50 text-rose-700 border-rose-200'
-                                    : emp.accountStatus === 'suspended'
-                                      ? 'bg-amber-50 text-amber-700 border-amber-200'
-                                      : 'bg-slate-50 text-slate-700 border-slate-200';
-                              const label =
-                                emp.accountStatus === 'active'
-                                  ? 'نشط'
-                                  : emp.accountStatus === 'disabled'
-                                    ? 'معطّل'
-                                    : emp.accountStatus === 'suspended'
-                                      ? 'موقوف مؤقتًا'
-                                      : 'بانتظار المراجعة';
-                              return (
-                                <div className="flex flex-col gap-0.5">
-                                  <span
-                                    className={`text-xs px-2.5 py-1 rounded-full font-semibold border w-fit ${tone}`}
-                                  >
-                                    {label}
-                                  </span>
-                                  {emp.disabledReason && emp.accountStatus !== 'active' && (
-                                    <span className="text-[10px] text-[hsl(var(--muted-foreground))]">
-                                      {emp.disabledReason}
-                                    </span>
-                                  )}
-                                </div>
-                              );
-                            })()}
-                          </td>
-                          <td className="px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
-                            {emp.createdAt}
-                          </td>
-                          <td className="px-4 py-3">
-                            {/* Phase 26E-Fix1 — silent `.delete()` button
-                              replaced with three safe actions
-                              (disable / suspend / reactivate) plus a
-                              disabled Trash2 tooltip explaining that
-                              permanent deletion isn't available from
-                              the app. Mirrors the UsersTab pattern so
-                              both tabs offer the same status semantics. */}
-                            <div className="flex items-center gap-1">
-                              <button
-                                onClick={() => setEditMember(emp)}
-                                className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted))] transition-colors"
-                                title="تعديل البيانات"
-                              >
-                                <Edit2 size={14} />
-                              </button>
-                              {/* Phase 26G — open the shared role-edit modal.
-                                  Page owns the supabase write + audit; the
-                                  modal renders the live `roles` list +
-                                  safety guards. */}
-                              <button
-                                onClick={() => {
-                                  if (!canManageStaff) return;
-                                  setRoleEditTarget({
-                                    id: emp.id,
-                                    email: emp.email || null,
-                                    name: emp.name,
-                                    currentRoleId: emp.roleId,
-                                    currentRoleName: emp.roleName ?? null,
-                                  });
-                                }}
-                                className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-indigo-50 text-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                                title={
-                                  canManageStaff ? 'تعديل الدور' : 'لا تملك صلاحية تعديل الأدوار'
-                                }
-                                disabled={!canManageStaff || roleEditBusy}
-                              >
-                                <ShieldCheck size={14} />
-                              </button>
-                              {emp.accountStatus !== 'disabled' && (
-                                <button
-                                  onClick={() => {
-                                    if (!canManageStaff) return;
-                                    const reason =
-                                      window.prompt('سبب التعطيل (اختياري):') ?? undefined;
-                                    void handleEmployeeStatusUpdate(emp, 'disabled', reason);
-                                  }}
-                                  className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-rose-50 text-rose-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                                  title={
-                                    canManageStaff
-                                      ? 'تعطيل الحساب'
-                                      : 'لا تملك صلاحية تعطيل الحسابات'
-                                  }
-                                  disabled={!canManageStaff || employeesBusyId === emp.id}
-                                >
-                                  <UserX size={14} />
-                                </button>
-                              )}
-                              {emp.accountStatus !== 'suspended' &&
-                                emp.accountStatus !== 'disabled' && (
-                                  <button
-                                    onClick={() => {
-                                      if (!canManageStaff) return;
-                                      const reason =
-                                        window.prompt('سبب الإيقاف المؤقت (اختياري):') ?? undefined;
-                                      void handleEmployeeStatusUpdate(emp, 'suspended', reason);
-                                    }}
-                                    className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-amber-50 text-amber-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                                    title={
-                                      canManageStaff
-                                        ? 'إيقاف مؤقت'
-                                        : 'لا تملك صلاحية إيقاف الحسابات'
-                                    }
-                                    disabled={!canManageStaff || employeesBusyId === emp.id}
-                                  >
-                                    <Clock size={14} />
-                                  </button>
-                                )}
-                              {(emp.accountStatus === 'disabled' ||
-                                emp.accountStatus === 'suspended') && (
-                                <button
-                                  onClick={() => void handleEmployeeStatusUpdate(emp, 'active')}
-                                  className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-emerald-50 text-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                                  title={
-                                    canManageStaff
-                                      ? 'إعادة تفعيل الحساب'
-                                      : 'لا تملك صلاحية إعادة التفعيل'
-                                  }
-                                  disabled={!canManageStaff || employeesBusyId === emp.id}
-                                >
-                                  <Check size={14} />
-                                </button>
-                              )}
-                              <button
-                                disabled
-                                className="w-8 h-8 flex items-center justify-center rounded-lg text-[hsl(var(--muted-foreground))]/40 cursor-not-allowed"
-                                title="الحذف النهائي غير متاح من التطبيق. استخدم تعطيل الحساب للحفاظ على سجل التدقيق."
-                              >
-                                <Trash2 size={14} />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    {employees.length === 0 && (
-                      <tr>
-                        <td
-                          colSpan={8}
-                          className="px-4 py-8 text-center text-[hsl(var(--muted-foreground))] text-sm"
-                        >
-                          لا يوجد موظفون
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ── Users Tab (Phase 26E redesign) ──
-            Security/account-focused: joins profiles with devices +
-            login events + staff audit log via the new UsersTab
-            component. Replaces the legacy inline table that
-            hardcoded login/device counts and silently deleted rows
-            on click. Hard delete is intentionally removed from
-            here; see UsersTab.tsx for the explanation banner. */}
-        {activeTab === 'users' && (
           <UsersTab
             onOpenSecurityTab={() => setActiveTab('security')}
-            /* Phase 26G — page owns the role-edit modal; UsersTab
-               just opens it with a target descriptor. */
             onRequestEditRole={(t) => setRoleEditTarget(t)}
-            /* Phase 26G — page signals UsersTab to refetch after a
-               successful page-level role mutation. */
             reloadTick={usersTabReloadTick}
           />
         )}
 
+        {/* Phase 26H-1 — `users` and `matrix` standalone renders
+            removed. UsersTab is now embedded as the employees tab
+            (see above) and PermissionsMatrixTab is inside the new
+            roles tab. */}
+
         {/* Phase 26A — Security tab */}
         {activeTab === 'security' && <SecurityTab />}
-
-        {/* Phase 26C — Permissions matrix tab */}
-        {activeTab === 'matrix' && <PermissionsMatrixTab />}
       </div>
 
       {/* Modals */}
