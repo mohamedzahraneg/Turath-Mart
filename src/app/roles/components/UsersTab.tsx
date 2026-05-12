@@ -47,6 +47,7 @@ import {
   Search,
   Shield,
   ShieldAlert,
+  ShieldCheck,
   Smartphone,
   Tablet,
   Trash2,
@@ -192,14 +193,34 @@ function deviceIconFor(label: string | null | undefined, size = 14) {
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
+export interface UsersTabRoleEditTarget {
+  id: string;
+  email: string | null;
+  name: string;
+  currentRoleId: string | null;
+  currentRoleName: string | null;
+}
+
 export interface UsersTabProps {
   /** Phase 26E — switch the parent /roles page to the Security tab.
    *  Lets the "افتح في الأمان" action stay scoped to the same page
    *  instead of forcing a navigation. */
   onOpenSecurityTab?: () => void;
+  /** Phase 26G — open the page-level ChangeRoleModal for the given
+   *  target. Page owns the supabase write + audit + safety guards;
+   *  UsersTab only describes who to edit. */
+  onRequestEditRole?: (target: UsersTabRoleEditTarget) => void;
+  /** Phase 26G — bumped by the parent after a successful role
+   *  mutation. UsersTab re-fetches its joined data so the role
+   *  badge + count update without waiting for the user to refresh. */
+  reloadTick?: number;
 }
 
-export default function UsersTab({ onOpenSecurityTab }: UsersTabProps) {
+export default function UsersTab({
+  onOpenSecurityTab,
+  onRequestEditRole,
+  reloadTick = 0,
+}: UsersTabProps) {
   const { user, currentRoleId, profileFullName } = useAuth();
   const perms = usePermissions();
 
@@ -301,8 +322,10 @@ export default function UsersTab({ onOpenSecurityTab }: UsersTabProps) {
       return;
     }
     void load();
+    // Phase 26G — `reloadTick` is bumped by the parent after a
+    // successful role mutation so we re-fetch profiles + roles.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canViewTab]);
+  }, [canViewTab, reloadTick]);
 
   // ─── Per-user derived stats ─────────────────────────────────────────────
 
@@ -773,10 +796,46 @@ export default function UsersTab({ onOpenSecurityTab }: UsersTabProps) {
                       )}
                     </td>
                     <td className="px-4 py-3 text-xs">
-                      <span className="inline-flex items-center gap-1 bg-[hsl(var(--muted))] text-[hsl(var(--foreground))] px-2 py-0.5 rounded-full font-semibold">
-                        <Shield size={11} />
-                        {u.role_name || u.role_id || '—'}
-                      </span>
+                      {/* Phase 26G — canonical role label from live
+                          `turath_roles` instead of the (possibly stale)
+                          cached `profiles.role_name`. Surfaces a small
+                          warning chip when the cached name no longer
+                          matches the canonical name, or when the
+                          stored `role_id` is missing from the roles
+                          table altogether. */}
+                      {(() => {
+                        const canonicalRole = roles.find((r) => r.id === u.role_id);
+                        const canonicalName = canonicalRole?.name ?? null;
+                        const isUnknownRoleId = !!u.role_id && !canonicalRole;
+                        const isStaleName =
+                          !!canonicalName &&
+                          !!u.role_name &&
+                          u.role_name.trim() !== canonicalName.trim();
+                        return (
+                          <div className="flex items-center gap-1 flex-wrap">
+                            <span className="inline-flex items-center gap-1 bg-[hsl(var(--muted))] text-[hsl(var(--foreground))] px-2 py-0.5 rounded-full font-semibold">
+                              <Shield size={11} />
+                              {canonicalName || u.role_id || '—'}
+                            </span>
+                            {isUnknownRoleId && (
+                              <span
+                                className="text-[10px] px-1.5 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200"
+                                title={`معرّف الدور (${u.role_id}) غير موجود في جدول الأدوار`}
+                              >
+                                ⚠ غير معروف
+                              </span>
+                            )}
+                            {isStaleName && !isUnknownRoleId && (
+                              <span
+                                className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200"
+                                title={`اسم الدور المسجل (${u.role_name}) قديم؛ الاسم الحالي: ${canonicalName}. سيتم تحديثه عند أي تعديل دور.`}
+                              >
+                                ⚠ اسم قديم
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td className="px-4 py-3">
                       <span
@@ -824,6 +883,28 @@ export default function UsersTab({ onOpenSecurityTab }: UsersTabProps) {
                         >
                           <Eye size={14} />
                         </button>
+                        {/* Phase 26G — open the page-level role-edit
+                            modal for this user. Hidden when the
+                            parent didn't wire the callback. */}
+                        {onRequestEditRole && (
+                          <button
+                            onClick={() => {
+                              if (!canManageStaff) return;
+                              onRequestEditRole({
+                                id: u.id,
+                                email: u.email,
+                                name: u.full_name || u.email?.split('@')[0] || 'مستخدم',
+                                currentRoleId: u.role_id,
+                                currentRoleName: u.role_name,
+                              });
+                            }}
+                            className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-indigo-50 text-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                            title={canManageStaff ? 'تعديل الدور' : 'لا تملك صلاحية تعديل الأدوار'}
+                            disabled={!canManageStaff || busy}
+                          >
+                            <ShieldCheck size={14} />
+                          </button>
+                        )}
                         {status !== 'disabled' && (
                           <button
                             onClick={() => {
@@ -954,6 +1035,18 @@ export default function UsersTab({ onOpenSecurityTab }: UsersTabProps) {
           onBlockAllDevices={(reason) => blockAllDevices(drawerUser, reason)}
           onDeviceStatus={setSingleDeviceStatus}
           onOpenSecurityTab={onOpenSecurityTab}
+          onRequestEditRole={
+            onRequestEditRole
+              ? () =>
+                  onRequestEditRole({
+                    id: drawerUser.id,
+                    email: drawerUser.email,
+                    name: drawerUser.full_name || drawerUser.email?.split('@')[0] || 'مستخدم',
+                    currentRoleId: drawerUser.role_id,
+                    currentRoleName: drawerUser.role_name,
+                  })
+              : undefined
+          }
         />
       )}
 
@@ -1007,6 +1100,9 @@ interface UserDetailsDrawerProps {
     reason?: string
   ) => Promise<void>;
   onOpenSecurityTab?: () => void;
+  /** Phase 26G — opens the page-level role-edit modal for the user
+   *  shown in the drawer. */
+  onRequestEditRole?: () => void;
 }
 
 function UserDetailsDrawer({
@@ -1027,6 +1123,7 @@ function UserDetailsDrawer({
   onBlockAllDevices,
   onDeviceStatus,
   onOpenSecurityTab,
+  onRequestEditRole,
 }: UserDetailsDrawerProps) {
   const status = (user.account_status ?? 'active').toLowerCase();
   const tone = ACCOUNT_STATUS_TONE[status] ?? ACCOUNT_STATUS_TONE.active;
@@ -1112,6 +1209,7 @@ function UserDetailsDrawer({
               onSuspend={onSuspend}
               onReactivate={onReactivate}
               onBlockAllDevices={onBlockAllDevices}
+              onRequestEditRole={onRequestEditRole}
             />
           )}
           {activeTab === 'devices' && (
@@ -1143,6 +1241,7 @@ function DrawerAccountTab({
   onSuspend,
   onReactivate,
   onBlockAllDevices,
+  onRequestEditRole,
 }: {
   user: ProfileRow;
   canManageStaff: boolean;
@@ -1154,6 +1253,7 @@ function DrawerAccountTab({
   onSuspend: (reason: string) => Promise<void>;
   onReactivate: () => Promise<void>;
   onBlockAllDevices: (reason: string) => Promise<void>;
+  onRequestEditRole?: () => void;
 }) {
   const status = (user.account_status ?? 'active').toLowerCase();
   return (
@@ -1176,6 +1276,19 @@ function DrawerAccountTab({
       <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-2">
         <h4 className="text-xs font-bold text-[hsl(var(--muted-foreground))]">الإجراءات</h4>
         <div className="flex flex-wrap gap-2">
+          {/* Phase 26G — role-edit launcher inside the drawer. Hidden
+              when the parent didn't supply the callback. */}
+          {onRequestEditRole && (
+            <button
+              onClick={() => onRequestEditRole()}
+              className="text-xs px-3 py-1.5 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1"
+              disabled={!canManageStaff || busy}
+              title={canManageStaff ? '' : 'لا تملك صلاحية تعديل الأدوار'}
+            >
+              <ShieldCheck size={12} />
+              تعديل الدور
+            </button>
+          )}
           {status !== 'disabled' && (
             <button
               onClick={() => {

@@ -40,6 +40,10 @@ import PermissionsMatrixTab from './components/PermissionsMatrixTab';
 // real staff accounts). Replaces the legacy inline users table
 // that hardcoded login/device counts and silently deleted rows.
 import UsersTab from './components/UsersTab';
+// Phase 26G — shared modal for "تعديل الدور" surfaced from both
+// the employees tab and the users tab. Writes role_id +
+// role_name + role to profiles via the page-level handler.
+import ChangeRoleModal, { type ChangeRoleModalTarget } from './components/ChangeRoleModal';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 interface Permission {
@@ -67,7 +71,11 @@ interface Employee {
   username: string;
   password: string;
   roleId: string;
-  roleName?: string;
+  /** Phase 26G — cached `profiles.role_name` straight from the DB.
+   *  Used only to detect drift against the live `turath_roles`
+   *  lookup; never rendered directly in the UI (the badge uses
+   *  `getRoleName(roleId)` for canonical truth). */
+  roleName?: string | null;
   /** Legacy `status` left in place for the role-summary card that
    *  counts active employees; real Phase 26A status lives in
    *  `accountStatus` below. */
@@ -232,6 +240,24 @@ const initialRoles: Role[] = [
 
 // No default employees - all employees are loaded from Supabase
 const defaultEmployees: Employee[] = [];
+
+// Phase 26G — legacy free-text `profiles.role` value kept in sync
+// with `role_id`. Pre-26A code paths still read this column for a
+// coarse-grained admin/manager/employee/delegate flag; the
+// employee-create wizard already set it via the same lookup table.
+// Promoted to module scope so the new role-update handler reuses
+// the exact same mapping (single source of truth).
+const LEGACY_ROLE_TEXT: Record<string, string> = {
+  r1: 'admin',
+  r2: 'manager',
+  r3: 'manager',
+  r4: 'delegate',
+  r5: 'employee',
+  r6: 'employee',
+};
+function legacyRoleText(roleId: string | null | undefined): string {
+  return (roleId && LEGACY_ROLE_TEXT[roleId]) || 'employee';
+}
 
 const DAYS_AR = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
 
@@ -826,6 +852,17 @@ export default function RolesPage() {
     window.setTimeout(() => setEmployeesToast(null), 4000);
   };
 
+  // Phase 26G — shared role-edit modal state. Both the employees
+  // tab (inline JSX) and the UsersTab open this same modal; the
+  // page owns the supabase write so audit + state refresh happen
+  // in one place.
+  const [roleEditTarget, setRoleEditTarget] = useState<ChangeRoleModalTarget | null>(null);
+  const [roleEditBusy, setRoleEditBusy] = useState(false);
+  // Bumped on every successful page-level profile mutation so the
+  // UsersTab re-fetches its joined data (devices / login events /
+  // audit / roles) on its own without us reaching into its state.
+  const [usersTabReloadTick, setUsersTabReloadTick] = useState(0);
+
   // Load ALL data from Supabase (source of truth) - roles, employees, users
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -890,6 +927,12 @@ export default function RolesPage() {
               username: p.email?.split('@')[0] || p.id,
               password: '••••••••',
               roleId: p.role_id || 'r6',
+              // Phase 26G — capture the cached `profiles.role_name`
+              // so the employees tab can detect drift against the
+              // live `turath_roles` lookup. The badge column still
+              // renders the canonical name via getRoleName(); this
+              // field exists to surface the stale-cache warning.
+              roleName: p.role_name ?? null,
               // Legacy `status` mirrors the real account status so the
               // role-summary card's active-employees count stays
               // honest now that account_status is loaded.
@@ -980,6 +1023,101 @@ export default function RolesPage() {
       console.error('Error saving role to Supabase:', err);
     }
     setEditRole(undefined);
+  };
+
+  // Phase 26G — `staff.role_changed` mutation surfaced from both
+  // the employees tab and the users tab. Writes the canonical
+  // `role_id` + `role_name` + legacy free-text `role` to the
+  // profiles row, emits an audit log entry, refreshes local
+  // state, and toasts. Self-changes trigger a session reload so
+  // AuthContext re-reads the new role from the DB instead of
+  // serving the cached 5-min profile.
+  const handleProfileRoleUpdate = async (target: ChangeRoleModalTarget, newRoleId: string) => {
+    if (!canManageStaff) {
+      showEmployeesToast('error', 'لا تملك صلاحية تعديل الأدوار.');
+      return;
+    }
+    const newRole = roles.find((r) => r.id === newRoleId);
+    if (!newRole) {
+      showEmployeesToast('error', 'الدور المختار غير موجود.');
+      return;
+    }
+    setRoleEditBusy(true);
+    try {
+      const supabase = createClient();
+      if (!supabase) {
+        showEmployeesToast('error', 'تعذر الاتصال بقاعدة البيانات.');
+        return;
+      }
+      const { error } = await supabase
+        .from('profiles')
+        .update({
+          role_id: newRoleId,
+          role_name: newRole.name,
+          role: legacyRoleText(newRoleId),
+          permissions: newRole.permissions,
+        })
+        .eq('id', target.id);
+      if (error) throw error;
+      try {
+        await writeStaffAuditLog(supabase, {
+          action: 'staff.role_changed',
+          description: `تم تغيير دور المستخدم من "${target.currentRoleName ?? target.currentRoleId ?? '—'}" إلى "${newRole.name}"`,
+          actorId: user?.id ?? null,
+          actorName: profileFullName ?? user?.email ?? null,
+          actorRoleId: currentRoleId,
+          entity: {
+            type: 'profile',
+            id: target.id,
+            label: target.name || target.email || '',
+          },
+          metadata: {
+            target_user_id: target.id,
+            target_email: target.email,
+            old_role_id: target.currentRoleId,
+            old_role_name: target.currentRoleName,
+            new_role_id: newRoleId,
+            new_role_name: newRole.name,
+            self_change: target.id === (user?.id ?? null),
+          },
+        });
+      } catch (auditErr) {
+        console.warn('[role-edit] staff audit failed:', auditErr);
+      }
+      // Phase 26G — refresh local state so the employees tab,
+      // users tab tab-count, and roles-tab summary all reflect the
+      // new role without a hard reload (except for self-changes,
+      // which need a session refresh to clear the AuthContext
+      // profile cache).
+      setEmployees((prev) =>
+        prev.map((e) =>
+          e.id === target.id ? { ...e, roleId: newRoleId, roleName: newRole.name } : e
+        )
+      );
+      setAppUsers((prev) =>
+        prev.map((u) => (u.id === target.id ? { ...u, roleId: newRoleId } : u))
+      );
+      setUsersTabReloadTick((n) => n + 1);
+      setRoleEditTarget(null);
+      const isSelf = target.id === (user?.id ?? null);
+      if (isSelf) {
+        showEmployeesToast('success', 'تم تغيير دورك. سيتم تحديث الجلسة والصلاحيات تلقائيًا...');
+        // Brief delay so the toast is readable before the reload.
+        window.setTimeout(() => window.location.reload(), 1500);
+      } else {
+        showEmployeesToast('success', `تم تغيير الدور إلى ${newRole.name}.`);
+      }
+    } catch (err) {
+      console.error('[role-edit] update failed:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      // RLS rejections surface as 42501 — translate to Arabic.
+      const friendly = msg.includes('42501')
+        ? 'لا تملك صلاحية تعديل أدوار المستخدمين. تواصل مع المدير.'
+        : 'تعذر تغيير الدور. حاول مرة أخرى.';
+      showEmployeesToast('error', friendly);
+    } finally {
+      setRoleEditBusy(false);
+    }
   };
 
   // Phase 26E-Fix1 — safe replacement for the legacy silent delete
@@ -1160,14 +1298,9 @@ export default function RolesPage() {
         const supabase = createClient();
         if (supabase) {
           const authEmail = `${emp.username}@turathmasr.com`;
-          const roleMap: Record<string, string> = {
-            r1: 'admin',
-            r2: 'manager',
-            r3: 'manager',
-            r4: 'delegate',
-            r5: 'employee',
-            r6: 'employee',
-          };
+          // Phase 26G — use the shared `legacyRoleText` helper so the
+          // free-text `role` column stays in sync with `role_id` here
+          // and in `handleProfileRoleUpdate`.
           const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
             email: authEmail,
             password: emp.password,
@@ -1175,7 +1308,7 @@ export default function RolesPage() {
               data: {
                 full_name: emp.name,
                 name: emp.name,
-                role: roleMap[emp.roleId] || 'employee',
+                role: legacyRoleText(emp.roleId),
                 role_id: emp.roleId,
                 username: emp.username,
               },
@@ -1185,14 +1318,18 @@ export default function RolesPage() {
             console.error('Supabase signUp error:', signUpError.message);
             alert(`خطأ في إنشاء الحساب: ${signUpError.message}`);
           } else if (signUpData?.user) {
-            // Update profile with correct role info
+            // Phase 26G — derive `role_name` from the live `roles`
+            // state (turath_roles lookup) so a stale `emp.roleName`
+            // form value can't desync the cached column.
+            const canonicalNewRoleName =
+              roles.find((r) => r.id === emp.roleId)?.name || emp.roleName || '';
             await supabase.from('profiles').upsert({
               id: signUpData.user.id,
               email: authEmail,
               full_name: emp.name,
-              role: roleMap[emp.roleId] || 'employee',
+              role: legacyRoleText(emp.roleId),
               role_id: emp.roleId,
-              role_name: emp.roleName || '',
+              role_name: canonicalNewRoleName,
             });
           }
         }
@@ -1540,11 +1677,48 @@ export default function RolesPage() {
                             </div>
                           </td>
                           <td className="px-4 py-3">
-                            <span
-                              className={`text-xs px-2.5 py-1 rounded-full font-semibold ${rc.bg} ${rc.text}`}
-                            >
-                              {getRoleName(emp.roleId)}
-                            </span>
+                            {/* Phase 26G — canonical role display from live
+                                `turath_roles`. The stale-cache warning fires
+                                when the cached `profiles.role_name` (held in
+                                `emp.roleName`) doesn't match the live name —
+                                a side effect of pre-26G code paths that
+                                updated `role_id` without keeping
+                                `role_name` in sync. The save handler
+                                repairs it the moment the role is edited. */}
+                            {(() => {
+                              const canonicalRole = roles.find((r) => r.id === emp.roleId);
+                              const canonicalName = canonicalRole?.name ?? null;
+                              const isUnknownRoleId = !canonicalRole;
+                              const isStaleName =
+                                !!canonicalName &&
+                                !!emp.roleName &&
+                                emp.roleName.trim() !== canonicalName.trim();
+                              return (
+                                <div className="flex items-center gap-1 flex-wrap">
+                                  <span
+                                    className={`text-xs px-2.5 py-1 rounded-full font-semibold ${rc.bg} ${rc.text}`}
+                                  >
+                                    {canonicalName ?? emp.roleId}
+                                  </span>
+                                  {isUnknownRoleId && (
+                                    <span
+                                      className="text-[10px] px-1.5 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200"
+                                      title={`معرّف الدور (${emp.roleId}) غير موجود في جدول الأدوار`}
+                                    >
+                                      ⚠ غير معروف
+                                    </span>
+                                  )}
+                                  {isStaleName && !isUnknownRoleId && (
+                                    <span
+                                      className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200"
+                                      title={`اسم الدور المسجل (${emp.roleName}) قديم؛ الاسم الحالي: ${canonicalName}. سيتم تحديثه عند أي تعديل دور.`}
+                                    >
+                                      ⚠ اسم قديم
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </td>
                           <td className="px-4 py-3">
                             <span
@@ -1610,6 +1784,29 @@ export default function RolesPage() {
                                 title="تعديل البيانات"
                               >
                                 <Edit2 size={14} />
+                              </button>
+                              {/* Phase 26G — open the shared role-edit modal.
+                                  Page owns the supabase write + audit; the
+                                  modal renders the live `roles` list +
+                                  safety guards. */}
+                              <button
+                                onClick={() => {
+                                  if (!canManageStaff) return;
+                                  setRoleEditTarget({
+                                    id: emp.id,
+                                    email: emp.email || null,
+                                    name: emp.name,
+                                    currentRoleId: emp.roleId,
+                                    currentRoleName: emp.roleName ?? null,
+                                  });
+                                }}
+                                className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-indigo-50 text-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                title={
+                                  canManageStaff ? 'تعديل الدور' : 'لا تملك صلاحية تعديل الأدوار'
+                                }
+                                disabled={!canManageStaff || roleEditBusy}
+                              >
+                                <ShieldCheck size={14} />
                               </button>
                               {emp.accountStatus !== 'disabled' && (
                                 <button
@@ -1701,7 +1898,17 @@ export default function RolesPage() {
             hardcoded login/device counts and silently deleted rows
             on click. Hard delete is intentionally removed from
             here; see UsersTab.tsx for the explanation banner. */}
-        {activeTab === 'users' && <UsersTab onOpenSecurityTab={() => setActiveTab('security')} />}
+        {activeTab === 'users' && (
+          <UsersTab
+            onOpenSecurityTab={() => setActiveTab('security')}
+            /* Phase 26G — page owns the role-edit modal; UsersTab
+               just opens it with a target descriptor. */
+            onRequestEditRole={(t) => setRoleEditTarget(t)}
+            /* Phase 26G — page signals UsersTab to refetch after a
+               successful page-level role mutation. */
+            reloadTick={usersTabReloadTick}
+          />
+        )}
 
         {/* Phase 26A — Security tab */}
         {activeTab === 'security' && <SecurityTab />}
@@ -1720,6 +1927,35 @@ export default function RolesPage() {
           roles={roles}
           onClose={() => setEditMember(undefined)}
           onSave={handleSaveMember}
+        />
+      )}
+      {/* Phase 26G — shared role-edit modal. Mounted at the page
+          level so both the employees tab and the users tab open
+          the same UI. Active-admin count + self-flag computed
+          from in-memory profiles list so the guards reflect the
+          latest data without an extra DB roundtrip. */}
+      {roleEditTarget && (
+        <ChangeRoleModal
+          target={roleEditTarget}
+          roles={roles.map((r) => ({
+            id: r.id,
+            name: r.name,
+            permCount: r.permissions.length,
+          }))}
+          isSelf={roleEditTarget.id === (user?.id ?? null)}
+          activeAdminCount={
+            employees.filter((e) => e.roleId === 'r1' && e.accountStatus === 'active').length
+          }
+          targetIsActiveAdmin={
+            !!employees.find(
+              (e) => e.id === roleEditTarget.id && e.roleId === 'r1' && e.accountStatus === 'active'
+            )
+          }
+          busy={roleEditBusy}
+          onClose={() => {
+            if (!roleEditBusy) setRoleEditTarget(null);
+          }}
+          onSave={(newRoleId) => handleProfileRoleUpdate(roleEditTarget, newRoleId)}
         />
       )}
       {/* Phase 26E-Fix1 — toast for the new employees-tab safe
