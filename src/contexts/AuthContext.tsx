@@ -56,6 +56,14 @@ type ProfileCacheEntry = {
   // every page mount. Old v1 cache entries without this field continue
   // to work — readers fall back to user_metadata.full_name when null.
   profileFullName: string | null;
+  // Phase 26H-2 — surface the force-password-change flag in the
+  // shared profile cache so AppLayout can gate every protected route
+  // without firing its own profile read. Cleared via the
+  // `complete_password_change()` RPC + a `refreshProfile()` call.
+  // Old cache entries that pre-date Phase 26H-2 lack these fields;
+  // readers treat `undefined` as the safe default (`false` / `null`).
+  mustChangePassword?: boolean;
+  passwordChangedAt?: string | null;
   expiresAt: number;
 };
 
@@ -129,6 +137,15 @@ interface AuthContextType {
   // consumers like Sidebar render the user's name without firing their
   // own `from('profiles')` query.
   profileFullName: string | null;
+  // Phase 26H-2 — surface the force-password-change flag + the last
+  // rotation timestamp on the context so AppLayout can gate every
+  // protected route. `refreshProfile()` re-runs the same syncProfile
+  // path that runs on auth state changes — used by /change-password
+  // after a successful Supabase password update to clear the cached
+  // flag in the same render cycle.
+  mustChangePassword: boolean;
+  passwordChangedAt: string | null;
+  refreshProfile: () => Promise<void>;
   setCurrentRole: (role: string | null) => void;
   setCurrentRoleId: (roleId: string | null) => void;
   setCustomPermissions: (perms: string[] | null) => void;
@@ -160,6 +177,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [currentRoleId, setCurrentRoleId] = useState<string | null>(null);
   const [customPermissions, setCustomPermissions] = useState<string[] | null>(null);
   const [profileFullName, setProfileFullName] = useState<string | null>(null);
+  // Phase 26H-2 — force-password-change state. Default false / null so
+  // pre-26H-2 logins (which never read these columns) don't trip the
+  // gate. Updated by syncProfile after every profile fetch.
+  const [mustChangePassword, setMustChangePassword] = useState<boolean>(false);
+  const [passwordChangedAt, setPasswordChangedAt] = useState<string | null>(null);
   const [roleLoading, setRoleLoading] = useState(true);
 
   // Phase 20D-Fix1: gate provider effects on the auth route. When a
@@ -270,6 +292,13 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       // Phase 20D-Fix2: profileFullName may be missing on old (v1) cache
       // entries — fall back to null so consumers use user_metadata.
       setProfileFullName(cached.profileFullName ?? null);
+      // Phase 26H-2 — must-change flag + last-change timestamp also
+      // come from the cache when present. Old v1 cache entries that
+      // pre-date 26H-2 lack these fields; the `?? false / ?? null`
+      // fallbacks keep the gate dormant until the next syncProfile
+      // refresh re-reads them from the DB.
+      setMustChangePassword(cached.mustChangePassword ?? false);
+      setPasswordChangedAt(cached.passwordChangedAt ?? null);
       setRoleLoading(false);
       return;
     }
@@ -285,7 +314,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
         const { data: profile, error } = await supabase
           .from('profiles')
-          .select('role_id, role_name, permissions, full_name')
+          .select(
+            'role_id, role_name, permissions, full_name, must_change_password, password_changed_at'
+          )
           .eq('id', user.id)
           .single();
 
@@ -295,6 +326,16 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
           setCurrentRoleId(roleId);
           setCurrentRole(roleName);
+          // Phase 26H-2 — read the force-password-change state from the
+          // profile. The columns were added in Phase 26H-2's migration;
+          // pre-migration profiles return `null/undefined` for these
+          // fields and the defaults below keep the gate dormant.
+          const mustChange =
+            (profile as { must_change_password?: boolean | null }).must_change_password === true;
+          const lastChange =
+            (profile as { password_changed_at?: string | null }).password_changed_at ?? null;
+          setMustChangePassword(mustChange);
+          setPasswordChangedAt(lastChange);
 
           // Use custom permissions from Supabase if they exist,
           // otherwise fall back to default role permissions
@@ -333,6 +374,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
             roleName,
             permissions: finalPerms,
             profileFullName: fullName,
+            mustChangePassword: mustChange,
+            passwordChangedAt: lastChange,
             expiresAt: Date.now() + PROFILE_CACHE_TTL_MS,
           });
         } else {
@@ -343,6 +386,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           setCurrentRole('خدمة عملاء');
           setCustomPermissions(getPermissionsForRoleId('r6'));
           setProfileFullName(null);
+          // Phase 26H-2 — without a profile row we can't know whether
+          // rotation is required, so we never trip the gate.
+          setMustChangePassword(false);
+          setPasswordChangedAt(null);
           clearProfileCache();
         }
       } catch (err) {
@@ -351,6 +398,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         setCurrentRole('خدمة عملاء');
         setCustomPermissions(getPermissionsForRoleId('r6'));
         setProfileFullName(null);
+        setMustChangePassword(false);
+        setPasswordChangedAt(null);
         // Phase 20D-Fix1: on error, drop any stale cache so we retry
         // fresh on the next mount/event rather than serving the old
         // (possibly wrong) role.
@@ -542,6 +591,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     setCurrentRoleId(null);
     setCustomPermissions(null);
     setProfileFullName(null);
+    // Phase 26H-2 — clear force-password-change state on signout so a
+    // subsequent login from a different account starts cleanly.
+    setMustChangePassword(false);
+    setPasswordChangedAt(null);
 
     // Phase 20D-Fix1: drop the profile cache so the next signed-in
     // user (different account, or same user re-signing in) starts
@@ -583,6 +636,54 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     return data;
   };
 
+  // Phase 26H-2 — exposed to consumers like /change-password that
+  // mutate the profile via a SECURITY DEFINER RPC and need the
+  // AuthContext to re-read the cached fields immediately rather than
+  // wait out the 5-min cache TTL. Clears the cache first so the next
+  // fetch is forced to hit the DB; then re-runs the same shape that
+  // `syncProfile` does in the useEffect, updating state inline.
+  const refreshProfile = async (): Promise<void> => {
+    const supabase = getSupabaseClient();
+    if (!supabase || !user) return;
+    clearProfileCache();
+    try {
+      const { data: profile, error } = await supabase
+        .from('profiles')
+        .select(
+          'role_id, role_name, permissions, full_name, must_change_password, password_changed_at'
+        )
+        .eq('id', user.id)
+        .single();
+      if (error || !profile) return;
+      const roleId = profile.role_id || 'r6';
+      const roleName = profile.role_name || 'خدمة عملاء';
+      const perms = Array.isArray(profile.permissions) ? profile.permissions : null;
+      const fullName = profile.full_name || null;
+      const mustChange =
+        (profile as { must_change_password?: boolean | null }).must_change_password === true;
+      const lastChange =
+        (profile as { password_changed_at?: string | null }).password_changed_at ?? null;
+      setCurrentRoleId(roleId);
+      setCurrentRole(roleName);
+      if (perms) setCustomPermissions(perms);
+      setProfileFullName(fullName);
+      setMustChangePassword(mustChange);
+      setPasswordChangedAt(lastChange);
+      writeProfileCache({
+        userId: user.id,
+        roleId,
+        roleName,
+        permissions: perms,
+        profileFullName: fullName,
+        mustChangePassword: mustChange,
+        passwordChangedAt: lastChange,
+        expiresAt: Date.now() + PROFILE_CACHE_TTL_MS,
+      });
+    } catch (err) {
+      console.warn('[AuthContext] refreshProfile failed:', err);
+    }
+  };
+
   const value = {
     user,
     session,
@@ -592,6 +693,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     currentRoleId,
     customPermissions,
     profileFullName,
+    mustChangePassword,
+    passwordChangedAt,
+    refreshProfile,
     setCurrentRole,
     setCurrentRoleId,
     setCustomPermissions,

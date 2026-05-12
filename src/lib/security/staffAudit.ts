@@ -35,6 +35,11 @@ export type StaffAuditAction =
   | 'staff.account_pending'
   | 'staff.created'
   | 'staff.deleted'
+  // ─── Phase 26H-2 — password rotation lifecycle ───
+  | 'staff.password_change_required'
+  | 'staff.password_change_required_completed'
+  | 'staff.password_reset_sent'
+  | 'staff.password_reset_failed'
   // ─── Security infrastructure (Phase 26A + 26B) ───
   | 'security.device_blocked'
   | 'security.device_unblocked'
@@ -108,6 +113,11 @@ export const STAFF_AUDIT_ACTION_LABEL_AR: Record<StaffAuditAction, string> = {
   'staff.account_pending': 'تعليق الحساب للمراجعة',
   'staff.created': 'إنشاء حساب جديد',
   'staff.deleted': 'حذف حساب',
+  // Phase 26H-2 — password rotation lifecycle.
+  'staff.password_change_required': 'إلزام الموظف بتغيير كلمة المرور',
+  'staff.password_change_required_completed': 'اكتمال تغيير كلمة المرور الإجباري',
+  'staff.password_reset_sent': 'إرسال رابط تغيير كلمة المرور',
+  'staff.password_reset_failed': 'فشل إرسال رابط تغيير كلمة المرور',
   'security.device_blocked': 'حظر جهاز',
   'security.device_unblocked': 'إلغاء حظر جهاز',
   'security.device_renamed': 'تسمية جهاز',

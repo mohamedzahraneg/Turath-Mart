@@ -1168,6 +1168,161 @@ export default function RolesPage() {
   // disabled-meta columns, writes a `staff.account_*` audit row,
   // refreshes local state, and toasts. Never deletes auth or
   // profile rows.
+  // Phase 26H-2 — admin actions for the staff drawer's password
+  // section. These mirror UsersTab's existing status mutations:
+  // permission gate → supabase write / RPC call → audit row →
+  // optimistic local state update → toast. Both handlers refuse to
+  // run for the current user (no admin can force themselves into
+  // the gate without an explicit per-row escape hatch — they can
+  // still self-rotate from /change-password directly).
+  //
+  // The `إجبار تغيير كلمة المرور` button writes
+  // `profiles.must_change_password = true`. RLS allows this because
+  // the caller is an admin (`profiles_admin_update`). The audit
+  // entry intentionally carries no password bytes.
+  const handleForcePasswordChange = async (target: {
+    id: string;
+    email: string | null;
+    name: string;
+  }) => {
+    if (!canManageStaff) {
+      showEmployeesToast('error', 'لا تملك صلاحية إلزام تغيير كلمة المرور.');
+      return;
+    }
+    if (target.id === (user?.id ?? null)) {
+      showEmployeesToast(
+        'error',
+        'لا يمكن إلزام نفسك بتغيير كلمة المرور من هنا. استخدم صفحة /change-password مباشرة.'
+      );
+      return;
+    }
+    setEmployeesBusyId(target.id);
+    try {
+      const supabase = createClient();
+      if (!supabase) {
+        showEmployeesToast('error', 'تعذر الاتصال بقاعدة البيانات.');
+        return;
+      }
+      const { error } = await supabase
+        .from('profiles')
+        .update({ must_change_password: true })
+        .eq('id', target.id);
+      if (error) throw error;
+      try {
+        await writeStaffAuditLog(supabase, {
+          action: 'staff.password_change_required',
+          description: `تم إلزام ${target.name} بتغيير كلمة المرور عند الدخول القادم`,
+          actorId: user?.id ?? null,
+          actorName: profileFullName ?? user?.email ?? null,
+          actorRoleId: currentRoleId,
+          entity: { type: 'profile', id: target.id, label: target.name || target.email || '' },
+          metadata: {
+            target_user_id: target.id,
+            target_email: target.email,
+            requested_by: user?.id ?? null,
+            self_change: false,
+          },
+        });
+      } catch (auditErr) {
+        console.warn('[force-password-change] audit failed:', auditErr);
+      }
+      setUsersTabReloadTick((n) => n + 1);
+      showEmployeesToast('success', 'سيُطلب من الموظف تغيير كلمة المرور عند الدخول القادم.');
+    } catch (err) {
+      console.error('[force-password-change] update failed:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      const friendly = msg.includes('42703')
+        ? 'حقل تغيير كلمة المرور غير متاح بعد. لم يتم تطبيق ترحيل القاعدة.'
+        : msg.includes('42501')
+          ? 'لا تملك صلاحية تعديل هذا الحساب.'
+          : 'تعذر إلزام الموظف بتغيير كلمة المرور.';
+      showEmployeesToast('error', friendly);
+    } finally {
+      setEmployeesBusyId(null);
+    }
+  };
+
+  // Sends a Supabase password-reset email. The redirect target
+  // lands the staff member on /change-password so they pick up the
+  // same form as the forced-rotation flow. We never see the token
+  // — it's emailed by Supabase and consumed by their auth callback
+  // routes. Audit is written for both success and failure.
+  const handleSendResetEmail = async (target: {
+    id: string;
+    email: string | null;
+    name: string;
+  }) => {
+    if (!canManageStaff) {
+      showEmployeesToast('error', 'لا تملك صلاحية إرسال روابط تغيير كلمة المرور.');
+      return;
+    }
+    if (!target.email) {
+      showEmployeesToast('error', 'لا يوجد بريد إلكتروني لهذا الموظف.');
+      return;
+    }
+    setEmployeesBusyId(target.id);
+    try {
+      const supabase = createClient();
+      if (!supabase) {
+        showEmployeesToast('error', 'تعذر الاتصال بقاعدة البيانات.');
+        return;
+      }
+      const origin = typeof window !== 'undefined' ? window.location.origin : '';
+      const redirectTo = `${origin}/change-password`;
+      const { error } = await supabase.auth.resetPasswordForEmail(target.email, {
+        redirectTo,
+      });
+      if (error) {
+        // Audit failure — never log the token (there is none on the
+        // failure path) and never echo the password.
+        try {
+          await writeStaffAuditLog(supabase, {
+            action: 'staff.password_reset_failed',
+            description: `فشل إرسال رابط تغيير كلمة المرور إلى ${target.name}`,
+            actorId: user?.id ?? null,
+            actorName: profileFullName ?? user?.email ?? null,
+            actorRoleId: currentRoleId,
+            entity: { type: 'profile', id: target.id, label: target.name || target.email || '' },
+            metadata: {
+              target_user_id: target.id,
+              target_email: target.email,
+              redirect_to: redirectTo,
+              reason: error.message ?? String(error),
+            },
+          });
+        } catch (auditErr) {
+          console.warn('[send-reset-email] failure audit failed:', auditErr);
+        }
+        showEmployeesToast('error', `تعذر إرسال رابط تغيير كلمة المرور: ${error.message}`);
+        return;
+      }
+      try {
+        await writeStaffAuditLog(supabase, {
+          action: 'staff.password_reset_sent',
+          description: `تم إرسال رابط تغيير كلمة المرور إلى ${target.name}`,
+          actorId: user?.id ?? null,
+          actorName: profileFullName ?? user?.email ?? null,
+          actorRoleId: currentRoleId,
+          entity: { type: 'profile', id: target.id, label: target.name || target.email || '' },
+          metadata: {
+            target_user_id: target.id,
+            target_email: target.email,
+            redirect_to: redirectTo,
+            self_change: target.id === (user?.id ?? null),
+          },
+        });
+      } catch (auditErr) {
+        console.warn('[send-reset-email] success audit failed:', auditErr);
+      }
+      showEmployeesToast('success', `تم إرسال رابط تغيير كلمة المرور إلى ${target.email}.`);
+    } catch (err) {
+      console.error('[send-reset-email] unexpected failure:', err);
+      showEmployeesToast('error', 'تعذر إرسال رابط تغيير كلمة المرور.');
+    } finally {
+      setEmployeesBusyId(null);
+    }
+  };
+
   const handleEmployeeStatusUpdate = async (
     emp: Employee,
     next: 'active' | 'disabled' | 'suspended',
@@ -1675,6 +1830,11 @@ export default function RolesPage() {
           <UsersTab
             onOpenSecurityTab={() => setActiveTab('security')}
             onRequestEditRole={(t) => setRoleEditTarget(t)}
+            /* Phase 26H-2 — admin password actions surfaced from
+               UsersTab's row + drawer. Page owns the supabase write
+               + audit + reload-tick bump. */
+            onRequestForcePasswordChange={(t) => handleForcePasswordChange(t)}
+            onRequestSendResetEmail={(t) => handleSendResetEmail(t)}
             reloadTick={usersTabReloadTick}
           />
         )}

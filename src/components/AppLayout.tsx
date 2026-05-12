@@ -27,8 +27,19 @@ function AuthLoadingScreen() {
 }
 
 export default function AppLayout({ children, currentPath = '' }: AppLayoutProps) {
-  const { currentRole, currentRoleId, customPermissions, hasAccess, roleLoading, user, loading } =
-    useAuth();
+  const {
+    currentRole,
+    currentRoleId,
+    customPermissions,
+    hasAccess,
+    roleLoading,
+    user,
+    loading,
+    // Phase 26H-2 — force-password-change state. Drives the gate
+    // below; non-admin staff with `must_change_password=true` get
+    // redirected to /change-password until the flag is cleared.
+    mustChangePassword,
+  } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const activePath = currentPath || pathname || '';
@@ -82,6 +93,31 @@ export default function AppLayout({ children, currentPath = '' }: AppLayoutProps
     // bail-out block) shows AuthLoadingScreen during the same window.
     if (user && !currentRoleId) return;
 
+    // Phase 26H-2 — force-password-change gate. Fires AFTER the
+    // role-resolution wait above (so we know the user is not an
+    // admin) and BEFORE the admin bypass + hasAccess routing below
+    // (so admins skip the gate by definition and non-admins can't
+    // reach any protected route while their flag is set).
+    //
+    // Edge cases:
+    //   • /change-password is the gate target — never redirect away
+    //     from it, otherwise we'd loop.
+    //   • Admins (r1) are intentionally excluded from forced
+    //     rotation per spec; if an admin's profile somehow has the
+    //     flag set, they pass through unchanged.
+    //   • The gate is dormant when `mustChangePassword` is false
+    //     (the default for every existing profile after the
+    //     migration, until an admin explicitly toggles it).
+    if (
+      user &&
+      mustChangePassword &&
+      !isAdminRole(currentRoleId) &&
+      activePath !== '/change-password'
+    ) {
+      router.replace(`/change-password?next=${encodeURIComponent(activePath)}`);
+      return;
+    }
+
     // Admin (r1) has full access
     if (isAdminRole(currentRoleId)) return;
 
@@ -120,6 +156,9 @@ export default function AppLayout({ children, currentPath = '' }: AppLayoutProps
     loading,
     user,
     router,
+    // Phase 26H-2 — re-evaluate the gate when the flag flips (e.g.
+    // immediately after /change-password's `refreshProfile()` call).
+    mustChangePassword,
   ]);
 
   // Block protected content from flashing while auth is resolving or while

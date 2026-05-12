@@ -43,6 +43,7 @@ import {
   Eye,
   History,
   Lock,
+  Mail,
   Monitor,
   Search,
   Shield,
@@ -76,6 +77,11 @@ interface ProfileRow {
   disabled_at: string | null;
   disabled_reason: string | null;
   created_at: string;
+  // Phase 26H-2 — force-password-change state. Both fields are
+  // optional in the type so a pre-migration profile (or a tenant
+  // running an older schema) doesn't break the renderer.
+  must_change_password?: boolean | null;
+  password_changed_at?: string | null;
 }
 
 interface DeviceRow {
@@ -201,6 +207,14 @@ export interface UsersTabRoleEditTarget {
   currentRoleName: string | null;
 }
 
+/** Phase 26H-2 — minimal descriptor for the page-level password
+ *  action handlers. Only identity fields, never the password. */
+export interface UsersTabPasswordActionTarget {
+  id: string;
+  email: string | null;
+  name: string;
+}
+
 export interface UsersTabProps {
   /** Phase 26E — switch the parent /roles page to the Security tab.
    *  Lets the "افتح في الأمان" action stay scoped to the same page
@@ -210,6 +224,14 @@ export interface UsersTabProps {
    *  target. Page owns the supabase write + audit + safety guards;
    *  UsersTab only describes who to edit. */
   onRequestEditRole?: (target: UsersTabRoleEditTarget) => void;
+  /** Phase 26H-2 — sets profiles.must_change_password=true for the
+   *  target. Page owns the write + audit. Surfaced from the drawer
+   *  account section only (not from the row actions — too easy to
+   *  fire accidentally for a bulk-actions UX). */
+  onRequestForcePasswordChange?: (target: UsersTabPasswordActionTarget) => void;
+  /** Phase 26H-2 — calls supabase.auth.resetPasswordForEmail for the
+   *  target. Page owns the call + audit. */
+  onRequestSendResetEmail?: (target: UsersTabPasswordActionTarget) => void;
   /** Phase 26G — bumped by the parent after a successful role
    *  mutation. UsersTab re-fetches its joined data so the role
    *  badge + count update without waiting for the user to refresh. */
@@ -219,6 +241,8 @@ export interface UsersTabProps {
 export default function UsersTab({
   onOpenSecurityTab,
   onRequestEditRole,
+  onRequestForcePasswordChange,
+  onRequestSendResetEmail,
   reloadTick = 0,
 }: UsersTabProps) {
   const { user, currentRoleId, profileFullName } = useAuth();
@@ -273,7 +297,7 @@ export default function UsersTab({
         supabase
           .from('profiles')
           .select(
-            'id, email, full_name, role_id, role_name, account_status, disabled_at, disabled_reason, created_at'
+            'id, email, full_name, role_id, role_name, account_status, disabled_at, disabled_reason, created_at, must_change_password, password_changed_at'
           )
           .order('created_at', { ascending: true }),
         supabase
@@ -1047,6 +1071,26 @@ export default function UsersTab({
                   })
               : undefined
           }
+          onRequestForcePasswordChange={
+            onRequestForcePasswordChange
+              ? () =>
+                  onRequestForcePasswordChange({
+                    id: drawerUser.id,
+                    email: drawerUser.email,
+                    name: drawerUser.full_name || drawerUser.email?.split('@')[0] || 'مستخدم',
+                  })
+              : undefined
+          }
+          onRequestSendResetEmail={
+            onRequestSendResetEmail
+              ? () =>
+                  onRequestSendResetEmail({
+                    id: drawerUser.id,
+                    email: drawerUser.email,
+                    name: drawerUser.full_name || drawerUser.email?.split('@')[0] || 'مستخدم',
+                  })
+              : undefined
+          }
         />
       )}
 
@@ -1103,6 +1147,11 @@ interface UserDetailsDrawerProps {
   /** Phase 26G — opens the page-level role-edit modal for the user
    *  shown in the drawer. */
   onRequestEditRole?: () => void;
+  /** Phase 26H-2 — force-password-change action; sets the cached
+   *  flag on the target's profile. */
+  onRequestForcePasswordChange?: () => void;
+  /** Phase 26H-2 — sends a Supabase password-reset email. */
+  onRequestSendResetEmail?: () => void;
 }
 
 function UserDetailsDrawer({
@@ -1124,6 +1173,8 @@ function UserDetailsDrawer({
   onDeviceStatus,
   onOpenSecurityTab,
   onRequestEditRole,
+  onRequestForcePasswordChange,
+  onRequestSendResetEmail,
 }: UserDetailsDrawerProps) {
   const status = (user.account_status ?? 'active').toLowerCase();
   const tone = ACCOUNT_STATUS_TONE[status] ?? ACCOUNT_STATUS_TONE.active;
@@ -1210,6 +1261,8 @@ function UserDetailsDrawer({
               onReactivate={onReactivate}
               onBlockAllDevices={onBlockAllDevices}
               onRequestEditRole={onRequestEditRole}
+              onRequestForcePasswordChange={onRequestForcePasswordChange}
+              onRequestSendResetEmail={onRequestSendResetEmail}
             />
           )}
           {activeTab === 'devices' && (
@@ -1242,6 +1295,8 @@ function DrawerAccountTab({
   onReactivate,
   onBlockAllDevices,
   onRequestEditRole,
+  onRequestForcePasswordChange,
+  onRequestSendResetEmail,
 }: {
   user: ProfileRow;
   canManageStaff: boolean;
@@ -1254,8 +1309,11 @@ function DrawerAccountTab({
   onReactivate: () => Promise<void>;
   onBlockAllDevices: (reason: string) => Promise<void>;
   onRequestEditRole?: () => void;
+  onRequestForcePasswordChange?: () => void;
+  onRequestSendResetEmail?: () => void;
 }) {
   const status = (user.account_status ?? 'active').toLowerCase();
+  const mustChangePassword = user.must_change_password === true;
   return (
     <>
       <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-2">
@@ -1265,6 +1323,21 @@ function DrawerAccountTab({
         <FieldRow label="الدور" value={user.role_name || user.role_id || '—'} />
         <FieldRow label="الحالة" value={ACCOUNT_STATUS_LABEL_AR[status] ?? status} />
         <FieldRow label="تاريخ الإنشاء" value={fmtDate(user.created_at)} />
+        {/* Phase 26H-2 — last password rotation timestamp + force
+            badge. Only render when we actually have data so the
+            section stays compact for accounts that haven't engaged
+            the rotation flow. */}
+        {user.password_changed_at && (
+          <FieldRow label="آخر تغيير لكلمة المرور" value={fmtDateTime(user.password_changed_at)} />
+        )}
+        {mustChangePassword && (
+          <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-1.5 flex items-start gap-1.5">
+            <ShieldAlert size={12} className="text-amber-700 mt-0.5 flex-shrink-0" />
+            <p className="text-[11px] text-amber-900">
+              مطلوب تغيير كلمة المرور — لن يتمكن هذا الموظف من استخدام النظام حتى يقوم بتغييرها.
+            </p>
+          </div>
+        )}
         {(user.disabled_at || user.disabled_reason) && (
           <>
             <FieldRow label="تاريخ التعطيل" value={fmtDateTime(user.disabled_at)} />
@@ -1287,6 +1360,57 @@ function DrawerAccountTab({
             >
               <ShieldCheck size={12} />
               تعديل الدور
+            </button>
+          )}
+          {/* Phase 26H-2 — password admin actions. Hidden when the
+              parent doesn't wire the callback (e.g. the same UsersTab
+              instance used somewhere outside /roles). */}
+          {onRequestForcePasswordChange && !mustChangePassword && (
+            <button
+              onClick={() => {
+                if (
+                  !window.confirm(
+                    'سيتم إلزام هذا الموظف بتغيير كلمة المرور عند الدخول القادم. متابعة؟'
+                  )
+                ) {
+                  return;
+                }
+                onRequestForcePasswordChange();
+              }}
+              className="text-xs px-3 py-1.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 hover:bg-amber-100 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1"
+              disabled={!canManageStaff || busy}
+              title={canManageStaff ? '' : 'لا تملك صلاحية إلزام تغيير كلمة المرور'}
+            >
+              <ShieldAlert size={12} />
+              إجبار تغيير كلمة المرور
+            </button>
+          )}
+          {onRequestSendResetEmail && (
+            <button
+              onClick={() => {
+                if (!user.email) {
+                  window.alert('لا يوجد بريد إلكتروني مسجل لهذا الموظف.');
+                  return;
+                }
+                if (
+                  !window.confirm(`سيتم إرسال رابط تغيير كلمة المرور إلى ${user.email}. متابعة؟`)
+                ) {
+                  return;
+                }
+                onRequestSendResetEmail();
+              }}
+              className="text-xs px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1"
+              disabled={!canManageStaff || busy || !user.email}
+              title={
+                !user.email
+                  ? 'لا يوجد بريد إلكتروني لإرسال الرابط إليه'
+                  : canManageStaff
+                    ? ''
+                    : 'لا تملك صلاحية إرسال رابط تغيير كلمة المرور'
+              }
+            >
+              <Mail size={12} />
+              إرسال رابط تغيير كلمة المرور
             </button>
           )}
           {status !== 'disabled' && (
