@@ -68,6 +68,8 @@ const RECOVERY_CHECK_TIMEOUT_MS = 7_000;
 const AUTH_CONTEXT_TIMEOUT_MS = 4_000;
 const INVALID_RESET_LINK_MESSAGE =
   'رابط تغيير كلمة المرور غير صالح أو انتهت صلاحيته. اطلب رابطًا جديدًا.';
+const INVALID_OTP_MESSAGE =
+  'الكود غير صحيح أو انتهت صلاحيته. تأكد من البريد والكود أو اطلب رسالة جديدة.';
 
 type RecoveryState = 'checking' | 'not_recovery' | 'processing' | 'ready' | 'invalid';
 type AuthOperationResult = { error: { message?: string } | null };
@@ -128,6 +130,9 @@ function ChangePasswordPageBody() {
   const [recoveryState, setRecoveryState] = useState<RecoveryState>('checking');
   const [recoveryUser, setRecoveryUser] = useState<User | null>(null);
   const [authWaitExpired, setAuthWaitExpired] = useState(false);
+  const [otpEmail, setOtpEmail] = useState('');
+  const [otpCode, setOtpCode] = useState('');
+  const [otpSubmitting, setOtpSubmitting] = useState(false);
 
   // Supabase recovery links may arrive with either `code` in the query
   // string or access/refresh tokens in the hash. We must bind the form
@@ -237,20 +242,8 @@ function ChangePasswordPageBody() {
     return () => window.clearTimeout(timeoutId);
   }, [loading, recoveryState, recoveryUser]);
 
-  // Bounce unauthenticated visitors to login. We don't lean on the
-  // middleware because /change-password lives outside the protected
-  // AppLayout — the redirect needs to fire here.
-  useEffect(() => {
-    if (recoveryState === 'checking' || recoveryState === 'processing') return;
-    if (recoveryState === 'invalid') return;
-    if (recoveryUser) return;
-    if (loading) return;
-    if (!user) {
-      router.replace(`/sign-up-login-screen?next=${encodeURIComponent('/change-password')}`);
-    }
-  }, [loading, user, router, recoveryState, recoveryUser]);
-
-  const activeUser = recoveryUser ?? user;
+  const recoveryLinkInvalid = recoveryState === 'invalid';
+  const activeUser = recoveryUser ?? (recoveryLinkInvalid ? null : user);
   const passwordInputsDisabled =
     submitting ||
     recoveryState === 'processing' ||
@@ -258,9 +251,11 @@ function ChangePasswordPageBody() {
     (!activeUser && authWaitExpired);
   const visibleError =
     error ||
-    (authWaitExpired && !activeUser
+    (authWaitExpired && !activeUser && recoveryState !== 'not_recovery'
       ? 'تعذر التحقق من جلسة المستخدم. افتح رابط تغيير كلمة المرور مرة أخرى أو سجل الدخول من جديد.'
       : null);
+  const normalizedOtpEmail = otpEmail.trim().toLowerCase();
+  const normalizedOtpCode = otpCode.replace(/\s+/g, '').trim();
   const passwordTooShort = newPassword.length > 0 && newPassword.length < MIN_PASSWORD_LENGTH;
   const passwordsMismatch = confirmPassword.length > 0 && newPassword !== confirmPassword;
   const canSubmit =
@@ -268,6 +263,61 @@ function ChangePasswordPageBody() {
     Boolean(activeUser) &&
     newPassword.length >= MIN_PASSWORD_LENGTH &&
     newPassword === confirmPassword;
+  const canSubmitOtp =
+    !otpSubmitting &&
+    normalizedOtpEmail.includes('@') &&
+    normalizedOtpCode.length >= 4 &&
+    normalizedOtpCode.length <= 10;
+
+  const handleVerifyOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canSubmitOtp) return;
+    setError(null);
+    setOtpSubmitting(true);
+    try {
+      const supabase = createClient();
+      if (!supabase) {
+        setError('تعذر الاتصال بقاعدة البيانات. حاول مرة أخرى.');
+        return;
+      }
+
+      const { error: verifyErr } = await withTimeout<AuthOperationResult>(
+        supabase.auth.verifyOtp({
+          email: normalizedOtpEmail,
+          token: normalizedOtpCode,
+          type: 'recovery',
+        }),
+        RECOVERY_CHECK_TIMEOUT_MS,
+        INVALID_OTP_MESSAGE
+      );
+      if (verifyErr) throw verifyErr;
+
+      const {
+        data: { user: resetUser },
+        error: userErr,
+      } = await withTimeout<GetUserResult>(
+        supabase.auth.getUser(),
+        RECOVERY_CHECK_TIMEOUT_MS,
+        INVALID_OTP_MESSAGE
+      );
+      if (userErr || !resetUser) {
+        throw userErr || new Error('تعذر التحقق من حساب كود الاسترداد.');
+      }
+
+      setRecoveryUser(resetUser);
+      setRecoveryState('ready');
+      setAuthWaitExpired(false);
+      setOtpCode('');
+      setError(null);
+      window.history.replaceState(null, '', '/change-password');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '';
+      setRecoveryState('invalid');
+      setError(message.includes('الكود') ? message : INVALID_OTP_MESSAGE);
+    } finally {
+      setOtpSubmitting(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -431,8 +481,93 @@ function ChangePasswordPageBody() {
                 <p className="text-xs">سيتم تحويلك للصفحة المطلوبة خلال لحظات...</p>
               </div>
             </div>
+          ) : !activeUser ? (
+            <form onSubmit={handleVerifyOtp} className="space-y-3">
+              <div className="rounded-2xl border border-blue-200 bg-blue-50 p-3 text-xs text-blue-950 leading-6">
+                أدخل البريد الإلكتروني وكود الاسترداد الموجود في رسالة تغيير كلمة المرور. هذا المسار
+                مفيد إذا فتح مزود البريد الرابط تلقائيًا وانتهت صلاحيته.
+              </div>
+
+              <div className="space-y-1">
+                <label
+                  htmlFor="recovery-email"
+                  className="text-xs font-bold text-[hsl(var(--foreground))]"
+                >
+                  بريد الحساب
+                </label>
+                <input
+                  id="recovery-email"
+                  type="email"
+                  value={otpEmail}
+                  onChange={(e) => setOtpEmail(e.target.value)}
+                  autoComplete="email"
+                  required
+                  disabled={otpSubmitting}
+                  className="w-full px-3 py-2.5 border border-[hsl(var(--border))] rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 disabled:opacity-50"
+                  dir="ltr"
+                  placeholder="name@example.com"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label
+                  htmlFor="recovery-code"
+                  className="text-xs font-bold text-[hsl(var(--foreground))]"
+                >
+                  كود الاسترداد
+                </label>
+                <input
+                  id="recovery-code"
+                  type="text"
+                  value={otpCode}
+                  onChange={(e) => setOtpCode(e.target.value)}
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  required
+                  disabled={otpSubmitting}
+                  className="w-full px-3 py-2.5 border border-[hsl(var(--border))] rounded-xl text-center text-lg tracking-[0.35em] bg-white focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 disabled:opacity-50"
+                  dir="ltr"
+                  placeholder="000000"
+                />
+              </div>
+
+              {visibleError && (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 flex items-start gap-2">
+                  <AlertTriangle size={14} className="text-rose-700 mt-0.5 flex-shrink-0" />
+                  <p className="text-xs text-rose-900">{visibleError}</p>
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={!canSubmitOtp}
+                className="w-full py-2.5 rounded-xl bg-[hsl(var(--primary))] text-white text-sm font-bold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {otpSubmitting ? (
+                  <>
+                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                    جارٍ التحقق...
+                  </>
+                ) : (
+                  <>
+                    <ShieldCheck size={14} />
+                    التحقق من الكود
+                  </>
+                )}
+              </button>
+            </form>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-3">
+              {recoveryUser?.email && (
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950 leading-6">
+                  سيتم تغيير كلمة المرور للحساب:
+                  <span className="font-bold" dir="ltr">
+                    {' '}
+                    {recoveryUser.email}
+                  </span>
+                </div>
+              )}
+
               <div className="space-y-1">
                 <label
                   htmlFor="new-password"
