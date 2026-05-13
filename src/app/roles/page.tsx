@@ -1267,8 +1267,11 @@ export default function RolesPage() {
         showEmployeesToast('error', 'تعذر الاتصال بقاعدة البيانات.');
         return;
       }
-      const origin = typeof window !== 'undefined' ? window.location.origin : '';
-      const redirectTo = `${origin}/change-password`;
+      const appUrl =
+        process.env.NEXT_PUBLIC_APP_URL ||
+        process.env.NEXT_PUBLIC_SITE_URL ||
+        'https://turathmasr.com';
+      const redirectTo = `${appUrl.replace(/\/$/, '')}/change-password`;
       const { error } = await supabase.auth.resetPasswordForEmail(target.email, {
         redirectTo,
       });
