@@ -54,6 +54,7 @@ export const dynamic = 'force-dynamic';
 import React, { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { AlertTriangle, Check, Eye, EyeOff, KeyRound, ShieldCheck } from 'lucide-react';
+import type { User } from '@supabase/supabase-js';
 import { useAuth } from '@/contexts/AuthContext';
 import { createClient } from '@/lib/supabase/client';
 import { writeStaffAuditLog } from '@/lib/security/staffAudit';
@@ -63,6 +64,15 @@ import { writeStaffAuditLog } from '@/lib/security/staffAudit';
 // Supabase's `auth.updateUser` enforces project-level password
 // policy and surfaces any rejection as an error message.
 const MIN_PASSWORD_LENGTH = 8;
+
+type RecoveryState = 'checking' | 'not_recovery' | 'processing' | 'ready' | 'invalid';
+
+function readResetParam(key: string) {
+  if (typeof window === 'undefined') return null;
+  const searchParams = new URLSearchParams(window.location.search);
+  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  return searchParams.get(key) || hashParams.get(key);
+}
 
 function LoadingShell() {
   return (
@@ -100,21 +110,118 @@ function ChangePasswordPageBody() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [recoveryState, setRecoveryState] = useState<RecoveryState>('checking');
+  const [recoveryUser, setRecoveryUser] = useState<User | null>(null);
+
+  // Supabase recovery links may arrive with either `code` in the query
+  // string or access/refresh tokens in the hash. We must bind the form
+  // to that recovery session before allowing `updateUser({ password })`;
+  // otherwise an already-signed-in admin could accidentally rotate their
+  // own password while opening another employee's reset link.
+  useEffect(() => {
+    let cancelled = false;
+
+    const prepareRecoverySession = async () => {
+      if (typeof window === 'undefined') return;
+
+      const type = readResetParam('type');
+      const code = readResetParam('code');
+      const accessToken = readResetParam('access_token');
+      const refreshToken = readResetParam('refresh_token');
+      const resetError = readResetParam('error') || readResetParam('error_code');
+      const looksLikeRecovery =
+        type === 'recovery' || Boolean(code) || Boolean(accessToken || refreshToken || resetError);
+
+      if (resetError) {
+        if (!cancelled) {
+          setRecoveryState('invalid');
+          setError(
+            'رابط تغيير كلمة المرور منتهي أو غير صالح. اطلب من المدير إرسال رابط جديد، ولن يتم تغيير كلمة مرور أي حساب مفتوح حاليًا.'
+          );
+        }
+        return;
+      }
+
+      if (!looksLikeRecovery) {
+        if (!cancelled) setRecoveryState('not_recovery');
+        return;
+      }
+
+      setRecoveryState('processing');
+      setError(null);
+
+      try {
+        const supabase = createClient();
+        if (!supabase) throw new Error('تعذر الاتصال بقاعدة البيانات.');
+
+        if (code) {
+          const { error: exchangeErr } = await supabase.auth.exchangeCodeForSession(code);
+          if (exchangeErr) throw exchangeErr;
+        } else if (accessToken && refreshToken) {
+          const { error: sessionErr } = await supabase.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken,
+          });
+          if (sessionErr) throw sessionErr;
+        } else {
+          throw new Error('رابط تغيير كلمة المرور لا يحتوي جلسة استرداد صالحة.');
+        }
+
+        const {
+          data: { user: resetUser },
+          error: userErr,
+        } = await supabase.auth.getUser();
+        if (userErr || !resetUser) {
+          throw userErr || new Error('تعذر التحقق من حساب رابط الاسترداد.');
+        }
+
+        if (!cancelled) {
+          setRecoveryUser(resetUser);
+          setRecoveryState('ready');
+          window.history.replaceState(null, '', '/change-password');
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setRecoveryState('invalid');
+          setError(
+            err instanceof Error
+              ? `تعذر فتح رابط تغيير كلمة المرور: ${err.message}`
+              : 'تعذر فتح رابط تغيير كلمة المرور. اطلب رابطًا جديدًا.'
+          );
+        }
+      }
+    };
+
+    void prepareRecoverySession();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Bounce unauthenticated visitors to login. We don't lean on the
   // middleware because /change-password lives outside the protected
   // AppLayout — the redirect needs to fire here.
   useEffect(() => {
+    if (recoveryState === 'checking' || recoveryState === 'processing') return;
+    if (recoveryState === 'invalid') return;
+    if (recoveryUser) return;
     if (loading) return;
     if (!user) {
       router.replace(`/sign-up-login-screen?next=${encodeURIComponent('/change-password')}`);
     }
-  }, [loading, user, router]);
+  }, [loading, user, router, recoveryState, recoveryUser]);
 
+  const activeUser = recoveryUser ?? user;
+  const passwordInputsDisabled =
+    submitting || recoveryState === 'processing' || recoveryState === 'invalid';
   const passwordTooShort = newPassword.length > 0 && newPassword.length < MIN_PASSWORD_LENGTH;
   const passwordsMismatch = confirmPassword.length > 0 && newPassword !== confirmPassword;
   const canSubmit =
-    !submitting && newPassword.length >= MIN_PASSWORD_LENGTH && newPassword === confirmPassword;
+    !passwordInputsDisabled &&
+    Boolean(activeUser) &&
+    newPassword.length >= MIN_PASSWORD_LENGTH &&
+    newPassword === confirmPassword;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -127,6 +234,19 @@ function ChangePasswordPageBody() {
         setError('تعذر الاتصال بقاعدة البيانات. حاول مرة أخرى.');
         return;
       }
+
+      const expectedUserId = activeUser?.id;
+      const {
+        data: { user: sessionUser },
+        error: sessionErr,
+      } = await supabase.auth.getUser();
+      if (sessionErr || !sessionUser || !expectedUserId || sessionUser.id !== expectedUserId) {
+        setError(
+          'تم إيقاف العملية لحماية الحسابات: جلسة تغيير كلمة المرور لا تطابق الحساب المطلوب. افتح الرابط في نافذة خاصة أو اطلب رابطًا جديدًا.'
+        );
+        return;
+      }
+
       // 1. Update Supabase Auth password. RLS-free; succeeds for the
       //    authenticated caller. Never log the password.
       const { error: updateErr } = await supabase.auth.updateUser({
@@ -168,16 +288,21 @@ function ChangePasswordPageBody() {
         await writeStaffAuditLog(supabase, {
           action: 'staff.password_change_required_completed',
           description: 'أكمل الموظف تغيير كلمة المرور الإجباري',
-          actorId: user?.id ?? null,
-          actorName: profileFullName ?? user?.email ?? null,
+          actorId: sessionUser.id,
+          actorName: recoveryUser
+            ? (sessionUser.email ?? null)
+            : (profileFullName ?? sessionUser.email ?? null),
           actorRoleId: currentRoleId,
           entity: {
             type: 'profile',
-            id: user?.id ?? null,
-            label: profileFullName ?? user?.email ?? null,
+            id: sessionUser.id,
+            label: recoveryUser
+              ? (sessionUser.email ?? null)
+              : (profileFullName ?? sessionUser.email ?? null),
           },
           metadata: {
             self_change: true,
+            recovery_flow: Boolean(recoveryUser),
             rpc_error: rpcError, // null on success
           },
         });
@@ -212,7 +337,11 @@ function ChangePasswordPageBody() {
     }
   };
 
-  if (loading) {
+  if (
+    recoveryState === 'checking' ||
+    recoveryState === 'processing' ||
+    (loading && !recoveryUser)
+  ) {
     return <LoadingShell />;
   }
 
@@ -274,7 +403,7 @@ function ChangePasswordPageBody() {
                     minLength={MIN_PASSWORD_LENGTH}
                     autoComplete="new-password"
                     required
-                    disabled={submitting}
+                    disabled={passwordInputsDisabled}
                     className="w-full px-3 py-2.5 pl-9 border border-[hsl(var(--border))] rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 disabled:opacity-50"
                     dir="ltr"
                   />
@@ -314,7 +443,7 @@ function ChangePasswordPageBody() {
                   minLength={MIN_PASSWORD_LENGTH}
                   autoComplete="new-password"
                   required
-                  disabled={submitting}
+                  disabled={passwordInputsDisabled}
                   className="w-full px-3 py-2.5 border border-[hsl(var(--border))] rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 disabled:opacity-50"
                   dir="ltr"
                 />
