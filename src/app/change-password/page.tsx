@@ -64,8 +64,14 @@ import { writeStaffAuditLog } from '@/lib/security/staffAudit';
 // Supabase's `auth.updateUser` enforces project-level password
 // policy and surfaces any rejection as an error message.
 const MIN_PASSWORD_LENGTH = 8;
+const RECOVERY_CHECK_TIMEOUT_MS = 7_000;
+const AUTH_CONTEXT_TIMEOUT_MS = 4_000;
+const INVALID_RESET_LINK_MESSAGE =
+  'رابط تغيير كلمة المرور غير صالح أو انتهت صلاحيته. اطلب رابطًا جديدًا.';
 
 type RecoveryState = 'checking' | 'not_recovery' | 'processing' | 'ready' | 'invalid';
+type AuthOperationResult = { error: { message?: string } | null };
+type GetUserResult = { data: { user: User | null }; error: { message?: string } | null };
 
 function readResetParam(key: string) {
   if (typeof window === 'undefined') return null;
@@ -74,12 +80,21 @@ function readResetParam(key: string) {
   return searchParams.get(key) || hashParams.get(key);
 }
 
-function LoadingShell() {
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string) {
+  return Promise.race<T>([
+    promise,
+    new Promise<T>((_, reject) => {
+      window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    }),
+  ]);
+}
+
+function LoadingShell({ message = 'جارٍ تحميل الصفحة...' }: { message?: string }) {
   return (
     <div className="min-h-screen flex items-center justify-center bg-[hsl(210,20%,97%)]" dir="rtl">
       <div className="flex flex-col items-center gap-3">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#c6a052] border-t-transparent" />
-        <p className="text-sm text-[hsl(var(--muted-foreground))]">جارٍ تحميل الصفحة...</p>
+        <p className="text-sm text-[hsl(var(--muted-foreground))]">{message}</p>
       </div>
     </div>
   );
@@ -112,6 +127,7 @@ function ChangePasswordPageBody() {
   const [success, setSuccess] = useState(false);
   const [recoveryState, setRecoveryState] = useState<RecoveryState>('checking');
   const [recoveryUser, setRecoveryUser] = useState<User | null>(null);
+  const [authWaitExpired, setAuthWaitExpired] = useState(false);
 
   // Supabase recovery links may arrive with either `code` in the query
   // string or access/refresh tokens in the hash. We must bind the form
@@ -135,9 +151,7 @@ function ChangePasswordPageBody() {
       if (resetError) {
         if (!cancelled) {
           setRecoveryState('invalid');
-          setError(
-            'رابط تغيير كلمة المرور منتهي أو غير صالح. اطلب من المدير إرسال رابط جديد، ولن يتم تغيير كلمة مرور أي حساب مفتوح حاليًا.'
-          );
+          setError(INVALID_RESET_LINK_MESSAGE);
         }
         return;
       }
@@ -155,13 +169,21 @@ function ChangePasswordPageBody() {
         if (!supabase) throw new Error('تعذر الاتصال بقاعدة البيانات.');
 
         if (code) {
-          const { error: exchangeErr } = await supabase.auth.exchangeCodeForSession(code);
+          const { error: exchangeErr } = await withTimeout<AuthOperationResult>(
+            supabase.auth.exchangeCodeForSession(code),
+            RECOVERY_CHECK_TIMEOUT_MS,
+            INVALID_RESET_LINK_MESSAGE
+          );
           if (exchangeErr) throw exchangeErr;
         } else if (accessToken && refreshToken) {
-          const { error: sessionErr } = await supabase.auth.setSession({
-            access_token: accessToken,
-            refresh_token: refreshToken,
-          });
+          const { error: sessionErr } = await withTimeout<AuthOperationResult>(
+            supabase.auth.setSession({
+              access_token: accessToken,
+              refresh_token: refreshToken,
+            }),
+            RECOVERY_CHECK_TIMEOUT_MS,
+            INVALID_RESET_LINK_MESSAGE
+          );
           if (sessionErr) throw sessionErr;
         } else {
           throw new Error('رابط تغيير كلمة المرور لا يحتوي جلسة استرداد صالحة.');
@@ -170,7 +192,11 @@ function ChangePasswordPageBody() {
         const {
           data: { user: resetUser },
           error: userErr,
-        } = await supabase.auth.getUser();
+        } = await withTimeout<GetUserResult>(
+          supabase.auth.getUser(),
+          RECOVERY_CHECK_TIMEOUT_MS,
+          INVALID_RESET_LINK_MESSAGE
+        );
         if (userErr || !resetUser) {
           throw userErr || new Error('تعذر التحقق من حساب رابط الاسترداد.');
         }
@@ -183,10 +209,9 @@ function ChangePasswordPageBody() {
       } catch (err) {
         if (!cancelled) {
           setRecoveryState('invalid');
+          const message = err instanceof Error ? err.message : '';
           setError(
-            err instanceof Error
-              ? `تعذر فتح رابط تغيير كلمة المرور: ${err.message}`
-              : 'تعذر فتح رابط تغيير كلمة المرور. اطلب رابطًا جديدًا.'
+            message.includes('رابط تغيير كلمة المرور') ? message : INVALID_RESET_LINK_MESSAGE
           );
         }
       }
@@ -198,6 +223,19 @@ function ChangePasswordPageBody() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!loading || recoveryUser || recoveryState === 'ready' || recoveryState === 'invalid') {
+      setAuthWaitExpired(false);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setAuthWaitExpired(true);
+    }, AUTH_CONTEXT_TIMEOUT_MS);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [loading, recoveryState, recoveryUser]);
 
   // Bounce unauthenticated visitors to login. We don't lean on the
   // middleware because /change-password lives outside the protected
@@ -214,7 +252,15 @@ function ChangePasswordPageBody() {
 
   const activeUser = recoveryUser ?? user;
   const passwordInputsDisabled =
-    submitting || recoveryState === 'processing' || recoveryState === 'invalid';
+    submitting ||
+    recoveryState === 'processing' ||
+    recoveryState === 'invalid' ||
+    (!activeUser && authWaitExpired);
+  const visibleError =
+    error ||
+    (authWaitExpired && !activeUser
+      ? 'تعذر التحقق من جلسة المستخدم. افتح رابط تغيير كلمة المرور مرة أخرى أو سجل الدخول من جديد.'
+      : null);
   const passwordTooShort = newPassword.length > 0 && newPassword.length < MIN_PASSWORD_LENGTH;
   const passwordsMismatch = confirmPassword.length > 0 && newPassword !== confirmPassword;
   const canSubmit =
@@ -340,9 +386,9 @@ function ChangePasswordPageBody() {
   if (
     recoveryState === 'checking' ||
     recoveryState === 'processing' ||
-    (loading && !recoveryUser)
+    (loading && !recoveryUser && !authWaitExpired)
   ) {
-    return <LoadingShell />;
+    return <LoadingShell message="جارِ التحقق من رابط تغيير كلمة المرور..." />;
   }
 
   return (
@@ -452,10 +498,10 @@ function ChangePasswordPageBody() {
                 )}
               </div>
 
-              {error && (
+              {visibleError && (
                 <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 flex items-start gap-2">
                   <AlertTriangle size={14} className="text-rose-700 mt-0.5 flex-shrink-0" />
-                  <p className="text-xs text-rose-900">{error}</p>
+                  <p className="text-xs text-rose-900">{visibleError}</p>
                 </div>
               )}
 
