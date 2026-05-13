@@ -1,5 +1,6 @@
 'use client';
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import dynamic from 'next/dynamic';
 import AppLayout from '@/components/AppLayout';
 import {
   Building2,
@@ -71,6 +72,15 @@ const DEFAULT_WA_TEMPLATE = `السلام عليكم {customerName} 🌟
 
 شكراً لتعاملك مع تراث مصر ✨`;
 
+const SecurityActivityTab = dynamic(() => import('./components/SecurityActivityTab'), {
+  ssr: false,
+  loading: () => (
+    <div className="p-8 bg-gray-50 rounded-3xl text-center text-gray-400 font-black text-sm">
+      جارِ تحميل سجل النشاط...
+    </div>
+  ),
+});
+
 // ─── Shared Storage Hook ──────────────────────────────────────────────────────
 
 function useSettingsSync<T>(key: string, initial: T) {
@@ -79,9 +89,8 @@ function useSettingsSync<T>(key: string, initial: T) {
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
 
-  const supabase = createClient();
-
   const load = useCallback(async () => {
+    const supabase = createClient();
     const { data: row, error } = await supabase
       .from('turath_masr_settings')
       .select('value')
@@ -91,11 +100,12 @@ function useSettingsSync<T>(key: string, initial: T) {
       setData(row.value as T);
     }
     setLoading(false);
-  }, [key, supabase]);
+  }, [key]);
 
   const save = async (newData?: T) => {
     setSaving(true);
     const toSave = newData !== undefined ? newData : data;
+    const supabase = createClient();
     // Phase 22J: explicit onConflict so PostgREST always uses the `key`
     // PK for the merge instead of relying on the table-default. The
     // previous form silently swallowed errors (no toast, no console
@@ -1362,27 +1372,35 @@ function WhatsAppTab() {
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<TabKey>('company');
 
-  const tabContent: Record<TabKey, React.ReactNode> = {
-    company: <CompanyTab />,
-    shipping: <ShippingTab />,
-    districts: <DistrictsTab />,
-    warranty: <WarrantyTab />,
-    whatsapp: <WhatsAppTab />,
-    notifications: (
-      <div className="p-8 bg-gray-50 rounded-3xl text-center text-gray-400 italic font-bold text-sm">
-        قريباً: واجهة متقدمة لإدارة قنوات الإشعارات (إيميل، SMS، نظام داخلي).
-      </div>
-    ),
-    appearance: (
-      <div className="p-8 bg-gray-50 rounded-3xl text-center text-gray-400 italic font-bold text-sm">
-        قريباً: تخصيص ألوان الواجهة، اختيار الخطوط، وتحميل اللوجو المتقدم.
-      </div>
-    ),
-    security: (
-      <div className="p-8 bg-gray-50 rounded-3xl text-center text-gray-400 italic font-bold text-sm">
-        قريباً: إدارة جلسات المستخدمين، سجلات تسجيل الدخول، وتغيير كلمات السر.
-      </div>
-    ),
+  const renderActiveTab = () => {
+    switch (activeTab) {
+      case 'company':
+        return <CompanyTab />;
+      case 'shipping':
+        return <ShippingTab />;
+      case 'districts':
+        return <DistrictsTab />;
+      case 'warranty':
+        return <WarrantyTab />;
+      case 'whatsapp':
+        return <WhatsAppTab />;
+      case 'security':
+        return <SecurityActivityTab />;
+      case 'notifications':
+        return (
+          <div className="p-8 bg-gray-50 rounded-3xl text-center text-gray-400 italic font-bold text-sm">
+            قريباً: واجهة متقدمة لإدارة قنوات الإشعارات (إيميل، SMS، نظام داخلي).
+          </div>
+        );
+      case 'appearance':
+        return (
+          <div className="p-8 bg-gray-50 rounded-3xl text-center text-gray-400 italic font-bold text-sm">
+            قريباً: تخصيص ألوان الواجهة، اختيار الخطوط، وتحميل اللوجو المتقدم.
+          </div>
+        );
+      default:
+        return null;
+    }
   };
 
   return (
@@ -1430,7 +1448,7 @@ export default function SettingsPage() {
             </div>
           </div>
           <div className="flex-1 min-w-0 bg-white border-2 border-gray-50 rounded-[2.5rem] p-10 shadow-sm">
-            {tabContent[activeTab]}
+            {renderActiveTab()}
           </div>
         </div>
       </div>
