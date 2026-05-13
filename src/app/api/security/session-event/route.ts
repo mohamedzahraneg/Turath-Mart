@@ -137,26 +137,57 @@ export async function POST(request: Request) {
     .from('profiles')
     .select('id, email, full_name, role_id, role_name, account_status')
     .eq('id', user.id)
-    .single();
+    .maybeSingle();
 
+  const profileId = profile?.id ?? null;
   const userEmail = profile?.email || user.email || null;
-  const userName = profile?.full_name || null;
+  const userName =
+    profile?.full_name ||
+    (typeof user.user_metadata?.full_name === 'string' ? user.user_metadata.full_name : null) ||
+    user.email ||
+    null;
+
+  const insertLoginEvent = async (input: {
+    event_type: 'login' | 'logout' | 'refresh' | 'blocked_device';
+    success: boolean;
+    failure_reason: string | null;
+  }) => {
+    const payload = {
+      user_id: profileId,
+      user_email: userEmail,
+      user_name: userName,
+      event_type: input.event_type,
+      success: input.success,
+      failure_reason: input.failure_reason,
+      ip_address: ipAddress,
+      user_agent: userAgent,
+      device_fingerprint: fingerprint,
+      device_label: deviceLabel,
+    };
+    const { error } = await supabase.from('turath_masr_login_events').insert(payload);
+    if (error && payload.user_id) {
+      // Some legacy/auth-only users can sign in before a matching
+      // profile exists. The table FK points at profiles(id), so keep
+      // an email/name audit trail instead of dropping the event.
+      const { error: retryError } = await supabase
+        .from('turath_masr_login_events')
+        .insert({ ...payload, user_id: null });
+      if (retryError) {
+        console.warn('[session-event] login event fallback failed:', retryError.message);
+      }
+    } else if (error) {
+      console.warn('[session-event] login event insert failed:', error.message);
+    }
+  };
 
   // Gate 1 — account status. Disabled / suspended / pending accounts
   // are not allowed to use the app. Log + reject.
   const accountStatus = (profile as { account_status?: string } | null)?.account_status ?? 'active';
   if (accountStatus !== 'active') {
-    await supabase.from('turath_masr_login_events').insert({
-      user_id: user.id,
-      user_email: userEmail,
-      user_name: userName,
+    await insertLoginEvent({
       event_type: 'blocked_device',
       success: false,
       failure_reason: `account_${accountStatus}`,
-      ip_address: ipAddress,
-      user_agent: userAgent,
-      device_fingerprint: fingerprint,
-      device_label: deviceLabel,
     });
     return NextResponse.json(
       { ok: false, blocked: true, reason: `account_${accountStatus}` },
@@ -169,7 +200,7 @@ export async function POST(request: Request) {
   // still log a login_event so admins see them, but cannot be tied to
   // a device.
   let deviceStatus: 'allowed' | 'blocked' | 'pending' = 'allowed';
-  if (fingerprint) {
+  if (fingerprint && profileId) {
     // Load (or create) the device policy + device row for this user.
     const { data: policyRow } = await supabase
       .from('turath_masr_user_device_policies')
@@ -250,17 +281,10 @@ export async function POST(request: Request) {
   // Persist the login event regardless of device gate result.
   const persistedEventType: 'login' | 'logout' | 'refresh' | 'blocked_device' =
     deviceStatus === 'blocked' ? 'blocked_device' : eventType;
-  await supabase.from('turath_masr_login_events').insert({
-    user_id: user.id,
-    user_email: userEmail,
-    user_name: userName,
+  await insertLoginEvent({
     event_type: persistedEventType,
     success: deviceStatus !== 'blocked',
     failure_reason: deviceStatus === 'blocked' ? 'device_blocked' : null,
-    ip_address: ipAddress,
-    user_agent: userAgent,
-    device_fingerprint: fingerprint,
-    device_label: deviceLabel,
   });
 
   if (deviceStatus === 'blocked') {

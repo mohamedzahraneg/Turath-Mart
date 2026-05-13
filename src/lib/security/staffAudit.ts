@@ -275,25 +275,41 @@ export async function writeStaffAuditLog(
   input: StaffAuditInput
 ): Promise<string | null> {
   try {
+    const metadata = input.metadata ?? {};
+    const payload = {
+      actor_id: input.actorId ?? null,
+      actor_name: input.actorName ?? null,
+      actor_role_id: input.actorRoleId ?? null,
+      action: input.action,
+      entity_type: input.entity?.type ?? null,
+      entity_id: input.entity?.id ?? null,
+      entity_label: input.entity?.label ?? null,
+      description: input.description ?? null,
+      metadata,
+      ip_address: input.ipAddress ?? null,
+      user_agent: input.userAgent ?? null,
+      device_fingerprint: input.deviceFingerprint ?? null,
+    };
     const { data, error } = await supabase
       .from('turath_masr_staff_audit_logs')
-      .insert({
-        actor_id: input.actorId ?? null,
-        actor_name: input.actorName ?? null,
-        actor_role_id: input.actorRoleId ?? null,
-        action: input.action,
-        entity_type: input.entity?.type ?? null,
-        entity_id: input.entity?.id ?? null,
-        entity_label: input.entity?.label ?? null,
-        description: input.description ?? null,
-        metadata: input.metadata ?? {},
-        ip_address: input.ipAddress ?? null,
-        user_agent: input.userAgent ?? null,
-        device_fingerprint: input.deviceFingerprint ?? null,
-      })
+      .insert(payload)
       .select('id')
       .single();
     if (error) {
+      if (input.actorId) {
+        const { data: retryData, error: retryError } = await supabase
+          .from('turath_masr_staff_audit_logs')
+          .insert({
+            ...payload,
+            actor_id: null,
+            metadata: { ...metadata, actor_profile_id_unresolved: input.actorId },
+          })
+          .select('id')
+          .single();
+        if (!retryError) {
+          return (retryData as { id?: string } | null)?.id ?? null;
+        }
+      }
       console.warn('[staffAudit] insert failed:', error.message);
       return null;
     }
