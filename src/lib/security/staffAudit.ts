@@ -266,6 +266,57 @@ export interface StaffAuditInput {
   deviceFingerprint?: string | null;
 }
 
+type StaffAuditInsertPayload = {
+  actor_id: string | null;
+  actor_name: string | null;
+  actor_role_id: string | null;
+  action: StaffAuditAction;
+  entity_type: string | null;
+  entity_id: string | null;
+  entity_label: string | null;
+  description: string | null;
+  metadata: Record<string, unknown>;
+  ip_address: string | null;
+  user_agent: string | null;
+  device_fingerprint: string | null;
+};
+
+type StaffAuditInsertError = {
+  code?: string;
+  message?: string;
+};
+
+function buildStaffAuditPayload(
+  input: StaffAuditInput,
+  actorId: string | null,
+  metadata: Record<string, unknown>
+): StaffAuditInsertPayload {
+  return {
+    actor_id: actorId,
+    actor_name: input.actorName ?? null,
+    actor_role_id: input.actorRoleId ?? null,
+    action: input.action,
+    entity_type: input.entity?.type ?? null,
+    entity_id: input.entity?.id ?? null,
+    entity_label: input.entity?.label ?? null,
+    description: input.description ?? null,
+    metadata,
+    ip_address: input.ipAddress ?? null,
+    user_agent: input.userAgent ?? null,
+    device_fingerprint: input.deviceFingerprint ?? null,
+  };
+}
+
+function shouldRetryWithoutActorId(error: StaffAuditInsertError): boolean {
+  const code = error.code ?? '';
+  const message = error.message ?? '';
+  return (
+    code === '23503' ||
+    code === '42501' ||
+    /foreign key|violates row-level security|row-level security/i.test(message)
+  );
+}
+
 /**
  * Best-effort insert. Returns the inserted row id on success, or
  * `null` on any failure path (including RLS rejection). Never throws.
@@ -275,25 +326,33 @@ export async function writeStaffAuditLog(
   input: StaffAuditInput
 ): Promise<string | null> {
   try {
-    const { data, error } = await supabase
-      .from('turath_masr_staff_audit_logs')
-      .insert({
-        actor_id: input.actorId ?? null,
-        actor_name: input.actorName ?? null,
-        actor_role_id: input.actorRoleId ?? null,
-        action: input.action,
-        entity_type: input.entity?.type ?? null,
-        entity_id: input.entity?.id ?? null,
-        entity_label: input.entity?.label ?? null,
-        description: input.description ?? null,
-        metadata: input.metadata ?? {},
-        ip_address: input.ipAddress ?? null,
-        user_agent: input.userAgent ?? null,
-        device_fingerprint: input.deviceFingerprint ?? null,
-      })
-      .select('id')
-      .single();
+    const baseMetadata = input.metadata ?? {};
+    const insertPayload = async (payload: StaffAuditInsertPayload) =>
+      supabase.from('turath_masr_staff_audit_logs').insert(payload).select('id').single();
+
+    const { data, error } = await insertPayload(
+      buildStaffAuditPayload(input, input.actorId ?? null, baseMetadata)
+    );
     if (error) {
+      if (input.actorId && shouldRetryWithoutActorId(error)) {
+        const fallbackMetadata: Record<string, unknown> = {
+          ...baseMetadata,
+          audit_actor_id_fallback: true,
+          audit_actor_original_id: input.actorId,
+          audit_actor_insert_error_code: error.code ?? null,
+        };
+        const { data: fallbackData, error: fallbackError } = await insertPayload(
+          buildStaffAuditPayload(input, null, fallbackMetadata)
+        );
+        if (!fallbackError) {
+          console.warn(
+            '[staffAudit] insert retried without actor_id after actor reference check failed.'
+          );
+          return (fallbackData as { id?: string } | null)?.id ?? null;
+        }
+        console.warn('[staffAudit] fallback insert failed:', fallbackError.message);
+        return null;
+      }
       console.warn('[staffAudit] insert failed:', error.message);
       return null;
     }

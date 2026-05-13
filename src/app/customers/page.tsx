@@ -56,6 +56,7 @@ import AppLayout from '@/components/AppLayout';
 import { createClient } from '@/lib/supabase/client';
 // Phase 26D-1 — staff audit on customer creation.
 import { writeStaffAuditLog } from '@/lib/security/staffAudit';
+import { useAuth } from '@/contexts/AuthContext';
 import { usePermissions } from '@/hooks/usePermissions';
 import {
   type CustomerRow,
@@ -959,6 +960,7 @@ function NewCustomerModal({
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { user, profileFullName, currentRoleId } = useAuth();
   // Phase 24B — when the typed phone matches an existing customer we
   // surface a "فتح ملف العميل" button that routes straight to the
   // existing profile (instead of just blocking the submit).
@@ -1031,6 +1033,9 @@ function NewCustomerModal({
       try {
         await writeStaffAuditLog(supabase, {
           action: 'customer.created',
+          actorId: user?.id ?? null,
+          actorName: (profileFullName ?? '').trim() || user?.email || null,
+          actorRoleId: currentRoleId ?? null,
           entity: { type: 'customer', id: phone, label: form.full_name.trim() },
           description: `إنشاء عميل جديد: ${form.full_name.trim()} (${phone})`,
           metadata: {

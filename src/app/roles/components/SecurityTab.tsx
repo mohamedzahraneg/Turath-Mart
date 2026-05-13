@@ -154,6 +154,47 @@ function fmtDateTime(iso: string | null | undefined): string {
   }
 }
 
+function metadataStringValue(metadata: Record<string, unknown> | null, key: string): string | null {
+  const value = metadata?.[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function auditFallbackActorId(row: StaffAuditRow): string | null {
+  return (
+    metadataStringValue(row.metadata, 'audit_actor_original_id') ??
+    metadataStringValue(row.metadata, 'actor_user_id')
+  );
+}
+
+function auditActorFilterKey(row: StaffAuditRow): string {
+  if (row.actor_id) return `id:${row.actor_id}`;
+  const fallbackId = auditFallbackActorId(row);
+  if (fallbackId) return `fallback-id:${fallbackId}`;
+  const name = (row.actor_name ?? '').trim();
+  if (name) return `name:${name.toLowerCase()}`;
+  const role = (row.actor_role_id ?? '').trim();
+  if (role) return `role:${role.toLowerCase()}`;
+  return 'unknown';
+}
+
+function auditActorLabel(row: StaffAuditRow): string {
+  const fallbackId = auditFallbackActorId(row);
+  const name = (row.actor_name ?? '').trim();
+  if (name) return name;
+  if (row.actor_id) return row.actor_id.slice(0, 8);
+  if (fallbackId) return `${fallbackId.slice(0, 8)} (Auth فقط)`;
+  return 'مستخدم غير محدد';
+}
+
+function metadataSearchText(metadata: Record<string, unknown> | null): string {
+  if (!metadata) return '';
+  try {
+    return JSON.stringify(metadata);
+  } catch {
+    return '';
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Component
 // ─────────────────────────────────────────────────────────────────────────────
@@ -268,9 +309,9 @@ export default function SecurityTab() {
   const auditActors = useMemo(() => {
     const map = new Map<string, string>();
     for (const a of auditRows) {
-      if (!a.actor_id) continue;
-      const label = (a.actor_name ?? '').trim() || a.actor_id.slice(0, 8);
-      if (!map.has(a.actor_id)) map.set(a.actor_id, label);
+      const key = auditActorFilterKey(a);
+      const label = auditActorLabel(a);
+      if (!map.has(key)) map.set(key, label);
     }
     return Array.from(map.entries()).map(([id, label]) => ({ id, label }));
   }, [auditRows]);
@@ -281,15 +322,19 @@ export default function SecurityTab() {
       if (auditGroupFilter !== 'all' && groupForAction(a.action) !== auditGroupFilter) {
         return false;
       }
-      if (auditUserFilter !== 'all' && a.actor_id !== auditUserFilter) {
+      if (auditUserFilter !== 'all' && auditActorFilterKey(a) !== auditUserFilter) {
         return false;
       }
       if (!q) return true;
       const hay = [
+        a.actor_id,
         a.actor_name,
+        a.actor_role_id,
+        auditFallbackActorId(a),
         a.entity_label,
         a.entity_id,
         a.description,
+        metadataSearchText(a.metadata),
         STAFF_AUDIT_ACTION_LABEL_AR[a.action as StaffAuditAction] ?? a.action,
       ]
         .filter(Boolean)
@@ -751,7 +796,7 @@ export default function SecurityTab() {
         <div className="p-3 border-b border-[hsl(var(--border))] flex items-center gap-2 flex-wrap">
           <ShieldAlert size={15} />
           <h3 className="text-sm font-bold flex-1">
-            سجل التدقيق الإداري ({filteredAudit.length} / {auditRows.length})
+            سجل تدقيق النظام ({filteredAudit.length} / {auditRows.length})
           </h3>
         </div>
         <div className="p-3 border-b border-[hsl(var(--border))] flex flex-wrap items-center gap-2 bg-[hsl(var(--muted))]/20">
@@ -832,7 +877,12 @@ export default function SecurityTab() {
                           {fmtDateTime(a.created_at)}
                         </td>
                         <td className="px-3 py-2 align-top">
-                          {a.actor_name || a.actor_id?.slice(0, 8) || '—'}
+                          <div className="leading-tight">
+                            <p>{auditActorLabel(a)}</p>
+                            {!a.actor_id && auditFallbackActorId(a) && (
+                              <p className="text-[9px] text-amber-700">بدون ملف مطابق</p>
+                            )}
+                          </div>
                         </td>
                         <td className="px-3 py-2 align-top">
                           <div className="flex flex-col gap-0.5 items-start">
