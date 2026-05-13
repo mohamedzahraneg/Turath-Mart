@@ -3,6 +3,7 @@ import type { Metadata, Viewport } from 'next';
 import '../styles/tailwind.css';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { NotificationProvider } from '@/contexts/NotificationContext';
+import AppUpdateChecker from '@/components/AppUpdateChecker';
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://turathmasr.com';
 const SITE_NAME = 'تراث مصر';
@@ -55,7 +56,10 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     <html lang="ar" dir="rtl">
       <body>
         <AuthProvider>
-          <NotificationProvider>{children}</NotificationProvider>
+          <NotificationProvider>
+            <AppUpdateChecker />
+            {children}
+          </NotificationProvider>
         </AuthProvider>
       </body>
     </html>

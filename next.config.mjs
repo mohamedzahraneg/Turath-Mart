@@ -30,8 +30,15 @@ const nextConfig = {
     return [
       {
         source: '/_next/static/(.*)',
+        headers: [{ key: 'Cache-Control', value: 'public, max-age=31536000, immutable' }],
+      },
+      {
+        source: '/((?!api|_next/static|_next/image|favicon.ico|assets|images).*)',
         headers: [
-          { key: 'Cache-Control', value: 'public, max-age=31536000, immutable' },
+          {
+            key: 'Cache-Control',
+            value: 'no-store, no-cache, must-revalidate, max-age=0',
+          },
         ],
       },
     ];
