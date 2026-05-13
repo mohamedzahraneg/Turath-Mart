@@ -268,9 +268,10 @@ export default function SecurityTab() {
   const auditActors = useMemo(() => {
     const map = new Map<string, string>();
     for (const a of auditRows) {
-      if (!a.actor_id) continue;
-      const label = (a.actor_name ?? '').trim() || a.actor_id.slice(0, 8);
-      if (!map.has(a.actor_id)) map.set(a.actor_id, label);
+      const actorKey = a.actor_id ?? (a.actor_name ? `name:${a.actor_name}` : null);
+      if (!actorKey) continue;
+      const label = (a.actor_name ?? '').trim() || a.actor_id?.slice(0, 8) || '—';
+      if (!map.has(actorKey)) map.set(actorKey, label);
     }
     return Array.from(map.entries()).map(([id, label]) => ({ id, label }));
   }, [auditRows]);
@@ -281,7 +282,8 @@ export default function SecurityTab() {
       if (auditGroupFilter !== 'all' && groupForAction(a.action) !== auditGroupFilter) {
         return false;
       }
-      if (auditUserFilter !== 'all' && a.actor_id !== auditUserFilter) {
+      const actorKey = a.actor_id ?? (a.actor_name ? `name:${a.actor_name}` : null);
+      if (auditUserFilter !== 'all' && actorKey !== auditUserFilter) {
         return false;
       }
       if (!q) return true;
@@ -290,6 +292,7 @@ export default function SecurityTab() {
         a.entity_label,
         a.entity_id,
         a.description,
+        JSON.stringify(a.metadata ?? {}),
         STAFF_AUDIT_ACTION_LABEL_AR[a.action as StaffAuditAction] ?? a.action,
       ]
         .filter(Boolean)

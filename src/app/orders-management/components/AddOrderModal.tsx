@@ -1918,15 +1918,20 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
         await writeStaffAuditLog(supabase, {
           action: 'order.created',
           actorId: user?.id ?? null,
-          actorName: (profileFullName ?? '').trim() || user?.email || null,
+          actorName: (profileFullName ?? '').trim() || newOrder.createdBy || user?.email || null,
           actorRoleId: currentRoleId ?? null,
           entity: { type: 'order', id: newOrder.id, label: `#${orderNum}` },
           description: `تم إنشاء الطلب #${orderNum} للعميل ${customerName} بقيمة ${grandTotal.toLocaleString('en-US')} ج.م`,
           metadata: {
             order_id: newOrder.id,
             order_num: orderNum,
+            actor_auth_user_id: user?.id ?? null,
+            actor_email: user?.email ?? null,
+            actor_display_name: newOrder.createdBy,
+            customer: customerName,
             customer_phone: phoneCanonical,
             total: grandTotal,
+            status: newOrder.status,
             line_count: lines.length,
           },
         });
