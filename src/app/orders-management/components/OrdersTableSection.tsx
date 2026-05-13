@@ -1,5 +1,5 @@
 'use client';
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import {
   Search,
@@ -16,6 +16,7 @@ import {
   Truck,
   ArrowDownCircle,
   History,
+  RefreshCw,
   Zap,
 } from 'lucide-react';
 import { toast, Toaster } from 'sonner';
@@ -87,6 +88,35 @@ interface Order {
   delegateName?: string;
 }
 
+interface OrderDbRow {
+  id: string;
+  order_num: string;
+  created_by: string | null;
+  created_by_device: string | null;
+  customer: string;
+  phone: string;
+  phone2: string | null;
+  region: string;
+  district: string | null;
+  neighborhood: string | null;
+  address: string;
+  products: string;
+  quantity: number;
+  subtotal: number;
+  shipping_fee: number;
+  extra_shipping_fee: number | null;
+  express_shipping: boolean | null;
+  total: number;
+  status: string;
+  date: string;
+  time: string;
+  day: string | null;
+  notes: string | null;
+  ip?: string | null;
+  delegate_name: string | null;
+  created_at: string;
+}
+
 const STATUS_MAP: Record<string, { label: string; cls: string }> = {
   new: { label: 'جديد', cls: 'status-new' },
   preparing: { label: 'جاري التجهيز', cls: 'status-preparing' },
@@ -116,9 +146,116 @@ const MOCK_DEPOSITS: Record<
 type SortField = 'orderNum' | 'customer' | 'region' | 'total' | 'status' | 'date';
 type SortDir = 'asc' | 'desc';
 
+const ORDER_SELECT_COLUMNS =
+  'id, order_num, created_by, created_by_device, customer, phone, phone2, region, district, neighborhood, address, products, quantity, subtotal, shipping_fee, extra_shipping_fee, express_shipping, total, status, date, time, day, notes, delegate_name, created_at';
+
+const SORT_COLUMN_BY_FIELD: Record<SortField, string> = {
+  orderNum: 'order_num',
+  customer: 'customer',
+  region: 'region',
+  total: 'total',
+  status: 'status',
+  date: 'created_at',
+};
+
 function parseDateStr(dateStr: string): Date {
   const parts = dateStr.split('/').map(Number);
   return new Date(parts[2], parts[1] - 1, parts[0]);
+}
+
+function mapOrderRow(row: OrderDbRow): Order {
+  return {
+    id: row.id,
+    orderNum: row.order_num,
+    createdBy: row.created_by || '',
+    createdByDevice: row.created_by_device || '',
+    customer: row.customer,
+    phone: row.phone,
+    phone2: row.phone2 || undefined,
+    region: row.region,
+    district: row.district || undefined,
+    neighborhood: row.neighborhood ?? null,
+    address: row.address,
+    products: row.products,
+    quantity: row.quantity,
+    subtotal: row.subtotal,
+    shippingFee: row.shipping_fee,
+    extraShippingFee: row.extra_shipping_fee || undefined,
+    expressShipping: row.express_shipping || undefined,
+    total: row.total,
+    status: row.status,
+    date: row.date,
+    time: row.time,
+    day: row.day || '',
+    notes: row.notes || undefined,
+    ip: row.ip || '',
+    delegateName: row.delegate_name || undefined,
+  };
+}
+
+function sanitizeSearchTerm(value: string): string {
+  return value
+    .trim()
+    .replace(/[%,()]/g, ' ')
+    .replace(/\s+/g, ' ');
+}
+
+function dateInputToIsoStart(value: string): string | null {
+  if (!value) return null;
+  const date = new Date(`${value}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function dateInputToIsoExclusiveEnd(value: string): string | null {
+  if (!value) return null;
+  const date = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return null;
+  date.setDate(date.getDate() + 1);
+  return date.toISOString();
+}
+
+function orderMatchesClientFilters(
+  order: Order,
+  filters: {
+    search: string;
+    regionFilter: string;
+    statusFilter: string;
+    productFilter: string;
+    adjustmentFilter: 'all' | 'parents' | 'returns' | 'exchanges';
+    dateFrom: string;
+    dateTo: string;
+  }
+): boolean {
+  const searchTerm = sanitizeSearchTerm(filters.search).toLowerCase();
+  const matchSearch =
+    !searchTerm ||
+    order.customer.toLowerCase().includes(searchTerm) ||
+    order.orderNum.toLowerCase().includes(searchTerm) ||
+    order.phone.toLowerCase().includes(searchTerm);
+  const matchRegion = filters.regionFilter === 'الكل' || order.region === filters.regionFilter;
+  const matchStatus = filters.statusFilter === 'الكل' || order.status === filters.statusFilter;
+  const matchProduct =
+    filters.productFilter === 'الكل' || order.products.includes(filters.productFilter);
+  const childMatch = order.orderNum.match(/-([RE])\d+$/);
+  const matchAdjustment =
+    filters.adjustmentFilter === 'all' ||
+    (filters.adjustmentFilter === 'parents' && !childMatch) ||
+    (filters.adjustmentFilter === 'returns' && childMatch?.[1] === 'R') ||
+    (filters.adjustmentFilter === 'exchanges' && childMatch?.[1] === 'E');
+  let matchDate = true;
+  if (filters.dateFrom || filters.dateTo) {
+    const orderDate = parseDateStr(order.date);
+    if (filters.dateFrom) {
+      const from = new Date(filters.dateFrom);
+      if (orderDate < from) matchDate = false;
+    }
+    if (filters.dateTo && matchDate) {
+      const to = new Date(filters.dateTo);
+      to.setHours(23, 59, 59);
+      if (orderDate > to) matchDate = false;
+    }
+  }
+  return matchSearch && matchRegion && matchStatus && matchProduct && matchDate && matchAdjustment;
 }
 
 function exportToCSV(orders: Order[]) {
@@ -241,10 +378,18 @@ export default function OrdersTableSection() {
   const [showDelegateStats, setShowDelegateStats] = useState(false);
   const [selectedDelegate, setSelectedDelegate] = useState('');
   const [allOrders, setAllOrders] = useState<Order[]>([]);
+  const visibleOrderIdsRef = useRef<string[]>([]);
+  const [totalOrders, setTotalOrders] = useState(0);
+  const [loadingOrders, setLoadingOrders] = useState(true);
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [liveUpdateCount, setLiveUpdateCount] = useState(0);
   const [lastUpdateTime, setLastUpdateTime] = useState<string | null>(null);
   // Phase 25A — order_id → summary of active adjustments
   const [adjustmentMap, setAdjustmentMap] = useState<Record<string, AdjustmentRowSummary>>({});
+
+  useEffect(() => {
+    visibleOrderIdsRef.current = allOrders.map((o) => o.id);
+  }, [allOrders]);
 
   // --- صلاحيات المستخدم (من AuthContext - المصدر الموثوق) ---
   const { user, currentRoleId, customPermissions: authPermissions } = useAuth();
@@ -271,94 +416,32 @@ export default function OrdersTableSection() {
     );
   })();
 
-  const loadOrders = useCallback(async () => {
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      setDebouncedSearch(sanitizeSearchTerm(search));
+    }, 350);
+    return () => window.clearTimeout(t);
+  }, [search]);
+
+  const loadAdjustmentSummaries = useCallback(async (orderIds: string[]) => {
     try {
       const supabase = createClient();
-      // Phase 20C-1: replaced select('*') with an explicit list of columns
-      // the row mapper actually consumes. Skipped fields with no
-      // wire/render value (notably the `lines` jsonb — kilobytes per row).
-      //
-      // Phase 20C-1 hotfix: removed `ip` from the list. The column does
-      // NOT exist in turath_masr_orders (the real column is
-      // `created_by_ip`); under select('*') the mapper's `row.ip` was
-      // silently `undefined` and the `|| ''` fallback masked it. With an
-      // explicit list, Postgres rejects the entire query with
-      // `42703: column "ip" does not exist` (400), the `if (error)` arm
-      // below returns early, and allOrders never populates — so the table
-      // appeared "stuck for minutes" until a hard refresh. The mapper at
-      // line below still does `ip: row.ip || ''` and continues to produce
-      // `''` (the field is genuinely never populated for any row), so
-      // behaviour is identical to pre-PR-#14.
-      const { data, error } = await supabase
-        .from('turath_masr_orders')
-        .select(
-          // Phase 22N-Fix3 — added `neighborhood` to the explicit select
-          // list so the new column flows through the OrdersTable +
-          // OrderDetailModal renders. Legacy rows missing the column
-          // simply come back as `null`.
-          'id, order_num, created_by, created_by_device, customer, phone, phone2, region, district, neighborhood, address, products, quantity, subtotal, shipping_fee, extra_shipping_fee, express_shipping, total, status, date, time, day, notes, delegate_name, created_at'
-        )
-        .order('created_at', { ascending: false });
-
-      if (error) {
-        console.error('Supabase fetch error:', error);
+      if (orderIds.length === 0) {
+        setAdjustmentMap({});
         return;
       }
-
-      if (data) {
-        const supabaseOrders = (data as Record<string, any>[]).map((row) => ({
-          id: row.id,
-          orderNum: row.order_num,
-          createdBy: row.created_by || '',
-          createdByDevice: row.created_by_device || '',
-          customer: row.customer,
-          phone: row.phone,
-          phone2: row.phone2 || undefined,
-          region: row.region,
-          district: row.district || undefined,
-          neighborhood: row.neighborhood ?? null,
-          address: row.address,
-          products: row.products,
-          quantity: row.quantity,
-          subtotal: row.subtotal,
-          shippingFee: row.shipping_fee,
-          extraShippingFee: row.extra_shipping_fee || undefined,
-          expressShipping: row.express_shipping || undefined,
-          total: row.total,
-          status: row.status,
-          date: row.date,
-          time: row.time,
-          day: row.day || '',
-          notes: row.notes || undefined,
-          ip: row.ip || '',
-          delegateName: row.delegate_name || undefined,
-        }));
-        setAllOrders(supabaseOrders);
-      }
-    } catch (err) {
-      console.error('Error loading orders:', err);
-    }
-  }, []);
-
-  // Phase 25A — pull active adjustment summaries so the table can
-  // render the small مرتجع / استبدال chip next to the status badge.
-  // Falls back silently if the table doesn't exist yet (migration
-  // staged but not applied in this environment).
-  const loadAdjustmentSummaries = useCallback(async () => {
-    try {
-      const supabase = createClient();
       const { data, error } = await supabase
         .from('turath_masr_order_adjustments')
         .select('order_id, kind, state')
+        .in('order_id', orderIds)
         .in('state', ['pending', 'approved', 'completed']);
       if (error || !data) {
+        setAdjustmentMap({});
         return;
       }
       const acc: Record<string, AdjustmentRowSummary> = {};
       // Priority: completed > approved > pending — we surface the
       // "freshest" terminal-ish state that still warrants a badge.
-      // Within the loop the *last* qualifying entry wins; we order
-      // the priority via a numeric weight.
       const weight: Record<string, number> = {
         completed: 3,
         approved: 2,
@@ -387,12 +470,86 @@ export default function OrdersTableSection() {
     }
   }, []);
 
+  const loadOrders = useCallback(async () => {
+    setLoadingOrders(true);
+    try {
+      const supabase = createClient();
+      const from = (page - 1) * perPage;
+      const to = from + perPage - 1;
+      let query = supabase
+        .from('turath_masr_orders')
+        .select(ORDER_SELECT_COLUMNS, { count: 'exact' });
+
+      if (debouncedSearch) {
+        const pattern = `*${debouncedSearch}*`;
+        query = query.or(
+          `customer.ilike.${pattern},order_num.ilike.${pattern},phone.ilike.${pattern}`
+        );
+      }
+      if (regionFilter !== 'الكل') {
+        query = query.eq('region', regionFilter);
+      }
+      if (statusFilter !== 'الكل') {
+        query = query.eq('status', statusFilter);
+      }
+      if (productFilter !== 'الكل') {
+        query = query.ilike('products', `%${productFilter}%`);
+      }
+      if (adjustmentFilter === 'parents') {
+        query = query.not('order_num', 'ilike', '%-R%').not('order_num', 'ilike', '%-E%');
+      } else if (adjustmentFilter === 'returns') {
+        query = query.ilike('order_num', '%-R%');
+      } else if (adjustmentFilter === 'exchanges') {
+        query = query.ilike('order_num', '%-E%');
+      }
+      const dateFromIso = dateInputToIsoStart(dateFrom);
+      const dateToIso = dateInputToIsoExclusiveEnd(dateTo);
+      if (dateFromIso) {
+        query = query.gte('created_at', dateFromIso);
+      }
+      if (dateToIso) {
+        query = query.lt('created_at', dateToIso);
+      }
+
+      const { data, error, count } = await query
+        .order(SORT_COLUMN_BY_FIELD[sortField], { ascending: sortDir === 'asc' })
+        .range(from, to);
+
+      if (error) throw error;
+
+      const supabaseOrders = ((data ?? []) as OrderDbRow[]).map(mapOrderRow);
+      setAllOrders(supabaseOrders);
+      setTotalOrders(count ?? 0);
+      setSelectedRows((prev) => {
+        const visible = new Set(supabaseOrders.map((o) => o.id));
+        return new Set(Array.from(prev).filter((id) => visible.has(id)));
+      });
+      await loadAdjustmentSummaries(supabaseOrders.map((o) => o.id));
+    } catch (err) {
+      console.error('Error loading orders:', err);
+      toast.error('تعذر تحميل الأوردرات. حاول التحديث.');
+    } finally {
+      setLoadingOrders(false);
+    }
+  }, [
+    adjustmentFilter,
+    dateFrom,
+    dateTo,
+    debouncedSearch,
+    loadAdjustmentSummaries,
+    page,
+    perPage,
+    productFilter,
+    regionFilter,
+    sortDir,
+    sortField,
+    statusFilter,
+  ]);
+
   useEffect(() => {
     loadOrders();
-    loadAdjustmentSummaries();
     const handleUpdate = () => {
       loadOrders();
-      loadAdjustmentSummaries();
       setLiveUpdateCount((prev) => prev + 1);
       setLastUpdateTime(
         new Date().toLocaleTimeString('en-US', {
@@ -403,22 +560,20 @@ export default function OrdersTableSection() {
       );
     };
     const handleAdjustments = () => {
-      loadAdjustmentSummaries();
+      loadAdjustmentSummaries(visibleOrderIdsRef.current);
     };
     window.addEventListener('turath_masr_orders_updated', handleUpdate);
     window.addEventListener('turath_masr_order_adjustments_updated', handleAdjustments);
-    // Supabase Realtime subscription — fires handleUpdate on every
-    // INSERT/UPDATE/DELETE, which already triggers a full refresh of the
-    // orders table.
-    //
-    // Phase 20C-1: removed the 120-second `setInterval(loadOrders, 120000)`
-    // fallback. With realtime + the window event listener (used by other
-    // components after their own writes), polling was a third redundant
-    // refresh path that re-shipped the entire orders payload every 2
-    // minutes regardless of whether anything changed. supabase-js
-    // auto-reconnects realtime on transient drops; the manual refresh
-    // button at OrdersHeader.tsx:84 is the user-facing escape hatch.
     const supabase = createClient();
+    const currentFilters = {
+      search: debouncedSearch,
+      regionFilter,
+      statusFilter,
+      productFilter,
+      adjustmentFilter,
+      dateFrom,
+      dateTo,
+    };
     const channel = supabase
       .channel('orders-realtime')
       .on(
@@ -428,8 +583,45 @@ export default function OrdersTableSection() {
           schema: 'public',
           table: 'turath_masr_orders',
         },
-        () => {
-          handleUpdate();
+        (payload: {
+          eventType: 'INSERT' | 'UPDATE' | 'DELETE';
+          new: Record<string, unknown>;
+          old: { id?: string } | null;
+        }) => {
+          setLiveUpdateCount((prev) => prev + 1);
+          setLastUpdateTime(
+            new Date().toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+            })
+          );
+
+          if (payload.eventType === 'UPDATE') {
+            const updated = mapOrderRow(payload.new as unknown as OrderDbRow);
+            setAllOrders((prev) => {
+              const existingIndex = prev.findIndex((o) => o.id === updated.id);
+              if (existingIndex === -1) return prev;
+              if (!orderMatchesClientFilters(updated, currentFilters)) {
+                return prev.filter((o) => o.id !== updated.id);
+              }
+              const next = [...prev];
+              next[existingIndex] = updated;
+              return next;
+            });
+            return;
+          }
+
+          if (payload.eventType === 'DELETE') {
+            // A delete changes counts and can pull the next row into the
+            // current page, so this is one of the bounded refresh cases.
+            void loadOrders();
+            return;
+          }
+
+          // Inserts can change page boundaries and counts, so only then
+          // do we re-read the bounded current page.
+          void loadOrders();
         }
       )
       .subscribe();
@@ -438,7 +630,17 @@ export default function OrdersTableSection() {
       window.removeEventListener('turath_masr_order_adjustments_updated', handleAdjustments);
       supabase.removeChannel(channel);
     };
-  }, [loadOrders, loadAdjustmentSummaries]);
+  }, [
+    adjustmentFilter,
+    dateFrom,
+    dateTo,
+    debouncedSearch,
+    loadAdjustmentSummaries,
+    loadOrders,
+    productFilter,
+    regionFilter,
+    statusFilter,
+  ]);
 
   const handleBulkDelete = async () => {
     if (selectedRows.size === 0) return;
@@ -494,69 +696,20 @@ export default function OrdersTableSection() {
     }
   };
 
-  const filtered = useMemo(() => {
-    return allOrders
-      .filter((o) => {
-        const matchSearch =
-          !search ||
-          o.customer.includes(search) ||
-          o.orderNum.includes(search) ||
-          o.phone.includes(search);
-        const matchRegion = regionFilter === 'الكل' || o.region === regionFilter;
-        const matchStatus = statusFilter === 'الكل' || o.status === statusFilter;
-        const matchProduct = productFilter === 'الكل' || o.products.includes(productFilter);
-        // Phase 25B — adjustment filter (parents vs return-child vs exchange-child)
-        const childMatch = o.orderNum.match(/-([RE])\d+$/);
-        const isReturnChild = childMatch?.[1] === 'R';
-        const isExchangeChild = childMatch?.[1] === 'E';
-        const matchAdjustment =
-          adjustmentFilter === 'all' ||
-          (adjustmentFilter === 'parents' && !childMatch) ||
-          (adjustmentFilter === 'returns' && isReturnChild) ||
-          (adjustmentFilter === 'exchanges' && isExchangeChild);
-        let matchDate = true;
-        if (dateFrom || dateTo) {
-          const orderDate = parseDateStr(o.date);
-          if (dateFrom) {
-            const from = new Date(dateFrom);
-            if (orderDate < from) matchDate = false;
-          }
-          if (dateTo && matchDate) {
-            const to = new Date(dateTo);
-            to.setHours(23, 59, 59);
-            if (orderDate > to) matchDate = false;
-          }
-        }
-        return (
-          matchSearch && matchRegion && matchStatus && matchProduct && matchDate && matchAdjustment
-        );
-      })
-      .sort((a, b) => {
-        let cmp = 0;
-        if (sortField === 'orderNum') cmp = a.orderNum.localeCompare(b.orderNum);
-        else if (sortField === 'customer') cmp = a.customer.localeCompare(b.customer);
-        else if (sortField === 'region') cmp = a.region.localeCompare(b.region);
-        else if (sortField === 'total') cmp = a.total - b.total;
-        else if (sortField === 'status') cmp = a.status.localeCompare(b.status);
-        else if (sortField === 'date')
-          cmp = parseDateStr(a.date).getTime() - parseDateStr(b.date).getTime();
-        return sortDir === 'asc' ? cmp : -cmp;
-      });
-  }, [
-    allOrders,
-    search,
-    regionFilter,
-    statusFilter,
-    dateFrom,
-    dateTo,
-    sortField,
-    sortDir,
-    productFilter,
-    adjustmentFilter,
-  ]);
+  const filtered = allOrders;
+  const totalPages = Math.ceil(totalOrders / perPage);
+  const paginated = allOrders;
+  const firstPageButton = Math.max(1, Math.min(page - 2, Math.max(1, totalPages - 4)));
+  const pageNumbers = Array.from(
+    { length: Math.min(totalPages, 5) },
+    (_, i) => firstPageButton + i
+  );
 
-  const totalPages = Math.ceil(filtered.length / perPage);
-  const paginated = filtered.slice((page - 1) * perPage, page * perPage);
+  useEffect(() => {
+    if (totalPages > 0 && page > totalPages) {
+      setPage(totalPages);
+    }
+  }, [page, totalPages]);
 
   const toggleRow = (id: string) => {
     const s = new Set(selectedRows);
@@ -890,7 +1043,7 @@ export default function OrdersTableSection() {
               </button>
             )}
             <span className="text-xs text-[hsl(var(--muted-foreground))] mr-auto">
-              {filtered.length} نتيجة
+              {loadingOrders ? 'جارٍ التحميل...' : `${totalOrders.toLocaleString('en-US')} نتيجة`}
             </span>
           </div>
         </div>
@@ -997,7 +1150,23 @@ export default function OrdersTableSection() {
               </tr>
             </thead>
             <tbody className="divide-y divide-[hsl(var(--border))]">
-              {paginated.length === 0 ? (
+              {loadingOrders && paginated.length === 0 ? (
+                <tr>
+                  <td colSpan={11} className="text-center py-16">
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="w-14 h-14 bg-[hsl(var(--muted))] rounded-2xl flex items-center justify-center">
+                        <RefreshCw
+                          size={26}
+                          className="text-[hsl(var(--muted-foreground))] animate-spin"
+                        />
+                      </div>
+                      <p className="text-base font-semibold text-[hsl(var(--foreground))]">
+                        جارٍ تحميل الأوردرات...
+                      </p>
+                    </div>
+                  </td>
+                </tr>
+              ) : paginated.length === 0 ? (
                 <tr>
                   <td colSpan={11} className="text-center py-16">
                     <div className="flex flex-col items-center gap-3">
@@ -1226,7 +1395,7 @@ export default function OrdersTableSection() {
                 </option>
               ))}
             </select>
-            <span>من {filtered.length} أوردر</span>
+            <span>من {totalOrders.toLocaleString('en-US')} أوردر</span>
           </div>
           <div className="flex items-center gap-1">
             <button
@@ -1245,8 +1414,7 @@ export default function OrdersTableSection() {
             >
               <ChevronRight size={14} />
             </button>
-            {Array.from({ length: Math.min(totalPages, 5) }, (_, i) => {
-              const pageNum = i + 1;
+            {pageNumbers.map((pageNum) => {
               return (
                 <button
                   key={`page-btn-${pageNum}`}
