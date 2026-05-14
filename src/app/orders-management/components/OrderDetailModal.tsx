@@ -31,12 +31,7 @@ import {
 import { getAuditLogs, STATUS_LABELS, type AuditEntry } from './AuditLogModal';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
-import {
-  canUseAdminOnlyFinancialFields,
-  canEditOrders,
-  isManagerOrAbove,
-  ROLE_IDS,
-} from '@/lib/constants/roles';
+import { canUseAdminOnlyFinancialFields, isManagerOrAbove, ROLE_IDS } from '@/lib/constants/roles';
 // Phase 22P — split structured `{ reason, note }` payloads in the
 // status-history + audit timeline render paths below.
 // Phase 22Q — also surfaces the optional `schedule` fragment.
@@ -333,12 +328,12 @@ function buildAuditTimelineItem(log: AuditEntry): OrderTimelineItem {
 export default function OrderDetailModal({ order, onClose }: Props) {
   const { currentRoleId, user, profileFullName } = useAuth();
   const IS_ADMIN = canUseAdminOnlyFinancialFields(currentRoleId);
-  const CAN_SEE_SENSITIVE = canEditOrders(currentRoleId);
 
   const [activeTab, setActiveTab] = useState('tab-details');
   const [auditLogs, setAuditLogs] = useState<AuditEntry[]>([]);
   const [liveOrder, setLiveOrder] = useState(order);
   const [waTemplate, setWaTemplate] = useState(DEFAULT_WA_TEMPLATE);
+  const [showTechnicalDetails, setShowTechnicalDetails] = useState(false);
 
   // Phase 25A — returns & exchanges
   const [adjustments, setAdjustments] = useState<OrderAdjustment[]>([]);
@@ -1321,47 +1316,78 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 </div>
               </div>
 
-              {CAN_SEE_SENSITIVE && (
-                <div className="border border-amber-200 bg-amber-50 rounded-xl p-4">
-                  <div className="flex items-center gap-2 mb-3">
-                    <Shield size={14} className="text-amber-600" />
-                    <div>
-                      <h4 className="text-sm font-bold text-amber-800">بيانات إنشاء الطلب</h4>
-                      <p className="text-[11px] text-amber-700 mt-0.5">
-                        بيانات تشغيلية كما تم تسجيلها وقت إنشاء الطلب. الحقول غير المتاحة تظهر كغير
-                        مسجلة.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-                    <div className="bg-white rounded-lg p-2.5 border border-amber-100">
-                      <p className="text-[hsl(var(--muted-foreground))] mb-1">المسجِّل</p>
-                      <p className="font-semibold">{liveOrder.createdBy || 'غير مسجل'}</p>
-                    </div>
-                    <div className="bg-white rounded-lg p-2.5 border border-amber-100">
-                      <p className="text-[hsl(var(--muted-foreground))] mb-1">IP وقت التسجيل</p>
-                      <p className="font-mono">
-                        {liveOrder.createdByIp || liveOrder.ip || 'غير مسجل'}
-                      </p>
-                    </div>
-                    <div className="bg-white rounded-lg p-2.5 border border-amber-100">
-                      <p className="text-[hsl(var(--muted-foreground))] mb-1 flex items-center gap-1">
-                        <MapPin size={10} /> الموقع
-                      </p>
-                      <p className="font-semibold">{liveOrder.createdByLocation || 'غير مسجل'}</p>
-                    </div>
-                    <div className="bg-white rounded-lg p-2.5 border border-amber-100">
-                      <p className="text-[hsl(var(--muted-foreground))] mb-1 flex items-center gap-1">
-                        <Monitor size={10} /> الجهاز
-                      </p>
-                      <p className="font-semibold flex items-center gap-1">
-                        <DeviceIcon device={liveOrder.createdByDevice} />
-                        {liveOrder.createdByDevice || 'غير مسجل'}
-                      </p>
-                    </div>
+              <div className="border border-amber-200 bg-amber-50 rounded-xl p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <FileText size={14} className="text-amber-600" />
+                  <div>
+                    <h4 className="text-sm font-bold text-amber-800">ملاحظات الطلب</h4>
+                    <p className="text-[11px] text-amber-700 mt-0.5">
+                      ملاحظات داخلية مرتبطة بهذا الطلب، وتظهر أيضًا ضمن سجل الحالات.
+                    </p>
                   </div>
                 </div>
-              )}
+                {liveOrder.notes?.trim() ? (
+                  <p className="text-sm text-[hsl(var(--foreground))] whitespace-pre-wrap leading-relaxed bg-white border border-amber-100 rounded-xl p-3">
+                    {liveOrder.notes.trim()}
+                  </p>
+                ) : (
+                  <p className="text-sm text-[hsl(var(--muted-foreground))] bg-white border border-amber-100 rounded-xl p-3">
+                    لا توجد ملاحظات مسجلة لهذا الطلب.
+                  </p>
+                )}
+
+                {IS_ADMIN && (
+                  <div className="mt-3 border-t border-amber-200 pt-3">
+                    <button
+                      type="button"
+                      onClick={() => setShowTechnicalDetails((value) => !value)}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-amber-700 transition-colors hover:bg-amber-100"
+                    >
+                      <Shield size={12} />
+                      بيانات تقنية
+                    </button>
+
+                    {showTechnicalDetails && (
+                      <div>
+                        <p className="mt-2 text-[11px] text-amber-700">
+                          بيانات فنية للمتابعة الداخلية فقط. الحقول غير المتاحة تظهر كغير مسجلة.
+                        </p>
+                        <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                          <div className="bg-white rounded-lg p-2.5 border border-amber-100">
+                            <p className="text-[hsl(var(--muted-foreground))] mb-1">المسجِّل</p>
+                            <p className="font-semibold">{liveOrder.createdBy || 'غير مسجل'}</p>
+                          </div>
+                          <div className="bg-white rounded-lg p-2.5 border border-amber-100">
+                            <p className="text-[hsl(var(--muted-foreground))] mb-1">
+                              IP وقت التسجيل
+                            </p>
+                            <p className="font-mono">
+                              {liveOrder.createdByIp || liveOrder.ip || 'غير مسجل'}
+                            </p>
+                          </div>
+                          <div className="bg-white rounded-lg p-2.5 border border-amber-100">
+                            <p className="text-[hsl(var(--muted-foreground))] mb-1 flex items-center gap-1">
+                              <MapPin size={10} /> الموقع
+                            </p>
+                            <p className="font-semibold">
+                              {liveOrder.createdByLocation || 'غير مسجل'}
+                            </p>
+                          </div>
+                          <div className="bg-white rounded-lg p-2.5 border border-amber-100">
+                            <p className="text-[hsl(var(--muted-foreground))] mb-1 flex items-center gap-1">
+                              <Monitor size={10} /> الجهاز
+                            </p>
+                            <p className="font-semibold flex items-center gap-1">
+                              <DeviceIcon device={liveOrder.createdByDevice} />
+                              {liveOrder.createdByDevice || 'غير مسجل'}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
 
               {/* Phase 25A — Returns & Exchanges section. Only shown
                   when at least one adjustment exists OR the order is
