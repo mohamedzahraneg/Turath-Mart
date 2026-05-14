@@ -8,6 +8,32 @@ import {
   DEFAULT_LANDING_ROUTE,
 } from '@/lib/auth/routes';
 
+function isMissingRefreshTokenError(error: unknown): boolean {
+  const authError = error as { code?: string; message?: string } | null;
+  const message = authError?.message ?? '';
+  return (
+    authError?.code === 'refresh_token_not_found' ||
+    message.includes('Invalid Refresh Token') ||
+    message.includes('Refresh Token Not Found')
+  );
+}
+
+function expireSupabaseAuthCookies(request: NextRequest, response: NextResponse): NextResponse {
+  for (const cookie of request.cookies.getAll()) {
+    const name = cookie.name;
+    if (!name.startsWith('sb-')) continue;
+    if (!name.includes('auth-token') && !name.includes('code-verifier')) continue;
+
+    request.cookies.delete(name);
+    response.cookies.set(name, '', {
+      path: '/',
+      maxAge: 0,
+      expires: new Date(0),
+    });
+  }
+  return response;
+}
+
 /**
  * Server-side route guard.
  *
@@ -37,9 +63,20 @@ export async function middleware(request: NextRequest) {
   // re-validation. Authorization on protected pages remains enforced
   // by RLS + per-route checks (this middleware only decides where to
   // route the browser).
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
+  let session = null;
+  let staleAuthCookies = false;
+  try {
+    const {
+      data: { session: currentSession },
+    } = await supabase.auth.getSession();
+    session = currentSession;
+  } catch (error) {
+    if (!isMissingRefreshTokenError(error)) {
+      throw error;
+    }
+    staleAuthCookies = true;
+    expireSupabaseAuthCookies(request, response);
+  }
 
   const authed = !!session?.user;
 
@@ -62,7 +99,9 @@ export async function middleware(request: NextRequest) {
     const url = request.nextUrl.clone();
     url.pathname = '/sign-up-login-screen';
     url.search = `?next=${encodeURIComponent(pathname)}`;
-    return NextResponse.redirect(url);
+    return staleAuthCookies
+      ? expireSupabaseAuthCookies(request, NextResponse.redirect(url))
+      : NextResponse.redirect(url);
   }
 
   // 7. Authenticated request to a protected route → continue.
@@ -72,7 +111,5 @@ export async function middleware(request: NextRequest) {
 // Run on every request except _next internals, static assets, and Next API.
 // We still call shouldSkipMiddleware() inside for defence-in-depth.
 export const config = {
-  matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|assets/|images/|api/).*)',
-  ],
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|assets/|images/|api/).*)'],
 };
