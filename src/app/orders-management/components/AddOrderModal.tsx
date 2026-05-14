@@ -65,6 +65,14 @@ import { getDisplayName, getRoleLabel } from '@/lib/utils/userDisplay';
 // 5-minute memory + sessionStorage cache and is invalidated by the
 // `/settings` save flow when the regions row is edited.
 import { getShippingRegions } from '@/lib/settings/shippingRegionsCache';
+import {
+  clearOrderDraft,
+  hasMeaningfulOrderDraft,
+  loadOrderDraft,
+  saveOrderDraft,
+  type AddOrderDraftData,
+  type StoredAddOrderDraft,
+} from '@/lib/orders/orderDraft';
 // Phase E1-Fix3 — the InventoryThumbnail helper that previously lived
 // inline in this file is now shared from `src/lib/inventory/` so the
 // /inventory list view and the /reports product table can reuse the
@@ -456,6 +464,7 @@ function lineTotal(line: OrderLine): number {
 
 export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: Props) {
   const { user, currentRoleId, currentRole, profileFullName } = useAuth();
+  const currentUserId = user?.id ?? null;
   const IS_ADMIN = canUseAdminOnlyFinancialFields(currentRoleId);
 
   // Phase 22L — derive the display name + role for the order's
@@ -540,9 +549,13 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
 
   // Order lines
   const [lines, setLines] = useState<OrderLine[]>([]);
+  const [pendingDraft, setPendingDraft] = useState<StoredAddOrderDraft | null>(null);
+  const [draftHydrated, setDraftHydrated] = useState(false);
+  const [draftDecisionMade, setDraftDecisionMade] = useState(false);
 
   // Inventory ref for stock limit checks
   const inventoryRef = useRef<InventoryItem[]>([]);
+  const draftAppliedRef = useRef(false);
 
   // All product cards (default + inventory items)
   const [productCards, setProductCards] = useState<ProductCard[]>([]);
@@ -550,6 +563,23 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
   // Dynamic regions from Supabase settings
   const [dbRegions, setDbRegions] = useState<any[]>([]);
   const [dbWarrantyOptions, setDbWarrantyOptions] = useState<string[]>([]);
+
+  const buildCurrentOrderDraft = (): AddOrderDraftData => ({
+    customerName,
+    phone,
+    phone2,
+    governorate,
+    district,
+    neighborhood,
+    address,
+    expressShipping,
+    freeShipping,
+    extraShippingFee: IS_ADMIN ? extraShippingFee : 0,
+    notes,
+    warranty,
+    lines,
+    step,
+  });
 
   // Generate order number on mount
   useEffect(() => {
@@ -660,7 +690,9 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
       }
       const defaultWarrantyValue = settingsMap.get('settings_warranty_default');
       if (typeof defaultWarrantyValue === 'string' && defaultWarrantyValue) {
-        setWarranty(defaultWarrantyValue);
+        setWarranty((prev) =>
+          draftAppliedRef.current || prev !== 'بدون ضمان' ? prev : defaultWarrantyValue
+        );
         setDefaultWarrantyLoaded(true);
       }
 
@@ -806,6 +838,62 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
     setNeighborhood('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [district]);
+
+  useEffect(() => {
+    setDraftHydrated(false);
+    setPendingDraft(null);
+    setDraftDecisionMade(false);
+
+    if (!currentUserId) {
+      setDraftHydrated(true);
+      setDraftDecisionMade(true);
+      return;
+    }
+
+    const draft = loadOrderDraft(currentUserId);
+    if (draft) {
+      setPendingDraft(draft);
+    } else {
+      setDraftDecisionMade(true);
+    }
+    setDraftHydrated(true);
+  }, [currentUserId]);
+
+  useEffect(() => {
+    if (!currentUserId || !draftHydrated || !draftDecisionMade || orderSuccess) return;
+
+    const draft = buildCurrentOrderDraft();
+    const timeout = window.setTimeout(() => {
+      if (hasMeaningfulOrderDraft(draft)) {
+        saveOrderDraft(currentUserId, draft);
+      } else {
+        clearOrderDraft(currentUserId);
+      }
+    }, 450);
+
+    return () => window.clearTimeout(timeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    currentUserId,
+    draftHydrated,
+    draftDecisionMade,
+    orderSuccess,
+    customerName,
+    phone,
+    phone2,
+    governorate,
+    district,
+    neighborhood,
+    address,
+    expressShipping,
+    freeShipping,
+    extraShippingFee,
+    notes,
+    warranty,
+    lines,
+    step,
+    IS_ADMIN,
+  ]);
 
   // ─── Phase 22O-Fix1 — broad customer search ─────────────────────────────
   //
@@ -1885,6 +1973,8 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
       // Notify other components that orders have been updated
       window.dispatchEvent(new CustomEvent('turath_masr_orders_updated'));
 
+      clearOrderDraft(currentUserId);
+
       // Phase 24C — fire optional onSuccess so the customer-profile
       // launcher can refetch THIS customer's orders + show a toast.
       // The existing /orders-management header flow doesn't pass
@@ -1946,6 +2036,7 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
       : ['بدون ضمان', '3 أشهر', '6 أشهر', 'سنة', 'سنتان'];
 
   const resetForm = () => {
+    draftAppliedRef.current = false;
     setCustomerName('');
     setPhone('');
     setPhone2('');
@@ -1980,6 +2071,59 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
     // Generate a new order number for the next order
     generateOrderNumber().then((num) => setOrderNum(num));
   };
+
+  const continueDraft = () => {
+    if (!pendingDraft) return;
+
+    const draft = pendingDraft.data;
+    draftAppliedRef.current = true;
+    skipNextCrossGovReset.current = true;
+    setCustomerName(draft.customerName);
+    setPhone(sanitizePhoneInput(draft.phone));
+    setPhone2(sanitizePhoneInput(draft.phone2));
+    setGovernorate(draft.governorate || 'القاهرة');
+    setDistrict(draft.district);
+    setNeighborhood(draft.neighborhood);
+    setAddress(draft.address);
+    setExpressShipping(draft.expressShipping);
+    setFreeShipping(draft.freeShipping);
+    setExtraShippingFee(IS_ADMIN ? draft.extraShippingFee : 0);
+    setNotes(draft.notes);
+    setWarranty(draft.warranty || 'بدون ضمان');
+    setLines(draft.lines);
+    setStep(draft.step);
+    setErrors({});
+    setPendingDraft(null);
+    setDraftDecisionMade(true);
+    window.setTimeout(() => {
+      skipNextCrossGovReset.current = false;
+    }, 0);
+    toast.success('تم استكمال المسودة');
+  };
+
+  const startNewOrder = () => {
+    clearOrderDraft(currentUserId);
+    setPendingDraft(null);
+    setDraftDecisionMade(true);
+    resetForm();
+    toast.success('تم بدء طلب جديد');
+  };
+
+  const deleteDraft = () => {
+    clearOrderDraft(currentUserId);
+    setPendingDraft(null);
+    setDraftDecisionMade(true);
+    toast.success('تم حذف المسودة');
+  };
+
+  const draftUpdatedAtDate = pendingDraft?.updatedAt ? new Date(pendingDraft.updatedAt) : null;
+  const draftUpdatedAtLabel =
+    draftUpdatedAtDate && !Number.isNaN(draftUpdatedAtDate.getTime())
+      ? new Intl.DateTimeFormat('ar-EG', {
+          dateStyle: 'medium',
+          timeStyle: 'short',
+        }).format(draftUpdatedAtDate)
+      : null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" dir="rtl">
@@ -2167,6 +2311,45 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
               </div>
             </div>
           </div>
+
+          {pendingDraft && !draftDecisionMade && (
+            <div className="px-6 pt-4 pb-0">
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 shadow-sm">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-bold text-amber-900">تم العثور على مسودة طلب</p>
+                    <p className="mt-1 text-xs leading-5 text-amber-800">
+                      آخر حفظ تلقائي{draftUpdatedAtLabel ? `: ${draftUpdatedAtLabel}` : ''}. اختر
+                      استكمالها أو بدء طلب جديد.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="rounded-xl bg-amber-600 px-3 py-2 text-xs font-bold text-white transition-colors hover:bg-amber-700"
+                      onClick={continueDraft}
+                    >
+                      استكمال المسودة
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-xl border border-amber-300 bg-white px-3 py-2 text-xs font-bold text-amber-800 transition-colors hover:bg-amber-100"
+                      onClick={startNewOrder}
+                    >
+                      بدء طلب جديد
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-xl border border-red-200 bg-white px-3 py-2 text-xs font-bold text-red-600 transition-colors hover:bg-red-50"
+                      onClick={deleteDraft}
+                    >
+                      حذف المسودة
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Form body */}
           <div className="flex-1 overflow-y-auto scrollbar-thin">
