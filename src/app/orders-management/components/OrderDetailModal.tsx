@@ -21,7 +21,6 @@ import {
   Link,
   Copy,
   Clock,
-  History,
   Headphones,
   Truck,
   Send,
@@ -29,9 +28,8 @@ import {
   XCircle,
   PlayCircle,
 } from 'lucide-react';
-import AuditLogModal, { getAuditLogs, AuditEntry } from './AuditLogModal';
+import { getAuditLogs, STATUS_LABELS, type AuditEntry } from './AuditLogModal';
 import { createClient } from '@/lib/supabase/client';
-import { STATUS_LABELS } from './AuditLogModal';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   canUseAdminOnlyFinancialFields,
@@ -159,8 +157,6 @@ const TABS = [
   { id: 'tab-tracking', label: 'رابط التتبع' },
   { id: 'tab-chat', label: 'محادثة الطلب' },
   { id: 'tab-history', label: 'سجل الحالات' },
-  { id: 'tab-audit', label: 'سجل التعديلات' },
-  { id: 'tab-notifications', label: 'سجل الإشعارات' },
   { id: 'tab-invoice', label: 'الفاتورة' },
 ];
 
@@ -182,17 +178,6 @@ function getTrackingLink(order: { orderNum: string; trackingToken?: string | nul
     : `${base}/track/${order.orderNum}`;
 }
 
-// Load WhatsApp template from localStorage
-function getWATemplate(): string {
-  if (typeof window === 'undefined') return '';
-  try {
-    const saved = localStorage.getItem('settings_wa_template');
-    return saved ? JSON.parse(saved) : '';
-  } catch {
-    return '';
-  }
-}
-
 const DEFAULT_WA_TEMPLATE = `مرحبا {customerName}،
 تم استلام طلبك رقم {orderNum} بإجمالي {total} ج.م.
 يمكنك تتبع شحنتك عبر الرابط: {trackingLink}
@@ -204,17 +189,155 @@ interface Props {
   onClose: () => void;
 }
 
+type TimelineTone = 'green' | 'blue' | 'amber' | 'slate' | 'purple';
+
+interface OrderTimelineItem {
+  id: string;
+  timestamp: number;
+  dateLabel: string;
+  title: string;
+  badge?: string;
+  badgeClass?: string;
+  actorName?: string | null;
+  actorRole?: string | null;
+  body?: string | null;
+  tone: TimelineTone;
+}
+
+function parseOrderDateTime(order: Order): number {
+  const dateMatch = order.date?.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (dateMatch) {
+    const [, day, month, year] = dateMatch;
+    const [hour = '0', minute = '0', second = '0'] = (order.time ?? '').split(':');
+    const parsed = new Date(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour),
+      Number(minute),
+      Number(second)
+    ).getTime();
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  const candidates = [`${order.date ?? ''} ${order.time ?? ''}`.trim(), order.date].filter(Boolean);
+  for (const candidate of candidates) {
+    const t = new Date(candidate).getTime();
+    if (Number.isFinite(t)) return t;
+  }
+  return 0;
+}
+
+function formatTimelineDate(value: string | number | null | undefined): string {
+  if (value === null || value === undefined || value === '') return '—';
+  const d = typeof value === 'number' ? new Date(value) : new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  const days = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+  return `${days[d.getDay()]} ${d.toLocaleDateString('en-GB')} — ${d.toLocaleTimeString('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit',
+  })}`;
+}
+
+function timelineToneClasses(tone: TimelineTone): { dot: string; card: string } {
+  const map: Record<TimelineTone, { dot: string; card: string }> = {
+    green: { dot: 'bg-emerald-500 text-white', card: 'bg-emerald-50 border-emerald-200' },
+    blue: { dot: 'bg-blue-500 text-white', card: 'bg-blue-50 border-blue-200' },
+    amber: { dot: 'bg-amber-500 text-white', card: 'bg-amber-50 border-amber-200' },
+    slate: { dot: 'bg-slate-500 text-white', card: 'bg-slate-50 border-slate-200' },
+    purple: { dot: 'bg-purple-500 text-white', card: 'bg-purple-50 border-purple-200' },
+  };
+  return map[tone];
+}
+
+function buildAuditTimelineItem(log: AuditEntry): OrderTimelineItem {
+  const timestamp = new Date(log.createdAt).getTime();
+  const safeTimestamp = Number.isFinite(timestamp) ? timestamp : 0;
+  const humanised = humanizeAdjustmentAuditEntry({ action: log.action, note: log.note });
+  const parsed = parseAuditNote(log.note);
+  const parsedBody = [
+    parsed.reason ? `سبب الإرجاع: ${parsed.reason}` : null,
+    parsed.schedule
+      ? [
+          `موعد التسليم: ${formatScheduleDateAr(parsed.schedule.date)}`,
+          `من الساعة ${formatTime12hAr(parsed.schedule.from)} إلى الساعة ${formatTime12hAr(
+            parsed.schedule.to
+          )}`,
+          parsed.schedule.reason ? `سبب الترحيل: ${parsed.schedule.reason}` : null,
+        ]
+          .filter(Boolean)
+          .join('\n')
+      : null,
+    parsed.note ? `ملاحظة: ${parsed.note}` : null,
+    parsed.raw ?? null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  if (log.action === 'status_change') {
+    const nextLabel = STATUS_LABELS[log.newValue || ''] || log.newValue || 'حالة غير محددة';
+    const previousLabel = log.oldValue ? STATUS_LABELS[log.oldValue] || log.oldValue : null;
+    return {
+      id: log.id,
+      timestamp: safeTimestamp,
+      dateLabel: formatTimelineDate(log.createdAt),
+      title: `تغيير الحالة إلى ${nextLabel}`,
+      badge: nextLabel,
+      badgeClass: STATUS_BADGE_MAP[log.newValue || '']?.cls ?? 'status-new',
+      actorName: log.changedBy,
+      actorRole: log.changedByRole,
+      body: [previousLabel ? `من: ${previousLabel}` : null, parsedBody || null]
+        .filter(Boolean)
+        .join('\n'),
+      tone: 'blue',
+    };
+  }
+
+  if (log.action.startsWith('adjustment_')) {
+    return {
+      id: log.id,
+      timestamp: safeTimestamp,
+      dateLabel: formatTimelineDate(log.createdAt),
+      title: 'حدث مرتجع / استبدال',
+      badge: 'تسوية',
+      actorName: log.changedBy,
+      actorRole: log.changedByRole,
+      body: humanised || parsedBody || null,
+      tone: 'amber',
+    };
+  }
+
+  const actionLabels: Record<string, string> = {
+    order_created: 'تم إنشاء الطلب',
+    order_edited: 'تم تعديل الطلب',
+    order_deleted: 'تم حذف الطلب',
+  };
+
+  return {
+    id: log.id,
+    timestamp: safeTimestamp,
+    dateLabel: formatTimelineDate(log.createdAt),
+    title: actionLabels[log.action] || log.action,
+    badge: log.action === 'order_created' ? 'إنشاء' : undefined,
+    actorName: log.changedBy,
+    actorRole: log.changedByRole,
+    body:
+      log.action === 'order_edited' && log.fieldChanged
+        ? `الحقل: ${log.fieldChanged}${
+            log.oldValue && log.newValue ? `\n${log.oldValue} ← ${log.newValue}` : ''
+          }${parsedBody ? `\n${parsedBody}` : ''}`
+        : parsedBody || null,
+    tone: log.action === 'order_created' ? 'green' : 'slate',
+  };
+}
+
 export default function OrderDetailModal({ order, onClose }: Props) {
   const { currentRoleId, user, profileFullName } = useAuth();
   const IS_ADMIN = canUseAdminOnlyFinancialFields(currentRoleId);
   const CAN_SEE_SENSITIVE = canEditOrders(currentRoleId);
 
   const [activeTab, setActiveTab] = useState('tab-details');
-  const [showAuditModal, setShowAuditModal] = useState(false);
   const [auditLogs, setAuditLogs] = useState<AuditEntry[]>([]);
-  const [systemNotifications, setSystemNotifications] = useState<any[]>([]);
   const [liveOrder, setLiveOrder] = useState(order);
-  const [loadingNotifs, setLoadingNotifs] = useState(true);
   const [waTemplate, setWaTemplate] = useState(DEFAULT_WA_TEMPLATE);
 
   // Phase 25A — returns & exchanges
@@ -319,29 +442,6 @@ export default function OrderDetailModal({ order, onClose }: Props) {
       }
     };
 
-    const fetchOrderNotifications = async () => {
-      try {
-        const supabase = createClient();
-        const { data, error } = await supabase
-          .from('turath_masr_notifications')
-          .select('*')
-          .eq('order_id', order.id)
-          .order('created_at', { ascending: false });
-
-        if (!error && data) {
-          setSystemNotifications(data);
-        }
-      } catch (err) {
-        console.error('Failed to fetch order notifications:', err);
-      } finally {
-        setLoadingNotifs(false);
-      }
-    };
-
-    fetchOrderNotifications();
-
-    const handleNotifs = () => fetchOrderNotifications();
-
     // Phase 25A — fetch adjustments tied to this order.
     const fetchAdjustments = async () => {
       try {
@@ -373,27 +473,10 @@ export default function OrderDetailModal({ order, onClose }: Props) {
     window.addEventListener('turath_masr_audit_updated', handleAudit);
     window.addEventListener('turath_masr_orders_updated', handleOrders);
 
-    // Subscribe to notification changes for this order
-    const supabase = createClient();
-    const notifSub = supabase
-      .channel(`order-notifs-${order.id}`)
-      .on(
-        'postgres_changes' as any,
-        {
-          event: '*',
-          schema: 'public',
-          table: 'turath_masr_notifications',
-          filter: `order_id=eq.${order.id}`,
-        },
-        handleNotifs
-      )
-      .subscribe();
-
     return () => {
       window.removeEventListener('turath_masr_audit_updated', handleAudit);
       window.removeEventListener('turath_masr_orders_updated', handleOrders);
       window.removeEventListener('turath_masr_order_adjustments_updated', handleAdjustments);
-      supabase.removeChannel(notifSub);
     };
   }, [order.id]);
 
@@ -401,6 +484,44 @@ export default function OrderDetailModal({ order, onClose }: Props) {
   const extraFee = liveOrder.extraShippingFee || 0;
   const shippingLabel = liveOrder.expressShipping ? 'شحن سريع' : 'تكلفة الشحن';
   const trackingLink = getTrackingLink(liveOrder);
+  const timelineItems = React.useMemo<OrderTimelineItem[]>(() => {
+    const items = auditLogs.map(buildAuditTimelineItem);
+    const createdAt = parseOrderDateTime(liveOrder);
+    const hasCreatedAudit = auditLogs.some((log) => log.action === 'order_created');
+
+    if (!hasCreatedAudit) {
+      items.push({
+        id: `order-created-${liveOrder.id}`,
+        timestamp: createdAt,
+        dateLabel: createdAt
+          ? formatTimelineDate(createdAt)
+          : `${liveOrder.day} ${liveOrder.date} — ${liveOrder.time}`,
+        title: 'تم إنشاء الطلب',
+        badge: 'إنشاء',
+        actorName: liveOrder.createdBy || null,
+        body: `تم تسجيل الطلب للعميل ${liveOrder.customer} بإجمالي ${liveOrder.total.toLocaleString(
+          'en-US'
+        )} ج.م`,
+        tone: 'green',
+      });
+    }
+
+    const trimmedNotes = liveOrder.notes?.trim();
+    if (trimmedNotes) {
+      items.push({
+        id: `order-note-${liveOrder.id}`,
+        timestamp: createdAt ? createdAt + 1 : 1,
+        dateLabel: createdAt ? formatTimelineDate(createdAt + 1) : 'ضمن بيانات الطلب',
+        title: 'ملاحظة الطلب',
+        badge: 'ملاحظة',
+        actorName: liveOrder.createdBy || null,
+        body: trimmedNotes,
+        tone: 'purple',
+      });
+    }
+
+    return items.sort((a, b) => a.timestamp - b.timestamp);
+  }, [auditLogs, liveOrder]);
 
   const buildWAMessage = () => {
     return waTemplate
@@ -964,21 +1085,27 @@ export default function OrderDetailModal({ order, onClose }: Props) {
         </div>
 
         {/* Tabs */}
-        <div className="flex border-b border-[hsl(var(--border))] px-5 overflow-x-auto">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`px-4 py-3 text-sm font-semibold border-b-2 transition-colors whitespace-nowrap ${activeTab === tab.id ? 'border-[hsl(var(--primary))] text-[hsl(var(--primary))]' : 'border-transparent text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'}`}
-            >
-              {tab.label}
-              {tab.id === 'tab-audit' && auditLogs.length > 0 && (
-                <span className="mr-1.5 bg-amber-100 text-amber-700 text-[10px] font-bold px-1.5 py-0.5 rounded-full">
-                  {auditLogs.length}
-                </span>
-              )}
-            </button>
-          ))}
+        <div className="border-b border-[hsl(var(--border))] px-4 py-3">
+          <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
+            {TABS.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`min-h-10 rounded-xl border px-3 py-2 text-xs sm:text-sm font-semibold transition-colors text-center leading-snug ${
+                  activeTab === tab.id
+                    ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))]'
+                    : 'border-[hsl(var(--border))] bg-white text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted))]/40'
+                }`}
+              >
+                <span>{tab.label}</span>
+                {tab.id === 'tab-history' && timelineItems.length > 0 && (
+                  <span className="mr-1.5 inline-flex min-w-5 justify-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">
+                    {timelineItems.length}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Tab content */}
@@ -1198,26 +1325,30 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 <div className="border border-amber-200 bg-amber-50 rounded-xl p-4">
                   <div className="flex items-center gap-2 mb-3">
                     <Shield size={14} className="text-amber-600" />
-                    <h4 className="text-sm font-bold text-amber-800">
-                      معلومات التسجيل (للمفوضين فقط)
-                    </h4>
+                    <div>
+                      <h4 className="text-sm font-bold text-amber-800">بيانات إنشاء الطلب</h4>
+                      <p className="text-[11px] text-amber-700 mt-0.5">
+                        بيانات تشغيلية كما تم تسجيلها وقت إنشاء الطلب. الحقول غير المتاحة تظهر كغير
+                        مسجلة.
+                      </p>
+                    </div>
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
                     <div className="bg-white rounded-lg p-2.5 border border-amber-100">
                       <p className="text-[hsl(var(--muted-foreground))] mb-1">المسجِّل</p>
-                      <p className="font-semibold">{liveOrder.createdBy}</p>
+                      <p className="font-semibold">{liveOrder.createdBy || 'غير مسجل'}</p>
                     </div>
                     <div className="bg-white rounded-lg p-2.5 border border-amber-100">
-                      <p className="text-[hsl(var(--muted-foreground))] mb-1">IP الجهاز</p>
-                      <p className="font-mono">{liveOrder.ip || liveOrder.createdByIp || '—'}</p>
+                      <p className="text-[hsl(var(--muted-foreground))] mb-1">IP وقت التسجيل</p>
+                      <p className="font-mono">
+                        {liveOrder.createdByIp || liveOrder.ip || 'غير مسجل'}
+                      </p>
                     </div>
                     <div className="bg-white rounded-lg p-2.5 border border-amber-100">
                       <p className="text-[hsl(var(--muted-foreground))] mb-1 flex items-center gap-1">
                         <MapPin size={10} /> الموقع
                       </p>
-                      <p className="font-semibold">
-                        {liveOrder.createdByLocation || 'القاهرة، مصر'}
-                      </p>
+                      <p className="font-semibold">{liveOrder.createdByLocation || 'غير مسجل'}</p>
                     </div>
                     <div className="bg-white rounded-lg p-2.5 border border-amber-100">
                       <p className="text-[hsl(var(--muted-foreground))] mb-1 flex items-center gap-1">
@@ -1225,17 +1356,10 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                       </p>
                       <p className="font-semibold flex items-center gap-1">
                         <DeviceIcon device={liveOrder.createdByDevice} />
-                        {liveOrder.createdByDevice || 'كمبيوتر'}
+                        {liveOrder.createdByDevice || 'غير مسجل'}
                       </p>
                     </div>
                   </div>
-                </div>
-              )}
-
-              {liveOrder.notes && (
-                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
-                  <p className="text-xs font-bold text-amber-700 mb-1">ملاحظات</p>
-                  <p className="text-sm text-[hsl(var(--foreground))]">{liveOrder.notes}</p>
                 </div>
               )}
 
@@ -1551,213 +1675,80 @@ export default function OrderDetailModal({ order, onClose }: Props) {
           {activeTab === 'tab-history' && (
             <div className="space-y-3 fade-in">
               <p className="text-sm text-[hsl(var(--muted-foreground))] mb-4">
-                سجل كامل لجميع تحديثات الحالة مع التوقيت الكامل والمسؤول
+                سجل موحد يبدأ من إنشاء الطلب ويجمع الحالات والتسويات والملاحظات المهمة.
               </p>
-              <div className="relative">
-                <div className="absolute right-4 top-0 bottom-0 w-0.5 bg-[hsl(var(--border))]" />
-                <div className="space-y-4">
-                  {auditLogs
-                    .filter(
-                      (l) => l.action === 'status_change' || l.action.startsWith('adjustment_')
-                    )
-                    .map((h, i, arr) => {
-                      const d = new Date(h.createdAt);
-                      const days = [
-                        'الأحد',
-                        'الاثنين',
-                        'الثلاثاء',
-                        'الأربعاء',
-                        'الخميس',
-                        'الجمعة',
-                        'السبت',
-                      ];
+              {timelineItems.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-10 gap-3">
+                  <div className="w-12 h-12 bg-[hsl(var(--muted))] rounded-2xl flex items-center justify-center">
+                    <Clock size={24} className="text-[hsl(var(--muted-foreground))]" />
+                  </div>
+                  <p className="text-sm font-semibold text-[hsl(var(--foreground))]">
+                    لا توجد أحداث مسجلة
+                  </p>
+                </div>
+              ) : (
+                <div className="relative">
+                  <div className="absolute right-4 top-0 bottom-0 w-0.5 bg-[hsl(var(--border))]" />
+                  <div className="space-y-4">
+                    {timelineItems.map((item, index) => {
+                      const tone = timelineToneClasses(item.tone);
+                      const isLatest = index === timelineItems.length - 1;
                       return (
-                        <div key={h.id} className="flex items-start gap-4 relative">
+                        <div key={item.id} className="flex items-start gap-4 relative">
                           <div
-                            className={`w-8 h-8 rounded-full flex items-center justify-center z-10 flex-shrink-0 ${i === 0 ? 'bg-[hsl(var(--primary))] text-white' : 'bg-green-100 text-green-600'}`}
+                            className={`w-8 h-8 rounded-full flex items-center justify-center z-10 flex-shrink-0 ${tone.dot}`}
                           >
                             <CheckCircle size={16} />
                           </div>
-                          <div className="flex-1 bg-white border border-[hsl(var(--border))] rounded-xl p-3">
-                            <div className="flex items-center justify-between mb-1.5">
-                              <span
-                                className={`badge ${STATUS_BADGE_MAP[h.newValue || '']?.cls || 'status-new'} text-[11px]`}
-                              >
-                                {STATUS_LABELS[h.newValue || ''] || h.newValue}
-                              </span>
-                              <span className="text-xs text-[hsl(var(--muted-foreground))] font-mono">
-                                {days[d.getDay()]} {d.toLocaleDateString('en-US')} —{' '}
-                                {d.toLocaleTimeString('en-US', {
-                                  hour: '2-digit',
-                                  minute: '2-digit',
-                                })}
+                          <div className={`flex-1 border rounded-xl p-3 ${tone.card}`}>
+                            <div className="flex items-start justify-between gap-2 mb-2">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <p className="text-sm font-bold text-[hsl(var(--foreground))]">
+                                  {item.title}
+                                </p>
+                                {item.badge && (
+                                  <span
+                                    className={
+                                      item.badgeClass
+                                        ? `badge ${item.badgeClass} text-[10px]`
+                                        : 'text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/70 text-[hsl(var(--foreground))]'
+                                    }
+                                  >
+                                    {item.badge}
+                                  </span>
+                                )}
+                                {isLatest && timelineItems.length > 1 && (
+                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/70 text-[hsl(var(--primary))]">
+                                    آخر حدث
+                                  </span>
+                                )}
+                              </div>
+                              <span className="text-[11px] text-[hsl(var(--muted-foreground))] font-mono text-left flex-shrink-0">
+                                {item.dateLabel}
                               </span>
                             </div>
-                            {/* Phase 22L — show full_name on top +
-                                Arabic role label below. Replaces the
-                                inline "بواسطة: name" form so this
-                                surface matches the audit log modal
-                                and the in-modal status history. */}
-                            <div className="flex items-center gap-1.5 text-xs text-[hsl(var(--muted-foreground))]">
-                              <span>بواسطة:</span>
-                              <UserStamp name={h.changedBy} role={h.changedByRole} size="sm" />
-                            </div>
-                            {/* Phase 22P / 22Q — split structured note.
-                                Phase 25B — when the action is an
-                                adjustment event, render the humanised
-                                Arabic paragraph instead of the raw
-                                JSON envelope. */}
-                            {(() => {
-                              const humanised = humanizeAdjustmentAuditEntry({
-                                action: h.action,
-                                note: h.note,
-                              });
-                              if (humanised) {
-                                return (
-                                  <div className="text-xs text-[hsl(var(--foreground))] mt-1.5 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1 whitespace-pre-line leading-relaxed">
-                                    {humanised}
-                                  </div>
-                                );
-                              }
-                              const parsed = parseAuditNote(h.note);
-                              if (
-                                !parsed.reason &&
-                                !parsed.note &&
-                                !parsed.schedule &&
-                                !parsed.raw
-                              ) {
-                                return null;
-                              }
-                              return (
-                                <div className="text-xs text-[hsl(var(--foreground))] mt-1.5 bg-[hsl(var(--muted))]/50 rounded-lg px-2 py-1 space-y-0.5">
-                                  {parsed.reason && (
-                                    <p className="leading-snug">
-                                      <span className="font-bold text-red-700">سبب الإرجاع:</span>{' '}
-                                      <span className="italic">{parsed.reason}</span>
-                                    </p>
-                                  )}
-                                  {/* Phase 22Q — schedule snapshot. */}
-                                  {parsed.schedule && (
-                                    <div className="leading-snug">
-                                      <p>
-                                        <span className="font-bold text-emerald-700">
-                                          موعد التسليم:
-                                        </span>{' '}
-                                        {formatScheduleDateAr(parsed.schedule.date)}
-                                      </p>
-                                      <p>
-                                        من الساعة {formatTime12hAr(parsed.schedule.from)} إلى الساعة{' '}
-                                        {formatTime12hAr(parsed.schedule.to)}
-                                      </p>
-                                      {parsed.schedule.reason && (
-                                        <p>
-                                          <span className="font-bold text-orange-700">
-                                            سبب الترحيل:
-                                          </span>{' '}
-                                          <span className="italic">{parsed.schedule.reason}</span>
-                                        </p>
-                                      )}
-                                    </div>
-                                  )}
-                                  {parsed.note && (
-                                    <p className="leading-snug">
-                                      <span className="font-bold">ملاحظة:</span>{' '}
-                                      <span className="italic">{parsed.note}</span>
-                                    </p>
-                                  )}
-                                  {parsed.raw && (
-                                    <p className="italic leading-snug">
-                                      &ldquo;{parsed.raw}&rdquo;
-                                    </p>
-                                  )}
-                                </div>
-                              );
-                            })()}
+                            {item.actorName && (
+                              <div className="flex items-center gap-1.5 text-xs text-[hsl(var(--muted-foreground))]">
+                                <span>بواسطة:</span>
+                                <UserStamp
+                                  name={item.actorName}
+                                  role={item.actorRole ?? undefined}
+                                  size="sm"
+                                />
+                              </div>
+                            )}
+                            {item.body && (
+                              <div className="text-xs text-[hsl(var(--foreground))] mt-2 bg-white/70 border border-white/60 rounded-lg px-2 py-1 whitespace-pre-line leading-relaxed">
+                                {item.body}
+                              </div>
+                            )}
                           </div>
                         </div>
                       );
                     })}
+                  </div>
                 </div>
-              </div>
-            </div>
-          )}
-
-          {/* Notifications Tab */}
-          {activeTab === 'tab-notifications' && (
-            <div className="space-y-3 fade-in">
-              <p className="text-sm text-[hsl(var(--muted-foreground))] mb-4">
-                سجل جميع الإشعارات المرتبطة بهذا الأوردر
-              </p>
-              <div className="space-y-3">
-                {loadingNotifs ? (
-                  <div className="p-10 text-center text-xs text-[hsl(var(--muted-foreground))]">
-                    جاري التحميل...
-                  </div>
-                ) : systemNotifications.length === 0 ? (
-                  <div className="p-10 text-center text-xs text-[hsl(var(--muted-foreground))]">
-                    لا توجد إشعارات مسجلة لهذا الأوردر
-                  </div>
-                ) : (
-                  systemNotifications.map((notif) => {
-                    const typeConfig: Record<string, { color: string; label: string }> = {
-                      status_change: {
-                        color: 'bg-blue-50 border-blue-200 text-blue-700',
-                        label: 'تغيير حالة',
-                      },
-                      whatsapp: {
-                        color: 'bg-green-50 border-green-200 text-green-700',
-                        label: 'واتساب',
-                      },
-                      new_order: {
-                        color: 'bg-purple-50 border-purple-200 text-purple-700',
-                        label: 'إنشاء أوردر',
-                      },
-                    };
-                    const cfg = typeConfig[notif.type] || {
-                      color: 'bg-gray-50 border-gray-200 text-gray-700',
-                      label: 'إشعار',
-                    };
-                    const d = new Date(notif.created_at);
-                    return (
-                      <div key={notif.id} className={`border rounded-xl p-3 ${cfg.color}`}>
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 mb-1">
-                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/60">
-                                {cfg.label}
-                              </span>
-                              <span className="text-xs font-semibold">{notif.message}</span>
-                            </div>
-                            {/* Phase 22L — notifications carry only
-                                the writer's display name string in
-                                turath_masr_notifications.created_by;
-                                no role column. UserStamp degrades
-                                gracefully and just renders the name
-                                line when role is absent. */}
-                            {notif.created_by && (
-                              <div className="flex items-center gap-1.5 text-[11px] opacity-80">
-                                <span>بواسطة:</span>
-                                <UserStamp name={notif.created_by} size="sm" />
-                              </div>
-                            )}
-                          </div>
-                          <div className="text-left flex-shrink-0">
-                            <p className="text-[10px] font-mono opacity-70">
-                              {d.toLocaleDateString('en-US')}
-                            </p>
-                            <p className="text-[10px] font-mono opacity-70">
-                              {d.toLocaleTimeString('en-US', {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                              })}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
+              )}
             </div>
           )}
 
@@ -1958,196 +1949,8 @@ export default function OrderDetailModal({ order, onClose }: Props) {
               </div>
             </div>
           )}
-
-          {/* Audit Log Tab */}
-          {activeTab === 'tab-audit' && (
-            <div className="space-y-3 fade-in">
-              <div className="flex items-center justify-between mb-4">
-                <p className="text-sm text-[hsl(var(--muted-foreground))]">
-                  سجل كامل لجميع التعديلات مع اسم من عدّل
-                </p>
-                <button
-                  onClick={() => setShowAuditModal(true)}
-                  className="flex items-center gap-1.5 text-xs bg-amber-50 border border-amber-200 text-amber-700 px-3 py-1.5 rounded-xl font-semibold hover:bg-amber-100 transition-colors"
-                >
-                  <History size={13} />
-                  عرض كامل
-                </button>
-              </div>
-              {auditLogs.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-10 gap-3">
-                  <div className="w-12 h-12 bg-[hsl(var(--muted))] rounded-2xl flex items-center justify-center">
-                    <Clock size={24} className="text-[hsl(var(--muted-foreground))]" />
-                  </div>
-                  <p className="text-sm font-semibold text-[hsl(var(--foreground))]">
-                    لا توجد تعديلات مسجلة
-                  </p>
-                  <p className="text-xs text-[hsl(var(--muted-foreground))] text-center">
-                    ستظهر هنا جميع التعديلات عند تحديث الحالة أو تعديل الأوردر
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {auditLogs.slice(0, 10).map((log) => {
-                    const d = new Date(log.createdAt);
-                    const dateStr = d.toLocaleDateString('en-US', {
-                      day: '2-digit',
-                      month: '2-digit',
-                      year: 'numeric',
-                    });
-                    const timeStr = d.toLocaleTimeString('en-US', {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                      second: '2-digit',
-                    });
-                    const actionColors: Record<string, string> = {
-                      status_change: 'bg-blue-50 border-blue-200',
-                      order_created: 'bg-green-50 border-green-200',
-                      order_edited: 'bg-amber-50 border-amber-200',
-                      order_deleted: 'bg-red-50 border-red-200',
-                    };
-                    const actionLabels: Record<string, string> = {
-                      status_change: 'تغيير الحالة',
-                      order_created: 'إنشاء الأوردر',
-                      order_edited: 'تعديل الأوردر',
-                      order_deleted: 'حذف الأوردر',
-                    };
-                    const statusLabels: Record<string, string> = {
-                      new: 'جديد',
-                      preparing: 'جاري التجهيز',
-                      warehouse: 'في المستودع',
-                      shipping: 'جاري الشحن',
-                      delivered: 'تم التسليم',
-                      cancelled: 'ملغي',
-                      returned: 'مرتجع',
-                    };
-                    return (
-                      <div
-                        key={log.id}
-                        className={`border rounded-xl p-3 ${actionColors[log.action] || 'bg-gray-50 border-gray-200'}`}
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 mb-1 flex-wrap">
-                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/60 text-[hsl(var(--foreground))]">
-                                {actionLabels[log.action] || log.action}
-                              </span>
-                              {log.action === 'status_change' && log.newValue && (
-                                <span
-                                  className={`badge ${STATUS_BADGE_MAP[log.newValue]?.cls || 'status-new'} text-[10px]`}
-                                >
-                                  {statusLabels[log.newValue] || log.newValue}
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-xs font-semibold text-[hsl(var(--foreground))]">
-                              {log.changedBy}
-                            </p>
-                            <p className="text-[11px] text-[hsl(var(--muted-foreground))]">
-                              {log.changedByRole === 'manager'
-                                ? 'مدير'
-                                : log.changedByRole === 'supervisor'
-                                  ? 'مشرف شحن'
-                                  : log.changedByRole === 'shipping'
-                                    ? 'مندوب'
-                                    : log.changedByRole}
-                            </p>
-                            {/* Phase 22P / 22Q — split structured note.
-                                Phase 25B — render adjustment events as
-                                Arabic paragraphs. */}
-                            {(() => {
-                              const humanised = humanizeAdjustmentAuditEntry({
-                                action: log.action,
-                                note: log.note,
-                              });
-                              if (humanised) {
-                                return (
-                                  <div className="text-xs mt-1 opacity-90 whitespace-pre-line leading-relaxed">
-                                    {humanised}
-                                  </div>
-                                );
-                              }
-                              const parsed = parseAuditNote(log.note);
-                              if (
-                                !parsed.reason &&
-                                !parsed.note &&
-                                !parsed.schedule &&
-                                !parsed.raw
-                              ) {
-                                return null;
-                              }
-                              return (
-                                <div className="text-xs mt-1 space-y-0.5 opacity-80">
-                                  {parsed.reason && (
-                                    <p className="leading-snug">
-                                      <span className="font-bold">سبب الإرجاع:</span>{' '}
-                                      <span className="italic">{parsed.reason}</span>
-                                    </p>
-                                  )}
-                                  {/* Phase 22Q — schedule snapshot. */}
-                                  {parsed.schedule && (
-                                    <div className="leading-snug">
-                                      <p>
-                                        <span className="font-bold">موعد التسليم:</span>{' '}
-                                        {formatScheduleDateAr(parsed.schedule.date)}
-                                      </p>
-                                      <p>
-                                        من الساعة {formatTime12hAr(parsed.schedule.from)} إلى الساعة{' '}
-                                        {formatTime12hAr(parsed.schedule.to)}
-                                      </p>
-                                      {parsed.schedule.reason && (
-                                        <p>
-                                          <span className="font-bold">سبب الترحيل:</span>{' '}
-                                          <span className="italic">{parsed.schedule.reason}</span>
-                                        </p>
-                                      )}
-                                    </div>
-                                  )}
-                                  {parsed.note && (
-                                    <p className="leading-snug">
-                                      <span className="font-bold">ملاحظة:</span>{' '}
-                                      <span className="italic">{parsed.note}</span>
-                                    </p>
-                                  )}
-                                  {parsed.raw && (
-                                    <p className="italic leading-snug">
-                                      &ldquo;{parsed.raw}&rdquo;
-                                    </p>
-                                  )}
-                                </div>
-                              );
-                            })()}
-                          </div>
-                          <div className="text-left flex-shrink-0">
-                            <p className="text-[10px] font-mono opacity-70">{dateStr}</p>
-                            <p className="text-[10px] font-mono opacity-70">{timeStr}</p>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {auditLogs.length > 10 && (
-                    <button
-                      onClick={() => setShowAuditModal(true)}
-                      className="w-full text-xs text-[hsl(var(--primary))] font-semibold py-2 hover:underline"
-                    >
-                      عرض {auditLogs.length - 10} تعديل إضافي...
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
         </div>
       </div>
-
-      {showAuditModal && (
-        <AuditLogModal
-          orderId={order.id}
-          orderNum={order.orderNum}
-          onClose={() => setShowAuditModal(false)}
-        />
-      )}
 
       {/* Phase 25A — create return / exchange modal */}
       {showAdjustmentModal && (
