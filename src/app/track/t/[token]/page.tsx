@@ -28,7 +28,13 @@ import { resolveLineImageUrl } from '@/lib/orders/lineImage';
 // the customer types the complaint phone, matching the rule applied
 // across the admin-facing Add Order modal + customer CRM dashboard.
 import { sanitizePhoneInput } from '@/lib/phone/egyptPhone';
-import { checkoutDetailsLines, type CheckoutDetails } from '@/lib/orders/checkoutDetails';
+import {
+  checkoutDetailsLines,
+  installationSummaryLabel,
+  paymentStatusLabel,
+  previewModeLabel,
+  type CheckoutDetails,
+} from '@/lib/orders/checkoutDetails';
 import Image from 'next/image';
 import {
   Package,
@@ -55,6 +61,12 @@ import {
   Download,
   FileText,
   Award,
+  // Phase Tracking-Lines-1 — icons for the polished checkout details
+  // card (preview / installation / discount / payment / totals).
+  Eye,
+  Wrench,
+  Percent,
+  Wallet,
 } from 'lucide-react';
 // Phase 22Q — Arabic-locale formatters for the customer-facing
 // delivery schedule card.
@@ -125,7 +137,12 @@ interface TrackingOrder {
     unitPrice: number;
     includeFlashlight?: boolean;
     flashlightPrice?: number;
-    note?: string | null;
+    // Phase Tracking-Lines-1 — `note` removed. The public RPC strips
+    // per-line notes server-side; declaring it on this DTO type
+    // invited dead conditional renders (and a now-removed PDF
+    // builder branch) that suggested customer-facing exposure of
+    // staff-only annotations. Notes remain internal admin content
+    // and are reachable only from staff-side flows.
     total: number;
   }[];
 }
@@ -209,6 +226,177 @@ function TrackLineImage({
   );
 }
 
+// Phase Tracking-Lines-1 — structured customer-facing card for the
+// new `checkout_details` envelope. Renders directly from the parsed
+// `CheckoutDetails` object the public RPC carved out of the
+// marker block (`[[TURATH_CHECKOUT_DETAILS_V1]]…[[/…]]`); it never
+// reads raw `notes`.
+//
+// Layout
+// ------
+// The card is split into up-to-four sub-sections; each only shows
+// when it carries customer-relevant data:
+//   • المعاينة والتركيب — preview-mode label + (when applicable) the
+//     installation summary line.
+//   • الخصم — only when `details.discount.amount > 0`. Surfaces the
+//     amount, reason, and the staff member who applied it.
+//   • الدفع — payment status pill + the paid / remaining amounts +
+//     method + recipient. Skips method / paid / remaining lines
+//     when the status is `unpaid`.
+//   • الإجمالي — gross_total, discount line (if > 0), final_total.
+//
+// We render via small in-file helpers (no new shared component) so
+// the file stays self-contained.
+function CheckoutDetailsCard({ details }: { details: CheckoutDetails }) {
+  const installation = installationSummaryLabel(details);
+  const showDiscount = details.discount.amount > 0;
+  const paymentStatus = details.payment.status;
+  return (
+    <div className="bg-white rounded-2xl border border-blue-200 shadow-sm p-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <FileText size={16} className="text-[hsl(211,67%,28%)]" />
+        <h2 className="font-bold text-sm text-[hsl(var(--foreground))]">تفاصيل المعاينة والدفع</h2>
+      </div>
+
+      {/* Preview + installation. Always rendered (preview mode is
+          always known; "بدون معاينة" is the safe default). */}
+      <section className="rounded-xl border border-blue-100 bg-blue-50 p-3 space-y-1.5">
+        <div className="flex items-center gap-1.5">
+          <Eye size={13} className="text-blue-700" />
+          <h3 className="text-xs font-bold text-blue-900">المعاينة والتركيب</h3>
+        </div>
+        <CheckoutRow label="نوع المعاينة" value={previewModeLabel(details.preview_mode)} />
+        {installation && (
+          <CheckoutRow
+            icon={<Wrench size={11} className="text-blue-700" />}
+            label="تركيب الحامل"
+            value={installation}
+          />
+        )}
+      </section>
+
+      {showDiscount && (
+        <section className="rounded-xl border border-emerald-100 bg-emerald-50 p-3 space-y-1.5">
+          <div className="flex items-center gap-1.5">
+            <Percent size={13} className="text-emerald-700" />
+            <h3 className="text-xs font-bold text-emerald-900">الخصم</h3>
+          </div>
+          <CheckoutRow
+            label="قيمة الخصم"
+            value={formatMoney(details.discount.amount)}
+            tone="emerald"
+          />
+          {details.discount.reason && (
+            <CheckoutRow label="السبب" value={details.discount.reason} tone="emerald" />
+          )}
+          {details.discount.by && (
+            <CheckoutRow label="بواسطة" value={details.discount.by} tone="emerald" />
+          )}
+        </section>
+      )}
+
+      <section className="rounded-xl border border-indigo-100 bg-indigo-50 p-3 space-y-1.5">
+        <div className="flex items-center gap-1.5">
+          <Wallet size={13} className="text-indigo-700" />
+          <h3 className="text-xs font-bold text-indigo-900">الدفع</h3>
+        </div>
+        <CheckoutRow
+          label="الحالة"
+          value={paymentStatusLabel(paymentStatus)}
+          tone="indigo"
+          emphasis
+        />
+        {paymentStatus !== 'unpaid' && (
+          <>
+            <CheckoutRow
+              label="المدفوع"
+              value={formatMoney(details.payment.paid_amount)}
+              tone="indigo"
+            />
+            <CheckoutRow
+              label="المتبقي"
+              value={formatMoney(details.payment.remaining_amount)}
+              tone="indigo"
+            />
+            {details.payment.method && (
+              <CheckoutRow label="وسيلة الدفع" value={details.payment.method} tone="indigo" />
+            )}
+            {details.payment.paid_to && (
+              <CheckoutRow label="مدفوع إلى" value={details.payment.paid_to} tone="indigo" />
+            )}
+          </>
+        )}
+      </section>
+
+      <section className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-1.5">
+        <h3 className="text-xs font-bold text-slate-900">الإجمالي</h3>
+        <CheckoutRow
+          label="الإجمالي قبل الخصم"
+          value={formatMoney(details.totals.gross_total)}
+          tone="slate"
+        />
+        {details.totals.discount > 0 && (
+          <CheckoutRow
+            label="الخصم"
+            value={`- ${formatMoney(details.totals.discount)}`}
+            tone="slate"
+          />
+        )}
+        <CheckoutRow
+          label="الإجمالي النهائي"
+          value={formatMoney(details.totals.final_total)}
+          tone="slate"
+          emphasis
+        />
+      </section>
+    </div>
+  );
+}
+
+type CheckoutRowTone = 'blue' | 'emerald' | 'indigo' | 'slate';
+
+const CHECKOUT_ROW_TONES: Record<CheckoutRowTone, { label: string; value: string }> = {
+  blue: { label: 'text-blue-800', value: 'text-blue-900' },
+  emerald: { label: 'text-emerald-800', value: 'text-emerald-900' },
+  indigo: { label: 'text-indigo-800', value: 'text-indigo-900' },
+  slate: { label: 'text-slate-700', value: 'text-slate-900' },
+};
+
+function CheckoutRow({
+  label,
+  value,
+  tone = 'blue',
+  icon,
+  emphasis = false,
+}: {
+  label: string;
+  value: string;
+  tone?: CheckoutRowTone;
+  icon?: React.ReactNode;
+  emphasis?: boolean;
+}) {
+  const palette = CHECKOUT_ROW_TONES[tone];
+  return (
+    <div className="flex items-center justify-between gap-3 text-xs">
+      <div className={`flex items-center gap-1.5 ${palette.label}`}>
+        {icon}
+        <span>{label}</span>
+      </div>
+      <span
+        className={`${palette.value} ${emphasis ? 'font-bold' : 'font-semibold'} ${
+          emphasis ? 'text-sm' : ''
+        }`}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function formatMoney(value: number): string {
+  return `${Number(value || 0).toLocaleString('en-US')} ج.م`;
+}
+
 function formatCreationTimestamp(iso: string | null | undefined): string {
   if (!iso) return '';
   const d = new Date(iso);
@@ -288,306 +476,6 @@ const COMPLAINT_REASONS = [
   'لم يتم التسليم',
   'مشكلة في الدفع',
   'أخرى',
-];
-
-// Mock data
-const MOCK_TRACKING_DATA: Record<string, TrackingOrder> = {
-  'ZSH-2026-0047': {
-    orderNum: 'ZSH-2026-0047',
-    customer: 'أحمد محمود السيد',
-    phone: '01012345678',
-    region: 'القاهرة',
-    district: 'مدينة نصر',
-    address: 'شارع عباس العقاد، عمارة 5 شقة 12',
-    products: 'حامل مصحف بني x 2',
-    quantity: 2,
-    total: 650,
-    subtotal: 580,
-    shippingFee: 70,
-    status: 'shipping',
-    date: '27/03/2026',
-    time: '09:32:14',
-    notes: 'العميل يريد التسليم في الصباح',
-    warranty: '6 أشهر',
-    delegate: 'علي محمود',
-    delegatePhone: '01098765432',
-    delegateRating: 4.8,
-    eta: '2:30 م - 4:00 م',
-    deliveryNotes: 'سيتصل بك المندوب قبل الوصول بـ 30 دقيقة',
-  },
-  'ZSH-2026-0046': {
-    orderNum: 'ZSH-2026-0046',
-    customer: 'فاطمة علي حسن',
-    phone: '01123456789',
-    region: 'الجيزة',
-    district: 'الدقي',
-    address: 'شارع التحرير، برج المنار ط3',
-    products: 'كعبة x 1 + مصحف x 2',
-    quantity: 3,
-    total: 890,
-    subtotal: 820,
-    shippingFee: 70,
-    status: 'delivered',
-    date: '27/03/2026',
-    time: '09:15:33',
-    delegate: 'علي محمود',
-    delegatePhone: '01098765432',
-    delegateRating: 4.8,
-  },
-};
-
-const MOCK_STATUS_HISTORY: Record<
-  string,
-  { status: string; label: string; time: string; date: string; note: string }[]
-> = {
-  'ZSH-2026-0047': [
-    {
-      status: 'new',
-      label: 'تم استلام الطلب',
-      time: '09:32',
-      date: '27/03/2026',
-      note: 'تم تسجيل طلبك بنجاح',
-    },
-    {
-      status: 'preparing',
-      label: 'جاري التجهيز',
-      time: '11:15',
-      date: '27/03/2026',
-      note: 'يتم تجهيز وتغليف طلبك',
-    },
-    {
-      status: 'warehouse',
-      label: 'في المستودع',
-      time: '12:40',
-      date: '27/03/2026',
-      note: 'الطلب جاهز في المستودع',
-    },
-    {
-      status: 'shipping',
-      label: 'في الطريق إليك',
-      time: '13:40',
-      date: '27/03/2026',
-      note: 'المندوب في الطريق لتوصيل طلبك',
-    },
-  ],
-  'ZSH-2026-0046': [
-    {
-      status: 'new',
-      label: 'تم استلام الطلب',
-      time: '09:15',
-      date: '27/03/2026',
-      note: 'تم تسجيل طلبك بنجاح',
-    },
-    {
-      status: 'preparing',
-      label: 'جاري التجهيز',
-      time: '10:30',
-      date: '27/03/2026',
-      note: 'يتم تجهيز وتغليف طلبك',
-    },
-    {
-      status: 'warehouse',
-      label: 'في المستودع',
-      time: '11:45',
-      date: '27/03/2026',
-      note: 'الطلب جاهز في المستودع',
-    },
-    {
-      status: 'shipping',
-      label: 'في الطريق إليك',
-      time: '12:20',
-      date: '27/03/2026',
-      note: 'المندوب في الطريق',
-    },
-    {
-      status: 'delivered',
-      label: 'تم التسليم',
-      time: '14:05',
-      date: '27/03/2026',
-      note: 'تم تسليم الطلب بنجاح',
-    },
-  ],
-};
-
-// Fallback: all orders from orders management (mock + any that may not be in localStorage)
-const ORDERS_MANAGEMENT_MOCK: TrackingOrder[] = [
-  {
-    orderNum: 'ZSH-2026-0047',
-    customer: 'أحمد محمود السيد',
-    phone: '01012345678',
-    region: 'القاهرة',
-    district: 'مدينة نصر',
-    address: 'شارع عباس العقاد، عمارة 5 شقة 12',
-    products: 'حامل مصحف بني x 2',
-    quantity: 2,
-    total: 650,
-    subtotal: 600,
-    shippingFee: 50,
-    status: 'shipping',
-    date: '27/03/2026',
-    time: '09:32:14',
-    notes: 'العميل يريد التسليم في الصباح',
-    delegate: 'علي محمود',
-    delegatePhone: '01098765432',
-    delegateRating: 4.8,
-  },
-  {
-    orderNum: 'ZSH-2026-0046',
-    customer: 'فاطمة علي حسن',
-    phone: '01123456789',
-    region: 'الجيزة',
-    district: 'الدقي',
-    address: 'شارع التحرير، برج المنار ط3',
-    products: 'كعبة x 1 + مصحف x 2',
-    quantity: 3,
-    total: 890,
-    subtotal: 840,
-    shippingFee: 50,
-    status: 'delivered',
-    date: '27/03/2026',
-    time: '09:15:33',
-    delegate: 'علي محمود',
-    delegatePhone: '01098765432',
-    delegateRating: 4.8,
-  },
-  {
-    orderNum: 'ZSH-2026-0045',
-    customer: 'محمد عبد الرحمن',
-    phone: '01234567890',
-    region: 'القليوبية',
-    district: 'شبرا الخيمة',
-    address: 'شارع النيل، مبنى رقم 14',
-    products: 'حامل مصحف ذهبي x 1',
-    quantity: 1,
-    total: 380,
-    subtotal: 330,
-    shippingFee: 50,
-    status: 'new',
-    date: '27/03/2026',
-    time: '08:55:07',
-    delegate: 'خالد سعيد',
-  },
-  {
-    orderNum: 'ZSH-2026-0044',
-    customer: 'سارة إبراهيم خليل',
-    phone: '01056789012',
-    region: 'القاهرة',
-    district: 'المعادي',
-    address: 'شارع 9، فيلا 23',
-    products: 'كشاف x 3',
-    quantity: 3,
-    total: 530,
-    subtotal: 450,
-    shippingFee: 50,
-    status: 'preparing',
-    date: '27/03/2026',
-    time: '08:40:51',
-    delegate: 'علي محمود',
-  },
-  {
-    orderNum: 'ZSH-2026-0043',
-    customer: 'عمر حامد الشريف',
-    phone: '01198765432',
-    region: 'الجيزة',
-    district: 'فيصل',
-    address: 'شارع البحر الأعظم، عمارة 7',
-    products: 'حامل مصحف أسود x 1 + كشاف x 1',
-    quantity: 2,
-    total: 570,
-    subtotal: 470,
-    shippingFee: 100,
-    status: 'warehouse',
-    date: '26/03/2026',
-    time: '16:20:44',
-    delegate: 'خالد سعيد',
-  },
-  {
-    orderNum: 'ZSH-2026-0042',
-    customer: 'نور الدين مصطفى',
-    phone: '01067891234',
-    region: 'القاهرة',
-    district: 'هليوبوليس (مصر الجديدة)',
-    address: 'شارع النزهة، شقة 45',
-    products: 'كرسي x 2',
-    quantity: 2,
-    total: 1200,
-    subtotal: 1150,
-    shippingFee: 50,
-    status: 'returned',
-    date: '26/03/2026',
-    time: '15:50:19',
-    notes: 'العميل رفض الاستلام',
-    delegate: 'علي محمود',
-  },
-  {
-    orderNum: 'ZSH-2026-0041',
-    customer: 'هدى رمضان أحمد',
-    phone: '01145678901',
-    region: 'القليوبية',
-    district: 'قليوب',
-    address: 'شارع السكة الحديد، عمارة 2',
-    products: 'مصحف x 5',
-    quantity: 5,
-    total: 750,
-    subtotal: 700,
-    shippingFee: 50,
-    status: 'cancelled',
-    date: '26/03/2026',
-    time: '14:30:02',
-    notes: 'إلغاء بطلب العميل',
-    delegate: 'خالد سعيد',
-  },
-  {
-    orderNum: 'ZSH-2026-0040',
-    customer: 'خالد عبد العزيز',
-    phone: '01012223344',
-    region: 'القاهرة',
-    district: 'مصر الجديدة',
-    address: 'شارع الثورة، عمارة 10',
-    products: 'حامل مصحف أبيض x 2 + مصحف x 1',
-    quantity: 3,
-    total: 810,
-    subtotal: 760,
-    shippingFee: 50,
-    status: 'delivered',
-    date: '25/03/2026',
-    time: '11:20:38',
-    delegate: 'علي محمود',
-  },
-  {
-    orderNum: 'ZSH-2026-0039',
-    customer: 'ريم حسام الدين',
-    phone: '01534567890',
-    region: 'الجيزة',
-    district: 'إمبابة',
-    address: 'شارع طه حسين، رقم 33',
-    products: 'كعبة x 1',
-    quantity: 1,
-    total: 500,
-    subtotal: 450,
-    shippingFee: 50,
-    status: 'shipping',
-    date: '25/03/2026',
-    time: '10:05:55',
-    delegate: 'خالد سعيد',
-  },
-  {
-    orderNum: 'ZSH-2026-0038',
-    customer: 'طارق سعيد منصور',
-    phone: '01267891234',
-    region: 'القليوبية',
-    district: 'الخانكة',
-    address: 'شارع المحطة، مبنى 5',
-    products: 'حامل مصحف صدف x 1 + كشاف x 1',
-    quantity: 2,
-    total: 610,
-    subtotal: 560,
-    shippingFee: 50,
-    status: 'preparing',
-    date: '25/03/2026',
-    time: '09:45:11',
-    delegate: 'علي محمود',
-  },
 ];
 
 // ─── Phase 15 — customer-side chat & complaint forms ─────────────────────────
@@ -1487,15 +1375,15 @@ function generateInvoiceHTML(order: TrackingOrder, token: string): string {
             const imgHtml = imgUrl
               ? `<img src="${imgUrl}" alt="${line.label}" style="width:40px;height:40px;object-fit:cover;border-radius:6px;border:1px solid #e5e7eb;" />`
               : `<span style="font-size:24px;">${line.emoji || '📦'}</span>`;
-            const noteHtml = line.note
-              ? `<br/><span style="font-size:11px;color:#d97706;font-style:italic;">ملاحظة: ${line.note}</span>`
-              : '';
+            // Phase Tracking-Lines-1 — `line.note` was an unreachable
+            // path here too (DTO strips it). Dropped to keep the PDF
+            // and the on-page card in lock-step.
             const colorHtml = line.color ? ` (${line.color})` : '';
             const flashHtml = line.includeFlashlight ? ' + كشاف' : '';
             return `<tr>
           <td style="display:flex;align-items:center;gap:10px;padding:10px 12px;">
             ${imgHtml}
-            <div><strong>${line.label}${colorHtml}${flashHtml}</strong>${noteHtml}</div>
+            <div><strong>${line.label}${colorHtml}${flashHtml}</strong></div>
           </td>
           <td>${line.quantity}</td>
           <td>${line.unitPrice.toLocaleString('en-US')} ج.م</td>
@@ -2023,7 +1911,11 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
   const isShipping = order.status === 'shipping';
   const isDelivered = order.status === 'delivered';
   const hasWarranty = order.warranty && order.warranty !== 'بدون ضمان';
-  const checkoutLines = order.checkoutDetails ? checkoutDetailsLines(order.checkoutDetails) : [];
+  // Phase Tracking-Lines-1 — `checkoutLines` (flat text form) is no
+  // longer rendered on the page (the new `CheckoutDetailsCard`
+  // consumes the structured envelope directly). The helper is still
+  // exported for PDF + chat surfaces and the import is intentionally
+  // retained — tsc would otherwise drop it on the next refactor.
 
   return (
     <div className="min-h-screen relative" dir="rtl">
@@ -2444,11 +2336,12 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
                               {line.color ? ` — ${line.color}` : ''}
                               {line.includeFlashlight ? ' + كشاف' : ''}
                             </p>
-                            {line.note && (
-                              <p className="text-xs text-amber-600 italic mt-0.5">
-                                ملاحظة: {line.note}
-                              </p>
-                            )}
+                            {/* Phase Tracking-Lines-1 — `line.note` is
+                                stripped server-side by the RPC and is
+                                never present in the DTO. The previous
+                                conditional render was unreachable and
+                                is intentionally removed; per-line
+                                notes remain internal staff content. */}
                             <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
                               {line.quantity} × {line.unitPrice.toLocaleString('en-US')} ج.م
                             </p>
@@ -2527,26 +2420,17 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
           </div>
         </div>
 
-        {checkoutLines.length > 0 && (
-          <div className="bg-white rounded-2xl border border-blue-200 shadow-sm p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <FileText size={16} className="text-[hsl(211,67%,28%)]" />
-              <h2 className="font-bold text-sm text-[hsl(var(--foreground))]">
-                تفاصيل المعاينة والدفع
-              </h2>
-            </div>
-            <div className="space-y-2">
-              {checkoutLines.map((line) => (
-                <div
-                  key={line}
-                  className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-900"
-                >
-                  {line}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        {/* Phase Tracking-Lines-1 — checkout details card.
+            Replaces the previous flat-text bullet list (which used
+            `checkoutDetailsLines()`) with structured sections so the
+            customer can scan معاينة / تركيب / خصم / دفع / إجمالي at
+            a glance with icons, RTL labels, and right-aligned
+            amounts. The data still comes exclusively from the
+            `checkout_details` JSONB envelope the RPC carved out of
+            the marker block — raw staff notes are never read.
+            `checkoutDetailsLines()` is preserved for the PDF / chat
+            surfaces that still want a flat text form. */}
+        {order.checkoutDetails && <CheckoutDetailsCard details={order.checkoutDetails} />}
 
         {/* Download Actions — Invoice & Warranty */}
         <div className="bg-white rounded-2xl border border-[hsl(var(--border))] shadow-sm p-4">
