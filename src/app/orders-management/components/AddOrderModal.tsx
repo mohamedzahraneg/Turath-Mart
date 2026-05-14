@@ -17,7 +17,6 @@ import {
   Zap,
   Calculator,
   ChevronDown,
-  DollarSign,
   Plus,
   Minus,
   CheckCircle,
@@ -27,7 +26,6 @@ import {
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
-import { canUseAdminOnlyFinancialFields } from '@/lib/constants/roles';
 import { isValidEgyptianMobile } from '@/lib/validators/phone';
 import { normalizeArabic } from '@/lib/utils/arabic';
 // Phase 24B-Fix1 — shared Egyptian-phone helper. Every phone-writing
@@ -71,10 +69,19 @@ import {
   loadOrderDraft,
   saveOrderDraft,
   type AddOrderDraftData,
-  type HolderInstallationPayer,
-  type HolderInstallationType,
   type StoredAddOrderDraft,
 } from '@/lib/orders/orderDraft';
+import {
+  appendCheckoutDetailsToNotes,
+  checkoutDetailsLines,
+  HOLDER_INSTALLATION_UNIT_PRICE,
+  PAYMENT_METHOD_OPTIONS,
+  type CheckoutDetails,
+  type InstallationPayer,
+  type InstallationTarget,
+  type PaymentStatus,
+  type PreviewMode,
+} from '@/lib/orders/checkoutDetails';
 // Phase E1-Fix3 — the InventoryThumbnail helper that previously lived
 // inline in this file is now shared from `src/lib/inventory/` so the
 // /inventory list view and the /reports product table can reuse the
@@ -114,7 +121,6 @@ interface OrderFormData {
   district: string;
   address: string;
   expressShipping: boolean;
-  extraShippingFee: number;
   notes: string;
   warranty: string;
 }
@@ -245,11 +251,6 @@ export const REGIONAL_FEES: Record<string, number> = {
   الجيزة: 50,
   القليوبية: 60,
 };
-
-// NOTE: admin-only feature gating now derives from the authenticated user's
-// role_id (via useAuth() inside the component), not a hardcoded constant.
-// The previous `CURRENT_USER_ROLE = 'customer_service'` made IS_ADMIN
-// permanently false, which silently disabled the extraShippingFee feature.
 
 function getDeviceType(): string {
   const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
@@ -457,8 +458,6 @@ function lineTotal(line: OrderLine): number {
   return base + flash;
 }
 
-const HOLDER_INSTALLATION_UNIT_PRICE = 20;
-
 function isHolderProductLine(line: OrderLine, productCards: ProductCard[]): boolean {
   if (line.productType === 'holder') return true;
   const card = productCards.find((p) => p.value === line.productType);
@@ -484,7 +483,6 @@ function isHolderProductLine(line: OrderLine, productCards: ProductCard[]): bool
 export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: Props) {
   const { user, currentRoleId, currentRole, profileFullName } = useAuth();
   const currentUserId = user?.id ?? null;
-  const IS_ADMIN = canUseAdminOnlyFinancialFields(currentRoleId);
 
   // Phase 22L — derive the display name + role for the order's
   // `created_by` audit field. Replaces the previous hardcoded
@@ -540,12 +538,16 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
   const [address, setAddress] = useState(defaultCustomer?.address?.trim() || '');
   const [expressShipping, setExpressShipping] = useState(false);
   const [freeShipping, setFreeShipping] = useState(false);
-  const [extraShippingFee, setExtraShippingFee] = useState(0);
-  const [holderInstallationEnabled, setHolderInstallationEnabled] = useState(false);
-  const [holderInstallationType, setHolderInstallationType] =
-    useState<HolderInstallationType>(null);
-  const [holderInstallationPayer, setHolderInstallationPayer] =
-    useState<HolderInstallationPayer>('customer');
+  const [previewMode, setPreviewMode] = useState<PreviewMode>('none');
+  const [installationTarget, setInstallationTarget] = useState<InstallationTarget>(null);
+  const [installationPayer, setInstallationPayer] = useState<InstallationPayer>('customer');
+  const [discountAmount, setDiscountAmount] = useState(0);
+  const [discountReason, setDiscountReason] = useState('');
+  const [discountBy, setDiscountBy] = useState(createdByDisplayName);
+  const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>('unpaid');
+  const [paidAmount, setPaidAmount] = useState(0);
+  const [paidTo, setPaidTo] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState('');
   const [notes, setNotes] = useState('');
   const [warranty, setWarranty] = useState('بدون ضمان');
   const [defaultWarrantyLoaded, setDefaultWarrantyLoaded] = useState(false);
@@ -598,14 +600,20 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
     address,
     expressShipping,
     freeShipping,
-    extraShippingFee: IS_ADMIN ? extraShippingFee : 0,
     notes,
     warranty,
     lines,
     step,
-    holderInstallationEnabled,
-    holderInstallationType,
-    holderInstallationPayer,
+    previewMode,
+    installationTarget,
+    installationPayer,
+    discountAmount,
+    discountReason,
+    discountBy,
+    paymentStatus,
+    paidAmount,
+    paidTo,
+    paymentMethod,
   });
 
   // Generate order number on mount
@@ -833,6 +841,10 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    setDiscountBy((prev) => prev.trim() || createdByDisplayName);
+  }, [createdByDisplayName]);
+
   // Phase 22N-Fix1 — when the user clicks a cross-governorate result
   // in the area dropdown, we set governorate + district + neighborhood
   // together. The two reset effects below would otherwise clear the
@@ -915,15 +927,20 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
     address,
     expressShipping,
     freeShipping,
-    extraShippingFee,
-    holderInstallationEnabled,
-    holderInstallationType,
-    holderInstallationPayer,
+    previewMode,
+    installationTarget,
+    installationPayer,
+    discountAmount,
+    discountReason,
+    discountBy,
+    paymentStatus,
+    paidAmount,
+    paidTo,
+    paymentMethod,
     notes,
     warranty,
     lines,
     step,
-    IS_ADMIN,
   ]);
 
   // ─── Phase 22O-Fix1 — broad customer search ─────────────────────────────
@@ -1722,42 +1739,75 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
   // authoritative source when a hierarchical match exists.
   const regionFee = feeResolution.fee;
   const shippingCost = freeShipping ? 0 : expressShipping ? ADMIN_SETTINGS.EXPRESS_FEE : regionFee;
-  const extraFeeAmount = IS_ADMIN ? extraShippingFee : 0;
   const subtotal = lines.reduce((s, l) => s + lineTotal(l), 0);
   const holderQuantity = lines.reduce(
     (sum, line) =>
       isHolderProductLine(line, productCards) ? sum + Number(line.quantity || 0) : sum,
     0
   );
+  const installationEnabled = previewMode === 'preview_with_installation';
   const holderInstallationCharge =
-    holderInstallationEnabled &&
-    holderInstallationType === 'customer' &&
-    holderInstallationPayer === 'customer'
+    installationEnabled && installationTarget === 'customer' && installationPayer === 'customer'
       ? holderQuantity * HOLDER_INSTALLATION_UNIT_PRICE
       : 0;
-  const grandTotal = subtotal + shippingCost + extraFeeAmount + holderInstallationCharge;
-  const holderInstallationLabel = (() => {
-    if (!holderInstallationEnabled || !holderInstallationType || holderQuantity === 0) return null;
-    if (holderInstallationType === 'mosque') {
-      return 'تركيب الحامل للمسجد: مجاني';
-    }
-    if (holderInstallationPayer === 'factory') {
-      return 'تركيب الحامل: للعملاء — على المصنع — مجاني للعميل';
-    }
-    return [
-      'تركيب الحامل: للعملاء — على العميل',
-      `${holderQuantity} × ${HOLDER_INSTALLATION_UNIT_PRICE} = ${holderInstallationCharge} ج.م`,
-    ].join(' — ');
-  })();
+  const grossTotal = subtotal + shippingCost + holderInstallationCharge;
+  const normalizedDiscountAmount = Math.max(0, Number(discountAmount) || 0);
+  const appliedDiscount = Math.min(normalizedDiscountAmount, grossTotal);
+  const grandTotal = Math.max(0, grossTotal - appliedDiscount);
+  const effectivePaidAmount =
+    paymentStatus === 'unpaid'
+      ? 0
+      : paymentStatus === 'paid'
+        ? grandTotal
+        : Math.max(0, Number(paidAmount) || 0);
+  const remainingAmount = Math.max(0, grandTotal - effectivePaidAmount);
+  const checkoutDetails: CheckoutDetails = {
+    version: 1,
+    preview_mode: previewMode,
+    installation: {
+      enabled: installationEnabled,
+      target: installationEnabled ? installationTarget : null,
+      payer: installationEnabled && installationTarget === 'customer' ? installationPayer : null,
+      unit_price: HOLDER_INSTALLATION_UNIT_PRICE,
+      holder_quantity: holderQuantity,
+      customer_charge: holderInstallationCharge,
+    },
+    discount: {
+      amount: appliedDiscount,
+      reason: discountReason.trim() || null,
+      by: discountBy.trim() || createdByDisplayName || null,
+      by_user_id: user?.id ?? null,
+    },
+    payment: {
+      status: paymentStatus,
+      paid_amount: effectivePaidAmount,
+      paid_to: paymentStatus === 'unpaid' ? null : paidTo.trim() || null,
+      method: paymentStatus === 'unpaid' ? null : paymentMethod.trim() || null,
+      remaining_amount: remainingAmount,
+    },
+    totals: {
+      products_subtotal: subtotal,
+      shipping: shippingCost,
+      installation_customer_charge: holderInstallationCharge,
+      gross_total: grossTotal,
+      discount: appliedDiscount,
+      final_total: grandTotal,
+    },
+  };
+  const checkoutSummaryLines = checkoutDetailsLines(checkoutDetails);
 
   useEffect(() => {
-    if (holderQuantity > 0 || !holderInstallationEnabled) return;
-    setHolderInstallationEnabled(false);
-    setHolderInstallationType(null);
-    setHolderInstallationPayer('customer');
-  }, [holderQuantity, holderInstallationEnabled]);
+    if (holderQuantity > 0 || previewMode !== 'preview_with_installation') return;
+    setPreviewMode('preview_only');
+    setInstallationTarget(null);
+    setInstallationPayer('customer');
+  }, [holderQuantity, previewMode]);
 
   const addLine = (productCard: ProductCard) => {
+    if (!Number.isFinite(productCard.basePrice) || productCard.basePrice < 0) {
+      toast.error('سعر المنتج غير متوفر من المخزن. راجع إعدادات المنتج أولًا.');
+      return;
+    }
     const line = createLine(productCard.value, productCard.basePrice);
     // Set default color if product has colors
     if (productCard.hasColor && productCard.colors && productCard.colors.length > 0) {
@@ -1832,12 +1882,34 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
       toast.error('يجب إضافة منتج واحد على الأقل');
       return false;
     }
-    if (holderInstallationEnabled && holderQuantity === 0) {
+    if (previewMode === 'preview_with_installation' && holderQuantity === 0) {
       toast.error('لا يمكن إضافة تركيب الحامل بدون وجود حامل مصحف في الأوردر.');
       return false;
     }
-    if (holderInstallationEnabled && !holderInstallationType) {
+    if (previewMode === 'preview_with_installation' && !installationTarget) {
       toast.error('اختر نوع تركيب الحامل أولًا');
+      return false;
+    }
+    if (normalizedDiscountAmount > grossTotal) {
+      toast.error('قيمة الخصم لا يمكن أن تتجاوز الإجمالي.');
+      return false;
+    }
+    if (normalizedDiscountAmount > 0 && !discountReason.trim()) {
+      toast.error('برجاء إدخال سبب الخصم.');
+      return false;
+    }
+    if (paymentStatus !== 'unpaid') {
+      if (!paidTo.trim()) {
+        toast.error('برجاء تحديد المدفوع له.');
+        return false;
+      }
+      if (!paymentMethod.trim()) {
+        toast.error('برجاء تحديد وسيلة الدفع.');
+        return false;
+      }
+    }
+    if (paymentStatus === 'partial' && (paidAmount <= 0 || paidAmount >= grandTotal)) {
+      toast.error('برجاء إدخال مبلغ مدفوع صحيح.');
       return false;
     }
     return true;
@@ -1850,12 +1922,34 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
       toast.error('يجب تسجيل الدخول قبل إنشاء طلب جديد');
       return;
     }
-    if (holderInstallationEnabled && holderQuantity === 0) {
+    if (previewMode === 'preview_with_installation' && holderQuantity === 0) {
       toast.error('لا يمكن إضافة تركيب الحامل بدون وجود حامل مصحف في الأوردر.');
       return;
     }
-    if (holderInstallationEnabled && !holderInstallationType) {
+    if (previewMode === 'preview_with_installation' && !installationTarget) {
       toast.error('اختر نوع تركيب الحامل أولًا');
+      return;
+    }
+    if (normalizedDiscountAmount > grossTotal) {
+      toast.error('قيمة الخصم لا يمكن أن تتجاوز الإجمالي.');
+      return;
+    }
+    if (normalizedDiscountAmount > 0 && !discountReason.trim()) {
+      toast.error('برجاء إدخال سبب الخصم.');
+      return;
+    }
+    if (paymentStatus !== 'unpaid') {
+      if (!paidTo.trim()) {
+        toast.error('برجاء تحديد المدفوع له.');
+        return;
+      }
+      if (!paymentMethod.trim()) {
+        toast.error('برجاء تحديد وسيلة الدفع.');
+        return;
+      }
+    }
+    if (paymentStatus === 'partial' && (paidAmount <= 0 || paidAmount >= grandTotal)) {
+      toast.error('برجاء إدخال مبلغ مدفوع صحيح.');
       return;
     }
 
@@ -1891,9 +1985,7 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
     // canonical key.
     const phoneCanonical = normalizeEgyptPhone(phone) ?? toEnglishDigits(phone);
     const phone2Canonical = phone2 ? (normalizeEgyptPhone(phone2) ?? toEnglishDigits(phone2)) : '';
-    const persistedNotes = [notes.trim(), holderInstallationLabel]
-      .filter((part): part is string => Boolean(part && part.trim()))
-      .join('\n');
+    const persistedNotes = appendCheckoutDetailsToNotes(notes, checkoutDetails);
 
     const newOrder = {
       id: `order-${Date.now()}`,
@@ -1925,7 +2017,6 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
       quantity: lines.reduce((s, l) => s + l.quantity, 0),
       subtotal,
       shippingFee: shippingCost,
-      extraShippingFee: IS_ADMIN ? extraShippingFee : 0,
       expressShipping,
       freeShipping,
       total: grandTotal,
@@ -2002,9 +2093,6 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
             quantity: newOrder.quantity,
             subtotal: newOrder.subtotal,
             shipping_fee: newOrder.shippingFee,
-            // extra_shipping_fee already coerced to 0 at line where newOrder is built
-            // when IS_ADMIN is false; client-side guard. RLS provides defence-in-depth.
-            extra_shipping_fee: newOrder.extraShippingFee || 0,
             express_shipping: newOrder.expressShipping || false,
             free_shipping: newOrder.freeShipping || false,
             total: newOrder.total,
@@ -2127,10 +2215,16 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
     setAddress('');
     setExpressShipping(false);
     setFreeShipping(false);
-    setExtraShippingFee(0);
-    setHolderInstallationEnabled(false);
-    setHolderInstallationType(null);
-    setHolderInstallationPayer('customer');
+    setPreviewMode('none');
+    setInstallationTarget(null);
+    setInstallationPayer('customer');
+    setDiscountAmount(0);
+    setDiscountReason('');
+    setDiscountBy(createdByDisplayName);
+    setPaymentStatus('unpaid');
+    setPaidAmount(0);
+    setPaidTo('');
+    setPaymentMethod('');
     setNotes('');
     setWarranty('بدون ضمان');
     setErrors({});
@@ -2171,10 +2265,16 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
     setAddress(draft.address);
     setExpressShipping(draft.expressShipping);
     setFreeShipping(draft.freeShipping);
-    setExtraShippingFee(IS_ADMIN ? draft.extraShippingFee : 0);
-    setHolderInstallationEnabled(draft.holderInstallationEnabled);
-    setHolderInstallationType(draft.holderInstallationType);
-    setHolderInstallationPayer(draft.holderInstallationPayer);
+    setPreviewMode(draft.previewMode);
+    setInstallationTarget(draft.installationTarget);
+    setInstallationPayer(draft.installationPayer);
+    setDiscountAmount(draft.discountAmount);
+    setDiscountReason(draft.discountReason);
+    setDiscountBy(draft.discountBy || createdByDisplayName);
+    setPaymentStatus(draft.paymentStatus);
+    setPaidAmount(draft.paidAmount);
+    setPaidTo(draft.paidTo);
+    setPaymentMethod(draft.paymentMethod);
     setNotes(draft.notes);
     setWarranty(draft.warranty || 'بدون ضمان');
     setLines(draft.lines);
@@ -2260,8 +2360,10 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                     return `- ${name}${colorPart}${flashPart} x ${l.quantity} = ${lineTotal(l)} ج.م`;
                   })
                   .join('\n');
-                const productsWithInstallation = holderInstallationLabel
-                  ? `${productsList}\n- ${holderInstallationLabel}`
+                const productsWithCheckout = checkoutSummaryLines.length
+                  ? `${productsList}\n\nتفاصيل إضافية:\n${checkoutSummaryLines
+                      .map((line) => `- ${line}`)
+                      .join('\n')}`
                   : productsList;
                 // Determine shipping type text
                 let shippingText = '';
@@ -2292,7 +2394,7 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                 msg = msg.replace('{orderNum}', successOrderNum);
                 msg = msg.replace('{total}', successTotal.toLocaleString('en-US'));
                 msg = msg.replace('{trackingLink}', trackingLink);
-                msg = msg.replace('{products}', productsWithInstallation);
+                msg = msg.replace('{products}', productsWithCheckout);
                 msg = msg.replace('{governorate}', governorate);
                 msg = msg.replace('{district}', district);
                 // Phase 22N-Fix3 — surface the typed neighborhood in
@@ -3169,16 +3271,15 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
 
                             {/* Unit price */}
                             <div>
-                              <label className="label-text">سعر الوحدة (ج.م) *</label>
-                              <input
-                                type="number"
-                                min={0}
-                                className="input-field font-mono"
-                                value={line.unitPrice}
-                                onChange={(e) =>
-                                  updateLine(line.id, { unitPrice: Number(e.target.value) })
-                                }
-                              />
+                              <label className="label-text">سعر الوحدة</label>
+                              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                                <p className="text-[10px] font-semibold text-slate-500">
+                                  السعر من المخزن
+                                </p>
+                                <p className="font-mono text-sm font-bold text-[hsl(var(--foreground))]">
+                                  {line.unitPrice.toLocaleString('en-US')} ج.م
+                                </p>
+                              </div>
                             </div>
 
                             {/* Flashlight option for holder */}
@@ -3203,17 +3304,9 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                                       <span className="text-xs text-[hsl(var(--muted-foreground))]">
                                         سعر الكشاف:
                                       </span>
-                                      <input
-                                        type="number"
-                                        min={0}
-                                        className="input-field w-20 text-center font-mono py-1 text-xs"
-                                        value={line.flashlightPrice}
-                                        onChange={(e) =>
-                                          updateLine(line.id, {
-                                            flashlightPrice: Number(e.target.value),
-                                          })
-                                        }
-                                      />
+                                      <span className="rounded-lg border border-amber-200 bg-white px-2 py-1 text-xs font-bold font-mono">
+                                        {line.flashlightPrice.toLocaleString('en-US')}
+                                      </span>
                                       <span className="text-xs text-[hsl(var(--muted-foreground))]">
                                         ج.م
                                       </span>
@@ -3226,7 +3319,7 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                             {isFlashlight && (
                               <div className="sm:col-span-2 bg-amber-50 border border-amber-200 rounded-xl p-3">
                                 <p className="text-xs text-amber-700 font-semibold">
-                                  💡 سعر الكشاف قابل للتعديل أعلاه
+                                  💡 سعر الكشاف من المخزن / الإعدادات ولا يتم تعديله يدويًا من الطلب
                                 </p>
                               </div>
                             )}
@@ -3321,7 +3414,7 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                     </label>
                   </div>
 
-                  {/* Holder installation */}
+                  {/* Preview + installation */}
                   <div
                     className={`rounded-2xl border p-4 ${
                       holderQuantity > 0
@@ -3332,9 +3425,9 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-lg">🛠️</span>
+                          <span className="text-lg">🔎</span>
                           <span className="text-sm font-bold text-[hsl(var(--foreground))]">
-                            تركيب الحامل
+                            المعاينة والتركيب
                           </span>
                           <span
                             className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
@@ -3347,49 +3440,82 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                           </span>
                         </div>
                         <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
-                          للمسجد مجاني دائمًا، وللعملاء 20 ج.م للقطعة حسب عدد حوامل المصحف.
+                          اختر حالة المعاينة. التركيب يظهر فقط عند اختيار معاينة مع تركيب.
                         </p>
                       </div>
-                      <label
-                        className={`flex items-center gap-2 text-xs font-semibold ${
-                          holderQuantity > 0 ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4 rounded"
-                          checked={holderInstallationEnabled}
-                          disabled={holderQuantity === 0}
-                          onChange={(e) => {
-                            const enabled = e.target.checked;
-                            setHolderInstallationEnabled(enabled);
-                            setHolderInstallationType(enabled ? 'customer' : null);
-                            setHolderInstallationPayer('customer');
-                          }}
-                        />
-                        تفعيل
-                      </label>
                     </div>
 
-                    {holderQuantity === 0 && (
+                    <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                      {[
+                        {
+                          value: 'none' as const,
+                          label: 'بدون معاينة',
+                          hint: 'لا توجد معاينة أو تركيب',
+                        },
+                        {
+                          value: 'preview_only' as const,
+                          label: 'معاينة بدون تركيب',
+                          hint: 'مجاني حاليًا',
+                        },
+                        {
+                          value: 'preview_with_installation' as const,
+                          label: 'معاينة مع تركيب',
+                          hint:
+                            holderQuantity > 0 ? 'تفعيل إعدادات التركيب' : 'أضف حامل مصحف أولًا',
+                        },
+                      ].map((option) => {
+                        const disabled =
+                          option.value === 'preview_with_installation' && holderQuantity === 0;
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            disabled={disabled}
+                            className={`rounded-xl border px-3 py-2 text-right text-xs font-semibold transition-all ${
+                              previewMode === option.value
+                                ? 'border-blue-300 bg-white text-blue-800 shadow-sm'
+                                : 'border-blue-100 bg-white/70 text-[hsl(var(--foreground))] hover:border-blue-200'
+                            } ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}
+                            onClick={() => {
+                              if (disabled) return;
+                              setPreviewMode(option.value);
+                              if (option.value !== 'preview_with_installation') {
+                                setInstallationTarget(null);
+                                setInstallationPayer('customer');
+                              } else {
+                                setInstallationTarget('customer');
+                                setInstallationPayer('customer');
+                              }
+                            }}
+                          >
+                            <span className="block text-sm font-bold">{option.label}</span>
+                            <span className="mt-1 block text-[11px] text-[hsl(var(--muted-foreground))]">
+                              {option.hint}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {holderQuantity === 0 && previewMode !== 'preview_with_installation' && (
                       <p className="mt-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
-                        لا يمكن إضافة تركيب الحامل بدون وجود حامل مصحف في الأوردر.
+                        لا يمكن اختيار تركيب بدون وجود حامل مصحف في الأوردر.
                       </p>
                     )}
 
-                    {holderInstallationEnabled && holderQuantity > 0 && (
+                    {previewMode === 'preview_with_installation' && holderQuantity > 0 && (
                       <div className="mt-4 space-y-3">
                         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                           <button
                             type="button"
                             className={`rounded-xl border px-3 py-2 text-right text-xs font-semibold transition-all ${
-                              holderInstallationType === 'mosque'
+                              installationTarget === 'mosque'
                                 ? 'border-green-300 bg-green-100 text-green-800'
                                 : 'border-blue-100 bg-white text-[hsl(var(--foreground))] hover:border-blue-200'
                             }`}
                             onClick={() => {
-                              setHolderInstallationType('mosque');
-                              setHolderInstallationPayer('factory');
+                              setInstallationTarget('mosque');
+                              setInstallationPayer('factory');
                             }}
                           >
                             <span className="block text-sm font-bold">للمسجد — مجاني</span>
@@ -3400,13 +3526,13 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                           <button
                             type="button"
                             className={`rounded-xl border px-3 py-2 text-right text-xs font-semibold transition-all ${
-                              holderInstallationType === 'customer'
+                              installationTarget === 'customer'
                                 ? 'border-blue-300 bg-blue-100 text-blue-800'
                                 : 'border-blue-100 bg-white text-[hsl(var(--foreground))] hover:border-blue-200'
                             }`}
                             onClick={() => {
-                              setHolderInstallationType('customer');
-                              setHolderInstallationPayer('customer');
+                              setInstallationTarget('customer');
+                              setInstallationPayer('customer');
                             }}
                           >
                             <span className="block text-sm font-bold">للعملاء — 20 ج.م للقطعة</span>
@@ -3416,7 +3542,7 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                           </button>
                         </div>
 
-                        {holderInstallationType === 'customer' && (
+                        {installationTarget === 'customer' && (
                           <div className="rounded-xl border border-blue-100 bg-white p-3">
                             <p className="mb-2 text-xs font-bold text-[hsl(var(--foreground))]">
                               تكلفة التركيب على
@@ -3438,11 +3564,11 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                                   key={option.value}
                                   type="button"
                                   className={`rounded-lg border px-3 py-2 text-xs transition-all ${
-                                    holderInstallationPayer === option.value
+                                    installationPayer === option.value
                                       ? 'border-blue-300 bg-blue-50 text-blue-800'
                                       : 'border-slate-200 text-[hsl(var(--foreground))] hover:bg-slate-50'
                                   }`}
-                                  onClick={() => setHolderInstallationPayer(option.value)}
+                                  onClick={() => setInstallationPayer(option.value)}
                                 >
                                   <span className="block font-bold">{option.label}</span>
                                   <span className="mt-1 block text-[10px] text-[hsl(var(--muted-foreground))]">
@@ -3457,33 +3583,126 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                     )}
                   </div>
 
-                  {/* Extra shipping fee — ADMIN ONLY */}
-                  {IS_ADMIN && (
-                    <div className="border border-orange-200 bg-orange-50 rounded-2xl p-4">
-                      <div className="flex items-center gap-2 mb-2">
-                        <DollarSign size={16} className="text-orange-600" />
-                        <span className="text-sm font-bold">مصاريف شحن إضافية</span>
-                        <span className="text-[10px] bg-orange-100 text-orange-700 border border-orange-200 px-2 py-0.5 rounded-full font-semibold">
-                          للأدمن فقط
-                        </span>
-                      </div>
-                      <p className="text-xs text-[hsl(var(--muted-foreground))] mb-3">
-                        تُضاف على الفاتورة وتُخصم من عهدة المندوب
-                      </p>
-                      <div className="flex items-center gap-3">
+                  {/* Discount */}
+                  <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
+                    <div className="mb-3 flex items-center gap-2">
+                      <span className="text-lg">٪</span>
+                      <span className="text-sm font-bold">الخصم</span>
+                    </div>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                      <div>
+                        <label className="label-text">قيمة الخصم</label>
                         <input
                           type="number"
                           min={0}
                           dir="ltr"
-                          className="input-field w-32 text-center font-mono"
-                          placeholder="0"
-                          value={extraShippingFee}
-                          onChange={(e) => setExtraShippingFee(Number(e.target.value))}
+                          className="input-field text-center font-mono"
+                          value={discountAmount}
+                          onChange={(e) =>
+                            setDiscountAmount(Math.max(0, Number(e.target.value) || 0))
+                          }
                         />
-                        <span className="text-sm text-[hsl(var(--muted-foreground))]">ج.م</span>
+                      </div>
+                      <div>
+                        <label className="label-text">سبب الخصم</label>
+                        <input
+                          className="input-field"
+                          placeholder="سبب الخصم"
+                          value={discountReason}
+                          onChange={(e) => setDiscountReason(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="label-text">تم الخصم بواسطة</label>
+                        <input className="input-field bg-slate-50" value={discountBy} readOnly />
                       </div>
                     </div>
-                  )}
+                    {normalizedDiscountAmount > grossTotal && (
+                      <p className="mt-2 text-xs font-semibold text-red-600">
+                        قيمة الخصم لا يمكن أن تتجاوز الإجمالي.
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Payment */}
+                  <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                    <div className="mb-3 flex items-center gap-2">
+                      <span className="text-lg">💳</span>
+                      <span className="text-sm font-bold">الدفع</span>
+                    </div>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                      {[
+                        { value: 'unpaid' as const, label: 'غير مدفوع' },
+                        { value: 'paid' as const, label: 'مدفوع بالكامل' },
+                        { value: 'partial' as const, label: 'مدفوع جزئيًا' },
+                      ].map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          className={`rounded-xl border px-3 py-2 text-xs font-bold transition-all ${
+                            paymentStatus === option.value
+                              ? 'border-emerald-300 bg-white text-emerald-800 shadow-sm'
+                              : 'border-emerald-100 bg-white/70 text-[hsl(var(--foreground))] hover:border-emerald-200'
+                          }`}
+                          onClick={() => {
+                            setPaymentStatus(option.value);
+                            if (option.value === 'unpaid') setPaidAmount(0);
+                            if (option.value === 'paid') setPaidAmount(grandTotal);
+                          }}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                    {paymentStatus !== 'unpaid' && (
+                      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                        <div>
+                          <label className="label-text">المبلغ المدفوع</label>
+                          <input
+                            type="number"
+                            min={0}
+                            dir="ltr"
+                            className="input-field text-center font-mono"
+                            value={paymentStatus === 'paid' ? grandTotal : paidAmount}
+                            readOnly={paymentStatus === 'paid'}
+                            onChange={(e) =>
+                              setPaidAmount(Math.max(0, Number(e.target.value) || 0))
+                            }
+                          />
+                        </div>
+                        <div>
+                          <label className="label-text">مدفوع لمين</label>
+                          <input
+                            className="input-field"
+                            value={paidTo}
+                            onChange={(e) => setPaidTo(e.target.value)}
+                            placeholder="اسم المستلم"
+                          />
+                        </div>
+                        <div>
+                          <label className="label-text">وسيلة الدفع</label>
+                          <select
+                            className="input-field"
+                            value={paymentMethod}
+                            onChange={(e) => setPaymentMethod(e.target.value)}
+                          >
+                            <option value="">اختر وسيلة الدفع</option>
+                            {PAYMENT_METHOD_OPTIONS.map((method) => (
+                              <option key={method} value={method}>
+                                {method}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    )}
+                    <div className="mt-3 flex items-center justify-between rounded-xl border border-emerald-100 bg-white px-3 py-2 text-xs">
+                      <span className="font-semibold text-emerald-800">المتبقي بعد الدفع</span>
+                      <span className="font-mono font-bold text-emerald-900">
+                        {remainingAmount.toLocaleString('en-US')} ج.م
+                      </span>
+                    </div>
+                  </div>
 
                   {/* Warranty */}
                   <div>
@@ -3551,34 +3770,32 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                           <span className="font-mono font-semibold">- {regionFee} ج.م</span>
                         </div>
                       )}
-                      {IS_ADMIN && extraShippingFee > 0 && (
-                        <div className="flex justify-between text-orange-700">
-                          <span>مصاريف إضافية:</span>
-                          <span className="font-mono">
-                            + {extraShippingFee.toLocaleString('en-US')} ج.م
-                          </span>
+                      {previewMode === 'preview_only' && (
+                        <div className="flex justify-between text-blue-700">
+                          <span>المعاينة:</span>
+                          <span className="font-semibold">بدون تركيب — مجاني</span>
                         </div>
                       )}
-                      {holderInstallationEnabled &&
-                        holderInstallationType === 'mosque' &&
+                      {installationEnabled &&
+                        installationTarget === 'mosque' &&
                         holderQuantity > 0 && (
                           <div className="flex justify-between text-green-700">
-                            <span>تركيب الحامل للمسجد:</span>
+                            <span>معاينة مع تركيب للمسجد:</span>
                             <span className="font-semibold">مجاني</span>
                           </div>
                         )}
-                      {holderInstallationEnabled &&
-                        holderInstallationType === 'customer' &&
-                        holderInstallationPayer === 'factory' &&
+                      {installationEnabled &&
+                        installationTarget === 'customer' &&
+                        installationPayer === 'factory' &&
                         holderQuantity > 0 && (
                           <div className="flex justify-between text-blue-700">
                             <span>تركيب الحامل:</span>
                             <span className="font-semibold">على المصنع — مجاني للعميل</span>
                           </div>
                         )}
-                      {holderInstallationEnabled &&
-                        holderInstallationType === 'customer' &&
-                        holderInstallationPayer === 'customer' &&
+                      {installationEnabled &&
+                        installationTarget === 'customer' &&
+                        installationPayer === 'customer' &&
                         holderQuantity > 0 && (
                           <div className="flex justify-between text-blue-700">
                             <span>تركيب الحامل:</span>
@@ -3588,6 +3805,23 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                             </span>
                           </div>
                         )}
+                      {appliedDiscount > 0 && (
+                        <div className="flex justify-between text-rose-700">
+                          <span>الخصم:</span>
+                          <span className="font-mono font-semibold">
+                            - {appliedDiscount.toLocaleString('en-US')} ج.م
+                          </span>
+                        </div>
+                      )}
+                      {paymentStatus !== 'unpaid' && (
+                        <div className="flex justify-between text-emerald-700">
+                          <span>المدفوع / المتبقي:</span>
+                          <span className="font-mono font-semibold">
+                            {effectivePaidAmount.toLocaleString('en-US')} /{' '}
+                            {remainingAmount.toLocaleString('en-US')} ج.م
+                          </span>
+                        </div>
+                      )}
                       <div className="border-t border-[hsl(var(--primary))]/20 pt-2 flex justify-between">
                         <span className="font-bold">الإجمالي الكلي:</span>
                         <span className="font-mono font-bold text-lg text-[hsl(var(--primary))]">
@@ -3699,12 +3933,18 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                           <p className="text-xs text-[hsl(var(--muted-foreground))]">{notes}</p>
                         </div>
                       )}
-                      {holderInstallationLabel && (
+                      {checkoutSummaryLines.length > 0 && (
                         <div className="col-span-2 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2">
                           <p className="text-[10px] text-blue-700 font-semibold mb-0.5">
-                            تركيب الحامل
+                            المعاينة والدفع
                           </p>
-                          <p className="text-xs text-blue-900">{holderInstallationLabel}</p>
+                          <div className="space-y-1">
+                            {checkoutSummaryLines.map((line) => (
+                              <p key={line} className="text-xs text-blue-900">
+                                {line}
+                              </p>
+                            ))}
+                          </div>
                         </div>
                       )}
                     </div>
@@ -3810,34 +4050,32 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                           <span className="font-mono font-semibold">- {regionFee} ج.م</span>
                         </div>
                       )}
-                      {IS_ADMIN && extraShippingFee > 0 && (
-                        <div className="flex justify-between text-orange-700">
-                          <span>مصاريف إضافية:</span>
-                          <span className="font-mono">
-                            + {extraShippingFee.toLocaleString('en-US')} ج.م
-                          </span>
+                      {previewMode === 'preview_only' && (
+                        <div className="flex justify-between text-blue-700">
+                          <span>المعاينة:</span>
+                          <span className="font-semibold">بدون تركيب — مجاني</span>
                         </div>
                       )}
-                      {holderInstallationEnabled &&
-                        holderInstallationType === 'mosque' &&
+                      {installationEnabled &&
+                        installationTarget === 'mosque' &&
                         holderQuantity > 0 && (
                           <div className="flex justify-between text-green-700">
-                            <span>تركيب الحامل للمسجد:</span>
+                            <span>معاينة مع تركيب للمسجد:</span>
                             <span className="font-semibold">مجاني</span>
                           </div>
                         )}
-                      {holderInstallationEnabled &&
-                        holderInstallationType === 'customer' &&
-                        holderInstallationPayer === 'factory' &&
+                      {installationEnabled &&
+                        installationTarget === 'customer' &&
+                        installationPayer === 'factory' &&
                         holderQuantity > 0 && (
                           <div className="flex justify-between text-blue-700">
                             <span>تركيب الحامل:</span>
                             <span className="font-semibold">على المصنع — مجاني للعميل</span>
                           </div>
                         )}
-                      {holderInstallationEnabled &&
-                        holderInstallationType === 'customer' &&
-                        holderInstallationPayer === 'customer' &&
+                      {installationEnabled &&
+                        installationTarget === 'customer' &&
+                        installationPayer === 'customer' &&
                         holderQuantity > 0 && (
                           <div className="flex justify-between text-blue-700">
                             <span>تركيب الحامل:</span>
@@ -3847,6 +4085,23 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                             </span>
                           </div>
                         )}
+                      {appliedDiscount > 0 && (
+                        <div className="flex justify-between text-rose-700">
+                          <span>الخصم:</span>
+                          <span className="font-mono font-semibold">
+                            - {appliedDiscount.toLocaleString('en-US')} ج.م
+                          </span>
+                        </div>
+                      )}
+                      {paymentStatus !== 'unpaid' && (
+                        <div className="flex justify-between text-emerald-700">
+                          <span>المدفوع / المتبقي:</span>
+                          <span className="font-mono font-semibold">
+                            {effectivePaidAmount.toLocaleString('en-US')} /{' '}
+                            {remainingAmount.toLocaleString('en-US')} ج.م
+                          </span>
+                        </div>
+                      )}
                       <div className="border-t border-[hsl(var(--primary))]/20 pt-2 flex justify-between">
                         <span className="font-bold text-base">الإجمالي الكلي:</span>
                         <span className="font-mono font-bold text-xl text-[hsl(var(--primary))]">
