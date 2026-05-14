@@ -28,6 +28,7 @@ import { resolveLineImageUrl } from '@/lib/orders/lineImage';
 // the customer types the complaint phone, matching the rule applied
 // across the admin-facing Add Order modal + customer CRM dashboard.
 import { sanitizePhoneInput } from '@/lib/phone/egyptPhone';
+import { checkoutDetailsLines, type CheckoutDetails } from '@/lib/orders/checkoutDetails';
 import Image from 'next/image';
 import {
   Package,
@@ -79,6 +80,7 @@ interface TrackingOrder {
   total: number;
   subtotal?: number;
   shippingFee?: number;
+  checkoutDetails?: CheckoutDetails | null;
   // Phase 22H — additional totals exposed by the widened token RPC.
   extraShippingFee?: number;
   freeShipping?: boolean;
@@ -1468,6 +1470,11 @@ function generateInvoiceHTML(order: TrackingOrder, token: string): string {
   const trackingLink = `${typeof window !== 'undefined' ? window.location.origin : 'https://turathmasr.com'}/track/t/${token}`;
   const subtotal = order.subtotal ?? order.total;
   const shippingFee = order.shippingFee ?? 0;
+  const checkoutRows = order.checkoutDetails
+    ? checkoutDetailsLines(order.checkoutDetails)
+        .map((line) => `<tr><td colspan="4">${line}</td></tr>`)
+        .join('')
+    : '';
 
   const productRows =
     order.lines && order.lines.length > 0
@@ -1565,6 +1572,7 @@ function generateInvoiceHTML(order: TrackingOrder, token: string): string {
         <tbody>
           ${productRows}
           ${shippingFee > 0 ? `<tr><td>تكلفة الشحن</td><td>—</td><td>—</td><td>${shippingFee.toLocaleString('en-US')} ج.م</td></tr>` : ''}
+          ${checkoutRows}
           ${warrantyRow}
           <tr class="total-row"><td colspan="3"><strong>الإجمالي الكلي</strong></td><td><strong>${order.total.toLocaleString('en-US')} ج.م</strong></td></tr>
         </tbody>
@@ -1748,6 +1756,7 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
                   total: Number(data.total ?? 0),
                   subtotal: data.subtotal == null ? undefined : Number(data.subtotal),
                   shippingFee: data.shippingFee == null ? undefined : Number(data.shippingFee),
+                  checkoutDetails: data.checkoutDetails ?? null,
                   extraShippingFee:
                     data.extraShippingFee == null ? undefined : Number(data.extraShippingFee),
                   freeShipping:
@@ -1757,6 +1766,7 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
                   date: data.date ?? '',
                   time: '',
                   createdAt: data.createdAt ?? undefined,
+                  notes: data.notes || undefined,
                   warranty: data.warranty || undefined,
                   // Phase 22Q — pass through the customer-facing
                   // schedule + delegate name. Both are null until the
@@ -2013,6 +2023,7 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
   const isShipping = order.status === 'shipping';
   const isDelivered = order.status === 'delivered';
   const hasWarranty = order.warranty && order.warranty !== 'بدون ضمان';
+  const checkoutLines = order.checkoutDetails ? checkoutDetailsLines(order.checkoutDetails) : [];
 
   return (
     <div className="min-h-screen relative" dir="rtl">
@@ -2515,6 +2526,27 @@ export default function TrackingPage({ params }: { params: Promise<{ token: stri
             </div>
           </div>
         </div>
+
+        {checkoutLines.length > 0 && (
+          <div className="bg-white rounded-2xl border border-blue-200 shadow-sm p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <FileText size={16} className="text-[hsl(211,67%,28%)]" />
+              <h2 className="font-bold text-sm text-[hsl(var(--foreground))]">
+                تفاصيل المعاينة والدفع
+              </h2>
+            </div>
+            <div className="space-y-2">
+              {checkoutLines.map((line) => (
+                <div
+                  key={line}
+                  className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-900"
+                >
+                  {line}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Download Actions — Invoice & Warranty */}
         <div className="bg-white rounded-2xl border border-[hsl(var(--border))] shadow-sm p-4">

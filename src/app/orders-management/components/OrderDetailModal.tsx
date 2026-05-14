@@ -59,6 +59,11 @@ import OrderAdjustmentModal from './OrderAdjustmentModal';
 // Phase Egress-Fix1 — resolve line image URL across legacy / inventory /
 // storage sources so consumers stop hard-coding `line.image`.
 import { resolveLineImageUrl } from '@/lib/orders/lineImage';
+import {
+  checkoutDetailsLines,
+  parseCheckoutDetailsFromNotes,
+  stripCheckoutDetailsBlock,
+} from '@/lib/orders/checkoutDetails';
 // Phase 26D-1 — staff audit log on adjustment decisions + child order
 // + auto-created complaint.
 import { writeStaffAuditLog } from '@/lib/security/staffAudit';
@@ -479,6 +484,10 @@ export default function OrderDetailModal({ order, onClose }: Props) {
   const extraFee = liveOrder.extraShippingFee || 0;
   const shippingLabel = liveOrder.expressShipping ? 'شحن سريع' : 'تكلفة الشحن';
   const trackingLink = getTrackingLink(liveOrder);
+  const printableNotes = stripCheckoutDetailsBlock(liveOrder.notes);
+  const checkoutDetails = parseCheckoutDetailsFromNotes(liveOrder.notes);
+  const checkoutLines = checkoutDetails ? checkoutDetailsLines(checkoutDetails) : [];
+  const customerNotes = stripCheckoutDetailsBlock(liveOrder.notes);
   const timelineItems = React.useMemo<OrderTimelineItem[]>(() => {
     const items = auditLogs.map(buildAuditTimelineItem);
     const createdAt = parseOrderDateTime(liveOrder);
@@ -501,7 +510,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
       });
     }
 
-    const trimmedNotes = liveOrder.notes?.trim();
+    const trimmedNotes = customerNotes.trim();
     if (trimmedNotes) {
       items.push({
         id: `order-note-${liveOrder.id}`,
@@ -516,7 +525,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
     }
 
     return items.sort((a, b) => a.timestamp - b.timestamp);
-  }, [auditLogs, liveOrder]);
+  }, [auditLogs, liveOrder, customerNotes]);
 
   const buildWAMessage = () => {
     return waTemplate
@@ -987,11 +996,12 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 ${productRows}
                 <tr><td>${shippingLabel}</td><td>—</td><td>—</td><td>${liveOrder.shippingFee.toLocaleString('en-US')} ج.م</td></tr>
                 ${extraFee > 0 ? `<tr><td>مصاريف شحن إضافية</td><td>—</td><td>—</td><td>${extraFee.toLocaleString('en-US')} ج.م</td></tr>` : ''}
+                ${checkoutLines.map((line) => `<tr><td colspan="4">${line}</td></tr>`).join('')}
                 ${warrantyRow}
                 <tr class="total-row"><td colspan="3"><strong>الإجمالي الكلي</strong></td><td><strong>${liveOrder.total.toLocaleString('en-US')} ج.م</strong></td></tr>
               </tbody>
             </table>
-            ${liveOrder.notes ? `<p style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px;font-size:13px;"><strong>ملاحظات:</strong> ${liveOrder.notes}</p>` : ''}
+            ${printableNotes ? `<p style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px;font-size:13px;"><strong>ملاحظات:</strong> ${printableNotes}</p>` : ''}
             <div class="footer">شكرا لثقتك في Turath Masr — للاستفسار: info@turath_masr.com</div>
           </div>
         </div>
@@ -1307,6 +1317,14 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                       <span className="font-mono">+ {extraFee.toLocaleString('en-US')} ج.م</span>
                     </div>
                   )}
+                  {checkoutLines.map((line) => (
+                    <div
+                      key={line}
+                      className="flex justify-between gap-3 py-1.5 border-b border-[hsl(var(--border))] text-blue-700"
+                    >
+                      <span>{line}</span>
+                    </div>
+                  ))}
                   <div className="flex justify-between py-1.5">
                     <span className="font-bold">الإجمالي الكلي:</span>
                     <span className="font-mono font-bold text-lg text-[hsl(var(--primary))]">
@@ -1326,9 +1344,9 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                     </p>
                   </div>
                 </div>
-                {liveOrder.notes?.trim() ? (
+                {customerNotes ? (
                   <p className="text-sm text-[hsl(var(--foreground))] whitespace-pre-wrap leading-relaxed bg-white border border-amber-100 rounded-xl p-3">
-                    {liveOrder.notes.trim()}
+                    {customerNotes}
                   </p>
                 ) : (
                   <p className="text-sm text-[hsl(var(--muted-foreground))] bg-white border border-amber-100 rounded-xl p-3">
@@ -1931,6 +1949,14 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                           </span>
                         </div>
                       )}
+                      {checkoutLines.map((line) => (
+                        <div
+                          key={`checkout-invoice-${line}`}
+                          className="grid grid-cols-12 gap-2 px-4 py-3 text-sm border-t border-[hsl(var(--border))] text-blue-700"
+                        >
+                          <span className="col-span-12">{line}</span>
+                        </div>
+                      ))}
                       {/* Warranty row */}
                       {liveOrder.warranty && liveOrder.warranty !== 'بدون ضمان' && (
                         <div className="grid grid-cols-12 gap-2 px-4 py-3 text-sm border-t border-[hsl(var(--border))] bg-green-50">

@@ -38,6 +38,11 @@
 
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
+import {
+  parseCheckoutDetailsFromNotes,
+  stripCheckoutDetailsBlock,
+  type CheckoutDetails,
+} from '@/lib/orders/checkoutDetails';
 
 export const runtime = 'nodejs';
 // Tracking responses are dynamic (status changes); don't statically cache
@@ -89,7 +94,9 @@ interface TrackingDTO {
   extraShippingFee: number | null;
   freeShipping: boolean | null;
   total: number | null;
+  checkoutDetails: CheckoutDetails | null;
   warranty: string | null;
+  notes: string | null;
   date: string | null;
   createdAt: string | null;
   updatedAt: string | null;
@@ -210,6 +217,13 @@ export async function GET(_request: Request, context: { params: Promise<{ token:
   }
 
   const toNum = (v: unknown): number | null => (v == null ? null : Number(v));
+  const rawNotes =
+    typeof (row as Record<string, unknown>).notes === 'string'
+      ? ((row as Record<string, unknown>).notes as string)
+      : null;
+  const checkoutDetails =
+    ((row as Record<string, unknown>).checkout_details as CheckoutDetails | null | undefined) ??
+    parseCheckoutDetailsFromNotes(rawNotes);
 
   const dto: TrackingDTO = {
     orderNum: row.order_num,
@@ -235,7 +249,9 @@ export async function GET(_request: Request, context: { params: Promise<{ token:
     extraShippingFee: toNum(row.extra_shipping_fee),
     freeShipping: typeof row.free_shipping === 'boolean' ? row.free_shipping : null,
     total: toNum(row.total),
+    checkoutDetails,
     warranty: row.warranty ?? null,
+    notes: stripCheckoutDetailsBlock(rawNotes),
     date: row.date ?? null,
     createdAt: row.created_at ?? null,
     updatedAt: row.updated_at ?? null,

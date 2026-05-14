@@ -1,9 +1,13 @@
+import type {
+  InstallationPayer,
+  InstallationTarget,
+  PaymentStatus,
+  PreviewMode,
+} from '@/lib/orders/checkoutDetails';
+
 export const ORDER_DRAFT_VERSION = 1;
 
 const ORDER_DRAFT_KEY_PREFIX = 'turath:add-order-draft:v1';
-
-export type HolderInstallationType = 'mosque' | 'customer' | null;
-export type HolderInstallationPayer = 'customer' | 'factory';
 
 export interface OrderDraftLine {
   id: string;
@@ -26,14 +30,20 @@ export interface AddOrderDraftData {
   address: string;
   expressShipping: boolean;
   freeShipping: boolean;
-  extraShippingFee: number;
   notes: string;
   warranty: string;
   lines: OrderDraftLine[];
   step: number;
-  holderInstallationEnabled: boolean;
-  holderInstallationType: HolderInstallationType;
-  holderInstallationPayer: HolderInstallationPayer;
+  previewMode: PreviewMode;
+  installationTarget: InstallationTarget;
+  installationPayer: InstallationPayer;
+  discountAmount: number;
+  discountReason: string;
+  discountBy: string;
+  paymentStatus: PaymentStatus;
+  paidAmount: number;
+  paidTo: string;
+  paymentMethod: string;
 }
 
 export interface StoredAddOrderDraft {
@@ -64,12 +74,22 @@ function safeNumber(value: unknown, fallback = 0): number {
   return fallback;
 }
 
-function safeHolderInstallationType(value: unknown): HolderInstallationType {
+function safePreviewMode(value: unknown): PreviewMode {
+  if (value === 'preview_only' || value === 'preview_with_installation') return value;
+  return 'none';
+}
+
+function safeInstallationTarget(value: unknown): InstallationTarget {
   return value === 'mosque' || value === 'customer' ? value : null;
 }
 
-function safeHolderInstallationPayer(value: unknown): HolderInstallationPayer {
+function safeInstallationPayer(value: unknown): InstallationPayer {
   return value === 'factory' ? 'factory' : 'customer';
+}
+
+function safePaymentStatus(value: unknown): PaymentStatus {
+  if (value === 'paid' || value === 'partial') return value;
+  return 'unpaid';
 }
 
 function sanitizeLine(input: unknown): OrderDraftLine | null {
@@ -94,6 +114,8 @@ export function sanitizeOrderDraftData(input: unknown): AddOrderDraftData | null
   const lines = rawLines
     .map((line) => sanitizeLine(line))
     .filter((line): line is OrderDraftLine => Boolean(line && line.productType));
+  const legacyInstallationEnabled = input.holderInstallationEnabled === true;
+  const legacyInstallationTarget = safeInstallationTarget(input.holderInstallationType);
 
   return {
     customerName: safeString(input.customerName),
@@ -105,14 +127,25 @@ export function sanitizeOrderDraftData(input: unknown): AddOrderDraftData | null
     address: safeString(input.address),
     expressShipping: input.expressShipping === true,
     freeShipping: input.freeShipping === true,
-    extraShippingFee: Math.max(0, safeNumber(input.extraShippingFee, 0)),
     notes: safeString(input.notes),
     warranty: safeString(input.warranty) || 'بدون ضمان',
     lines,
     step: Math.min(3, Math.max(1, Math.floor(safeNumber(input.step, 1)))),
-    holderInstallationEnabled: input.holderInstallationEnabled === true,
-    holderInstallationType: safeHolderInstallationType(input.holderInstallationType),
-    holderInstallationPayer: safeHolderInstallationPayer(input.holderInstallationPayer),
+    previewMode: legacyInstallationEnabled
+      ? 'preview_with_installation'
+      : safePreviewMode(input.previewMode),
+    installationTarget:
+      safeInstallationTarget(input.installationTarget) ?? legacyInstallationTarget,
+    installationPayer: safeInstallationPayer(
+      input.installationPayer ?? input.holderInstallationPayer
+    ),
+    discountAmount: Math.max(0, safeNumber(input.discountAmount, 0)),
+    discountReason: safeString(input.discountReason),
+    discountBy: safeString(input.discountBy),
+    paymentStatus: safePaymentStatus(input.paymentStatus),
+    paidAmount: Math.max(0, safeNumber(input.paidAmount, 0)),
+    paidTo: safeString(input.paidTo),
+    paymentMethod: safeString(input.paymentMethod),
   };
 }
 
@@ -127,8 +160,13 @@ export function hasMeaningfulOrderDraft(data: AddOrderDraftData): boolean {
     Boolean(data.notes.trim()) ||
     data.expressShipping ||
     data.freeShipping ||
-    data.extraShippingFee > 0 ||
-    data.holderInstallationEnabled ||
+    data.previewMode !== 'none' ||
+    data.discountAmount > 0 ||
+    Boolean(data.discountReason.trim()) ||
+    data.paymentStatus !== 'unpaid' ||
+    data.paidAmount > 0 ||
+    Boolean(data.paidTo.trim()) ||
+    Boolean(data.paymentMethod.trim()) ||
     data.lines.length > 0
   );
 }
