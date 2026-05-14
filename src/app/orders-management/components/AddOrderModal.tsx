@@ -71,6 +71,8 @@ import {
   loadOrderDraft,
   saveOrderDraft,
   type AddOrderDraftData,
+  type HolderInstallationPayer,
+  type HolderInstallationType,
   type StoredAddOrderDraft,
 } from '@/lib/orders/orderDraft';
 // Phase E1-Fix3 — the InventoryThumbnail helper that previously lived
@@ -325,6 +327,7 @@ interface ProductCard {
   image?: string;
   isInventory?: boolean;
   colors?: string[];
+  category?: string;
 }
 
 // Phase 24C — prefill shape for the new "create order from customer
@@ -454,6 +457,22 @@ function lineTotal(line: OrderLine): number {
   return base + flash;
 }
 
+const HOLDER_INSTALLATION_UNIT_PRICE = 20;
+
+function isHolderProductLine(line: OrderLine, productCards: ProductCard[]): boolean {
+  if (line.productType === 'holder') return true;
+  const card = productCards.find((p) => p.value === line.productType);
+  if (!card) return false;
+  const label = normalizeArabic(card.label || '').toLowerCase();
+  const category = normalizeArabic(card.category || '').toLowerCase();
+  return (
+    label.includes('حامل') ||
+    label.includes('holder') ||
+    category.includes('حامل') ||
+    category.includes('holder')
+  );
+}
+
 // Phase E1-Fix3 — the inline `InventoryThumbnail` component (Phase
 // E1-Fix1.1) was moved to `src/lib/inventory/InventoryThumbnail.tsx`
 // so /inventory + /reports can share the same render + fallback
@@ -522,6 +541,11 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
   const [expressShipping, setExpressShipping] = useState(false);
   const [freeShipping, setFreeShipping] = useState(false);
   const [extraShippingFee, setExtraShippingFee] = useState(0);
+  const [holderInstallationEnabled, setHolderInstallationEnabled] = useState(false);
+  const [holderInstallationType, setHolderInstallationType] =
+    useState<HolderInstallationType>(null);
+  const [holderInstallationPayer, setHolderInstallationPayer] =
+    useState<HolderInstallationPayer>('customer');
   const [notes, setNotes] = useState('');
   const [warranty, setWarranty] = useState('بدون ضمان');
   const [defaultWarrantyLoaded, setDefaultWarrantyLoaded] = useState(false);
@@ -579,6 +603,9 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
     warranty,
     lines,
     step,
+    holderInstallationEnabled,
+    holderInstallationType,
+    holderInstallationPayer,
   });
 
   // Generate order number on mount
@@ -746,6 +773,7 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
         image: inventoryThumbnailUrl(item.id),
         isInventory: true,
         colors: item.colors,
+        category: item.category,
         available: item.available,
       }));
 
@@ -888,6 +916,9 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
     expressShipping,
     freeShipping,
     extraShippingFee,
+    holderInstallationEnabled,
+    holderInstallationType,
+    holderInstallationPayer,
     notes,
     warranty,
     lines,
@@ -1693,7 +1724,38 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
   const shippingCost = freeShipping ? 0 : expressShipping ? ADMIN_SETTINGS.EXPRESS_FEE : regionFee;
   const extraFeeAmount = IS_ADMIN ? extraShippingFee : 0;
   const subtotal = lines.reduce((s, l) => s + lineTotal(l), 0);
-  const grandTotal = subtotal + shippingCost + extraFeeAmount;
+  const holderQuantity = lines.reduce(
+    (sum, line) =>
+      isHolderProductLine(line, productCards) ? sum + Number(line.quantity || 0) : sum,
+    0
+  );
+  const holderInstallationCharge =
+    holderInstallationEnabled &&
+    holderInstallationType === 'customer' &&
+    holderInstallationPayer === 'customer'
+      ? holderQuantity * HOLDER_INSTALLATION_UNIT_PRICE
+      : 0;
+  const grandTotal = subtotal + shippingCost + extraFeeAmount + holderInstallationCharge;
+  const holderInstallationLabel = (() => {
+    if (!holderInstallationEnabled || !holderInstallationType || holderQuantity === 0) return null;
+    if (holderInstallationType === 'mosque') {
+      return 'تركيب الحامل للمسجد: مجاني';
+    }
+    if (holderInstallationPayer === 'factory') {
+      return 'تركيب الحامل: للعملاء — على المصنع — مجاني للعميل';
+    }
+    return [
+      'تركيب الحامل: للعملاء — على العميل',
+      `${holderQuantity} × ${HOLDER_INSTALLATION_UNIT_PRICE} = ${holderInstallationCharge} ج.م`,
+    ].join(' — ');
+  })();
+
+  useEffect(() => {
+    if (holderQuantity > 0 || !holderInstallationEnabled) return;
+    setHolderInstallationEnabled(false);
+    setHolderInstallationType(null);
+    setHolderInstallationPayer('customer');
+  }, [holderQuantity, holderInstallationEnabled]);
 
   const addLine = (productCard: ProductCard) => {
     const line = createLine(productCard.value, productCard.basePrice);
@@ -1770,6 +1832,14 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
       toast.error('يجب إضافة منتج واحد على الأقل');
       return false;
     }
+    if (holderInstallationEnabled && holderQuantity === 0) {
+      toast.error('لا يمكن إضافة تركيب الحامل بدون وجود حامل مصحف في الأوردر.');
+      return false;
+    }
+    if (holderInstallationEnabled && !holderInstallationType) {
+      toast.error('اختر نوع تركيب الحامل أولًا');
+      return false;
+    }
     return true;
   };
 
@@ -1778,6 +1848,14 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
     // reject the insert anyway and the order would not be traceable.
     if (!user?.id) {
       toast.error('يجب تسجيل الدخول قبل إنشاء طلب جديد');
+      return;
+    }
+    if (holderInstallationEnabled && holderQuantity === 0) {
+      toast.error('لا يمكن إضافة تركيب الحامل بدون وجود حامل مصحف في الأوردر.');
+      return;
+    }
+    if (holderInstallationEnabled && !holderInstallationType) {
+      toast.error('اختر نوع تركيب الحامل أولًا');
       return;
     }
 
@@ -1813,6 +1891,9 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
     // canonical key.
     const phoneCanonical = normalizeEgyptPhone(phone) ?? toEnglishDigits(phone);
     const phone2Canonical = phone2 ? (normalizeEgyptPhone(phone2) ?? toEnglishDigits(phone2)) : '';
+    const persistedNotes = [notes.trim(), holderInstallationLabel]
+      .filter((part): part is string => Boolean(part && part.trim()))
+      .join('\n');
 
     const newOrder = {
       id: `order-${Date.now()}`,
@@ -1852,7 +1933,7 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
       date: `${d}/${m}/${y}`,
       time: `${h}:${min}:${sec}`,
       day: days[now.getDay()],
-      notes: notes || undefined,
+      notes: persistedNotes || undefined,
       warranty,
       ip: '—',
       lines: lines.map((l) => {
@@ -2047,6 +2128,9 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
     setExpressShipping(false);
     setFreeShipping(false);
     setExtraShippingFee(0);
+    setHolderInstallationEnabled(false);
+    setHolderInstallationType(null);
+    setHolderInstallationPayer('customer');
     setNotes('');
     setWarranty('بدون ضمان');
     setErrors({});
@@ -2088,6 +2172,9 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
     setExpressShipping(draft.expressShipping);
     setFreeShipping(draft.freeShipping);
     setExtraShippingFee(IS_ADMIN ? draft.extraShippingFee : 0);
+    setHolderInstallationEnabled(draft.holderInstallationEnabled);
+    setHolderInstallationType(draft.holderInstallationType);
+    setHolderInstallationPayer(draft.holderInstallationPayer);
     setNotes(draft.notes);
     setWarranty(draft.warranty || 'بدون ضمان');
     setLines(draft.lines);
@@ -2173,6 +2260,9 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                     return `- ${name}${colorPart}${flashPart} x ${l.quantity} = ${lineTotal(l)} ج.م`;
                   })
                   .join('\n');
+                const productsWithInstallation = holderInstallationLabel
+                  ? `${productsList}\n- ${holderInstallationLabel}`
+                  : productsList;
                 // Determine shipping type text
                 let shippingText = '';
                 if (freeShipping) {
@@ -2202,7 +2292,7 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                 msg = msg.replace('{orderNum}', successOrderNum);
                 msg = msg.replace('{total}', successTotal.toLocaleString('en-US'));
                 msg = msg.replace('{trackingLink}', trackingLink);
-                msg = msg.replace('{products}', productsList);
+                msg = msg.replace('{products}', productsWithInstallation);
                 msg = msg.replace('{governorate}', governorate);
                 msg = msg.replace('{district}', district);
                 // Phase 22N-Fix3 — surface the typed neighborhood in
@@ -3231,6 +3321,142 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                     </label>
                   </div>
 
+                  {/* Holder installation */}
+                  <div
+                    className={`rounded-2xl border p-4 ${
+                      holderQuantity > 0
+                        ? 'border-blue-200 bg-blue-50'
+                        : 'border-slate-200 bg-slate-50'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-lg">🛠️</span>
+                          <span className="text-sm font-bold text-[hsl(var(--foreground))]">
+                            تركيب الحامل
+                          </span>
+                          <span
+                            className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
+                              holderQuantity > 0
+                                ? 'border-blue-200 bg-blue-100 text-blue-700'
+                                : 'border-slate-200 bg-white text-slate-500'
+                            }`}
+                          >
+                            {holderQuantity > 0 ? `${holderQuantity} حامل` : 'أضف حامل مصحف أولًا'}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+                          للمسجد مجاني دائمًا، وللعملاء 20 ج.م للقطعة حسب عدد حوامل المصحف.
+                        </p>
+                      </div>
+                      <label
+                        className={`flex items-center gap-2 text-xs font-semibold ${
+                          holderQuantity > 0 ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 rounded"
+                          checked={holderInstallationEnabled}
+                          disabled={holderQuantity === 0}
+                          onChange={(e) => {
+                            const enabled = e.target.checked;
+                            setHolderInstallationEnabled(enabled);
+                            setHolderInstallationType(enabled ? 'customer' : null);
+                            setHolderInstallationPayer('customer');
+                          }}
+                        />
+                        تفعيل
+                      </label>
+                    </div>
+
+                    {holderQuantity === 0 && (
+                      <p className="mt-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                        لا يمكن إضافة تركيب الحامل بدون وجود حامل مصحف في الأوردر.
+                      </p>
+                    )}
+
+                    {holderInstallationEnabled && holderQuantity > 0 && (
+                      <div className="mt-4 space-y-3">
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          <button
+                            type="button"
+                            className={`rounded-xl border px-3 py-2 text-right text-xs font-semibold transition-all ${
+                              holderInstallationType === 'mosque'
+                                ? 'border-green-300 bg-green-100 text-green-800'
+                                : 'border-blue-100 bg-white text-[hsl(var(--foreground))] hover:border-blue-200'
+                            }`}
+                            onClick={() => {
+                              setHolderInstallationType('mosque');
+                              setHolderInstallationPayer('factory');
+                            }}
+                          >
+                            <span className="block text-sm font-bold">للمسجد — مجاني</span>
+                            <span className="mt-1 block text-[11px] text-[hsl(var(--muted-foreground))]">
+                              لا يضيف تكلفة على العميل
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            className={`rounded-xl border px-3 py-2 text-right text-xs font-semibold transition-all ${
+                              holderInstallationType === 'customer'
+                                ? 'border-blue-300 bg-blue-100 text-blue-800'
+                                : 'border-blue-100 bg-white text-[hsl(var(--foreground))] hover:border-blue-200'
+                            }`}
+                            onClick={() => {
+                              setHolderInstallationType('customer');
+                              setHolderInstallationPayer('customer');
+                            }}
+                          >
+                            <span className="block text-sm font-bold">للعملاء — 20 ج.م للقطعة</span>
+                            <span className="mt-1 block text-[11px] text-[hsl(var(--muted-foreground))]">
+                              {holderQuantity} × {HOLDER_INSTALLATION_UNIT_PRICE} ج.م
+                            </span>
+                          </button>
+                        </div>
+
+                        {holderInstallationType === 'customer' && (
+                          <div className="rounded-xl border border-blue-100 bg-white p-3">
+                            <p className="mb-2 text-xs font-bold text-[hsl(var(--foreground))]">
+                              تكلفة التركيب على
+                            </p>
+                            <div className="grid grid-cols-2 gap-2">
+                              {[
+                                {
+                                  value: 'customer' as const,
+                                  label: 'العميل',
+                                  hint: 'تضاف إلى إجمالي الفاتورة',
+                                },
+                                {
+                                  value: 'factory' as const,
+                                  label: 'المصنع',
+                                  hint: 'مجاني للعميل',
+                                },
+                              ].map((option) => (
+                                <button
+                                  key={option.value}
+                                  type="button"
+                                  className={`rounded-lg border px-3 py-2 text-xs transition-all ${
+                                    holderInstallationPayer === option.value
+                                      ? 'border-blue-300 bg-blue-50 text-blue-800'
+                                      : 'border-slate-200 text-[hsl(var(--foreground))] hover:bg-slate-50'
+                                  }`}
+                                  onClick={() => setHolderInstallationPayer(option.value)}
+                                >
+                                  <span className="block font-bold">{option.label}</span>
+                                  <span className="mt-1 block text-[10px] text-[hsl(var(--muted-foreground))]">
+                                    {option.hint}
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
                   {/* Extra shipping fee — ADMIN ONLY */}
                   {IS_ADMIN && (
                     <div className="border border-orange-200 bg-orange-50 rounded-2xl p-4">
@@ -3333,6 +3559,35 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                           </span>
                         </div>
                       )}
+                      {holderInstallationEnabled &&
+                        holderInstallationType === 'mosque' &&
+                        holderQuantity > 0 && (
+                          <div className="flex justify-between text-green-700">
+                            <span>تركيب الحامل للمسجد:</span>
+                            <span className="font-semibold">مجاني</span>
+                          </div>
+                        )}
+                      {holderInstallationEnabled &&
+                        holderInstallationType === 'customer' &&
+                        holderInstallationPayer === 'factory' &&
+                        holderQuantity > 0 && (
+                          <div className="flex justify-between text-blue-700">
+                            <span>تركيب الحامل:</span>
+                            <span className="font-semibold">على المصنع — مجاني للعميل</span>
+                          </div>
+                        )}
+                      {holderInstallationEnabled &&
+                        holderInstallationType === 'customer' &&
+                        holderInstallationPayer === 'customer' &&
+                        holderQuantity > 0 && (
+                          <div className="flex justify-between text-blue-700">
+                            <span>تركيب الحامل:</span>
+                            <span className="font-mono font-semibold">
+                              {holderQuantity} × {HOLDER_INSTALLATION_UNIT_PRICE} ={' '}
+                              {holderInstallationCharge.toLocaleString('en-US')} ج.م
+                            </span>
+                          </div>
+                        )}
                       <div className="border-t border-[hsl(var(--primary))]/20 pt-2 flex justify-between">
                         <span className="font-bold">الإجمالي الكلي:</span>
                         <span className="font-mono font-bold text-lg text-[hsl(var(--primary))]">
@@ -3442,6 +3697,14 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                             ملاحظات
                           </p>
                           <p className="text-xs text-[hsl(var(--muted-foreground))]">{notes}</p>
+                        </div>
+                      )}
+                      {holderInstallationLabel && (
+                        <div className="col-span-2 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2">
+                          <p className="text-[10px] text-blue-700 font-semibold mb-0.5">
+                            تركيب الحامل
+                          </p>
+                          <p className="text-xs text-blue-900">{holderInstallationLabel}</p>
                         </div>
                       )}
                     </div>
@@ -3555,6 +3818,35 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                           </span>
                         </div>
                       )}
+                      {holderInstallationEnabled &&
+                        holderInstallationType === 'mosque' &&
+                        holderQuantity > 0 && (
+                          <div className="flex justify-between text-green-700">
+                            <span>تركيب الحامل للمسجد:</span>
+                            <span className="font-semibold">مجاني</span>
+                          </div>
+                        )}
+                      {holderInstallationEnabled &&
+                        holderInstallationType === 'customer' &&
+                        holderInstallationPayer === 'factory' &&
+                        holderQuantity > 0 && (
+                          <div className="flex justify-between text-blue-700">
+                            <span>تركيب الحامل:</span>
+                            <span className="font-semibold">على المصنع — مجاني للعميل</span>
+                          </div>
+                        )}
+                      {holderInstallationEnabled &&
+                        holderInstallationType === 'customer' &&
+                        holderInstallationPayer === 'customer' &&
+                        holderQuantity > 0 && (
+                          <div className="flex justify-between text-blue-700">
+                            <span>تركيب الحامل:</span>
+                            <span className="font-mono font-semibold">
+                              {holderQuantity} × {HOLDER_INSTALLATION_UNIT_PRICE} ={' '}
+                              {holderInstallationCharge.toLocaleString('en-US')} ج.م
+                            </span>
+                          </div>
+                        )}
                       <div className="border-t border-[hsl(var(--primary))]/20 pt-2 flex justify-between">
                         <span className="font-bold text-base">الإجمالي الكلي:</span>
                         <span className="font-mono font-bold text-xl text-[hsl(var(--primary))]">
