@@ -2,28 +2,26 @@
 // src/app/orders-management/components/EditOrderModal.tsx
 //
 // Phase Orders-Edit-1 — focused edit surface for an existing order.
-// Replaces the "no path to fix a typo" gap (today the only mutation
-// surfaces for a placed order are status change + returns/exchanges).
+// Phase Orders-Edit-2 — expanded to allow full line-item edits.
 //
-// Scope — v1 intentionally narrow
-// -------------------------------
 // Editable here:
 //   • customer identity: name, phone, phone2
 //   • address: region, district, neighborhood, address
 //   • shipping flags: free_shipping, express_shipping
-//   • per-line quantity (the product itself + color stay read-only;
-//     product changes go through the existing returns / exchanges
-//     adjustment flow — that path already handles stock + inventory
-//     side-effects safely)
+//   • per-line: quantity, color, product (via swap dropdown),
+//     flashlight add-on, AND adding / removing lines. Last line
+//     cannot be deleted (Order with zero products has no meaning;
+//     status change is the cancel path). Stock checks fire on
+//     swap / add via OrderLinesEditor matching AddOrderModal.
+//     Price is read-only from inventory; swapping uses the
+//     current inventory price.
 //   • preview + installation: preview_mode, installation_target,
 //     installation_payer
 //   • discount: enabled + type (fixed / percent) + value + reason
 //   • payment: status + paid_amount + paid_to + method
 //
 // NOT editable here (intentionally):
-//   • product, color, image (each requires touching the inventory
-//     catalog + image proxy; safer to do via Phase 25A adjustments)
-//   • adding / removing line items
+//   • unit price (driven by inventory / settings)
 //   • extra_shipping_fee (deprecated by Phase Orders-Checkout-1)
 //   • order_num, tracking_token, created_by, created_at, status,
 //     delegate, audit / auth metadata
@@ -72,6 +70,19 @@ import {
   type OrderSnapshot,
   type OrderSnapshotLine,
 } from '@/lib/orders/orderChangeDiff';
+// Phase Orders-Edit-2 — shared product catalog + line editor.
+// Lifts the AddOrderModal's product-grid block into a reusable
+// surface so EditOrderModal supports color / swap / add / delete
+// without copy-pasting ~300 lines of JSX.
+import {
+  lineSubtotal,
+  loadProductCards,
+  resolveLineColors,
+  type DraftOrderLine,
+  type InventoryItem,
+  type ProductCard,
+} from '@/lib/orders/productCards';
+import OrderLinesEditor from './OrderLinesEditor';
 import { addAuditLog } from './AuditLogModal';
 
 // Re-exported from OrderDetailModal; copying the shape here keeps
@@ -117,27 +128,35 @@ interface EditOrderModalProps {
   onSaved: (updated: EditableOrder) => void;
 }
 
-interface DraftLine {
-  productType: string | null;
-  label: string | null;
-  color: string | null;
-  quantity: number;
-  unitPrice: number;
-  includeFlashlight: boolean;
-  flashlightPrice: number;
-}
-
-function buildInitialLines(order: EditableOrder): DraftLine[] {
-  const lines = Array.isArray(order.lines) ? order.lines : [];
-  return lines.map((l) => ({
-    productType: l.productType ?? null,
-    label: l.label ?? null,
-    color: l.color ?? null,
-    quantity: Math.max(1, Number(l.quantity) || 1),
-    unitPrice: Math.max(0, Number(l.unitPrice) || 0),
-    includeFlashlight: l.includeFlashlight === true,
-    flashlightPrice: Math.max(0, Number(l.flashlightPrice) || 0),
-  }));
+// Phase Orders-Edit-2 — derive DraftOrderLine[] (the shared shape
+// from `productCards.ts`) from the persisted lines JSONB. We
+// preserve image metadata so a color-only edit later doesn't drop
+// the Phase Egress-Fix1 image_source / image_path placement on the
+// row.
+function buildInitialLines(order: EditableOrder): DraftOrderLine[] {
+  const lines = Array.isArray(order.lines) ? (order.lines as Array<Record<string, unknown>>) : [];
+  let idCounter = 0;
+  return lines.map((l) => {
+    idCounter += 1;
+    const productType = typeof l.productType === 'string' ? l.productType : '';
+    return {
+      id: `existing-${idCounter}-${productType}`,
+      productType,
+      color: typeof l.color === 'string' ? l.color : '',
+      quantity: Math.max(1, Number(l.quantity) || 1),
+      unitPrice: Math.max(0, Number(l.unitPrice) || 0),
+      includeFlashlight: l.includeFlashlight === true,
+      flashlightPrice: Math.max(0, Number(l.flashlightPrice) || 150),
+      label: typeof l.label === 'string' ? l.label : undefined,
+      emoji: typeof l.emoji === 'string' ? l.emoji : undefined,
+      image: typeof l.image === 'string' ? l.image : undefined,
+      image_source:
+        l.image_source === 'inventory' || l.image_source === 'storage' || l.image_source === 'none'
+          ? (l.image_source as 'inventory' | 'storage' | 'none')
+          : undefined,
+      image_path: typeof l.image_path === 'string' ? l.image_path : undefined,
+    };
+  });
 }
 
 function snapshotOrder(order: EditableOrder, parsed: CheckoutDetails | null): OrderSnapshot {
@@ -190,7 +209,14 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
   const [freeShipping, setFreeShipping] = useState(order.shippingFee === 0);
   const [expressShipping, setExpressShipping] = useState(order.expressShipping === true);
 
-  const [lines, setLines] = useState<DraftLine[]>(() => buildInitialLines(order));
+  const [lines, setLines] = useState<DraftOrderLine[]>(() => buildInitialLines(order));
+  // Phase Orders-Edit-2 — live product catalog loaded once when the
+  // modal opens. `productCards` drives the OrderLinesEditor's grid;
+  // `inventoryItems` powers the stock checks. Both stay null until
+  // the load resolves; the editor handles the "loading..." state
+  // itself when `productCards.length === 0`.
+  const [productCards, setProductCards] = useState<ProductCard[]>([]);
+  const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
 
   const [previewMode, setPreviewMode] = useState<PreviewMode>(
     initialCheckout?.preview_mode ?? 'none'
@@ -238,17 +264,33 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
     setDiscountBy((curr) => (curr.trim() ? curr : (profileFullName ?? user?.email ?? '')));
   }, [discountEnabled, profileFullName, user?.email]);
 
+  // Phase Orders-Edit-2 — load the product catalog once when the
+  // modal opens. Powers the OrderLinesEditor's clickable grid and
+  // the per-line swap dropdown. Inventory drives stock checks; the
+  // static fallback (when no inventory rows exist) preserves the
+  // legacy AddOrderModal UX.
+  useEffect(() => {
+    const supabase = createClient();
+    if (!supabase) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { items, cards } = await loadProductCards(supabase);
+        if (cancelled) return;
+        setProductCards(cards);
+        setInventoryItems(items);
+      } catch (err) {
+        console.warn('[edit-order] failed to load product catalog:', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // ─── Recompute totals ──────────────────────────────────────────────────
 
-  const subtotal = useMemo(
-    () =>
-      lines.reduce((acc, l) => {
-        const flashlight = l.includeFlashlight ? Number(l.flashlightPrice) || 0 : 0;
-        const perUnit = (Number(l.unitPrice) || 0) + flashlight;
-        return acc + perUnit * (Number(l.quantity) || 0);
-      }, 0),
-    [lines]
-  );
+  const subtotal = useMemo(() => lines.reduce((acc, l) => acc + lineSubtotal(l), 0), [lines]);
   // Shipping fee logic: we only know the live regionFee when the
   // operator opened from a region that has a per-region fee in
   // settings. For v1 we preserve the original `shippingFee` unless
@@ -300,8 +342,17 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
     if (!phone.trim() || phone.trim().length < 7) return 'رقم الهاتف غير صالح';
     if (!region.trim()) return 'المحافظة مطلوبة';
     if (!address.trim() || address.trim().length < 5) return 'العنوان قصير جدًا';
+    if (lines.length === 0) return 'يجب أن يحتوي الطلب على منتج واحد على الأقل';
     for (const l of lines) {
       if ((Number(l.quantity) || 0) <= 0) return 'كمية كل منتج يجب أن تكون 1 على الأقل';
+      // Phase Orders-Edit-2 — when the line's product card carries
+      // a colour palette (static holder OR an inventory row with
+      // colours), the operator must pick one. Products without a
+      // colour picker stay valid with an empty `color`.
+      const card = productCards.find((p) => p.value === l.productType) ?? null;
+      if (card && resolveLineColors(card).length > 0 && !(l.color || '').trim()) {
+        return `اختر لون لكل ${card.label}`;
+      }
     }
     if (discountEnabled) {
       if (discountType === 'percent') {
@@ -384,26 +435,58 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
         liveCheckout
       );
 
-      // Rebuild new lines payload — quantity edits are persisted;
-      // every other line-level field is carried forward verbatim
-      // from the live row so we don't clobber image / image_source
-      // / note metadata Phase Egress-Fix1 placed there.
+      // Phase Orders-Edit-2 — rebuild lines from the editable
+      // DraftOrderLine[] state. For each draft line:
+      //   • If it points at an existing live row (id pattern
+      //     `existing-N-…`) AND the productType is unchanged, carry
+      //     the live row's image / image_source / image_path / note
+      //     forward so a color- or quantity-only edit doesn't drop
+      //     Phase Egress-Fix1 image placement.
+      //   • If the line was swapped to a different product OR is a
+      //     newly-added line, drop the carry-over image metadata.
+      //     The new line resolves its image from the live productCard
+      //     thumbnail at render time.
       const liveLines = Array.isArray(liveRow.lines)
         ? (liveRow.lines as Array<Record<string, unknown>>)
         : [];
-      const newLines = liveLines.map((live, idx) => {
-        const edited = lines[idx];
-        if (!edited) return live;
-        const qty = Math.max(1, Number(edited.quantity) || 1);
-        const unitPrice = Number(live.unitPrice) || Number(edited.unitPrice) || 0;
-        const flashlightPrice = Number(live.flashlightPrice) || Number(edited.flashlightPrice) || 0;
-        const includeFlashlight = live.includeFlashlight === true;
-        const perUnit = unitPrice + (includeFlashlight ? flashlightPrice : 0);
-        return {
-          ...live,
+      const existingIdxMatch = /^existing-(\d+)-/;
+      const newLines: Record<string, unknown>[] = lines.map((draft) => {
+        const m = existingIdxMatch.exec(draft.id);
+        const liveIdx = m ? Number(m[1]) - 1 : -1;
+        const liveSource = liveIdx >= 0 ? liveLines[liveIdx] : null;
+        const liveProductType =
+          liveSource && typeof liveSource.productType === 'string' ? liveSource.productType : '';
+        const sameProduct = !!liveSource && liveProductType === draft.productType;
+        const qty = Math.max(1, Number(draft.quantity) || 1);
+        const unitPrice = Math.max(0, Number(draft.unitPrice) || 0);
+        const flashlightPrice = Math.max(0, Number(draft.flashlightPrice) || 0);
+        const perUnit = unitPrice + (draft.includeFlashlight ? flashlightPrice : 0);
+        const payload: Record<string, unknown> = {
+          productType: draft.productType,
+          label: draft.label ?? '',
+          color: (draft.color ?? '').trim(),
           quantity: qty,
+          unitPrice,
+          includeFlashlight: draft.includeFlashlight,
+          flashlightPrice,
+          emoji: draft.emoji ?? '',
           total: perUnit * qty,
         };
+        if (sameProduct && liveSource) {
+          if ('image' in liveSource) payload.image = liveSource.image;
+          if ('image_source' in liveSource) payload.image_source = liveSource.image_source;
+          if ('image_path' in liveSource) payload.image_path = liveSource.image_path;
+          if ('note' in liveSource) payload.note = liveSource.note;
+        } else {
+          // New product on this row — either a brand-new line or a
+          // swap. Use whatever the draft already carries (which the
+          // OrderLinesEditor cleared on swap so we don't ship stale
+          // inventory thumbnails for the wrong product).
+          if (draft.image !== undefined) payload.image = draft.image;
+          if (draft.image_source) payload.image_source = draft.image_source;
+          if (draft.image_path) payload.image_path = draft.image_path;
+        }
+        return payload;
       });
       const newSubtotal = newLines.reduce(
         (acc, l) => acc + (Number((l as { total?: number }).total) || 0),
@@ -413,6 +496,22 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
         (acc, l) => acc + (Number((l as { quantity?: number }).quantity) || 0),
         0
       );
+      // Phase Orders-Edit-2 — recompute the row's products summary
+      // string to match AddOrderModal's format so the orders list +
+      // search results reflect the post-edit basket. Without this
+      // the column would still show the pre-edit basket and split
+      // from the persisted `lines` jsonb.
+      const newProductsSummary =
+        lines
+          .map((l) => {
+            const card = productCards.find((p) => p.value === l.productType) ?? null;
+            const label = card?.label || l.label || l.productType || 'منتج';
+            const colorPart = l.color ? ` ${l.color}` : '';
+            const flashPart = l.includeFlashlight ? ' + كشاف' : '';
+            const qty = Math.max(1, Number(l.quantity) || 1);
+            return `${label}${colorPart}${flashPart} x ${qty}`;
+          })
+          .join(' + ') || 'لا يوجد منتجات';
 
       const checkoutDetails: CheckoutDetails = {
         version: 1,
@@ -474,6 +573,7 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
         // value.
         shipping_fee: shippingFee,
         lines: newLines,
+        products: newProductsSummary,
         subtotal: newSubtotal,
         quantity: newQuantity,
         total: newTotal,
@@ -581,6 +681,7 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
         district: district.trim() || undefined,
         neighborhood: neighborhood.trim() || null,
         address: address.trim(),
+        products: newProductsSummary,
         subtotal: newSubtotal,
         shippingFee,
         total: newTotal,
@@ -677,50 +778,14 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
           </section>
 
           <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <h4 className="text-xs font-bold text-[hsl(var(--muted-foreground))]">المنتجات</h4>
-              <span className="text-[11px] text-[hsl(var(--muted-foreground))]">
-                لتعديل المنتج أو اللون أو حذف منتج، استخدم مرتجع / استبدال
-              </span>
-            </div>
-            <div className="space-y-2">
-              {lines.length === 0 && (
-                <p className="text-sm text-[hsl(var(--muted-foreground))]">
-                  لا توجد منتجات على هذا الطلب.
-                </p>
-              )}
-              {lines.map((line, idx) => (
-                <div
-                  key={idx}
-                  className="rounded-xl border border-[hsl(var(--border))] p-3 flex items-center gap-3"
-                >
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-bold">
-                      {line.label || line.productType || 'منتج'}
-                      {line.color ? ` — ${line.color}` : ''}
-                    </p>
-                    <p className="text-[11px] text-[hsl(var(--muted-foreground))]">
-                      السعر: {Number(line.unitPrice).toLocaleString('en-US')} ج.م
-                      {line.includeFlashlight ? ` + كشاف ${line.flashlightPrice} ج.م` : ''}
-                    </p>
-                  </div>
-                  <label className="text-[11px] text-[hsl(var(--muted-foreground))]">الكمية</label>
-                  <input
-                    type="number"
-                    min={1}
-                    className="input-field w-20 text-center font-mono"
-                    value={line.quantity}
-                    onChange={(e) => {
-                      const value = Math.max(1, Number(e.target.value) || 1);
-                      setLines((prev) =>
-                        prev.map((l, i) => (i === idx ? { ...l, quantity: value } : l))
-                      );
-                    }}
-                    dir="ltr"
-                  />
-                </div>
-              ))}
-            </div>
+            <OrderLinesEditor
+              lines={lines}
+              productCards={productCards}
+              inventoryItems={inventoryItems}
+              onLinesChange={setLines}
+              requireAtLeastOne={true}
+              renderHeader={true}
+            />
           </section>
 
           <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">

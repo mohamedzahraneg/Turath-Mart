@@ -156,8 +156,15 @@ function paymentStatusLabel(status: ReturnType<typeof paymentSignature>['status'
 function linesProductLabel(lines: OrderSnapshotLine[]): string {
   if (lines.length === 0) return 'لا توجد منتجات';
   // Compact comma-separated product label list, capped so a
-  // 10-item order doesn't blow up the audit row.
-  const labels = lines.map((l) => l.label || l.productType || '—').slice(0, 5);
+  // 10-item order doesn't blow up the audit row. Phase Orders-Edit-2
+  // — include color when present (e.g. "حامل مصحف (بني)") so a
+  // pure color swap registers as a `products` diff and lands in the
+  // audit timeline.
+  const labels = lines.slice(0, 5).map((l) => {
+    const base = l.label || l.productType || '—';
+    const color = (l.color ?? '').trim();
+    return color ? `${base} (${color})` : base;
+  });
   const more = lines.length > 5 ? ` و${lines.length - 5} منتج إضافي` : '';
   return `${labels.join('، ')}${more}`;
 }
