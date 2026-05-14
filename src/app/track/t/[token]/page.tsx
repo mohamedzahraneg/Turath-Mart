@@ -281,11 +281,27 @@ function CheckoutDetailsCard({ details }: { details: CheckoutDetails }) {
             <Percent size={13} className="text-emerald-700" />
             <h3 className="text-xs font-bold text-emerald-900">الخصم</h3>
           </div>
-          <CheckoutRow
-            label="قيمة الخصم"
-            value={formatMoney(details.discount.amount)}
-            tone="emerald"
-          />
+          {/* Phase Orders-Edit-1 — show "10% (X ج.م)" when the
+              envelope carries percent type, otherwise the legacy
+              flat amount line. Pre-Orders-Edit-1 envelopes parse
+              with type='fixed' so they fall through to the
+              original line unchanged. */}
+          {details.discount.type === 'percent' && details.discount.value > 0 ? (
+            <>
+              <CheckoutRow label="نسبة الخصم" value={`${details.discount.value}%`} tone="emerald" />
+              <CheckoutRow
+                label="قيمة الخصم"
+                value={formatMoney(details.discount.amount)}
+                tone="emerald"
+              />
+            </>
+          ) : (
+            <CheckoutRow
+              label="قيمة الخصم"
+              value={formatMoney(details.discount.amount)}
+              tone="emerald"
+            />
+          )}
           {details.discount.reason && (
             <CheckoutRow label="السبب" value={details.discount.reason} tone="emerald" />
           )}
