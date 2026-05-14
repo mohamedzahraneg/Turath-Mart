@@ -1,4 +1,5 @@
 import type {
+  DiscountType,
   InstallationPayer,
   InstallationTarget,
   PaymentStatus,
@@ -37,6 +38,12 @@ export interface AddOrderDraftData {
   previewMode: PreviewMode;
   installationTarget: InstallationTarget;
   installationPayer: InstallationPayer;
+  // Phase Orders-Edit-1 — explicit discount gate + type so the
+  // draft persists the user's collapse/expand intent and chosen
+  // mode across page reloads.
+  discountEnabled: boolean;
+  discountType: DiscountType;
+  discountValue: number;
   discountAmount: number;
   discountReason: string;
   discountBy: string;
@@ -92,6 +99,10 @@ function safePaymentStatus(value: unknown): PaymentStatus {
   return 'unpaid';
 }
 
+function safeDiscountType(value: unknown): DiscountType {
+  return value === 'percent' ? 'percent' : 'fixed';
+}
+
 function sanitizeLine(input: unknown): OrderDraftLine | null {
   if (!isObject(input)) return null;
 
@@ -139,6 +150,18 @@ export function sanitizeOrderDraftData(input: unknown): AddOrderDraftData | null
     installationPayer: safeInstallationPayer(
       input.installationPayer ?? input.holderInstallationPayer
     ),
+    // Phase Orders-Edit-1 — derive new discount fields from the
+    // raw input but fall back to the legacy `discountAmount > 0`
+    // signal so pre-Orders-Edit-1 drafts hydrate cleanly.
+    discountEnabled:
+      typeof input.discountEnabled === 'boolean'
+        ? input.discountEnabled
+        : Math.max(0, safeNumber(input.discountAmount, 0)) > 0,
+    discountType: safeDiscountType(input.discountType),
+    discountValue: Math.max(
+      0,
+      safeNumber(input.discountValue, safeNumber(input.discountAmount, 0))
+    ),
     discountAmount: Math.max(0, safeNumber(input.discountAmount, 0)),
     discountReason: safeString(input.discountReason),
     discountBy: safeString(input.discountBy),
@@ -161,7 +184,9 @@ export function hasMeaningfulOrderDraft(data: AddOrderDraftData): boolean {
     data.expressShipping ||
     data.freeShipping ||
     data.previewMode !== 'none' ||
+    data.discountEnabled ||
     data.discountAmount > 0 ||
+    data.discountValue > 0 ||
     Boolean(data.discountReason.trim()) ||
     data.paymentStatus !== 'unpaid' ||
     data.paidAmount > 0 ||

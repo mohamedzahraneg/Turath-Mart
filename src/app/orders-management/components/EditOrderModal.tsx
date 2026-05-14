@@ -1,0 +1,1056 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// src/app/orders-management/components/EditOrderModal.tsx
+//
+// Phase Orders-Edit-1 — focused edit surface for an existing order.
+// Replaces the "no path to fix a typo" gap (today the only mutation
+// surfaces for a placed order are status change + returns/exchanges).
+//
+// Scope — v1 intentionally narrow
+// -------------------------------
+// Editable here:
+//   • customer identity: name, phone, phone2
+//   • address: region, district, neighborhood, address
+//   • shipping flags: free_shipping, express_shipping
+//   • per-line quantity (the product itself + color stay read-only;
+//     product changes go through the existing returns / exchanges
+//     adjustment flow — that path already handles stock + inventory
+//     side-effects safely)
+//   • preview + installation: preview_mode, installation_target,
+//     installation_payer
+//   • discount: enabled + type (fixed / percent) + value + reason
+//   • payment: status + paid_amount + paid_to + method
+//
+// NOT editable here (intentionally):
+//   • product, color, image (each requires touching the inventory
+//     catalog + image proxy; safer to do via Phase 25A adjustments)
+//   • adding / removing line items
+//   • extra_shipping_fee (deprecated by Phase Orders-Checkout-1)
+//   • order_num, tracking_token, created_by, created_at, status,
+//     delegate, audit / auth metadata
+//
+// Save flow
+// ---------
+//   1. Validate the form locally (mirrors AddOrderModal's rules).
+//   2. Refetch the live row from `turath_masr_orders` so we diff
+//      against the most recent server state — not a stale snapshot
+//      the parent loaded minutes ago.
+//   3. Recompute subtotal + total + new checkout envelope.
+//   4. Update the row atomically (single `.update()`).
+//   5. Diff before vs after via `orderChangeDiff` (small payload —
+//      no full jsonb, no images, no tokens).
+//   6. Emit per-order audit rows (`addAuditLog`, one per changed
+//      field) so the existing AuditLogModal timeline shows the
+//      edit; PLUS a single staff-wide `order.updated` row with a
+//      compact metadata bundle.
+//   7. Call `onSaved(updatedOrder)` so the parent refreshes its
+//      `liveOrder` without a full list reload.
+// ─────────────────────────────────────────────────────────────────────────────
+'use client';
+
+import React, { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, Edit2, Save, Wallet, Wrench, X } from 'lucide-react';
+import { toast } from 'sonner';
+import { createClient } from '@/lib/supabase/client';
+import { useAuth } from '@/contexts/AuthContext';
+import { usePermissions } from '@/hooks/usePermissions';
+import { writeStaffAuditLog } from '@/lib/security/staffAudit';
+import {
+  appendCheckoutDetailsToNotes,
+  parseCheckoutDetailsFromNotes,
+  PAYMENT_METHOD_OPTIONS,
+  type CheckoutDetails,
+  type DiscountType,
+  type InstallationPayer,
+  type InstallationTarget,
+  type PaymentStatus,
+  type PreviewMode,
+} from '@/lib/orders/checkoutDetails';
+import {
+  buildArabicDescription,
+  buildStaffAuditMetadata,
+  diffOrders,
+  type OrderSnapshot,
+  type OrderSnapshotLine,
+} from '@/lib/orders/orderChangeDiff';
+import { addAuditLog } from './AuditLogModal';
+
+// Re-exported from OrderDetailModal; copying the shape here keeps
+// this component a leaf module (no circular imports). The parent
+// hands us this object via the `order` prop.
+interface EditableOrder {
+  id: string;
+  orderNum: string;
+  trackingToken?: string | null;
+  customer: string;
+  phone: string;
+  phone2?: string;
+  region: string;
+  district?: string;
+  neighborhood?: string | null;
+  address: string;
+  products: string;
+  quantity: number;
+  subtotal: number;
+  shippingFee: number;
+  extraShippingFee?: number;
+  expressShipping?: boolean;
+  total: number;
+  status: string;
+  notes?: string;
+  lines?: Array<{
+    productType?: string;
+    label?: string;
+    color?: string | null;
+    quantity: number;
+    unitPrice: number;
+    includeFlashlight?: boolean;
+    flashlightPrice?: number;
+    total: number;
+  }>;
+}
+
+interface EditOrderModalProps {
+  order: EditableOrder;
+  onClose: () => void;
+  /** Called with the freshly-persisted order after save success.
+   *  Parent should update its `liveOrder` state from this. */
+  onSaved: (updated: EditableOrder) => void;
+}
+
+interface DraftLine {
+  productType: string | null;
+  label: string | null;
+  color: string | null;
+  quantity: number;
+  unitPrice: number;
+  includeFlashlight: boolean;
+  flashlightPrice: number;
+}
+
+function buildInitialLines(order: EditableOrder): DraftLine[] {
+  const lines = Array.isArray(order.lines) ? order.lines : [];
+  return lines.map((l) => ({
+    productType: l.productType ?? null,
+    label: l.label ?? null,
+    color: l.color ?? null,
+    quantity: Math.max(1, Number(l.quantity) || 1),
+    unitPrice: Math.max(0, Number(l.unitPrice) || 0),
+    includeFlashlight: l.includeFlashlight === true,
+    flashlightPrice: Math.max(0, Number(l.flashlightPrice) || 0),
+  }));
+}
+
+function snapshotOrder(order: EditableOrder, parsed: CheckoutDetails | null): OrderSnapshot {
+  const lines: OrderSnapshotLine[] = Array.isArray(order.lines)
+    ? order.lines.map((l) => ({
+        productType: l.productType ?? null,
+        label: l.label ?? null,
+        color: l.color ?? null,
+        quantity: Number(l.quantity) || 0,
+        unitPrice: Number(l.unitPrice) || 0,
+        total: Number(l.total) || 0,
+      }))
+    : [];
+  return {
+    customer: order.customer,
+    phone: order.phone,
+    phone2: order.phone2 ?? null,
+    region: order.region,
+    district: order.district ?? null,
+    neighborhood: order.neighborhood ?? null,
+    address: order.address,
+    freeShipping: parsed?.totals ? parsed.totals.shipping === 0 : order.shippingFee === 0,
+    expressShipping: order.expressShipping === true,
+    subtotal: order.subtotal,
+    shippingFee: order.shippingFee,
+    total: order.total,
+    lines,
+    checkoutDetails: parsed,
+  };
+}
+
+export default function EditOrderModal({ order, onClose, onSaved }: EditOrderModalProps) {
+  const { user, profileFullName, currentRoleId } = useAuth();
+  const perms = usePermissions();
+  const canEdit = perms.isAdmin || perms.can('edit_orders');
+
+  const initialCheckout = useMemo(
+    () => parseCheckoutDetailsFromNotes(order.notes ?? null),
+    [order.notes]
+  );
+
+  const [customerName, setCustomerName] = useState(order.customer || '');
+  const [phone, setPhone] = useState(order.phone || '');
+  const [phone2, setPhone2] = useState(order.phone2 || '');
+  const [region, setRegion] = useState(order.region || '');
+  const [district, setDistrict] = useState(order.district || '');
+  const [neighborhood, setNeighborhood] = useState(order.neighborhood ?? '');
+  const [address, setAddress] = useState(order.address || '');
+
+  const [freeShipping, setFreeShipping] = useState(order.shippingFee === 0);
+  const [expressShipping, setExpressShipping] = useState(order.expressShipping === true);
+
+  const [lines, setLines] = useState<DraftLine[]>(() => buildInitialLines(order));
+
+  const [previewMode, setPreviewMode] = useState<PreviewMode>(
+    initialCheckout?.preview_mode ?? 'none'
+  );
+  const [installationTarget, setInstallationTarget] = useState<InstallationTarget>(
+    initialCheckout?.installation?.target ?? null
+  );
+  const [installationPayer, setInstallationPayer] = useState<InstallationPayer>(
+    (initialCheckout?.installation?.payer as InstallationPayer | null) ?? 'customer'
+  );
+
+  const [discountEnabled, setDiscountEnabled] = useState(
+    !!initialCheckout?.discount?.enabled || (initialCheckout?.discount?.amount ?? 0) > 0
+  );
+  const [discountType, setDiscountType] = useState<DiscountType>(
+    initialCheckout?.discount?.type === 'percent' ? 'percent' : 'fixed'
+  );
+  const [discountValue, setDiscountValue] = useState<number>(
+    Number(initialCheckout?.discount?.value ?? initialCheckout?.discount?.amount ?? 0)
+  );
+  const [discountReason, setDiscountReason] = useState<string>(
+    initialCheckout?.discount?.reason ?? ''
+  );
+  const [discountBy, setDiscountBy] = useState<string>(initialCheckout?.discount?.by ?? '');
+
+  const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>(
+    initialCheckout?.payment?.status ?? 'unpaid'
+  );
+  const [paidAmount, setPaidAmount] = useState<number>(
+    Number(initialCheckout?.payment?.paid_amount ?? 0)
+  );
+  const [paidTo, setPaidTo] = useState<string>(initialCheckout?.payment?.paid_to ?? '');
+  const [paymentMethod, setPaymentMethod] = useState<string>(
+    initialCheckout?.payment?.method ?? ''
+  );
+
+  const [submitting, setSubmitting] = useState(false);
+
+  // Default the "discount_by" label to the operator running the
+  // edit once the auth context resolves, but only when the field is
+  // empty AND the section is being newly enabled (don't clobber the
+  // original creator's label on an existing discount).
+  useEffect(() => {
+    if (!discountEnabled) return;
+    setDiscountBy((curr) => (curr.trim() ? curr : (profileFullName ?? user?.email ?? '')));
+  }, [discountEnabled, profileFullName, user?.email]);
+
+  // ─── Recompute totals ──────────────────────────────────────────────────
+
+  const subtotal = useMemo(
+    () =>
+      lines.reduce((acc, l) => {
+        const flashlight = l.includeFlashlight ? Number(l.flashlightPrice) || 0 : 0;
+        const perUnit = (Number(l.unitPrice) || 0) + flashlight;
+        return acc + perUnit * (Number(l.quantity) || 0);
+      }, 0),
+    [lines]
+  );
+  // Shipping fee logic: we only know the live regionFee when the
+  // operator opened from a region that has a per-region fee in
+  // settings. For v1 we preserve the original `shippingFee` unless
+  // `freeShipping` flips. Editing the express toggle ALONE doesn't
+  // change the saved fee because we don't have the live regionFee
+  // here. This keeps the edit surgical and prevents accidentally
+  // overwriting a customer-specific fee.
+  const shippingFee = freeShipping ? 0 : Number(order.shippingFee) || 0;
+  const holderQuantity = useMemo(
+    () =>
+      lines.reduce(
+        (sum, l) =>
+          // Use the same productType-based heuristic as AddOrderModal.
+          (l.productType || '').toLowerCase().includes('holder')
+            ? sum + (Number(l.quantity) || 0)
+            : sum,
+        0
+      ),
+    [lines]
+  );
+  const installationCharge =
+    previewMode === 'preview_with_installation' &&
+    installationTarget === 'customer' &&
+    installationPayer === 'customer'
+      ? holderQuantity * 20 // HOLDER_INSTALLATION_UNIT_PRICE
+      : 0;
+  const grossTotal = subtotal + shippingFee + installationCharge;
+
+  const normalizedDiscountValue = Math.max(0, Number(discountValue) || 0);
+  const rawDiscountAmount = !discountEnabled
+    ? 0
+    : discountType === 'percent'
+      ? Math.round((grossTotal * Math.min(normalizedDiscountValue, 100)) / 100)
+      : normalizedDiscountValue;
+  const appliedDiscount = Math.min(rawDiscountAmount, grossTotal);
+  const grandTotal = Math.max(0, grossTotal - appliedDiscount);
+  const effectivePaidAmount =
+    paymentStatus === 'unpaid'
+      ? 0
+      : paymentStatus === 'paid'
+        ? grandTotal
+        : Math.max(0, Number(paidAmount) || 0);
+  const remainingAmount = Math.max(0, grandTotal - effectivePaidAmount);
+
+  // ─── Validations ───────────────────────────────────────────────────────
+
+  const validate = (): string | null => {
+    if (!customerName.trim()) return 'اسم العميل مطلوب';
+    if (!phone.trim() || phone.trim().length < 7) return 'رقم الهاتف غير صالح';
+    if (!region.trim()) return 'المحافظة مطلوبة';
+    if (!address.trim() || address.trim().length < 5) return 'العنوان قصير جدًا';
+    for (const l of lines) {
+      if ((Number(l.quantity) || 0) <= 0) return 'كمية كل منتج يجب أن تكون 1 على الأقل';
+    }
+    if (discountEnabled) {
+      if (discountType === 'percent') {
+        if (normalizedDiscountValue <= 0 || normalizedDiscountValue > 100)
+          return 'نسبة الخصم يجب أن تكون بين 1% و 100%.';
+      } else {
+        if (normalizedDiscountValue <= 0) return 'قيمة الخصم يجب أن تكون أكبر من صفر.';
+        if (normalizedDiscountValue > grossTotal) return 'قيمة الخصم لا يمكن أن تتجاوز الإجمالي.';
+      }
+      if (!discountReason.trim()) return 'برجاء إدخال سبب الخصم.';
+    }
+    if (paymentStatus !== 'unpaid') {
+      if (!paidTo.trim()) return 'برجاء تحديد المدفوع له.';
+      if (!paymentMethod.trim()) return 'برجاء تحديد وسيلة الدفع.';
+    }
+    if (
+      paymentStatus === 'partial' &&
+      (effectivePaidAmount <= 0 || effectivePaidAmount >= grandTotal)
+    )
+      return 'برجاء إدخال مبلغ مدفوع جزئي صحيح.';
+    return null;
+  };
+
+  // ─── Save ──────────────────────────────────────────────────────────────
+
+  const handleSave = async () => {
+    if (!canEdit) {
+      toast.error('ليس لديك صلاحية تعديل الطلب');
+      return;
+    }
+    const validationError = validate();
+    if (validationError) {
+      toast.error(validationError);
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const supabase = createClient();
+      if (!supabase) {
+        toast.error('تعذر الاتصال بقاعدة البيانات');
+        return;
+      }
+
+      // Refetch live row so the diff is against current server state.
+      const { data: liveRow, error: fetchErr } = await supabase
+        .from('turath_masr_orders')
+        .select(
+          'id, order_num, customer, phone, phone2, region, district, neighborhood, address, products, quantity, subtotal, shipping_fee, extra_shipping_fee, total, status, notes, lines'
+        )
+        .eq('id', order.id)
+        .single();
+      if (fetchErr || !liveRow) {
+        console.error('[edit-order] fetch failed:', fetchErr);
+        toast.error('تعذر قراءة بيانات الطلب الحالية. حاول مرة أخرى.');
+        return;
+      }
+
+      const liveCheckout = parseCheckoutDetailsFromNotes(liveRow.notes ?? null);
+      const beforeSnapshot: OrderSnapshot = snapshotOrder(
+        {
+          id: liveRow.id,
+          orderNum: liveRow.order_num,
+          customer: liveRow.customer,
+          phone: liveRow.phone,
+          phone2: liveRow.phone2,
+          region: liveRow.region,
+          district: liveRow.district,
+          neighborhood: liveRow.neighborhood,
+          address: liveRow.address,
+          products: liveRow.products,
+          quantity: liveRow.quantity,
+          subtotal: Number(liveRow.subtotal) || 0,
+          shippingFee: Number(liveRow.shipping_fee) || 0,
+          extraShippingFee: Number(liveRow.extra_shipping_fee) || 0,
+          total: Number(liveRow.total) || 0,
+          status: liveRow.status,
+          notes: liveRow.notes,
+          lines: liveRow.lines,
+        } as EditableOrder,
+        liveCheckout
+      );
+
+      // Rebuild new lines payload — quantity edits are persisted;
+      // every other line-level field is carried forward verbatim
+      // from the live row so we don't clobber image / image_source
+      // / note metadata Phase Egress-Fix1 placed there.
+      const liveLines = Array.isArray(liveRow.lines)
+        ? (liveRow.lines as Array<Record<string, unknown>>)
+        : [];
+      const newLines = liveLines.map((live, idx) => {
+        const edited = lines[idx];
+        if (!edited) return live;
+        const qty = Math.max(1, Number(edited.quantity) || 1);
+        const unitPrice = Number(live.unitPrice) || Number(edited.unitPrice) || 0;
+        const flashlightPrice = Number(live.flashlightPrice) || Number(edited.flashlightPrice) || 0;
+        const includeFlashlight = live.includeFlashlight === true;
+        const perUnit = unitPrice + (includeFlashlight ? flashlightPrice : 0);
+        return {
+          ...live,
+          quantity: qty,
+          total: perUnit * qty,
+        };
+      });
+      const newSubtotal = newLines.reduce(
+        (acc, l) => acc + (Number((l as { total?: number }).total) || 0),
+        0
+      );
+      const newQuantity = newLines.reduce(
+        (acc, l) => acc + (Number((l as { quantity?: number }).quantity) || 0),
+        0
+      );
+
+      const checkoutDetails: CheckoutDetails = {
+        version: 1,
+        preview_mode: previewMode,
+        installation: {
+          enabled: previewMode === 'preview_with_installation',
+          target: previewMode === 'preview_with_installation' ? installationTarget : null,
+          payer:
+            previewMode === 'preview_with_installation' && installationTarget === 'customer'
+              ? installationPayer
+              : null,
+          unit_price: 20,
+          holder_quantity: holderQuantity,
+          customer_charge: installationCharge,
+        },
+        discount: {
+          enabled: discountEnabled && appliedDiscount > 0,
+          type: discountType,
+          value: discountEnabled ? normalizedDiscountValue : 0,
+          amount: appliedDiscount,
+          reason: discountReason.trim() || null,
+          by: discountBy.trim() || null,
+          by_user_id: user?.id ?? null,
+        },
+        payment: {
+          status: paymentStatus,
+          paid_amount: effectivePaidAmount,
+          paid_to: paymentStatus === 'unpaid' ? null : paidTo.trim() || null,
+          method: paymentStatus === 'unpaid' ? null : paymentMethod.trim() || null,
+          remaining_amount: remainingAmount,
+        },
+        totals: {
+          products_subtotal: newSubtotal,
+          shipping: shippingFee,
+          installation_customer_charge: installationCharge,
+          gross_total: newSubtotal + shippingFee + installationCharge,
+          discount: appliedDiscount,
+          final_total: Math.max(
+            0,
+            newSubtotal + shippingFee + installationCharge - appliedDiscount
+          ),
+        },
+      };
+      const newNotes = appendCheckoutDetailsToNotes(liveRow.notes ?? '', checkoutDetails);
+
+      const newTotal = checkoutDetails.totals.final_total;
+
+      const updatePayload: Record<string, unknown> = {
+        customer: customerName.trim(),
+        phone: phone.trim(),
+        phone2: phone2.trim() || null,
+        region: region.trim(),
+        district: district.trim() || null,
+        neighborhood: neighborhood.trim() || null,
+        address: address.trim(),
+        free_shipping: freeShipping,
+        // Preserve the express-shipping flag — we don't have a UI
+        // for editing it here; this carries forward the original
+        // value.
+        shipping_fee: shippingFee,
+        lines: newLines,
+        subtotal: newSubtotal,
+        quantity: newQuantity,
+        total: newTotal,
+        notes: newNotes,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error: updateErr } = await supabase
+        .from('turath_masr_orders')
+        .update(updatePayload)
+        .eq('id', order.id);
+      if (updateErr) {
+        console.error('[edit-order] update failed:', updateErr);
+        const friendly =
+          updateErr.code === '42501'
+            ? 'لا تملك صلاحية تعديل هذا الطلب. تواصل مع المدير.'
+            : `تعذر حفظ التعديلات: ${updateErr.message}`;
+        toast.error(friendly);
+        return;
+      }
+
+      // Build the after-snapshot from the payload we just sent.
+      const afterSnapshot: OrderSnapshot = {
+        customer: customerName.trim(),
+        phone: phone.trim(),
+        phone2: phone2.trim() || null,
+        region: region.trim(),
+        district: district.trim() || null,
+        neighborhood: neighborhood.trim() || null,
+        address: address.trim(),
+        freeShipping,
+        expressShipping: beforeSnapshot.expressShipping,
+        subtotal: newSubtotal,
+        shippingFee,
+        total: newTotal,
+        lines: newLines.map((l) => ({
+          productType: ((l as { productType?: string }).productType ?? null) as string | null,
+          label: ((l as { label?: string }).label ?? null) as string | null,
+          color: ((l as { color?: string | null }).color ?? null) as string | null,
+          quantity: Number((l as { quantity?: number }).quantity) || 0,
+          unitPrice: Number((l as { unitPrice?: number }).unitPrice) || 0,
+          total: Number((l as { total?: number }).total) || 0,
+        })),
+        checkoutDetails,
+      };
+
+      const changes = diffOrders(beforeSnapshot, afterSnapshot);
+
+      // Audit: one row per changed field into the per-order log so
+      // the existing AuditLogModal timeline renders them as
+      // individual entries. Best-effort — never block the save.
+      const actorLabel = (profileFullName ?? '').trim() || user?.email || '—';
+      for (const change of changes) {
+        try {
+          await addAuditLog({
+            orderId: order.id,
+            orderNum: order.orderNum,
+            action: 'order_edited',
+            fieldChanged: change.label,
+            oldValue: change.before == null ? '' : String(change.before),
+            newValue: change.after == null ? '' : String(change.after),
+            changedBy: actorLabel,
+            changedByRole: currentRoleId ?? '—',
+          });
+        } catch (auditErr) {
+          console.warn('[edit-order] per-field audit failed:', auditErr);
+        }
+      }
+
+      // Staff audit: one row summarising the whole edit.
+      try {
+        await writeStaffAuditLog(supabase, {
+          action: 'order.updated',
+          description: buildArabicDescription(order.orderNum, changes),
+          actorId: user?.id ?? null,
+          actorName: actorLabel,
+          actorRoleId: currentRoleId,
+          entity: {
+            type: 'order',
+            id: order.id,
+            label: order.orderNum,
+          },
+          metadata: buildStaffAuditMetadata(
+            order.id,
+            order.orderNum,
+            beforeSnapshot,
+            afterSnapshot,
+            changes
+          ),
+        });
+      } catch (staffAuditErr) {
+        console.warn('[edit-order] staff audit failed:', staffAuditErr);
+      }
+
+      toast.success(
+        changes.length === 0 ? 'تم الحفظ بدون تغييرات.' : `تم حفظ ${changes.length} تعديل.`
+      );
+
+      const updated: EditableOrder = {
+        ...order,
+        customer: customerName.trim(),
+        phone: phone.trim(),
+        phone2: phone2.trim() || undefined,
+        region: region.trim(),
+        district: district.trim() || undefined,
+        neighborhood: neighborhood.trim() || null,
+        address: address.trim(),
+        subtotal: newSubtotal,
+        shippingFee,
+        total: newTotal,
+        quantity: newQuantity,
+        notes: newNotes,
+        lines: newLines as EditableOrder['lines'],
+      };
+      onSaved(updated);
+    } catch (err) {
+      console.error('[edit-order] unexpected failure:', err);
+      toast.error('حدث خطأ غير متوقع. حاول مرة أخرى.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (!canEdit) {
+    return (
+      <div
+        className="fixed inset-0 z-[70] flex items-center justify-center p-4"
+        dir="rtl"
+        role="dialog"
+      >
+        <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden />
+        <div className="relative bg-white rounded-3xl shadow-modal w-full max-w-md p-6 space-y-3">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={18} className="text-rose-700" />
+            <h3 className="text-base font-bold">ليس لديك صلاحية تعديل الطلب</h3>
+          </div>
+          <p className="text-sm text-[hsl(var(--muted-foreground))]">
+            تواصل مع المدير لمنحك صلاحية تعديل الأوردرات.
+          </p>
+          <button
+            onClick={onClose}
+            className="w-full py-2 rounded-xl bg-[hsl(var(--primary))] text-white text-sm font-bold"
+          >
+            إغلاق
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center p-4"
+      dir="rtl"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div
+        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+        onClick={onClose}
+        aria-hidden
+      />
+      <div className="relative bg-white rounded-3xl shadow-modal w-full max-w-3xl max-h-[92vh] flex flex-col fade-in">
+        {/* Header */}
+        <div className="flex-shrink-0 flex items-center justify-between p-5 border-b border-[hsl(var(--border))]">
+          <div className="flex items-center gap-2">
+            <Edit2 size={18} className="text-[hsl(var(--primary))]" />
+            <div>
+              <h3 className="text-base font-bold">تعديل الطلب</h3>
+              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
+                رقم الطلب: <span className="font-mono">{order.orderNum}</span>
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))]"
+            aria-label="إغلاق"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-4 scrollbar-thin">
+          <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
+            <h4 className="text-xs font-bold text-[hsl(var(--muted-foreground))]">بيانات العميل</h4>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field label="اسم العميل *" value={customerName} onChange={setCustomerName} />
+              <Field label="رقم الهاتف *" value={phone} onChange={setPhone} dir="ltr" />
+              <Field label="رقم هاتف إضافي" value={phone2} onChange={setPhone2} dir="ltr" />
+              <Field label="المحافظة *" value={region} onChange={setRegion} />
+              <Field label="المنطقة / الحي" value={district} onChange={setDistrict} />
+              <Field label="القرية / الشياخة" value={neighborhood} onChange={setNeighborhood} />
+              <div className="sm:col-span-2">
+                <Field label="العنوان *" value={address} onChange={setAddress} multiline />
+              </div>
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-bold text-[hsl(var(--muted-foreground))]">المنتجات</h4>
+              <span className="text-[11px] text-[hsl(var(--muted-foreground))]">
+                لتعديل المنتج أو اللون أو حذف منتج، استخدم مرتجع / استبدال
+              </span>
+            </div>
+            <div className="space-y-2">
+              {lines.length === 0 && (
+                <p className="text-sm text-[hsl(var(--muted-foreground))]">
+                  لا توجد منتجات على هذا الطلب.
+                </p>
+              )}
+              {lines.map((line, idx) => (
+                <div
+                  key={idx}
+                  className="rounded-xl border border-[hsl(var(--border))] p-3 flex items-center gap-3"
+                >
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-bold">
+                      {line.label || line.productType || 'منتج'}
+                      {line.color ? ` — ${line.color}` : ''}
+                    </p>
+                    <p className="text-[11px] text-[hsl(var(--muted-foreground))]">
+                      السعر: {Number(line.unitPrice).toLocaleString('en-US')} ج.م
+                      {line.includeFlashlight ? ` + كشاف ${line.flashlightPrice} ج.م` : ''}
+                    </p>
+                  </div>
+                  <label className="text-[11px] text-[hsl(var(--muted-foreground))]">الكمية</label>
+                  <input
+                    type="number"
+                    min={1}
+                    className="input-field w-20 text-center font-mono"
+                    value={line.quantity}
+                    onChange={(e) => {
+                      const value = Math.max(1, Number(e.target.value) || 1);
+                      setLines((prev) =>
+                        prev.map((l, i) => (i === idx ? { ...l, quantity: value } : l))
+                      );
+                    }}
+                    dir="ltr"
+                  />
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
+            <h4 className="text-xs font-bold text-[hsl(var(--muted-foreground))]">الشحن</h4>
+            <div className="flex flex-wrap gap-3">
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={freeShipping}
+                  onChange={(e) => setFreeShipping(e.target.checked)}
+                />
+                شحن مجاني
+              </label>
+              <label className="flex items-center gap-2 text-sm cursor-pointer opacity-70">
+                <input
+                  type="checkbox"
+                  checked={expressShipping}
+                  disabled
+                  onChange={(e) => setExpressShipping(e.target.checked)}
+                />
+                شحن سريع (يتم تعديله من المنشئ فقط حاليًا)
+              </label>
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
+            <div className="flex items-center gap-1.5">
+              <Wrench size={13} className="text-[hsl(var(--primary))]" />
+              <h4 className="text-xs font-bold">المعاينة والتركيب</h4>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              {(
+                [
+                  { key: 'none', label: 'بدون معاينة' },
+                  { key: 'preview_only', label: 'معاينة بدون تركيب' },
+                  { key: 'preview_with_installation', label: 'معاينة مع تركيب' },
+                ] as const
+              ).map((opt) => (
+                <button
+                  type="button"
+                  key={opt.key}
+                  onClick={() => setPreviewMode(opt.key)}
+                  className={`text-xs px-3 py-2 rounded-xl border font-semibold transition-colors ${
+                    previewMode === opt.key
+                      ? 'bg-[hsl(var(--primary))] text-white border-[hsl(var(--primary))]'
+                      : 'bg-white border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/30'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            {previewMode === 'preview_with_installation' && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <select
+                  className="input-field"
+                  value={installationTarget ?? ''}
+                  onChange={(e) =>
+                    setInstallationTarget(
+                      e.target.value === 'mosque' || e.target.value === 'customer'
+                        ? (e.target.value as InstallationTarget)
+                        : null
+                    )
+                  }
+                >
+                  <option value="">اختر هدف التركيب</option>
+                  <option value="mosque">مسجد (مجاني)</option>
+                  <option value="customer">عملاء</option>
+                </select>
+                {installationTarget === 'customer' && (
+                  <select
+                    className="input-field"
+                    value={installationPayer}
+                    onChange={(e) => setInstallationPayer(e.target.value as InstallationPayer)}
+                  >
+                    <option value="customer">على العميل</option>
+                    <option value="factory">على المصنع</option>
+                  </select>
+                )}
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
+            <h4 className="text-xs font-bold text-[hsl(var(--muted-foreground))]">الخصم</h4>
+            {!discountEnabled ? (
+              <button
+                type="button"
+                onClick={() => setDiscountEnabled(true)}
+                className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-rose-200 bg-rose-50/50 px-4 py-2 text-sm font-bold text-rose-700 hover:bg-rose-50"
+              >
+                <span className="text-lg leading-none">+</span>
+                إضافة خصم
+              </button>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex gap-2">
+                  {(
+                    [
+                      { key: 'fixed', label: 'قيمة ثابتة' },
+                      { key: 'percent', label: 'نسبة مئوية' },
+                    ] as const
+                  ).map((opt) => (
+                    <button
+                      type="button"
+                      key={opt.key}
+                      onClick={() => setDiscountType(opt.key)}
+                      className={`flex-1 rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${
+                        discountType === opt.key
+                          ? 'border-rose-400 bg-white text-rose-800'
+                          : 'border-rose-200 bg-rose-50/70 text-rose-600 hover:bg-white'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="label-text">
+                      {discountType === 'percent' ? 'نسبة الخصم (%)' : 'قيمة الخصم (ج.م)'}
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={discountType === 'percent' ? 100 : undefined}
+                      dir="ltr"
+                      className="input-field text-center font-mono"
+                      value={discountValue}
+                      onChange={(e) => setDiscountValue(Math.max(0, Number(e.target.value) || 0))}
+                    />
+                  </div>
+                  <div>
+                    <label className="label-text">سبب الخصم</label>
+                    <input
+                      className="input-field"
+                      value={discountReason}
+                      onChange={(e) => setDiscountReason(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="label-text">تم الخصم بواسطة</label>
+                    <input
+                      className="input-field bg-slate-50"
+                      value={discountBy}
+                      onChange={(e) => setDiscountBy(e.target.value)}
+                      readOnly
+                    />
+                  </div>
+                </div>
+                {discountType === 'percent' && normalizedDiscountValue > 0 && (
+                  <p className="text-xs text-rose-800">
+                    سيتم خصم{' '}
+                    <span className="font-bold font-mono" dir="ltr">
+                      {appliedDiscount.toLocaleString('en-US')} ج.م
+                    </span>{' '}
+                    من إجمالي{' '}
+                    <span className="font-bold font-mono" dir="ltr">
+                      {grossTotal.toLocaleString('en-US')} ج.م
+                    </span>
+                  </p>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDiscountEnabled(false);
+                    setDiscountValue(0);
+                    setDiscountReason('');
+                  }}
+                  className="text-xs font-bold text-rose-700 underline-offset-2 hover:underline"
+                >
+                  إلغاء الخصم
+                </button>
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
+            <div className="flex items-center gap-1.5">
+              <Wallet size={13} className="text-[hsl(var(--primary))]" />
+              <h4 className="text-xs font-bold">الدفع</h4>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <select
+                className="input-field"
+                value={paymentStatus}
+                onChange={(e) => setPaymentStatus(e.target.value as PaymentStatus)}
+              >
+                <option value="unpaid">غير مدفوع</option>
+                <option value="paid">مدفوع بالكامل</option>
+                <option value="partial">مدفوع جزئيًا</option>
+              </select>
+              {paymentStatus !== 'unpaid' && (
+                <>
+                  <select
+                    className="input-field"
+                    value={paymentMethod}
+                    onChange={(e) => setPaymentMethod(e.target.value)}
+                  >
+                    <option value="">اختر وسيلة الدفع</option>
+                    {PAYMENT_METHOD_OPTIONS.map((opt) => (
+                      <option key={opt} value={opt}>
+                        {opt}
+                      </option>
+                    ))}
+                  </select>
+                  <Field label="مدفوع إلى" value={paidTo} onChange={setPaidTo} />
+                  {paymentStatus === 'partial' && (
+                    <div>
+                      <label className="label-text">المبلغ المدفوع</label>
+                      <input
+                        type="number"
+                        min={0}
+                        dir="ltr"
+                        className="input-field text-center font-mono"
+                        value={paidAmount}
+                        onChange={(e) => setPaidAmount(Math.max(0, Number(e.target.value) || 0))}
+                      />
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-1">
+            <h4 className="text-xs font-bold text-slate-700">ملخص الأسعار بعد التعديل</h4>
+            <Row label="إجمالي المنتجات" value={`${subtotal.toLocaleString('en-US')} ج.م`} />
+            <Row label="مصاريف الشحن" value={`${shippingFee.toLocaleString('en-US')} ج.م`} />
+            {installationCharge > 0 && (
+              <Row
+                label="تركيب الحامل"
+                value={`${installationCharge.toLocaleString('en-US')} ج.م`}
+              />
+            )}
+            <Row label="الإجمالي قبل الخصم" value={`${grossTotal.toLocaleString('en-US')} ج.م`} />
+            {appliedDiscount > 0 && (
+              <Row label="الخصم" value={`- ${appliedDiscount.toLocaleString('en-US')} ج.م`} />
+            )}
+            <Row
+              label="الإجمالي النهائي"
+              value={`${grandTotal.toLocaleString('en-US')} ج.م`}
+              emphasis
+            />
+            {paymentStatus !== 'unpaid' && (
+              <>
+                <Row label="المدفوع" value={`${effectivePaidAmount.toLocaleString('en-US')} ج.م`} />
+                <Row label="المتبقي" value={`${remainingAmount.toLocaleString('en-US')} ج.م`} />
+              </>
+            )}
+          </section>
+        </div>
+
+        {/* Footer */}
+        <div className="flex-shrink-0 border-t border-[hsl(var(--border))] p-4 flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            className="px-4 py-2 rounded-xl text-sm font-semibold border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]"
+          >
+            إلغاء
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleSave()}
+            disabled={submitting}
+            className="px-5 py-2 rounded-xl text-sm font-bold bg-[hsl(var(--primary))] text-white hover:opacity-90 disabled:opacity-40 flex items-center gap-1.5"
+          >
+            <Save size={14} />
+            {submitting ? 'جارٍ الحفظ...' : 'حفظ التعديلات'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  value,
+  onChange,
+  dir,
+  multiline,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  dir?: 'ltr' | 'rtl';
+  multiline?: boolean;
+}) {
+  return (
+    <div>
+      <label className="label-text">{label}</label>
+      {multiline ? (
+        <textarea
+          className="input-field min-h-[64px]"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          dir={dir}
+        />
+      ) : (
+        <input
+          className="input-field"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          dir={dir}
+        />
+      )}
+    </div>
+  );
+}
+
+function Row({
+  label,
+  value,
+  emphasis = false,
+}: {
+  label: string;
+  value: string;
+  emphasis?: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between text-xs">
+      <span className="text-slate-600">{label}</span>
+      <span
+        className={`font-mono ${emphasis ? 'font-bold text-sm text-slate-900' : 'text-slate-800'}`}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}

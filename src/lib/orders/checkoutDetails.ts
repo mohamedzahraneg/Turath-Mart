@@ -3,6 +3,17 @@ export type InstallationTarget = 'mosque' | 'customer' | null;
 export type InstallationPayer = 'customer' | 'factory';
 export type PaymentStatus = 'unpaid' | 'paid' | 'partial';
 
+// Phase Orders-Edit-1 — discount kind. `fixed` is the legacy default
+// (an EGP amount the staff member typed directly). `percent` is the
+// new mode where the staff member types a 0–100 number and the
+// engine derives the amount from the gross total at save time. The
+// `null` literal is intentionally absent — when discount.enabled is
+// false the type field still carries the last selected mode so the
+// UI can re-expand to the same view without losing the user's
+// intent. Existing orders that pre-date Phase Orders-Edit-1 carry
+// no `type` field; the parse helper defaults them to `fixed`.
+export type DiscountType = 'fixed' | 'percent';
+
 export const HOLDER_INSTALLATION_UNIT_PRICE = 20;
 
 export const PAYMENT_METHOD_OPTIONS = [
@@ -26,6 +37,19 @@ export interface CheckoutDetails {
     customer_charge: number;
   };
   discount: {
+    // Phase Orders-Edit-1 — explicit gate so the staff member can
+    // collapse the section back to "no discount" without losing
+    // the rest of the values. Pre-26H-2 envelopes (no `enabled`
+    // field) are inferred from `amount > 0` at parse time.
+    enabled: boolean;
+    // Phase Orders-Edit-1 — discount kind (`fixed` | `percent`).
+    // Pre-Orders-Edit-1 envelopes default to `fixed`.
+    type: DiscountType;
+    // Phase Orders-Edit-1 — the raw value the user typed. For
+    // `fixed`, this equals `amount`. For `percent`, this is the
+    // 0–100 number and `amount` is the derived EGP value at the
+    // gross total at save time.
+    value: number;
     amount: number;
     reason: string | null;
     by: string | null;
@@ -87,7 +111,14 @@ export function checkoutDetailsLines(details: CheckoutDetails): string[] {
   const installation = installationSummaryLabel(details);
   if (installation) lines.push(installation);
   if (details.discount.amount > 0) {
-    lines.push(`الخصم: ${money(details.discount.amount)}`);
+    // Phase Orders-Edit-1 — surface percent type when present.
+    // Pre-Orders-Edit-1 envelopes parse with `type='fixed'`, so the
+    // percent branch only triggers for orders saved by the new UI.
+    if (details.discount.type === 'percent' && details.discount.value > 0) {
+      lines.push(`الخصم: ${details.discount.value}% (${money(details.discount.amount)})`);
+    } else {
+      lines.push(`الخصم: ${money(details.discount.amount)}`);
+    }
     if (details.discount.reason) lines.push(`سبب الخصم: ${details.discount.reason}`);
     if (details.discount.by) lines.push(`تم الخصم بواسطة: ${details.discount.by}`);
   }
@@ -193,12 +224,34 @@ export function parseCheckoutDetailsFromNotes(
         holder_quantity: asNumber(installation.holder_quantity),
         customer_charge: asNumber(installation.customer_charge),
       },
-      discount: {
-        amount: asNumber(discount.amount),
-        reason: asString(discount.reason),
-        by: asString(discount.by),
-        by_user_id: asString(discount.by_user_id),
-      },
+      discount: (() => {
+        // Phase Orders-Edit-1 — backward-compatible parse. Pre-26H-2
+        // envelopes carry only `{ amount, reason, by, by_user_id }`;
+        // we infer:
+        //   • `enabled` from explicit field, falling back to
+        //     `amount > 0` (old envelopes that did record a value).
+        //   • `type` from explicit field, falling back to `fixed`.
+        //   • `value` from explicit field, falling back to `amount`
+        //     so legacy fixed-amount envelopes round-trip
+        //     unchanged through the new UI.
+        const amount = asNumber(discount.amount);
+        const explicitEnabled = typeof discount.enabled === 'boolean' ? discount.enabled : null;
+        const explicitType =
+          discount.type === 'fixed' || discount.type === 'percent' ? discount.type : null;
+        const explicitValue =
+          typeof discount.value === 'number' && Number.isFinite(discount.value)
+            ? discount.value
+            : null;
+        return {
+          enabled: explicitEnabled ?? amount > 0,
+          type: explicitType ?? 'fixed',
+          value: explicitValue ?? amount,
+          amount,
+          reason: asString(discount.reason),
+          by: asString(discount.by),
+          by_user_id: asString(discount.by_user_id),
+        };
+      })(),
       payment: {
         status: paymentStatus,
         paid_amount: asNumber(payment.paid_amount),

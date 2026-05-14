@@ -27,6 +27,9 @@ import {
   RotateCcw,
   XCircle,
   PlayCircle,
+  // Phase Orders-Edit-1 — pencil icon for the new "تعديل الطلب"
+  // action button in the modal header.
+  Edit2,
 } from 'lucide-react';
 import { getAuditLogs, STATUS_LABELS, type AuditEntry } from './AuditLogModal';
 import { createClient } from '@/lib/supabase/client';
@@ -56,6 +59,10 @@ import {
   type OrderAdjustment,
 } from '@/lib/orders/orderAdjustments';
 import OrderAdjustmentModal from './OrderAdjustmentModal';
+// Phase Orders-Edit-1 — focused edit surface gated behind the
+// `edit_orders` permission. Opens via the new action button below.
+import EditOrderModal from './EditOrderModal';
+import { usePermissions } from '@/hooks/usePermissions';
 // Phase Egress-Fix1 — resolve line image URL across legacy / inventory /
 // storage sources so consumers stop hard-coding `line.image`.
 import { resolveLineImageUrl } from '@/lib/orders/lineImage';
@@ -352,6 +359,12 @@ export default function OrderDetailModal({ order, onClose }: Props) {
   ];
   const canCreateAdjustment = !!currentRoleId && ADJUSTMENT_CREATOR_ROLES.includes(currentRoleId);
   const canDecideAdjustment = isManagerOrAbove(currentRoleId);
+
+  // Phase Orders-Edit-1 — `edit_orders` permission gate + modal
+  // visibility state. Admin (r1) bypasses via `perms.isAdmin`.
+  const perms = usePermissions();
+  const canEditOrder = perms.isAdmin || perms.can('edit_orders');
+  const [showEditModal, setShowEditModal] = useState(false);
 
   // Load audit logs and listen for real-time updates
   useEffect(() => {
@@ -1075,6 +1088,29 @@ export default function OrderDetailModal({ order, onClose }: Props) {
             <Printer size={13} />
             طباعة / PDF
           </button>
+          {/* Phase Orders-Edit-1 — edit button gated by `edit_orders`.
+              Sits before the adjustment button so the natural read of
+              action order is: print → edit → adjustment. Disabled
+              callers see the tooltip explanation rather than a
+              missing button so they know who to contact. */}
+          {canEditOrder ? (
+            <button
+              onClick={() => setShowEditModal(true)}
+              className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-1.5 rounded-xl font-semibold transition-colors"
+            >
+              <Edit2 size={13} />
+              تعديل الطلب
+            </button>
+          ) : (
+            <button
+              disabled
+              title="ليس لديك صلاحية تعديل الطلب"
+              className="flex items-center gap-1.5 bg-slate-200 text-slate-400 text-xs px-3 py-1.5 rounded-xl font-semibold cursor-not-allowed"
+            >
+              <Edit2 size={13} />
+              تعديل الطلب
+            </button>
+          )}
           {/* Phase 25A — returns & exchanges entry point. Shown only
               when the order is `delivered` and the current role is
               allowed to raise an adjustment. */}
@@ -2022,6 +2058,24 @@ export default function OrderDetailModal({ order, onClose }: Props) {
             neighborhood: liveOrder.neighborhood ?? null,
           }}
           onClose={() => setShowAdjustmentModal(false)}
+        />
+      )}
+
+      {/* Phase Orders-Edit-1 — edit modal. Mounted lazily so the
+          editor only loads when invoked. `onSaved` swaps the
+          parent's `liveOrder` so the rest of the detail panes
+          (header totals, audit timeline) reflect the new state
+          without a full reload. The cast is safe — EditOrderModal
+          only patches the editable subset, and the lines payload
+          retains every original field plus the new quantity/total. */}
+      {showEditModal && (
+        <EditOrderModal
+          order={liveOrder}
+          onClose={() => setShowEditModal(false)}
+          onSaved={(updated) => {
+            setLiveOrder((curr) => ({ ...curr, ...updated }) as Order);
+            setShowEditModal(false);
+          }}
         />
       )}
     </div>

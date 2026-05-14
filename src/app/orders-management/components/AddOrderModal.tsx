@@ -77,6 +77,7 @@ import {
   HOLDER_INSTALLATION_UNIT_PRICE,
   PAYMENT_METHOD_OPTIONS,
   type CheckoutDetails,
+  type DiscountType,
   type InstallationPayer,
   type InstallationTarget,
   type PaymentStatus,
@@ -541,7 +542,16 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
   const [previewMode, setPreviewMode] = useState<PreviewMode>('none');
   const [installationTarget, setInstallationTarget] = useState<InstallationTarget>(null);
   const [installationPayer, setInstallationPayer] = useState<InstallationPayer>('customer');
-  const [discountAmount, setDiscountAmount] = useState(0);
+  // Phase Orders-Edit-1 — discount is now an opt-in section. The
+  // `enabled` gate collapses the entire card behind a single
+  // "إضافة خصم" button until the staff member opts in; the `type`
+  // field switches the value control between a flat EGP amount
+  // (fixed) and a 0–100 percentage. The derived EGP amount is
+  // computed at save time from `grossTotal` so a typo in the gross
+  // never lands in the envelope.
+  const [discountEnabled, setDiscountEnabled] = useState(false);
+  const [discountType, setDiscountType] = useState<DiscountType>('fixed');
+  const [discountValue, setDiscountValue] = useState(0);
   const [discountReason, setDiscountReason] = useState('');
   const [discountBy, setDiscountBy] = useState(createdByDisplayName);
   const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>('unpaid');
@@ -607,7 +617,13 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
     previewMode,
     installationTarget,
     installationPayer,
-    discountAmount,
+    // Phase Orders-Edit-1 — persist discount mode + raw value
+    // alongside the derived EGP amount so reopens hydrate the
+    // exact same UI state.
+    discountEnabled,
+    discountType,
+    discountValue,
+    discountAmount: appliedDiscount,
     discountReason,
     discountBy,
     paymentStatus,
@@ -930,7 +946,13 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
     previewMode,
     installationTarget,
     installationPayer,
-    discountAmount,
+    // Phase Orders-Edit-1 — bump draft serialization on any of the
+    // new discount fields. `appliedDiscount` is derived later in the
+    // function body from these three plus `grossTotal`, so listing
+    // the inputs is enough (and keeps TS happy about use-before-decl).
+    discountEnabled,
+    discountType,
+    discountValue,
     discountReason,
     discountBy,
     paymentStatus,
@@ -1751,8 +1773,17 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
       ? holderQuantity * HOLDER_INSTALLATION_UNIT_PRICE
       : 0;
   const grossTotal = subtotal + shippingCost + holderInstallationCharge;
-  const normalizedDiscountAmount = Math.max(0, Number(discountAmount) || 0);
-  const appliedDiscount = Math.min(normalizedDiscountAmount, grossTotal);
+  // Phase Orders-Edit-1 — derive discount from the new state shape.
+  // `discountValue` is the user's typed number (EGP for `fixed`,
+  // percentage for `percent`). The derived EGP `appliedDiscount` is
+  // capped at `grossTotal` so an over-entry never lands negative.
+  const normalizedDiscountValue = Math.max(0, Number(discountValue) || 0);
+  const rawDiscountAmount = !discountEnabled
+    ? 0
+    : discountType === 'percent'
+      ? Math.round((grossTotal * Math.min(normalizedDiscountValue, 100)) / 100)
+      : normalizedDiscountValue;
+  const appliedDiscount = Math.min(rawDiscountAmount, grossTotal);
   const grandTotal = Math.max(0, grossTotal - appliedDiscount);
   const effectivePaidAmount =
     paymentStatus === 'unpaid'
@@ -1773,6 +1804,13 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
       customer_charge: holderInstallationCharge,
     },
     discount: {
+      // Phase Orders-Edit-1 — envelope V2 carries the typed mode +
+      // raw value alongside the derived EGP amount so the tracking
+      // page can show "10%" + the EGP equivalent, and so an edit
+      // round-trip re-populates the original UI exactly.
+      enabled: discountEnabled && appliedDiscount > 0,
+      type: discountType,
+      value: discountEnabled ? normalizedDiscountValue : 0,
       amount: appliedDiscount,
       reason: discountReason.trim() || null,
       by: discountBy.trim() || createdByDisplayName || null,
@@ -1890,13 +1928,28 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
       toast.error('اختر نوع تركيب الحامل أولًا');
       return false;
     }
-    if (normalizedDiscountAmount > grossTotal) {
-      toast.error('قيمة الخصم لا يمكن أن تتجاوز الإجمالي.');
-      return false;
-    }
-    if (normalizedDiscountAmount > 0 && !discountReason.trim()) {
-      toast.error('برجاء إدخال سبب الخصم.');
-      return false;
+    // Phase Orders-Edit-1 — discount validations now run only when
+    // the discount section is explicitly enabled.
+    if (discountEnabled) {
+      if (discountType === 'percent') {
+        if (normalizedDiscountValue <= 0 || normalizedDiscountValue > 100) {
+          toast.error('نسبة الخصم يجب أن تكون بين 1% و 100%.');
+          return false;
+        }
+      } else {
+        if (normalizedDiscountValue <= 0) {
+          toast.error('قيمة الخصم يجب أن تكون أكبر من صفر.');
+          return false;
+        }
+        if (normalizedDiscountValue > grossTotal) {
+          toast.error('قيمة الخصم لا يمكن أن تتجاوز الإجمالي.');
+          return false;
+        }
+      }
+      if (!discountReason.trim()) {
+        toast.error('برجاء إدخال سبب الخصم.');
+        return false;
+      }
     }
     if (paymentStatus !== 'unpaid') {
       if (!paidTo.trim()) {
@@ -1930,13 +1983,27 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
       toast.error('اختر نوع تركيب الحامل أولًا');
       return;
     }
-    if (normalizedDiscountAmount > grossTotal) {
-      toast.error('قيمة الخصم لا يمكن أن تتجاوز الإجمالي.');
-      return;
-    }
-    if (normalizedDiscountAmount > 0 && !discountReason.trim()) {
-      toast.error('برجاء إدخال سبب الخصم.');
-      return;
+    // Phase Orders-Edit-1 — discount validation mirrors validateStep2.
+    if (discountEnabled) {
+      if (discountType === 'percent') {
+        if (normalizedDiscountValue <= 0 || normalizedDiscountValue > 100) {
+          toast.error('نسبة الخصم يجب أن تكون بين 1% و 100%.');
+          return;
+        }
+      } else {
+        if (normalizedDiscountValue <= 0) {
+          toast.error('قيمة الخصم يجب أن تكون أكبر من صفر.');
+          return;
+        }
+        if (normalizedDiscountValue > grossTotal) {
+          toast.error('قيمة الخصم لا يمكن أن تتجاوز الإجمالي.');
+          return;
+        }
+      }
+      if (!discountReason.trim()) {
+        toast.error('برجاء إدخال سبب الخصم.');
+        return;
+      }
     }
     if (paymentStatus !== 'unpaid') {
       if (!paidTo.trim()) {
@@ -2218,7 +2285,9 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
     setPreviewMode('none');
     setInstallationTarget(null);
     setInstallationPayer('customer');
-    setDiscountAmount(0);
+    setDiscountEnabled(false);
+    setDiscountType('fixed');
+    setDiscountValue(0);
     setDiscountReason('');
     setDiscountBy(createdByDisplayName);
     setPaymentStatus('unpaid');
@@ -2268,7 +2337,13 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
     setPreviewMode(draft.previewMode);
     setInstallationTarget(draft.installationTarget);
     setInstallationPayer(draft.installationPayer);
-    setDiscountAmount(draft.discountAmount);
+    // Phase Orders-Edit-1 — hydrate the new discount fields from the
+    // draft. The sanitizer (orderDraft.ts) already defaults
+    // pre-Orders-Edit-1 drafts to `enabled = amount > 0`, `type =
+    // 'fixed'`, `value = amount` so they round-trip cleanly.
+    setDiscountEnabled(draft.discountEnabled);
+    setDiscountType(draft.discountType);
+    setDiscountValue(draft.discountValue);
     setDiscountReason(draft.discountReason);
     setDiscountBy(draft.discountBy || createdByDisplayName);
     setPaymentStatus(draft.paymentStatus);
@@ -3583,46 +3658,121 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                     )}
                   </div>
 
-                  {/* Discount */}
-                  <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
-                    <div className="mb-3 flex items-center gap-2">
-                      <span className="text-lg">٪</span>
-                      <span className="text-sm font-bold">الخصم</span>
+                  {/* Discount — Phase Orders-Edit-1 collapsed → expanded */}
+                  {!discountEnabled ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDiscountEnabled(true);
+                        setDiscountBy((curr) => curr || createdByDisplayName);
+                      }}
+                      className="flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-rose-200 bg-rose-50/50 px-4 py-3 text-sm font-bold text-rose-700 transition-colors hover:bg-rose-50"
+                    >
+                      <span className="text-lg leading-none">+</span>
+                      إضافة خصم
+                    </button>
+                  ) : (
+                    <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-lg">٪</span>
+                          <span className="text-sm font-bold">الخصم</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDiscountEnabled(false);
+                            setDiscountValue(0);
+                            setDiscountReason('');
+                          }}
+                          className="text-xs font-bold text-rose-700 underline-offset-2 hover:underline"
+                        >
+                          إلغاء الخصم
+                        </button>
+                      </div>
+
+                      {/* Type selector */}
+                      <div className="flex gap-2">
+                        {(
+                          [
+                            { key: 'fixed', label: 'قيمة ثابتة' },
+                            { key: 'percent', label: 'نسبة مئوية' },
+                          ] as const
+                        ).map((opt) => (
+                          <button
+                            type="button"
+                            key={opt.key}
+                            onClick={() => setDiscountType(opt.key)}
+                            className={`flex-1 rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${
+                              discountType === opt.key
+                                ? 'border-rose-400 bg-white text-rose-800'
+                                : 'border-rose-200 bg-rose-50/70 text-rose-600 hover:bg-white'
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                        <div>
+                          <label className="label-text">
+                            {discountType === 'percent' ? 'نسبة الخصم (%)' : 'قيمة الخصم (ج.م)'}
+                          </label>
+                          <input
+                            type="number"
+                            min={0}
+                            max={discountType === 'percent' ? 100 : undefined}
+                            dir="ltr"
+                            className="input-field text-center font-mono"
+                            value={discountValue}
+                            onChange={(e) =>
+                              setDiscountValue(Math.max(0, Number(e.target.value) || 0))
+                            }
+                          />
+                        </div>
+                        <div>
+                          <label className="label-text">سبب الخصم</label>
+                          <input
+                            className="input-field"
+                            placeholder="سبب الخصم"
+                            value={discountReason}
+                            onChange={(e) => setDiscountReason(e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label className="label-text">تم الخصم بواسطة</label>
+                          <input className="input-field bg-slate-50" value={discountBy} readOnly />
+                        </div>
+                      </div>
+
+                      {/* Derived amount preview for percent mode */}
+                      {discountType === 'percent' && normalizedDiscountValue > 0 && (
+                        <p className="text-xs text-rose-800">
+                          سيتم خصم{' '}
+                          <span className="font-bold font-mono" dir="ltr">
+                            {appliedDiscount.toLocaleString('en-US')} ج.م
+                          </span>{' '}
+                          من إجمالي{' '}
+                          <span className="font-bold font-mono" dir="ltr">
+                            {grossTotal.toLocaleString('en-US')} ج.م
+                          </span>{' '}
+                          ({normalizedDiscountValue}%)
+                        </p>
+                      )}
+                      {discountType === 'fixed' && normalizedDiscountValue > grossTotal && (
+                        <p className="text-xs font-semibold text-red-600">
+                          قيمة الخصم لا يمكن أن تتجاوز الإجمالي.
+                        </p>
+                      )}
+                      {discountType === 'percent' &&
+                        (normalizedDiscountValue <= 0 || normalizedDiscountValue > 100) && (
+                          <p className="text-xs font-semibold text-red-600">
+                            نسبة الخصم يجب أن تكون بين 1% و 100%.
+                          </p>
+                        )}
                     </div>
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                      <div>
-                        <label className="label-text">قيمة الخصم</label>
-                        <input
-                          type="number"
-                          min={0}
-                          dir="ltr"
-                          className="input-field text-center font-mono"
-                          value={discountAmount}
-                          onChange={(e) =>
-                            setDiscountAmount(Math.max(0, Number(e.target.value) || 0))
-                          }
-                        />
-                      </div>
-                      <div>
-                        <label className="label-text">سبب الخصم</label>
-                        <input
-                          className="input-field"
-                          placeholder="سبب الخصم"
-                          value={discountReason}
-                          onChange={(e) => setDiscountReason(e.target.value)}
-                        />
-                      </div>
-                      <div>
-                        <label className="label-text">تم الخصم بواسطة</label>
-                        <input className="input-field bg-slate-50" value={discountBy} readOnly />
-                      </div>
-                    </div>
-                    {normalizedDiscountAmount > grossTotal && (
-                      <p className="mt-2 text-xs font-semibold text-red-600">
-                        قيمة الخصم لا يمكن أن تتجاوز الإجمالي.
-                      </p>
-                    )}
-                  </div>
+                  )}
 
                   {/* Payment */}
                   <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
