@@ -380,6 +380,7 @@ function LoginPageInner() {
   // safety) so the effect only runs in the browser.
   const hasCleanedRef = useRef(false);
   const cleanupPromiseRef = useRef<Promise<unknown> | null>(null);
+  const loginInFlightRef = useRef(false);
   useEffect(() => {
     if (hasCleanedRef.current) return;
     hasCleanedRef.current = true;
@@ -422,8 +423,11 @@ function LoginPageInner() {
   /* ─── Auth logic — UNCHANGED except for the username→email resolver. ─── */
   const onSubmit = useCallback(
     async (data: LoginForm) => {
+      if (loginInFlightRef.current || cooldownSec > 0) return;
+      loginInFlightRef.current = true;
       setIsLoading(true);
       setLoginError('');
+      let shouldUnlock = true;
 
       try {
         // Allow the user to type either a full email OR just their username.
@@ -511,6 +515,7 @@ function LoginPageInner() {
         setTimeout(() => {
           router.replace(landingPage);
         }, 800);
+        shouldUnlock = false;
       } catch (err: any) {
         // Phase 11B/11C: classify the error so the user-facing copy matches
         // the actual failure mode. The previous catch labeled every error
@@ -559,10 +564,13 @@ function LoginPageInner() {
           setCooldownSec(60);
         }
       } finally {
-        setIsLoading(false);
+        if (shouldUnlock) {
+          setIsLoading(false);
+          loginInFlightRef.current = false;
+        }
       }
     },
-    [signIn, deviceType, router, searchParams]
+    [signIn, deviceType, router, searchParams, cooldownSec]
   );
 
   return (
@@ -730,10 +738,12 @@ function LoginPageInner() {
                     dir="ltr"
                     autoComplete="username"
                     aria-invalid={errors.email ? 'true' : 'false'}
+                    disabled={isLoading || cooldownSec > 0}
                     placeholder="البريد أو اسم المستخدم"
                     className={`w-full pr-8 sm:pr-9 pl-2.5 sm:pl-3 py-2 sm:py-2.5 bg-white/[0.05] border rounded-lg text-[12px] sm:text-[13px] text-white placeholder-white/35 text-right
                       focus:ring-2 focus:ring-[#4be0ff]/40 focus:border-[#4be0ff]/40 outline-none transition-all duration-300
                       backdrop-blur-sm shadow-inner shadow-black/20
+                      disabled:opacity-60 disabled:cursor-not-allowed
                       ${errors.email ? 'border-red-500/55' : 'border-white/10 hover:border-white/20'}`}
                     {...register('email', {
                       required: 'يرجى إدخال البريد أو اسم المستخدم',
@@ -765,9 +775,11 @@ function LoginPageInner() {
                     placeholder="كلمة المرور"
                     autoComplete="current-password"
                     aria-invalid={errors.password ? 'true' : 'false'}
+                    disabled={isLoading || cooldownSec > 0}
                     className={`w-full pr-8 sm:pr-9 pl-8 sm:pl-9 py-2 sm:py-2.5 bg-white/[0.05] border rounded-lg text-[12px] sm:text-[13px] text-white placeholder-white/35 text-right
                       focus:ring-2 focus:ring-[#4be0ff]/40 focus:border-[#4be0ff]/40 outline-none transition-all duration-300
                       backdrop-blur-sm shadow-inner shadow-black/20
+                      disabled:opacity-60 disabled:cursor-not-allowed
                       ${errors.password ? 'border-red-500/55' : 'border-white/10 hover:border-white/20'}`}
                     {...register('password', { required: 'يرجى إدخال كلمة المرور' })}
                   />
