@@ -2,6 +2,9 @@ export const ORDER_DRAFT_VERSION = 1;
 
 const ORDER_DRAFT_KEY_PREFIX = 'turath:add-order-draft:v1';
 
+export type HolderInstallationType = 'mosque' | 'customer' | null;
+export type HolderInstallationPayer = 'customer' | 'factory';
+
 export interface OrderDraftLine {
   id: string;
   productType: string;
@@ -28,6 +31,9 @@ export interface AddOrderDraftData {
   warranty: string;
   lines: OrderDraftLine[];
   step: number;
+  holderInstallationEnabled: boolean;
+  holderInstallationType: HolderInstallationType;
+  holderInstallationPayer: HolderInstallationPayer;
 }
 
 export interface StoredAddOrderDraft {
@@ -56,6 +62,14 @@ function safeNumber(value: unknown, fallback = 0): number {
     return Number.isFinite(parsed) ? parsed : fallback;
   }
   return fallback;
+}
+
+function safeHolderInstallationType(value: unknown): HolderInstallationType {
+  return value === 'mosque' || value === 'customer' ? value : null;
+}
+
+function safeHolderInstallationPayer(value: unknown): HolderInstallationPayer {
+  return value === 'factory' ? 'factory' : 'customer';
 }
 
 function sanitizeLine(input: unknown): OrderDraftLine | null {
@@ -96,6 +110,9 @@ export function sanitizeOrderDraftData(input: unknown): AddOrderDraftData | null
     warranty: safeString(input.warranty) || 'بدون ضمان',
     lines,
     step: Math.min(3, Math.max(1, Math.floor(safeNumber(input.step, 1)))),
+    holderInstallationEnabled: input.holderInstallationEnabled === true,
+    holderInstallationType: safeHolderInstallationType(input.holderInstallationType),
+    holderInstallationPayer: safeHolderInstallationPayer(input.holderInstallationPayer),
   };
 }
 
@@ -111,6 +128,7 @@ export function hasMeaningfulOrderDraft(data: AddOrderDraftData): boolean {
     data.expressShipping ||
     data.freeShipping ||
     data.extraShippingFee > 0 ||
+    data.holderInstallationEnabled ||
     data.lines.length > 0
   );
 }
