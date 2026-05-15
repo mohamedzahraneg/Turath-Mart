@@ -795,43 +795,76 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
     statusFilter,
   ]);
 
+  // Phase Orders-Page-Redesign-1 Fix3b — cancel / archive instead of
+  // hard delete. Both the bulk-action button and the per-row trash
+  // icon now flip the order's status to `cancelled` and stamp
+  // `updated_by` for the audit trail. The row stays in the
+  // database so its history (audit logs, adjustments, child orders)
+  // remains intact.
+  //
+  // We intentionally KEEP the handler names (`handleBulkDelete` /
+  // `handleSingleDelete`) so we don't rename every call site; the
+  // body + tooltips + toasts now describe the cancel/archive
+  // behaviour clearly.
   const handleBulkDelete = async () => {
     if (selectedRows.size === 0) return;
-    const confirmed = window.confirm(`هل أنت متأكد من حذف ${selectedRows.size} أوردر؟`);
-    if (!confirmed) return;
-    try {
-      const supabase = createClient();
-      const idsToDelete = Array.from(selectedRows);
-      const { error } = await supabase.from('turath_masr_orders').delete().in('id', idsToDelete);
-      if (error) throw error;
-      toast.success(`تم حذف ${selectedRows.size} أوردر بنجاح`);
-      setSelectedRows(new Set());
-      loadOrders();
-      window.dispatchEvent(new CustomEvent('turath_masr_orders_updated'));
-    } catch (err) {
-      console.error('Bulk delete error:', err);
-      toast.error('حدث خطأ أثناء حذف الأوردرات');
-    }
-  };
-
-  // Phase Orders-Page-Redesign-1 Fix3 — single-row delete wired to
-  // the existing bulk-delete primitive. Permission is already
-  // gated at the icon level by `canManageOrders`. The confirm
-  // dialog spells out the order number so a misclick is obvious.
-  const handleSingleDelete = async (order: Order) => {
-    if (!canManageOrders) {
-      toast.error('ليس لديك صلاحية حذف الطلب');
-      return;
-    }
     const confirmed = window.confirm(
-      `هل أنت متأكد من حذف الطلب #${order.orderNum}؟\nلا يمكن التراجع عن هذه العملية.`
+      `هل تريد إلغاء / أرشفة ${selectedRows.size} طلب؟\nسيتم نقل الطلبات إلى حالة ملغي ولن يتم حذف بياناتها أو سجلاتها.`
     );
     if (!confirmed) return;
     try {
       const supabase = createClient();
-      const { error } = await supabase.from('turath_masr_orders').delete().eq('id', order.id);
+      const idsToUpdate = Array.from(selectedRows);
+      const updatePayload: Record<string, unknown> = {
+        status: 'cancelled',
+        updated_at: new Date().toISOString(),
+      };
+      if (user?.id) {
+        updatePayload.updated_by = user.id;
+      }
+      const { error } = await supabase
+        .from('turath_masr_orders')
+        .update(updatePayload)
+        .in('id', idsToUpdate);
       if (error) throw error;
-      toast.success(`تم حذف الطلب #${order.orderNum}`);
+      toast.success(`تم إلغاء / أرشفة ${selectedRows.size} طلب`);
+      setSelectedRows(new Set());
+      loadOrders();
+      window.dispatchEvent(new CustomEvent('turath_masr_orders_updated'));
+    } catch (err) {
+      console.error('[OrdersTableSection] bulk cancel/archive failed:', err);
+      const msg =
+        err instanceof Error && err.message.includes('42501')
+          ? 'لا تملك صلاحية إلغاء هذه الطلبات. تواصل مع المدير.'
+          : 'حدث خطأ أثناء إلغاء / أرشفة الطلبات';
+      toast.error(msg);
+    }
+  };
+
+  const handleSingleDelete = async (order: Order) => {
+    if (!canManageOrders) {
+      toast.error('ليس لديك صلاحية إلغاء الطلب');
+      return;
+    }
+    const confirmed = window.confirm(
+      `هل تريد إلغاء / أرشفة الطلب #${order.orderNum}؟\nسيتم نقل الطلب إلى حالة ملغي ولن يتم حذف بياناته أو سجلاته.`
+    );
+    if (!confirmed) return;
+    try {
+      const supabase = createClient();
+      const updatePayload: Record<string, unknown> = {
+        status: 'cancelled',
+        updated_at: new Date().toISOString(),
+      };
+      if (user?.id) {
+        updatePayload.updated_by = user.id;
+      }
+      const { error } = await supabase
+        .from('turath_masr_orders')
+        .update(updatePayload)
+        .eq('id', order.id);
+      if (error) throw error;
+      toast.success(`تم إلغاء / أرشفة الطلب #${order.orderNum}`);
       setSelectedRows((prev) => {
         const next = new Set(prev);
         next.delete(order.id);
@@ -840,11 +873,11 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
       loadOrders();
       window.dispatchEvent(new CustomEvent('turath_masr_orders_updated'));
     } catch (err) {
-      console.error('[OrdersTableSection] single delete failed:', err);
+      console.error('[OrdersTableSection] single cancel/archive failed:', err);
       const msg =
         err instanceof Error && err.message.includes('42501')
-          ? 'لا تملك صلاحية حذف هذا الطلب. تواصل مع المدير.'
-          : 'حدث خطأ أثناء حذف الطلب';
+          ? 'لا تملك صلاحية إلغاء هذا الطلب. تواصل مع المدير.'
+          : 'حدث خطأ أثناء إلغاء / أرشفة الطلب';
       toast.error(msg);
     }
   };
@@ -1261,8 +1294,9 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
               <button
                 className="bg-red-500/80 hover:bg-red-600 text-white text-xs px-3 py-1.5 rounded-lg transition-colors font-medium"
                 onClick={handleBulkDelete}
+                title="إلغاء / أرشفة الطلبات المحددة"
               >
-                حذف المحدد
+                إلغاء / أرشفة المحدد
               </button>
               <button
                 className="bg-white/20 hover:bg-white/30 text-white text-xs px-3 py-1.5 rounded-lg transition-colors font-medium"
@@ -1584,7 +1618,8 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
                             <button
                               onClick={() => handleSingleDelete(order)}
                               className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
-                              title="حذف الطلب"
+                              title="إلغاء / أرشفة الطلب"
+                              aria-label="إلغاء / أرشفة الطلب"
                             >
                               <Trash2 size={14} />
                             </button>
