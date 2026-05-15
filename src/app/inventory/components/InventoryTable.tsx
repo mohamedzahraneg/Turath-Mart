@@ -13,7 +13,16 @@
 'use client';
 
 import React from 'react';
-import { AlertTriangle, Archive, CheckCircle, Edit2, Eye, Pause, XCircle } from 'lucide-react';
+import {
+  AlertTriangle,
+  Archive,
+  CheckCircle,
+  Edit2,
+  Eye,
+  Pause,
+  Plus,
+  XCircle,
+} from 'lucide-react';
 
 import { InventoryThumbnail, inventoryThumbnailUrl } from '@/lib/inventory/InventoryThumbnail';
 import {
@@ -29,9 +38,11 @@ import {
 interface Props {
   items: InventoryItem[];
   withdrawnByName: Record<string, number>;
+  canAddStock: boolean;
   onView: (item: InventoryItem) => void;
   onEdit: (item: InventoryItem) => void;
   onArchive: (item: InventoryItem) => void;
+  onAddStock: (item: InventoryItem) => void;
 }
 
 const HEADERS = [
@@ -53,9 +64,11 @@ const HEADERS = [
 export default function InventoryTable({
   items,
   withdrawnByName,
+  canAddStock,
   onView,
   onEdit,
   onArchive,
+  onAddStock,
 }: Props) {
   return (
     <div
@@ -212,6 +225,17 @@ export default function InventoryTable({
                       >
                         <Edit2 size={14} />
                       </button>
+                      {canAddStock && (
+                        <button
+                          type="button"
+                          onClick={() => onAddStock(item)}
+                          disabled={isArchived}
+                          className="p-1.5 hover:bg-emerald-50 text-emerald-700 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed"
+                          title={isArchived ? 'مؤرشف — لا يمكن إضافة كمية' : 'إضافة كمية'}
+                        >
+                          <Plus size={14} />
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => onArchive(item)}

@@ -3,11 +3,24 @@
 //
 // Phase Inventory-UI-Redesign-1 — six KPI cards built from real values
 // computed in `computeStats`. No mocks, no fake trends.
+//
+// Phase Inventory-Additions-Log-1 — adds an optional seventh card
+// "إضافات الشهر" driven by the additions ledger. Pass `null` to hide
+// the card (e.g. when the additions table is missing pre-migration);
+// pass a number to show it.
 // ─────────────────────────────────────────────────────────────────────────────
 'use client';
 
 import React from 'react';
-import { AlertTriangle, Banknote, Package, TrendingDown, Warehouse, XCircle } from 'lucide-react';
+import {
+  AlertTriangle,
+  Banknote,
+  Package,
+  PackagePlus,
+  TrendingDown,
+  Warehouse,
+  XCircle,
+} from 'lucide-react';
 
 import {
   formatCompactMoney,
@@ -17,16 +30,19 @@ import {
 
 interface Props {
   stats: InventoryStats;
+  /** Units added across the additions ledger for the current month.
+   *  `null` hides the card (e.g. before the migration applies). */
+  additionsThisMonth?: number | null;
 }
 
 interface Card {
   label: string;
   value: string;
   icon: React.ReactNode;
-  tone: 'blue' | 'green' | 'orange' | 'navy' | 'amber' | 'red';
+  tone: 'blue' | 'green' | 'orange' | 'navy' | 'amber' | 'red' | 'emerald';
 }
 
-export default function InventoryKpiCards({ stats }: Props) {
+export default function InventoryKpiCards({ stats, additionsThisMonth }: Props) {
   const cards: Card[] = [
     {
       label: 'إجمالي المنتجات',
@@ -66,8 +82,20 @@ export default function InventoryKpiCards({ stats }: Props) {
     },
   ];
 
+  if (typeof additionsThisMonth === 'number') {
+    cards.push({
+      label: 'إضافات الشهر',
+      value: `+${formatNumber(additionsThisMonth)}`,
+      icon: <PackagePlus size={20} />,
+      tone: 'emerald',
+    });
+  }
+
+  // Switch the xl grid to 7 columns when the additions card is included.
+  const xlCols = cards.length >= 7 ? 'xl:grid-cols-7' : 'xl:grid-cols-6';
+
   return (
-    <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3" dir="rtl">
+    <div className={`grid grid-cols-2 md:grid-cols-3 ${xlCols} gap-3`} dir="rtl">
       {cards.map((card) => (
         <div
           key={card.label}
@@ -95,4 +123,5 @@ const TONE_BG: Record<Card['tone'], string> = {
   navy: 'bg-[hsl(217,80%,95%)] text-[hsl(217,80%,30%)]',
   amber: 'bg-amber-50 text-amber-700',
   red: 'bg-red-50 text-red-600',
+  emerald: 'bg-emerald-100 text-emerald-700',
 };

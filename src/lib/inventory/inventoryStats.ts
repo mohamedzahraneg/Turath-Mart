@@ -53,6 +53,29 @@ export interface Category {
   is_active: boolean;
 }
 
+/** Phase Inventory-Additions-Log-1 — one row in the additions ledger. */
+export interface InventoryAddition {
+  id: string;
+  inventory_id: string;
+  quantity: number;
+  unit_cost: number | null;
+  total_cost: number | null;
+  supplier_id: string | null;
+  supplier_name: string | null;
+  supplier_invoice_num: string | null;
+  received_at: string;
+  created_by: string | null;
+  created_by_name: string | null;
+  note: string | null;
+  created_at: string;
+}
+
+/** A row joined with the inventory product, for the global log view. */
+export interface InventoryAdditionWithProduct extends InventoryAddition {
+  inventory_name: string;
+  inventory_sku: string;
+}
+
 /** Stock health of a single row (independent of lifecycle status). */
 export type ProductStatus = 'available' | 'low' | 'out';
 
@@ -272,6 +295,50 @@ export function exportInventoryCsv(items: InventoryItem[]): void {
   const a = document.createElement('a');
   a.href = url;
   a.download = `inventory-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+// Phase Inventory-Additions-Log-1 — CSV export of the global
+// additions log. Columns mirror the table; UTF-8 BOM so Excel opens
+// Arabic correctly.
+export function exportAdditionsCsv(rows: InventoryAdditionWithProduct[]): void {
+  if (typeof window === 'undefined') return;
+
+  const header = [
+    'التاريخ',
+    'المنتج',
+    'SKU',
+    'الكمية',
+    'تكلفة الوحدة',
+    'إجمالي التكلفة',
+    'المورد',
+    'رقم الفاتورة',
+    'أضيف بواسطة',
+    'ملاحظة',
+  ];
+
+  const rowsCsv = rows.map((r) => [
+    r.received_at ?? r.created_at ?? '',
+    r.inventory_name ?? '',
+    r.inventory_sku ?? '',
+    String(r.quantity ?? 0),
+    r.unit_cost == null ? '' : String(r.unit_cost),
+    r.total_cost == null ? '' : String(r.total_cost),
+    r.supplier_name ?? '',
+    r.supplier_invoice_num ?? '',
+    r.created_by_name ?? '',
+    r.note ?? '',
+  ]);
+
+  const csv = [header, ...rowsCsv].map((line) => line.map(csvEscape).join(',')).join('\r\n');
+  const blob = new Blob(['﻿', csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `inventory-additions-${new Date().toISOString().slice(0, 10)}.csv`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

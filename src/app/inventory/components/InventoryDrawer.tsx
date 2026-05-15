@@ -1,25 +1,24 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // src/app/inventory/components/InventoryDrawer.tsx
 //
-// Phase Inventory-UI-Redesign-1 — right-side product details drawer with
-// four tabs. NO movement / additions tabs in this phase.
-//
-// Phase Inventory-Categories-Safer-Archive-1 — adds:
-//   • Lifecycle chip (نشط / موقوف / مؤرشف) shown alongside the stock
-//     chip in the summary tab and the settings tab.
-//   • Settings tab now hosts the active ↔ inactive toggle, an archive
-//     button (replaces the previous hard delete), and a "استعادة من
-//     الأرشيف" admin-only restore for archived rows.
-//   • A small banner explains that archived products are hidden from
-//     the order picker but remain in the inventory history.
+// Phase Inventory-UI-Redesign-1 — right-side product details drawer.
+// Phase Inventory-Categories-Safer-Archive-1 — adds lifecycle chip,
+//   active ↔ inactive toggle, archive / restore.
+// Phase Inventory-Additions-Log-1 — adds:
+//   • A new "الإضافات" tab listing the latest stock additions for
+//     this product (read from `turath_masr_inventory_additions`).
+//     Falls back to an honest empty / missing-table state.
+//   • "+ إضافة كمية" CTA in the summary tab (and a mirror in the
+//     settings tab) that opens the AddStockModal via the parent.
 //
 // Tabs:
-//   • الملخص — factsheet, image, inventory value, lifecycle + stock chips
+//   • الملخص — factsheet, lifecycle + stock chips, + إضافة كمية CTA
 //   • الألوان — chips, or honest empty state if no colors
+//   • الإضافات — last 50 stock additions for this product
 //   • الطلبات المرتبطة — last 10 orders whose `products` text contains
 //     the product name (lightweight ilike). Falls back to an honest
 //     empty state on error.
-//   • الإعدادات — read-only metadata + edit / lifecycle actions
+//   • الإعدادات — read-only metadata + edit / lifecycle / + قطع
 // ─────────────────────────────────────────────────────────────────────────────
 'use client';
 
@@ -32,6 +31,7 @@ import {
   Package,
   Pause,
   Play,
+  Plus,
   RefreshCw,
   RotateCcw,
   X,
@@ -46,32 +46,38 @@ import {
   formatNumber,
   productLifecycle,
   productStatus,
+  type InventoryAddition,
   type InventoryItem,
   type LifecycleStatus,
 } from '@/lib/inventory/inventoryStats';
 
-type Tab = 'summary' | 'colors' | 'orders' | 'settings';
+type Tab = 'summary' | 'colors' | 'additions' | 'orders' | 'settings';
 
 interface Props {
   item: InventoryItem;
   withdrawn: number;
   isAdmin: boolean;
+  canAddStock: boolean;
   onClose: () => void;
   onEdit: (item: InventoryItem) => void;
   onArchive: (item: InventoryItem) => void;
   onSetStatus: (item: InventoryItem, nextStatus: 'active' | 'inactive') => void;
   onRestore: (item: InventoryItem) => void;
+  /** Phase Inventory-Additions-Log-1 — launches AddStockModal for this product. */
+  onAddStock: (item: InventoryItem) => void;
 }
 
 export default function InventoryDrawer({
   item,
   withdrawn,
   isAdmin,
+  canAddStock,
   onClose,
   onEdit,
   onArchive,
   onSetStatus,
   onRestore,
+  onAddStock,
 }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>('summary');
   const status = productStatus(item);
@@ -138,6 +144,7 @@ export default function InventoryDrawer({
             [
               { key: 'summary', label: 'الملخص' },
               { key: 'colors', label: 'الألوان' },
+              { key: 'additions', label: 'الإضافات' },
               { key: 'orders', label: 'الطلبات المرتبطة' },
               { key: 'settings', label: 'الإعدادات' },
             ] as { key: Tab; label: string }[]
@@ -168,9 +175,18 @@ export default function InventoryDrawer({
               status={status}
               lifecycle={lifecycle}
               inventoryValue={inventoryValue}
+              canAddStock={canAddStock}
+              onAddStock={() => onAddStock(item)}
             />
           )}
           {activeTab === 'colors' && <ColorsTab item={item} />}
+          {activeTab === 'additions' && (
+            <AdditionsTab
+              item={item}
+              canAddStock={canAddStock}
+              onAddStock={() => onAddStock(item)}
+            />
+          )}
           {activeTab === 'orders' && <OrdersTab item={item} />}
           {activeTab === 'settings' && (
             <SettingsTab
@@ -178,10 +194,12 @@ export default function InventoryDrawer({
               status={status}
               lifecycle={lifecycle}
               isAdmin={isAdmin}
+              canAddStock={canAddStock}
               onEdit={() => onEdit(item)}
               onArchive={() => onArchive(item)}
               onSetStatus={(next) => onSetStatus(item, next)}
               onRestore={() => onRestore(item)}
+              onAddStock={() => onAddStock(item)}
             />
           )}
         </div>
@@ -198,12 +216,16 @@ function SummaryTab({
   status,
   lifecycle,
   inventoryValue,
+  canAddStock,
+  onAddStock,
 }: {
   item: InventoryItem;
   withdrawn: number;
   status: ReturnType<typeof productStatus>;
   lifecycle: LifecycleStatus;
   inventoryValue: number;
+  canAddStock: boolean;
+  onAddStock: () => void;
 }) {
   return (
     <div className="space-y-4">
@@ -226,6 +248,17 @@ function SummaryTab({
         <Row label="دورة الحياة" value={<LifecycleChip lifecycle={lifecycle} />} />
         <Row label="حالة المخزون" value={<StatusChip status={status} />} />
       </div>
+
+      {canAddStock && lifecycle !== 'archived' && (
+        <button
+          type="button"
+          onClick={onAddStock}
+          className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold rounded-xl py-2.5"
+        >
+          <Plus size={15} />
+          إضافة كمية
+        </button>
+      )}
 
       {lifecycle === 'archived' && (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-800 flex items-start gap-2">
@@ -365,6 +398,207 @@ function ColorsTab({ item }: { item: InventoryItem }) {
   );
 }
 
+// ─── Additions (per product) ────────────────────────────────────────────────
+
+interface RawAdditionRow {
+  id: string;
+  inventory_id: string;
+  quantity: number | null;
+  unit_cost: number | string | null;
+  total_cost: number | string | null;
+  supplier_id: string | null;
+  supplier_name: string | null;
+  supplier_invoice_num: string | null;
+  received_at: string | null;
+  created_by: string | null;
+  created_by_name: string | null;
+  note: string | null;
+  created_at: string | null;
+}
+
+function AdditionsTab({
+  item,
+  canAddStock,
+  onAddStock,
+}: {
+  item: InventoryItem;
+  canAddStock: boolean;
+  onAddStock: () => void;
+}) {
+  const [rows, setRows] = useState<InventoryAddition[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [missingTable, setMissingTable] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setMissingTable(false);
+    (async () => {
+      try {
+        const supabase = createClient();
+        const { data, error: err } = await supabase
+          .from('turath_masr_inventory_additions')
+          .select(
+            'id, inventory_id, quantity, unit_cost, total_cost, supplier_id, supplier_name, supplier_invoice_num, received_at, created_by, created_by_name, note, created_at'
+          )
+          .eq('inventory_id', item.id)
+          .order('received_at', { ascending: false })
+          .order('created_at', { ascending: false })
+          .limit(50);
+
+        if (cancelled) return;
+        if (err) {
+          const msg = (err.message || '').toLowerCase();
+          if (msg.includes('does not exist') || msg.includes('relation')) {
+            setMissingTable(true);
+            setRows([]);
+          } else {
+            setError('تعذر تحميل سجل الإضافات.');
+          }
+          return;
+        }
+        const mapped: InventoryAddition[] = (data as RawAdditionRow[]).map((r) => ({
+          id: r.id,
+          inventory_id: r.inventory_id,
+          quantity: Number(r.quantity ?? 0),
+          unit_cost: r.unit_cost == null ? null : Number(r.unit_cost),
+          total_cost: r.total_cost == null ? null : Number(r.total_cost),
+          supplier_id: r.supplier_id,
+          supplier_name: r.supplier_name,
+          supplier_invoice_num: r.supplier_invoice_num,
+          received_at: r.received_at ?? '',
+          created_by: r.created_by,
+          created_by_name: r.created_by_name,
+          note: r.note,
+          created_at: r.created_at ?? '',
+        }));
+        setRows(mapped);
+      } catch {
+        if (!cancelled) setError('تعذر تحميل سجل الإضافات.');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [item.id]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-10 text-[hsl(var(--muted-foreground))] gap-2 text-sm">
+        <RefreshCw size={14} className="animate-spin" />
+        جاري التحميل...
+      </div>
+    );
+  }
+
+  if (missingTable) {
+    return (
+      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-800 text-sm">
+        سجل الإضافات غير مفعّل بعد. يجب تطبيق تحديث قاعدة البيانات أولًا.
+      </div>
+    );
+  }
+
+  if (error) {
+    return <div className="text-center py-10 text-red-600 text-sm">{error}</div>;
+  }
+
+  if (!rows || rows.length === 0) {
+    return (
+      <div className="space-y-3">
+        <div className="text-center py-12 text-[hsl(var(--muted-foreground))] text-sm">
+          لا توجد إضافات مسجلة لهذا المنتج بعد.
+        </div>
+        {canAddStock && productLifecycle(item) !== 'archived' && (
+          <button
+            type="button"
+            onClick={onAddStock}
+            className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold rounded-xl py-2.5"
+          >
+            <Plus size={15} />
+            إضافة كمية جديدة
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-[hsl(var(--muted-foreground))]">
+          آخر {rows.length} إضافة لهذا المنتج.
+        </p>
+        {canAddStock && productLifecycle(item) !== 'archived' && (
+          <button
+            type="button"
+            onClick={onAddStock}
+            className="inline-flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-xl"
+          >
+            <Plus size={12} /> إضافة كمية
+          </button>
+        )}
+      </div>
+
+      <div className="rounded-2xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-[hsl(var(--muted))]/40 border-b border-[hsl(var(--border))]">
+              {[
+                'التاريخ',
+                'الكمية',
+                'تكلفة الوحدة',
+                'الإجمالي',
+                'المورد',
+                'رقم الفاتورة',
+                'أضيف بواسطة',
+                'ملاحظة',
+              ].map((h) => (
+                <th
+                  key={h}
+                  className="text-right px-3 py-2 text-[11px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap"
+                >
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[hsl(var(--border))]">
+            {rows.map((row) => (
+              <tr key={row.id} className="hover:bg-[hsl(var(--muted))]/30 align-top">
+                <td className="px-3 py-2 text-xs text-[hsl(var(--muted-foreground))] whitespace-nowrap">
+                  {formatDate(row.received_at)}
+                </td>
+                <td className="px-3 py-2 font-mono text-xs font-bold text-emerald-700">
+                  +{formatNumber(row.quantity)}
+                </td>
+                <td className="px-3 py-2 font-mono text-xs">
+                  {row.unit_cost == null ? '—' : formatMoney(row.unit_cost)}
+                </td>
+                <td className="px-3 py-2 font-mono text-xs">
+                  {row.total_cost == null ? '—' : formatMoney(row.total_cost)}
+                </td>
+                <td className="px-3 py-2 text-xs truncate max-w-[140px]">
+                  {row.supplier_name || '—'}
+                </td>
+                <td className="px-3 py-2 text-xs font-mono">{row.supplier_invoice_num || '—'}</td>
+                <td className="px-3 py-2 text-xs">{row.created_by_name || '—'}</td>
+                <td className="px-3 py-2 text-xs text-[hsl(var(--muted-foreground))] truncate max-w-[160px]">
+                  {row.note || '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ─── Linked orders ──────────────────────────────────────────────────────────
 
 interface LinkedOrder {
@@ -486,19 +720,23 @@ function SettingsTab({
   status,
   lifecycle,
   isAdmin,
+  canAddStock,
   onEdit,
   onArchive,
   onSetStatus,
   onRestore,
+  onAddStock,
 }: {
   item: InventoryItem;
   status: ReturnType<typeof productStatus>;
   lifecycle: LifecycleStatus;
   isAdmin: boolean;
+  canAddStock: boolean;
   onEdit: () => void;
   onArchive: () => void;
   onSetStatus: (next: 'active' | 'inactive') => void;
   onRestore: () => void;
+  onAddStock: () => void;
 }) {
   return (
     <div className="space-y-4">
@@ -518,6 +756,17 @@ function SettingsTab({
       </div>
 
       <div className="flex flex-col gap-2">
+        {canAddStock && lifecycle !== 'archived' && (
+          <button
+            type="button"
+            onClick={onAddStock}
+            className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold rounded-xl py-2.5"
+          >
+            <Plus size={15} />
+            إضافة كمية
+          </button>
+        )}
+
         <button
           type="button"
           onClick={onEdit}
