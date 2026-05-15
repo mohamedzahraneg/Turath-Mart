@@ -803,6 +803,34 @@ export default function OrderDetailModal({ order, onClose }: Props) {
         toast.error(updateErr.message || 'تعذر تحديث حالة التسوية.');
         return;
       }
+
+      // Phase Returns-Exchange-1 — cascade-cancel the linked child
+      // shipping order when the adjustment is cancelled or rejected.
+      // The child was created upfront at adjustment-creation time so
+      // it appeared in the scheduling list; once the parent settlement
+      // dies it must not stay live. Best-effort: log + carry on if the
+      // update fails so the parent transition still completes.
+      let childCascadeCancelled = false;
+      if ((nextState === 'cancelled' || nextState === 'rejected') && childOrderId) {
+        try {
+          const { error: childCancelErr } = await supabase
+            .from('turath_masr_orders')
+            .update({
+              status: 'cancelled',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', childOrderId)
+            .neq('status', 'cancelled');
+          if (childCancelErr) {
+            console.warn('[OrderDetailModal] cascade-cancel child order failed:', childCancelErr);
+          } else {
+            childCascadeCancelled = true;
+          }
+        } catch (cascadeErr) {
+          console.warn('[OrderDetailModal] cascade-cancel child exception:', cascadeErr);
+        }
+      }
+
       try {
         await supabase.from('turath_masr_audit_logs').insert({
           order_id: adjustment.order_id,
@@ -879,6 +907,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
               ...(childOrderNum ? { child_order_num: childOrderNum } : {}),
               ...(linkedComplaintId ? { linked_complaint_id: linkedComplaintId } : {}),
               ...(decisionNote?.trim() ? { decision_note: decisionNote.trim() } : {}),
+              ...(childCascadeCancelled ? { child_order_cascade_cancelled: true } : {}),
             },
           });
         }
@@ -888,7 +917,9 @@ export default function OrderDetailModal({ order, onClose }: Props) {
       toast.success(
         nextState === 'approved' && childOrderNum
           ? `تمت الموافقة، وإنشاء الطلب الفرعي #${childOrderNum}`
-          : 'تم تحديث حالة التسوية.'
+          : childCascadeCancelled && childOrderNum
+            ? `تم تحديث حالة التسوية، وإلغاء الطلب الفرعي #${childOrderNum}.`
+            : 'تم تحديث حالة التسوية.'
       );
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new Event('turath_masr_order_adjustments_updated'));
@@ -2040,7 +2071,11 @@ export default function OrderDetailModal({ order, onClose }: Props) {
         </div>
       </div>
 
-      {/* Phase 25A — create return / exchange modal */}
+      {/* Phase Returns-Exchange-1 — create return / exchange modal.
+          The wizard now creates a linked shipping child order at the
+          same time as the adjustment, so we must hand it the full
+          parent context (phone2 / address / warranty) it needs to
+          seed that child row. */}
       {showAdjustmentModal && (
         <OrderAdjustmentModal
           order={{
@@ -2048,14 +2083,15 @@ export default function OrderDetailModal({ order, onClose }: Props) {
             orderNum: liveOrder.orderNum,
             customer: liveOrder.customer,
             phone: liveOrder.phone,
+            phone2: liveOrder.phone2 ?? null,
             total: liveOrder.total,
             lines: liveOrder.lines ?? [],
-            // Phase 25B — pass region + base shipping so the modal can
-            // seed the new shipment leg automatically.
             shippingFee: liveOrder.shippingFee,
             region: liveOrder.region,
             district: liveOrder.district ?? null,
             neighborhood: liveOrder.neighborhood ?? null,
+            address: liveOrder.address,
+            warranty: liveOrder.warranty ?? null,
           }}
           onClose={() => setShowAdjustmentModal(false)}
         />
