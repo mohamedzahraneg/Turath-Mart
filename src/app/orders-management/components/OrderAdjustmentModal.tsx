@@ -1,70 +1,68 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // src/app/orders-management/components/OrderAdjustmentModal.tsx
 //
-// Phase Returns-Exchange-1 — full rebuild of the return / exchange
-// creation surface. Replaces the flat single-form modal (Phase 25A/B)
-// with a 3-step wizard:
+// Phase Returns-Exchange-1 — 3-step wizard for return / exchange
+// creation with reason mandatory + maintenance-item affordance +
+// linked child shipping order at create time + invoice preview.
 //
-//   Step 1 — نوع التسوية: pick مرتجع/استبدال + كامل/جزئي + سبب (مطلوب)
-//   Step 2 — العناصر: select returned items (locked for *_full),
-//            add replacement items + maintenance/spare parts (for
-//            exchanges only).
-//   Step 3 — ملخص التسوية: shipping fee + shipping payer (customer/
-//            company), settlement summary card (original value,
-//            replacement value, difference, shipping, amount due /
-//            refund), preview of the linked shipping order number,
-//            and an invoice preview button.
+// Phase Returns-Exchange-1 Fix1 — UX + math corrections layered on
+// top of the Phase Returns-Exchange-1 wizard:
 //
-// What changed vs Phase 25A/B
-// ---------------------------
-//   • Wizard structure replaces the long single form. Each step has
-//     its own validator + Arabic error strings.
-//   • Reason is always shown in step 1 and label-flips per kind
-//     ("سبب المرتجع" vs "سبب الاستبدال").
-//   • Maintenance / spare-part items get an explicit affordance
-//     ("إضافة قطعة صيانة") with name + qty + free toggle + price +
-//     note. Same DB shape (`AdjustmentLine.itemType = 'part'` +
-//     `isFree`); the rebuild is UX-only.
-//   • Shipping payer is binary (customer / company). The legacy
-//     'split' value is preserved in the DB schema but no longer
-//     surfaced. Existing rows that used 'split' still render fine.
-//   • A linked shipping child order is now created at adjustment
-//     INSERT time (state `new`) so it appears immediately in
-//     /orders-management for scheduling. Previously the child was
-//     created on approval; that path now skips creation when the
-//     child already exists.
-//   • The settlement summary card surfaces every spec row plus a
-//     preview of the derived child-order number ({parent}-R1 / -E1).
-//   • An invoice preview button opens an HTML doc via
-//     `openAdjustmentInvoiceWindow` — browser print only, no PDF
-//     library.
-//   • Per-order audit + staff audit emissions are enriched with the
-//     settlement reason, settlement type, items summaries, financial
-//     summary, and the linked shipping order number. No payloads
-//     contain images, tokens, or base64 data.
+//   1. Shipping is now auto-resolved from the active address's region
+//      coverage (settings_regions). The number is read-only; only
+//      changes when the operator picks a different address.
+//   2. Address picker in step 3: "same as original order" (default)
+//      or "new address". When new, the operator fills gov/area/
+//      neighborhood + address line and the fee re-resolves live.
+//      The new address rides the child shipping order, which means
+//      the next past-addresses lookup for this customer surfaces it.
+//   3. Replacement products MUST come from the inventory catalog
+//      (the same product-card grid used by AddOrderModal /
+//      EditOrderModal). Free-text product entry is gone. Maintenance
+//      / spare parts remain manual via a dedicated affordance.
+//   4. Per-line partial-value mode: the operator can mark a returned
+//      item as a "partial piece" worth only N ج.م rather than the
+//      whole product price (e.g. swapping a single broken bolt on
+//      a holder). Stored on the line as `value_mode='partial'` +
+//      `partial_value` and honoured by `computeLineContribution`.
+//   5. Refund mode is user-controlled (full / partial / none /
+//      price_diff). Partial mode requires a refund-amount input.
+//      Company deduction can also reduce the refund.
+//   6. Final settlement math distinguishes refund-side vs amount-due-
+//      side: customer-shipping reduces refund when refund > 0;
+//      adds to amount-due when refund = 0. Company deduction always
+//      reduces refund.
+//   7. Invoice preview popup uses the safer pattern: synchronous
+//      `window.open` inside the click handler with a loading shell
+//      written first, then the real HTML, with auto-print after a
+//      300 ms delay. Popup blockers fall through to an in-page iframe
+//      modal so the operator can still print.
 //
-// What this surface still doesn't do
-// ----------------------------------
-//   • Touch inventory (Phase 25A boundary holds).
-//   • Auto-approve. The adjustment is created at `pending`; the
-//     manager still uses OrderDetailModal's action bar to approve /
-//     reject / complete / cancel.
-//   • Send tracking-side notifications. The settlement is admin-
-//     internal until approval.
+// Boundaries (unchanged)
+// ----------------------
+//   • No inventory mutations.
+//   • No DB migration. `value_mode` / `partial_value` live inside
+//     existing JSONB columns; company deduction is folded into
+//     `customer_collect_amount` math + audit metadata.
+//   • No auto-approval. State always starts at `pending`.
 // ─────────────────────────────────────────────────────────────────────────────
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
   CheckCircle,
+  Download,
   Eye,
+  Home,
+  MapPin,
   Minus,
   Package,
   Plus,
+  Printer,
   Repeat,
   RotateCcw,
   Trash2,
@@ -78,9 +76,10 @@ import { useAuth } from '@/contexts/AuthContext';
 import { writeStaffAuditLog } from '@/lib/security/staffAudit';
 import {
   ADJUSTMENT_KIND_LABEL_AR,
+  REFUND_MODE_LABEL_AR,
   buildChildOrderNum,
   computeAdjustmentTotals,
-  computeOperationalSettlement,
+  computeLineTotal,
   sumChargeableReplacementLines,
   validateAdjustmentDraft,
   type AdjustmentDraft,
@@ -93,11 +92,27 @@ import {
   buildChildOrderRow,
   childOrderTaskLabel,
   countAdjustmentSiblings,
+  type ChildOrderShipAddress,
 } from '@/lib/orders/adjustmentChildOrder';
 import {
   openAdjustmentInvoiceWindow,
   type AdjustmentInvoicePayload,
 } from '@/lib/orders/adjustmentInvoice';
+import {
+  loadProductCards,
+  resolveLineColors,
+  type InventoryItem,
+  type ProductCard,
+} from '@/lib/orders/productCards';
+import { InventoryThumbnail } from '@/lib/inventory/InventoryThumbnail';
+import { getShippingRegions } from '@/lib/settings/shippingRegionsCache';
+import { resolveShippingFeeFromCoverage } from '@/lib/shipping/resolveShippingFee';
+import {
+  findArea,
+  findNeighborhood,
+  normalizeCoverageHierarchy,
+} from '@/lib/shipping/coverageHierarchy';
+import type { ShippingDistrict, ShippingGovernorate } from '@/lib/shipping/types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Props
@@ -122,16 +137,13 @@ interface OrderSummary {
   orderNum: string;
   customer: string;
   phone: string;
-  /** Optional secondary phone — passed through to the linked child order. */
   phone2?: string | null;
   total: number;
   lines: OrderLine[];
-  /** Region fee from the original order, seeds the new shipment leg. */
   shippingFee?: number;
   region?: string;
   district?: string | null;
   neighborhood?: string | null;
-  /** Full address line — needed so the child order can ship to the same place. */
   address?: string;
   warranty?: string | null;
 }
@@ -151,11 +163,17 @@ const fmtEgp = (n: number): string => `${(Number.isFinite(n) ? n : 0).toLocaleSt
 type SettlementType = 'return' | 'exchange';
 type Subtype = 'full' | 'partial';
 type ShippingPayer = 'customer' | 'company';
+type AddressMode = 'same' | 'new';
 
 interface ReturnRow {
   line: OrderLine;
   selected: boolean;
   qty: number;
+  /** Phase Returns-Exchange-1 Fix1 — full product value vs partial
+   *  piece value. */
+  valueMode: 'full' | 'partial';
+  /** Only used when `valueMode === 'partial'`. */
+  partialValue: number;
 }
 
 function deriveKind(t: SettlementType | null, s: Subtype | null): AdjustmentKind | null {
@@ -175,10 +193,23 @@ function reasonPlaceholderFor(type: SettlementType | null): string {
   return 'اكتب سبب المرتجع أو الاستبدال...';
 }
 
-function addressLabel(order: OrderSummary): string {
-  return [order.region, order.district, order.neighborhood, order.address]
+function addressLabelOf(parts: {
+  region: string | null | undefined;
+  district: string | null | undefined;
+  neighborhood: string | null | undefined;
+  address: string | null | undefined;
+}): string {
+  return [parts.region, parts.district, parts.neighborhood, parts.address]
+    .map((p) => (p ?? '').trim())
     .filter(Boolean)
     .join('، ');
+}
+
+function fullLineValue(line: OrderLine, qty: number): number {
+  const unit = Math.max(0, Number(line.unitPrice) || 0);
+  const flashOn = line.includeFlashlight === true;
+  const flash = flashOn ? Math.max(0, Number(line.flashlightPrice) || 0) : 0;
+  return qty * unit + qty * flash;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -199,20 +230,46 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
 
   // ── Step 2 state — items
   const [returnRows, setReturnRows] = useState<ReturnRow[]>(() =>
-    order.lines.map((line) => ({ line, selected: true, qty: line.quantity }))
+    order.lines.map((line) => ({
+      line,
+      selected: true,
+      qty: line.quantity,
+      valueMode: 'full',
+      partialValue: 0,
+    }))
   );
   const [replacementLines, setReplacementLines] = useState<AdjustmentLine[]>([]);
+  const [productCards, setProductCards] = useState<ProductCard[]>([]);
+  const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
+  const [showProductPicker, setShowProductPicker] = useState(false);
 
   // ── Step 3 state — settlement
-  const [shippingBaseAmount, setShippingBaseAmount] = useState<number>(
-    Math.max(0, Number(order.shippingFee) || 0)
-  );
   const [shippingPayer, setShippingPayer] = useState<ShippingPayer>('company');
   const [operationalNote, setOperationalNote] = useState('');
-  /** Cached sibling count for the child-order suffix preview. Loaded
-   *  when the user enters step 3 — refetched at submit time so a
-   *  parallel creation by another operator can't collide on R1/E1. */
+  /** Cached sibling count for the child-order suffix preview. */
   const [previewSiblingCount, setPreviewSiblingCount] = useState<number | null>(null);
+
+  // Phase Returns-Exchange-1 Fix1 — address picker state.
+  const [addressMode, setAddressMode] = useState<AddressMode>('same');
+  const [newAddressRegion, setNewAddressRegion] = useState('');
+  const [newAddressDistrict, setNewAddressDistrict] = useState('');
+  const [newAddressNeighborhood, setNewAddressNeighborhood] = useState('');
+  const [newAddressLine, setNewAddressLine] = useState('');
+  const [dbRegions, setDbRegions] = useState<unknown[]>([]);
+
+  // Phase Returns-Exchange-1 Fix1 — refund mode + amount + company
+  // deduction. Refund mode replaces the legacy auto-derivation;
+  // company deduction reduces the refund before shipping.
+  const [refundMode, setRefundMode] = useState<RefundMode>('full');
+  const [refundAmountInput, setRefundAmountInput] = useState(0);
+  const [companyDeductionEnabled, setCompanyDeductionEnabled] = useState(false);
+  const [companyDeductionAmount, setCompanyDeductionAmount] = useState(0);
+  const [companyDeductionReason, setCompanyDeductionReason] = useState('');
+
+  // Invoice preview state. When the browser blocks the popup, fall
+  // back to an in-page iframe modal so the operator still has a path
+  // to print.
+  const [invoiceFallback, setInvoiceFallback] = useState<{ html: string } | null>(null);
 
   // ── Submission state
   const [submitting, setSubmitting] = useState(false);
@@ -222,8 +279,7 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
   const isExchange = settlementType === 'exchange';
   const isFullKind = subtype === 'full';
 
-  // ── Recompute return rows when subtype switches (full locks all,
-  // partial preserves selections).
+  // ── Recompute return rows when subtype switches.
   useEffect(() => {
     if (subtype === 'full') {
       setReturnRows((rows) => rows.map((r) => ({ ...r, selected: true, qty: r.line.quantity })));
@@ -242,39 +298,161 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
     if (settlementType === 'return') setReplacementLines([]);
   }, [settlementType]);
 
-  // ── Build the return-lines payload from the rows.
+  // ── Load shipping regions once.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const regs = (await getShippingRegions()) as unknown[];
+        if (!cancelled && Array.isArray(regs)) setDbRegions(regs);
+      } catch (err) {
+        console.warn('[OrderAdjustmentModal] shipping regions load failed:', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // ── Load product catalog once for the replacement picker.
+  useEffect(() => {
+    const supabase = createClient();
+    if (!supabase) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { items, cards } = await loadProductCards(supabase);
+        if (cancelled) return;
+        setProductCards(cards);
+        setInventoryItems(items);
+      } catch (err) {
+        console.warn('[OrderAdjustmentModal] product catalog load failed:', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // ── Region hierarchy for address picker / fee resolution.
+  const hierarchicalRegions = useMemo(() => {
+    if (dbRegions.length === 0) return [] as ShippingGovernorate[];
+    return normalizeCoverageHierarchy(dbRegions, {});
+  }, [dbRegions]);
+
+  // ── Active address: same-as-parent or new.
+  const activeAddress: ChildOrderShipAddress = useMemo(() => {
+    if (addressMode === 'new') {
+      return {
+        region: newAddressRegion.trim(),
+        district: newAddressDistrict.trim() || null,
+        neighborhood: newAddressNeighborhood.trim() || null,
+        address: newAddressLine.trim(),
+      };
+    }
+    return {
+      region: (order.region ?? '').trim(),
+      district: (order.district ?? '').trim() || null,
+      neighborhood: (order.neighborhood ?? '').trim() || null,
+      address: (order.address ?? '').trim(),
+    };
+  }, [
+    addressMode,
+    newAddressRegion,
+    newAddressDistrict,
+    newAddressNeighborhood,
+    newAddressLine,
+    order.region,
+    order.district,
+    order.neighborhood,
+    order.address,
+  ]);
+
+  // ── Resolve shipping fee from the active address's coverage tree.
+  const feeResolution = useMemo(() => {
+    const govEntry = hierarchicalRegions.find((g) => g.name === activeAddress.region) ?? null;
+    const areaEntry: ShippingDistrict | null = activeAddress.district
+      ? findArea(activeAddress.region, activeAddress.district, hierarchicalRegions)
+      : null;
+    const neighEntry: ShippingDistrict | null =
+      areaEntry && activeAddress.neighborhood
+        ? findNeighborhood(
+            activeAddress.region,
+            areaEntry.name,
+            activeAddress.neighborhood,
+            hierarchicalRegions
+          )
+        : null;
+    const resolution = resolveShippingFeeFromCoverage({
+      governorate: govEntry,
+      area: areaEntry,
+      neighborhood: neighEntry,
+    });
+    return {
+      ...resolution,
+      // When the address is the parent order's and the regions data
+      // isn't loaded yet, fall back to the original order's
+      // `shippingFee` so the preview isn't a blank "0 ج.م".
+      fee:
+        resolution.source !== 'none'
+          ? resolution.fee
+          : addressMode === 'same' && Number.isFinite(order.shippingFee)
+            ? Math.max(0, Number(order.shippingFee) || 0)
+            : resolution.fee,
+      source: resolution.source,
+      label: resolution.label,
+    };
+  }, [
+    hierarchicalRegions,
+    activeAddress.region,
+    activeAddress.district,
+    activeAddress.neighborhood,
+    addressMode,
+    order.shippingFee,
+  ]);
+
+  const shippingBaseAmount = Math.max(0, Number(feeResolution.fee) || 0);
+
+  // ── Build return-lines payload — propagates value_mode + partial_value
+  // through to the JSONB so audit + invoice can render it.
   const returnLinesPayload: AdjustmentLine[] = useMemo(
     () =>
       returnRows
         .filter((r) => r.selected && r.qty > 0)
-        .map((r) => ({
-          productType: r.line.productType,
-          label: r.line.label,
-          color: r.line.color ?? null,
-          quantity: r.qty,
-          unitPrice: r.line.unitPrice,
-          includeFlashlight: r.line.includeFlashlight,
-          flashlightPrice: r.line.flashlightPrice,
-          note: r.line.note ?? null,
-        })),
+        .map((r) => {
+          const base: AdjustmentLine = {
+            productType: r.line.productType,
+            label: r.line.label,
+            color: r.line.color ?? null,
+            quantity: r.qty,
+            unitPrice: r.line.unitPrice,
+            includeFlashlight: r.line.includeFlashlight,
+            flashlightPrice: r.line.flashlightPrice,
+            note: r.line.note ?? null,
+          };
+          if (r.valueMode === 'partial') {
+            base.value_mode = 'partial';
+            base.partial_value = Math.max(0, Number(r.partialValue) || 0);
+          } else {
+            base.value_mode = 'full';
+          }
+          return base;
+        }),
     [returnRows]
   );
 
+  // ── Totals — `computeAdjustmentTotals` already honours
+  // `computeLineContribution` (Fix1) so the returnedValue here
+  // reflects the partial-value lump sums.
   const totals = useMemo(
     () =>
       computeAdjustmentTotals({
         return_lines: returnLinesPayload,
         replacement_lines: replacementLines,
-        // Refund mode is derived below; this call just gives us the
-        // returned/replacement totals — `suggestedRefund` is ignored.
         refund_mode: 'none',
       }),
     [returnLinesPayload, replacementLines]
   );
-
-  // Chargeable replacement value (free items excluded) — drives the
-  // price-difference math so a courtesy maintenance item doesn't
-  // inflate the customer's balance.
   const chargeableReplacementValue = useMemo(
     () => sumChargeableReplacementLines(replacementLines),
     [replacementLines]
@@ -284,7 +462,7 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
     [chargeableReplacementValue, totals.returnedValue]
   );
 
-  // ── Derived price direction (auto, no UI control).
+  // ── Derived price direction.
   const priceDirection: PriceDifferenceDirection = useMemo(() => {
     if (!isExchange) return 'none';
     if (chargeablePriceDifference > 0) return 'customer_pays';
@@ -292,47 +470,70 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
     return 'none';
   }, [isExchange, chargeablePriceDifference]);
 
-  // ── Operational settlement preview.
-  const settlement = useMemo(
-    () =>
-      computeOperationalSettlement({
-        shippingBaseAmount,
-        shippingCustomerShare: shippingPayer === 'customer' ? shippingBaseAmount : 0,
-        priceDifferenceAbs: Math.abs(chargeablePriceDifference),
-        priceDifferenceDirection: priceDirection,
-      }),
-    [shippingBaseAmount, shippingPayer, chargeablePriceDifference, priceDirection]
-  );
-
-  // ── Refund mode derivation. The DB still requires a value
-  // ('full' | 'partial' | 'none' | 'price_diff'); the new wizard
-  // never asks the operator directly. Rules:
-  //   • Pure return → 'full' (the customer gets back what they sent)
-  //   • Exchange with company refund → 'price_diff'
-  //   • Anything else → 'none'
-  const derivedRefundMode: RefundMode = useMemo(() => {
-    if (!isExchange) return 'full';
-    if (priceDirection === 'company_refunds') return 'price_diff';
-    return 'none';
-  }, [isExchange, priceDirection]);
-
-  const derivedRefundAmount = useMemo(() => {
-    if (derivedRefundMode === 'full') return totals.returnedValue;
-    if (derivedRefundMode === 'price_diff') return Math.abs(chargeablePriceDifference);
+  // ── Refund eligibility — the natural refund before mode override.
+  // For pure returns it's the returned value; for exchanges where
+  // the company owes the customer it's the absolute price difference.
+  const eligibleRefund = useMemo(() => {
+    if (!isExchange) return totals.returnedValue;
+    if (priceDirection === 'company_refunds') return Math.abs(chargeablePriceDifference);
     return 0;
-  }, [derivedRefundMode, totals.returnedValue, chargeablePriceDifference]);
+  }, [isExchange, priceDirection, totals.returnedValue, chargeablePriceDifference]);
 
-  // ── Preview child order number. We use the cached sibling count
-  // for display; the actual number is recomputed at submit with a
-  // fresh count to avoid collisions if two operators create
-  // adjustments in parallel.
+  // ── Effective refund after the operator's mode + amount choice.
+  const effectiveRefund = useMemo(() => {
+    if (eligibleRefund <= 0) return 0;
+    switch (refundMode) {
+      case 'full':
+        return eligibleRefund;
+      case 'partial':
+        return Math.min(Math.max(0, Number(refundAmountInput) || 0), eligibleRefund);
+      case 'none':
+        return 0;
+      case 'price_diff':
+        // For exchanges this equals abs(priceDiff) when company owes;
+        // for pure returns there is no price difference so 0.
+        if (isExchange && priceDirection === 'company_refunds') {
+          return Math.abs(chargeablePriceDifference);
+        }
+        return 0;
+    }
+  }, [
+    eligibleRefund,
+    refundMode,
+    refundAmountInput,
+    isExchange,
+    priceDirection,
+    chargeablePriceDifference,
+  ]);
+
+  const customerPaysDifference =
+    isExchange && priceDirection === 'customer_pays' ? Math.abs(chargeablePriceDifference) : 0;
+
+  const customerShippingShare = shippingPayer === 'customer' ? shippingBaseAmount : 0;
+  const companyShippingShare = shippingPayer === 'company' ? shippingBaseAmount : 0;
+
+  const companyDeduction = companyDeductionEnabled
+    ? Math.max(0, Number(companyDeductionAmount) || 0)
+    : 0;
+
+  // ── Final settlement: refund-side vs amount-due-side.
+  // When effectiveRefund > 0, customer-shipping + deduction reduce
+  // the refund. When effectiveRefund == 0 but customer owes
+  // money, customer-shipping adds to the amount due.
+  const finalRefundToCustomer = Math.max(
+    0,
+    effectiveRefund - customerShippingShare - companyDeduction
+  );
+  const finalAmountDueFromCustomer =
+    effectiveRefund > 0 ? customerPaysDifference : customerPaysDifference + customerShippingShare;
+
+  // ── Preview child order number.
   const previewChildOrderNum = useMemo(() => {
     if (!kind || previewSiblingCount === null) return null;
     return buildChildOrderNum(order.orderNum, kind, previewSiblingCount);
   }, [kind, previewSiblingCount, order.orderNum]);
 
-  // ── Fetch the sibling count when entering step 3 so the preview
-  // child-order number renders correctly.
+  // ── Fetch sibling count when entering step 3.
   useEffect(() => {
     if (step !== 3 || !kind) {
       setPreviewSiblingCount(null);
@@ -349,6 +550,19 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
       cancelled = true;
     };
   }, [step, kind, order.orderNum]);
+
+  // ── Reset refund mode when settlementType changes so an old
+  // "price_diff" pick doesn't linger into a pure return.
+  useEffect(() => {
+    if (!isExchange) setRefundMode('full');
+  }, [isExchange]);
+
+  // ── Sync refund-amount input with eligible refund changes.
+  useEffect(() => {
+    if (refundMode === 'partial') {
+      setRefundAmountInput((curr) => Math.min(Math.max(0, Number(curr) || 0), eligibleRefund));
+    }
+  }, [refundMode, eligibleRefund]);
 
   // ── Per-step validators
   const validateStep = (target: 1 | 2 | 3): string | null => {
@@ -368,6 +582,15 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
         if (r.qty > r.line.quantity) {
           return 'لا يمكن إرجاع كمية أكبر من الكمية الأصلية.';
         }
+        if (r.valueMode === 'partial') {
+          const full = fullLineValue(r.line, r.qty);
+          if (!(r.partialValue > 0)) {
+            return 'برجاء إدخال قيمة جزئية أكبر من صفر.';
+          }
+          if (r.partialValue > full) {
+            return 'لا يمكن أن تتجاوز قيمة الجزء قيمة المنتج الأصلي.';
+          }
+        }
       }
       if (isExchange) {
         if (replacementLines.length === 0) {
@@ -378,7 +601,7 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
           if (!name) {
             return line.itemType === 'part'
               ? 'برجاء إدخال اسم قطعة الصيانة.'
-              : 'برجاء إدخال اسم المنتج البديل.';
+              : 'برجاء اختيار المنتج البديل من المخزن.';
           }
           if (!Number.isFinite(line.quantity) || line.quantity < 1) {
             return 'الكمية يجب أن تكون 1 على الأقل.';
@@ -386,7 +609,7 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
           if (!line.isFree && (!Number.isFinite(line.unitPrice) || line.unitPrice <= 0)) {
             return line.itemType === 'part'
               ? 'برجاء إدخال سعر قطعة الصيانة المدفوعة.'
-              : 'برجاء إدخال سعر المنتج البديل.';
+              : 'سعر المنتج البديل غير متاح من المخزن.';
           }
         }
       }
@@ -394,6 +617,32 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
     if (target >= 3) {
       if (shippingPayer !== 'customer' && shippingPayer !== 'company') {
         return 'برجاء تحديد من يتحمل الشحن.';
+      }
+      // Address validation
+      if (addressMode === 'new') {
+        if (!newAddressRegion.trim()) return 'برجاء اختيار المحافظة للعنوان الجديد.';
+        if (!newAddressLine.trim()) return 'برجاء إدخال العنوان الجديد.';
+      }
+      if (!activeAddress.region) return 'برجاء اختيار عنوان شحن صحيح.';
+      if (feeResolution.source === 'none') {
+        return 'برجاء تحديد المنطقة لحساب الشحن.';
+      }
+      // Refund mode validation
+      if (refundMode === 'partial') {
+        if (!(refundAmountInput > 0)) {
+          return 'برجاء إدخال مبلغ استرداد جزئي أكبر من صفر.';
+        }
+        if (refundAmountInput > eligibleRefund) {
+          return 'لا يمكن أن يتجاوز الاسترداد الجزئي المبلغ المستحق.';
+        }
+      }
+      if (companyDeductionEnabled) {
+        if (!(companyDeduction > 0)) {
+          return 'برجاء إدخال قيمة الاستقطاع أكبر من صفر.';
+        }
+        if (companyDeduction > eligibleRefund) {
+          return 'لا يمكن أن يتجاوز الاستقطاع قيمة الاسترداد.';
+        }
       }
     }
     return null;
@@ -418,9 +667,44 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
     setStep((s) => (s - 1) as 1 | 2 | 3);
   };
 
-  // ── Invoice preview — opens a new window with the HTML invoice.
-  // Disabled until step 3 is reachable so we don't render an empty
-  // settlement summary.
+  // ── Build the invoice payload from current state.
+  const buildInvoicePayload = (childOrderNum: string | null): AdjustmentInvoicePayload | null => {
+    if (!kind) return null;
+    return {
+      parentOrderNum: order.orderNum,
+      customer: order.customer,
+      phone: order.phone,
+      addressLabel: addressLabelOf({
+        region: activeAddress.region,
+        district: activeAddress.district,
+        neighborhood: activeAddress.neighborhood,
+        address: activeAddress.address,
+      }),
+      addressChoice: addressMode,
+      kind,
+      reason: reason.trim(),
+      returnLines: returnLinesPayload,
+      replacementLines,
+      originalSelectedValue: totals.returnedValue,
+      replacementValue: chargeableReplacementValue,
+      priceDifferenceAbs: Math.abs(chargeablePriceDifference),
+      priceDifferenceDirection: priceDirection,
+      shippingBaseAmount,
+      shippingCustomerAmount: customerShippingShare,
+      shippingCompanyAmount: companyShippingShare,
+      shippingFeeSourceLabel: feeResolution.label,
+      customerCollectAmount: finalAmountDueFromCustomer,
+      companyRefundAmount: finalRefundToCustomer,
+      refundMode,
+      companyDeductionAmount: companyDeduction,
+      companyDeductionReason: companyDeductionReason.trim() || null,
+      childOrderNum,
+      staffName: (profileFullName ?? '').trim() || user?.email || 'مستخدم غير معروف',
+      operationalNote: operationalNote.trim() || null,
+    };
+  };
+
+  // ── Invoice preview — synchronous popup with fallback iframe.
   const handlePreviewInvoice = () => {
     if (!kind) {
       toast.error('برجاء اختيار نوع التسوية أولًا.');
@@ -431,31 +715,13 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
       toast.error(stepErr);
       return;
     }
-    const payload: AdjustmentInvoicePayload = {
-      parentOrderNum: order.orderNum,
-      customer: order.customer,
-      phone: order.phone,
-      addressLabel: addressLabel(order),
-      kind,
-      reason: reason.trim(),
-      returnLines: returnLinesPayload,
-      replacementLines,
-      originalSelectedValue: totals.returnedValue,
-      replacementValue: chargeableReplacementValue,
-      priceDifferenceAbs: Math.abs(chargeablePriceDifference),
-      priceDifferenceDirection: priceDirection,
-      shippingBaseAmount,
-      shippingCustomerAmount: settlement.shippingCustomerShare,
-      shippingCompanyAmount: settlement.shippingCompanyShare,
-      customerCollectAmount: settlement.customerCollectAmount,
-      companyRefundAmount: settlement.companyRefundAmount,
-      childOrderNum: previewChildOrderNum,
-      staffName: (profileFullName ?? '').trim() || user?.email || 'مستخدم غير معروف',
-      operationalNote: operationalNote.trim() || null,
-    };
-    const popup = openAdjustmentInvoiceWindow(payload);
-    if (!popup) {
-      toast.error('برجاء السماح بالنوافذ المنبثقة لمعاينة الفاتورة.');
+    const payload = buildInvoicePayload(previewChildOrderNum);
+    if (!payload) return;
+    const result = openAdjustmentInvoiceWindow(payload);
+    if (!result.opened) {
+      // Popup blocked — fall back to an in-page iframe modal.
+      setInvoiceFallback({ html: result.html });
+      toast.message('المتصفح منع فتح نافذة منبثقة. تم فتح الفاتورة داخل الصفحة.');
     }
   };
 
@@ -468,7 +734,6 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
       toast.error(msg);
       return;
     }
-    // Run the full per-step validation one last time.
     const stepErr = validateStep(3);
     if (stepErr) {
       setError(stepErr);
@@ -476,8 +741,6 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
       return;
     }
 
-    // Signed price difference: positive = customer pays, negative =
-    // company refunds, 0 = no flow. Mirrors the legacy column shape.
     const signedPriceDiff =
       priceDirection === 'customer_pays'
         ? Math.abs(chargeablePriceDifference)
@@ -494,14 +757,14 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
       return_lines: returnLinesPayload,
       replacement_lines: isExchange ? replacementLines : [],
       original_total: order.total ?? 0,
-      refund_mode: derivedRefundMode,
-      refund_amount: derivedRefundAmount,
+      refund_mode: refundMode,
+      refund_amount: effectiveRefund,
       price_difference: signedPriceDiff,
       shipping_payer: shippingPayer,
-      shipping_customer_amount: settlement.shippingCustomerShare,
-      shipping_company_amount: settlement.shippingCompanyShare,
-      shipping_base_amount: settlement.shippingBaseAmount,
-      customer_collect_amount: settlement.customerCollectAmount,
+      shipping_customer_amount: customerShippingShare,
+      shipping_company_amount: companyShippingShare,
+      shipping_base_amount: shippingBaseAmount,
+      customer_collect_amount: finalAmountDueFromCustomer,
       price_difference_direction: priceDirection,
       operational_note: operationalNote.trim() || null,
     };
@@ -524,11 +787,9 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
       }
       const createdByName = (profileFullName ?? '').trim() || user?.email || 'مستخدم غير معروف';
 
-      // 1) Fresh sibling count → child order number.
       const siblings = await countAdjustmentSiblings(supabase, order.orderNum, kind);
       const childOrderNum = buildChildOrderNum(order.orderNum, kind, siblings);
 
-      // 2) INSERT adjustment row (state defaults to 'pending').
       const adjustmentInsertPayload = {
         order_id: draft.order_id,
         order_num: draft.order_num,
@@ -564,10 +825,7 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
       }
       const adjustmentId = (inserted as { id?: string } | null)?.id ?? null;
 
-      // 3) INSERT linked child shipping order (best-effort). If this
-      //    fails we keep the adjustment alive at `pending` without a
-      //    child — the existing approval path will then build the
-      //    child as a fallback.
+      // INSERT linked child shipping order with the active address.
       let childOrderId: string | null = null;
       let childCreated = false;
       try {
@@ -590,12 +848,13 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
           replacementLines: isExchange ? replacementLines : [],
           priceDifference: signedPriceDiff,
           priceDifferenceDirection: priceDirection,
-          shippingCustomerAmount: settlement.shippingCustomerShare,
-          customerCollectAmount: settlement.customerCollectAmount,
+          shippingCustomerAmount: customerShippingShare,
+          customerCollectAmount: finalAmountDueFromCustomer,
           operationalNote: operationalNote.trim() || null,
           reason: reason.trim(),
           createdBy: createdByName,
           createdByUserId: user?.id ?? null,
+          shipAddress: addressMode === 'new' ? activeAddress : null,
         });
         const { data: childInserted, error: childErr } = await supabase
           .from('turath_masr_orders')
@@ -618,7 +877,6 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
         );
       }
 
-      // 4) UPDATE adjustment with child link (best-effort).
       if (childCreated && childOrderId && adjustmentId) {
         try {
           await supabase
@@ -633,16 +891,15 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
         }
       }
 
-      // 5) Per-order audit row — enriched envelope with the reason,
-      //    settlement type, items summaries, financial summary, and
-      //    linked shipping order number. No images, tokens, or
-      //    base64 — all compact scalars / lightweight lists.
+      // Audit summaries — enriched with Fix1 fields.
       const returnSummary = returnLinesPayload.map((l) => ({
         productType: l.productType,
         label: l.label ?? null,
         color: l.color ?? null,
         quantity: l.quantity,
         unitPrice: l.unitPrice,
+        value_mode: l.value_mode ?? 'full',
+        partial_value: l.value_mode === 'partial' ? (l.partial_value ?? 0) : null,
       }));
       const replacementSummary = replacementLines
         .filter((l) => (l.itemType ?? 'product') === 'product')
@@ -668,11 +925,18 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
         replacement_value: chargeableReplacementValue,
         price_difference: signedPriceDiff,
         price_difference_direction: priceDirection,
-        shipping_base_amount: settlement.shippingBaseAmount,
-        shipping_customer_amount: settlement.shippingCustomerShare,
-        shipping_company_amount: settlement.shippingCompanyShare,
-        customer_collect_amount: settlement.customerCollectAmount,
-        company_refund_amount: settlement.companyRefundAmount,
+        shipping_base_amount: shippingBaseAmount,
+        shipping_customer_amount: customerShippingShare,
+        shipping_company_amount: companyShippingShare,
+        shipping_fee_source: feeResolution.source,
+        refund_mode: refundMode,
+        eligible_refund: eligibleRefund,
+        effective_refund: effectiveRefund,
+        company_deduction: companyDeduction,
+        company_deduction_reason: companyDeductionReason.trim() || null,
+        customer_collect_amount: finalAmountDueFromCustomer,
+        company_refund_amount: finalRefundToCustomer,
+        address_choice: addressMode,
       };
 
       try {
@@ -699,6 +963,10 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
             shipping_company_amount: draft.shipping_company_amount,
             shipping_base_amount: draft.shipping_base_amount,
             customer_collect_amount: draft.customer_collect_amount,
+            company_refund_amount: finalRefundToCustomer,
+            company_deduction: companyDeduction,
+            company_deduction_reason: companyDeductionReason.trim() || null,
+            address_choice: addressMode,
             child_order_num: childCreated ? childOrderNum : null,
             return_summary: returnSummary,
             replacement_summary: replacementSummary,
@@ -709,7 +977,6 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
         console.warn('[OrderAdjustmentModal] per-order audit failed:', auditErr);
       }
 
-      // 6) Staff audit — `adjustment.created` with full metadata.
       try {
         await writeStaffAuditLog(supabase, {
           action: 'adjustment.created',
@@ -744,8 +1011,6 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
         console.warn('[OrderAdjustmentModal] staff audit (created) failed:', staffAuditErr);
       }
 
-      // 7) Staff audit — `adjustment.child_order_created` when the
-      //    linked shipping order was successfully created.
       if (childCreated && childOrderId) {
         try {
           await writeStaffAuditLog(supabase, {
@@ -768,6 +1033,10 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
               settlement_type: draft.kind,
               settlement_reason: draft.reason,
               task: childOrderTaskLabel(kind),
+              address_choice: addressMode,
+              ship_region: activeAddress.region,
+              ship_district: activeAddress.district,
+              ship_neighborhood: activeAddress.neighborhood,
             },
           });
         } catch (childAuditErr) {
@@ -784,7 +1053,6 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
           : 'تم إنشاء التسوية، بانتظار الموافقة.'
       );
 
-      // Broadcast so other open surfaces refresh.
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new Event('turath_masr_order_adjustments_updated'));
         window.dispatchEvent(new Event('turath_masr_orders_updated'));
@@ -802,14 +1070,34 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
     }
   };
 
-  // ─── Replacement / maintenance line editor helpers ───
-  const addReplacementLine = (preset: 'product' | 'part') => {
+  // ─── Replacement editor helpers ───
+  const addInventoryReplacement = (card: ProductCard) => {
+    const colors = resolveLineColors(card);
     setReplacementLines((arr) => [
       ...arr,
       {
-        itemType: preset,
+        itemType: 'product',
         isFree: false,
-        productType: preset === 'part' ? 'maintenance_part' : '',
+        productType: card.value,
+        label: card.label,
+        color: colors[0]?.value ?? null,
+        quantity: 1,
+        unitPrice: Math.max(0, Number(card.basePrice) || 0),
+        includeFlashlight: false,
+        flashlightPrice: card.value === 'holder' ? 150 : 0,
+        note: '',
+      },
+    ]);
+    setShowProductPicker(false);
+  };
+
+  const addMaintenancePart = () => {
+    setReplacementLines((arr) => [
+      ...arr,
+      {
+        itemType: 'part',
+        isFree: false,
+        productType: 'maintenance_part',
         label: '',
         color: '',
         quantity: 1,
@@ -829,7 +1117,7 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
     setReplacementLines((arr) => arr.filter((_, i) => i !== idx));
   };
 
-  // ─── Render ───────────────────────────────────────────────────────────────
+  // ─── Render ──────────────────────────────────────────────────────────────
   return (
     <div className="fixed inset-0 z-[200] bg-black/40 flex items-center justify-center p-3">
       <div
@@ -882,11 +1170,16 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
               setReturnRows={setReturnRows}
               returnedValue={totals.returnedValue}
               replacementLines={replacementLines}
+              productCards={productCards}
+              inventoryItems={inventoryItems}
+              showProductPicker={showProductPicker}
+              setShowProductPicker={setShowProductPicker}
               chargeableReplacementValue={chargeableReplacementValue}
               chargeablePriceDifference={chargeablePriceDifference}
-              addReplacementLine={addReplacementLine}
-              updateReplacementLine={updateReplacementLine}
-              removeReplacementLine={removeReplacementLine}
+              onAddInventory={addInventoryReplacement}
+              onAddMaintenance={addMaintenancePart}
+              onUpdateLine={updateReplacementLine}
+              onRemoveLine={removeReplacementLine}
             />
           )}
 
@@ -894,18 +1187,43 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
             <Step3Summary
               kind={kind}
               order={order}
+              activeAddress={activeAddress}
+              addressMode={addressMode}
+              setAddressMode={setAddressMode}
+              newAddressRegion={newAddressRegion}
+              setNewAddressRegion={setNewAddressRegion}
+              newAddressDistrict={newAddressDistrict}
+              setNewAddressDistrict={setNewAddressDistrict}
+              newAddressNeighborhood={newAddressNeighborhood}
+              setNewAddressNeighborhood={setNewAddressNeighborhood}
+              newAddressLine={newAddressLine}
+              setNewAddressLine={setNewAddressLine}
+              hierarchicalRegions={hierarchicalRegions}
+              feeResolution={feeResolution}
+              shippingPayer={shippingPayer}
+              setShippingPayer={setShippingPayer}
+              shippingBaseAmount={shippingBaseAmount}
+              customerShippingShare={customerShippingShare}
+              companyShippingShare={companyShippingShare}
               returnedValue={totals.returnedValue}
               replacementValue={chargeableReplacementValue}
               priceDifferenceAbs={Math.abs(chargeablePriceDifference)}
               priceDirection={priceDirection}
-              shippingBaseAmount={shippingBaseAmount}
-              setShippingBaseAmount={setShippingBaseAmount}
-              shippingPayer={shippingPayer}
-              setShippingPayer={setShippingPayer}
-              shippingCustomerShare={settlement.shippingCustomerShare}
-              shippingCompanyShare={settlement.shippingCompanyShare}
-              customerCollectAmount={settlement.customerCollectAmount}
-              companyRefundAmount={settlement.companyRefundAmount}
+              eligibleRefund={eligibleRefund}
+              effectiveRefund={effectiveRefund}
+              refundMode={refundMode}
+              setRefundMode={setRefundMode}
+              refundAmountInput={refundAmountInput}
+              setRefundAmountInput={setRefundAmountInput}
+              companyDeductionEnabled={companyDeductionEnabled}
+              setCompanyDeductionEnabled={setCompanyDeductionEnabled}
+              companyDeductionAmount={companyDeductionAmount}
+              setCompanyDeductionAmount={setCompanyDeductionAmount}
+              companyDeductionReason={companyDeductionReason}
+              setCompanyDeductionReason={setCompanyDeductionReason}
+              companyDeduction={companyDeduction}
+              finalRefundToCustomer={finalRefundToCustomer}
+              finalAmountDueFromCustomer={finalAmountDueFromCustomer}
               previewChildOrderNum={previewChildOrderNum}
               operationalNote={operationalNote}
               setOperationalNote={setOperationalNote}
@@ -965,6 +1283,99 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
           </div>
         </div>
       </div>
+
+      {/* Phase Returns-Exchange-1 Fix1 — popup fallback. When the
+          browser blocks the popup, render the invoice HTML in an
+          in-page modal via an iframe `srcDoc`. The user can print
+          from the iframe or via the embedded "طباعة" button. */}
+      {invoiceFallback && (
+        <InvoicePreviewFallback
+          html={invoiceFallback.html}
+          onClose={() => setInvoiceFallback(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Invoice preview fallback (in-page iframe)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function InvoicePreviewFallback({ html, onClose }: { html: string; onClose: () => void }) {
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+
+  const handlePrint = () => {
+    try {
+      iframeRef.current?.contentWindow?.print();
+    } catch (err) {
+      console.warn('[InvoicePreviewFallback] iframe print failed:', err);
+      toast.error('تعذر فتح نافذة الطباعة. حاول تنزيل الفاتورة بدلًا من ذلك.');
+    }
+  };
+
+  const handleDownload = () => {
+    try {
+      const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'invoice.html';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (err) {
+      console.warn('[InvoicePreviewFallback] download failed:', err);
+      toast.error('تعذر تحميل ملف الفاتورة.');
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[300] bg-black/60 flex items-center justify-center p-3"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div
+        className="bg-white w-full max-w-4xl max-h-[94vh] flex flex-col rounded-2xl shadow-2xl"
+        dir="rtl"
+      >
+        <div className="flex items-center justify-between px-5 py-3 border-b border-[hsl(var(--border))]">
+          <h3 className="text-sm font-bold flex items-center gap-2">
+            <Eye size={16} /> معاينة الفاتورة
+          </h3>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handlePrint}
+              className="text-xs rounded-lg border border-[hsl(var(--primary))] bg-white px-3 py-1.5 text-[hsl(var(--primary))] hover:bg-[hsl(var(--primary))]/5 flex items-center gap-1"
+            >
+              <Printer size={12} /> طباعة
+            </button>
+            <button
+              type="button"
+              onClick={handleDownload}
+              className="text-xs rounded-lg border border-[hsl(var(--border))] bg-white px-3 py-1.5 hover:bg-[hsl(var(--muted))]/40 flex items-center gap-1"
+            >
+              <Download size={12} /> تحميل
+            </button>
+            <button
+              onClick={onClose}
+              className="text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"
+              aria-label="إغلاق"
+            >
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+        <iframe
+          ref={iframeRef}
+          srcDoc={html}
+          title="معاينة الفاتورة"
+          className="flex-1 w-full border-0"
+        />
+      </div>
     </div>
   );
 }
@@ -1020,7 +1431,7 @@ function Stepper({ step, kind }: { step: 1 | 2 | 3; kind: AdjustmentKind | null 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step 1 — settlement type + reason
+// Step 1
 // ─────────────────────────────────────────────────────────────────────────────
 
 function Step1Type(props: {
@@ -1205,11 +1616,16 @@ function Step2Items(props: {
   setReturnRows: React.Dispatch<React.SetStateAction<ReturnRow[]>>;
   returnedValue: number;
   replacementLines: AdjustmentLine[];
+  productCards: ProductCard[];
+  inventoryItems: InventoryItem[];
+  showProductPicker: boolean;
+  setShowProductPicker: (open: boolean) => void;
   chargeableReplacementValue: number;
   chargeablePriceDifference: number;
-  addReplacementLine: (preset: 'product' | 'part') => void;
-  updateReplacementLine: (idx: number, patch: Partial<AdjustmentLine>) => void;
-  removeReplacementLine: (idx: number) => void;
+  onAddInventory: (card: ProductCard) => void;
+  onAddMaintenance: () => void;
+  onUpdateLine: (idx: number, patch: Partial<AdjustmentLine>) => void;
+  onRemoveLine: (idx: number) => void;
 }) {
   const {
     isExchange,
@@ -1218,11 +1634,16 @@ function Step2Items(props: {
     setReturnRows,
     returnedValue,
     replacementLines,
+    productCards,
+    inventoryItems,
+    showProductPicker,
+    setShowProductPicker,
     chargeableReplacementValue,
     chargeablePriceDifference,
-    addReplacementLine,
-    updateReplacementLine,
-    removeReplacementLine,
+    onAddInventory,
+    onAddMaintenance,
+    onUpdateLine,
+    onRemoveLine,
   } = props;
 
   return (
@@ -1240,79 +1661,16 @@ function Step2Items(props: {
               لا توجد عناصر مفصلة لهذا الطلب — تأكد من بيانات الفاتورة قبل المتابعة.
             </p>
           )}
-          {returnRows.map((row, idx) => {
-            const flashlightTotal = row.line.includeFlashlight
-              ? (row.line.flashlightPrice ?? 0) * row.qty
-              : 0;
-            const lineTotal = row.line.unitPrice * row.qty + flashlightTotal;
-            return (
-              <div
-                key={`return-row-${idx}`}
-                className={`flex items-start gap-2 rounded-xl border p-3 ${
-                  row.selected
-                    ? 'border-[hsl(var(--border))] bg-white'
-                    : 'border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted))]/30 opacity-70'
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={row.selected}
-                  disabled={isFullKind}
-                  onChange={(e) =>
-                    setReturnRows((rows) =>
-                      rows.map((r, i) => (i === idx ? { ...r, selected: e.target.checked } : r))
-                    )
-                  }
-                  className="mt-1"
-                  aria-label="تحديد"
-                />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold truncate">
-                    {row.line.label}
-                    {row.line.color ? ` — ${row.line.color}` : ''}
-                    {row.line.includeFlashlight ? ' + كشاف' : ''}
-                  </p>
-                  <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-0.5">
-                    الأصلي: {row.line.quantity} × {fmtEgp(row.line.unitPrice)}
-                  </p>
-                </div>
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    disabled={isFullKind || !row.selected || row.qty <= 1}
-                    className="w-6 h-6 rounded-md border border-[hsl(var(--border))] text-xs disabled:opacity-40"
-                    onClick={() =>
-                      setReturnRows((rows) =>
-                        rows.map((r, i) => (i === idx ? { ...r, qty: Math.max(1, r.qty - 1) } : r))
-                      )
-                    }
-                    aria-label="إنقاص"
-                  >
-                    <Minus size={12} className="mx-auto" />
-                  </button>
-                  <span className="w-8 text-center text-sm font-mono">{row.qty}</span>
-                  <button
-                    type="button"
-                    disabled={isFullKind || !row.selected || row.qty >= row.line.quantity}
-                    className="w-6 h-6 rounded-md border border-[hsl(var(--border))] text-xs disabled:opacity-40"
-                    onClick={() =>
-                      setReturnRows((rows) =>
-                        rows.map((r, i) =>
-                          i === idx ? { ...r, qty: Math.min(r.line.quantity, r.qty + 1) } : r
-                        )
-                      )
-                    }
-                    aria-label="زيادة"
-                  >
-                    <Plus size={12} className="mx-auto" />
-                  </button>
-                </div>
-                <div className="text-left text-sm font-mono font-bold w-[110px] flex-shrink-0">
-                  {fmtEgp(lineTotal)}
-                </div>
-              </div>
-            );
-          })}
+          {returnRows.map((row, idx) => (
+            <ReturnRowEditor
+              key={`return-row-${idx}`}
+              row={row}
+              isFullKind={isFullKind}
+              onChange={(patch) =>
+                setReturnRows((rows) => rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)))
+              }
+            />
+          ))}
         </div>
         <div className="mt-3 flex justify-between text-xs">
           <span className="text-[hsl(var(--muted-foreground))]">قيمة العناصر المرتجعة</span>
@@ -1329,20 +1687,30 @@ function Step2Items(props: {
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                onClick={() => addReplacementLine('product')}
+                onClick={() => setShowProductPicker(!showProductPicker)}
                 className="text-xs flex items-center gap-1 rounded-lg border border-[hsl(var(--border))] px-2 py-1 hover:bg-[hsl(var(--muted))]/40"
               >
-                <Plus size={12} /> إضافة منتج بديل
+                <Plus size={12} /> إضافة منتج بديل (من المخزن)
               </button>
               <button
                 type="button"
-                onClick={() => addReplacementLine('part')}
+                onClick={onAddMaintenance}
                 className="text-xs flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50/60 px-2 py-1 text-indigo-700 hover:bg-indigo-50"
               >
                 <Wrench size={12} /> إضافة قطعة صيانة
               </button>
             </div>
           </div>
+
+          {showProductPicker && (
+            <InventoryProductPicker
+              productCards={productCards}
+              inventoryItems={inventoryItems}
+              onPick={onAddInventory}
+              onClose={() => setShowProductPicker(false)}
+            />
+          )}
+
           {replacementLines.length === 0 ? (
             <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
               الاستبدال يتطلب عنصر بديل أو قطعة صيانة واحدة على الأقل.
@@ -1354,8 +1722,8 @@ function Step2Items(props: {
                   key={`replace-${idx}`}
                   line={line}
                   idx={idx}
-                  onChange={(patch) => updateReplacementLine(idx, patch)}
-                  onRemove={() => removeReplacementLine(idx)}
+                  onChange={(patch) => onUpdateLine(idx, patch)}
+                  onRemove={() => onRemoveLine(idx)}
                 />
               ))}
               <div className="flex justify-between text-xs text-[hsl(var(--muted-foreground))]">
@@ -1384,6 +1752,133 @@ function Step2Items(props: {
   );
 }
 
+function ReturnRowEditor(props: {
+  row: ReturnRow;
+  isFullKind: boolean;
+  onChange: (patch: Partial<ReturnRow>) => void;
+}) {
+  const { row, isFullKind, onChange } = props;
+  const fullLineTotal = fullLineValue(row.line, row.qty);
+  const partialClamped = Math.min(row.partialValue, fullLineTotal);
+  const lineValue = row.valueMode === 'partial' ? partialClamped : fullLineTotal;
+  return (
+    <div
+      className={`rounded-xl border p-3 ${
+        row.selected
+          ? 'border-[hsl(var(--border))] bg-white'
+          : 'border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted))]/30 opacity-70'
+      }`}
+    >
+      <div className="flex items-start gap-2">
+        <input
+          type="checkbox"
+          checked={row.selected}
+          disabled={isFullKind}
+          onChange={(e) => onChange({ selected: e.target.checked })}
+          className="mt-1"
+          aria-label="تحديد"
+        />
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold truncate">
+            {row.line.label}
+            {row.line.color ? ` — ${row.line.color}` : ''}
+            {row.line.includeFlashlight ? ' + كشاف' : ''}
+          </p>
+          <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-0.5">
+            الأصلي: {row.line.quantity} × {fmtEgp(row.line.unitPrice)}
+          </p>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            disabled={isFullKind || !row.selected || row.qty <= 1}
+            className="w-6 h-6 rounded-md border border-[hsl(var(--border))] text-xs disabled:opacity-40"
+            onClick={() => onChange({ qty: Math.max(1, row.qty - 1) })}
+            aria-label="إنقاص"
+          >
+            <Minus size={12} className="mx-auto" />
+          </button>
+          <span className="w-8 text-center text-sm font-mono">{row.qty}</span>
+          <button
+            type="button"
+            disabled={isFullKind || !row.selected || row.qty >= row.line.quantity}
+            className="w-6 h-6 rounded-md border border-[hsl(var(--border))] text-xs disabled:opacity-40"
+            onClick={() => onChange({ qty: Math.min(row.line.quantity, row.qty + 1) })}
+            aria-label="زيادة"
+          >
+            <Plus size={12} className="mx-auto" />
+          </button>
+        </div>
+        <div className="text-left text-sm font-mono font-bold w-[110px] flex-shrink-0">
+          {fmtEgp(lineValue)}
+        </div>
+      </div>
+
+      {row.selected && (
+        <div className="mt-3 pt-2 border-t border-[hsl(var(--border))]/40 space-y-2">
+          <div>
+            <span className="text-[11px] text-[hsl(var(--muted-foreground))] block mb-1">
+              نوع قيمة العنصر
+            </span>
+            <div className="flex bg-[hsl(var(--muted))]/40 rounded-lg p-0.5 text-[11px] w-fit">
+              <button
+                type="button"
+                onClick={() => onChange({ valueMode: 'full' })}
+                className={`px-2 py-0.5 rounded-md transition-colors ${
+                  row.valueMode === 'full'
+                    ? 'bg-white shadow-sm font-bold text-[hsl(var(--foreground))]'
+                    : 'text-[hsl(var(--muted-foreground))]'
+                }`}
+              >
+                قيمة المنتج كاملة
+              </button>
+              <button
+                type="button"
+                onClick={() => onChange({ valueMode: 'partial' })}
+                className={`px-2 py-0.5 rounded-md transition-colors ${
+                  row.valueMode === 'partial'
+                    ? 'bg-white shadow-sm font-bold text-[hsl(var(--foreground))]'
+                    : 'text-[hsl(var(--muted-foreground))]'
+                }`}
+              >
+                قيمة جزئية / قطعة من المنتج
+              </button>
+            </div>
+          </div>
+          {row.valueMode === 'partial' && (
+            <label className="flex items-center justify-between gap-2 text-xs">
+              <span className="text-[hsl(var(--muted-foreground))]">
+                قيمة الجزء المستبدل / المرتجع (ج.م)
+              </span>
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                max={fullLineTotal}
+                value={row.partialValue}
+                onChange={(e) =>
+                  onChange({ partialValue: Math.max(0, Number(e.target.value) || 0) })
+                }
+                className="form-input text-sm w-32 font-mono"
+                dir="ltr"
+              />
+            </label>
+          )}
+          {row.valueMode === 'partial' && row.partialValue > fullLineTotal && (
+            <p className="text-[10px] text-rose-600">
+              لا يمكن أن تتجاوز قيمة الجزء قيمة المنتج الأصلي ({fmtEgp(fullLineTotal)}).
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Replacement-line row (inventory product OR maintenance part)
+// ─────────────────────────────────────────────────────────────────────────────
+
 function ReplacementLineRow(props: {
   line: AdjustmentLine;
   idx: number;
@@ -1392,12 +1887,7 @@ function ReplacementLineRow(props: {
 }) {
   const { line, idx, onChange, onRemove } = props;
   const isPart = line.itemType === 'part';
-  const qty = Math.max(0, Number(line.quantity) || 0);
-  const unit = Math.max(0, Number(line.unitPrice) || 0);
-  const flashlightTotal = line.includeFlashlight
-    ? qty * Math.max(0, Number(line.flashlightPrice) || 0)
-    : 0;
-  const subtotal = qty * unit + flashlightTotal;
+  const subtotal = computeLineTotal(line);
   const chargeable = line.isFree ? 0 : subtotal;
   return (
     <div
@@ -1432,6 +1922,11 @@ function ReplacementLineRow(props: {
               مجاني
             </span>
           </label>
+          {!isPart && (
+            <span className="text-[10px] text-[hsl(var(--muted-foreground))]">
+              {line.label || line.productType}
+            </span>
+          )}
         </div>
         <button
           type="button"
@@ -1443,13 +1938,23 @@ function ReplacementLineRow(props: {
       </div>
 
       <div className="grid grid-cols-2 gap-2">
-        <input
-          type="text"
-          value={line.label ?? ''}
-          onChange={(e) => onChange({ label: e.target.value })}
-          placeholder={isPart ? 'اسم القطعة *' : 'اسم المنتج *'}
-          className="form-input text-sm"
-        />
+        {isPart ? (
+          <input
+            type="text"
+            value={line.label ?? ''}
+            onChange={(e) => onChange({ label: e.target.value })}
+            placeholder="اسم القطعة *"
+            className="form-input text-sm col-span-2"
+          />
+        ) : (
+          <input
+            type="text"
+            value={line.label ?? ''}
+            disabled
+            placeholder="اسم المنتج"
+            className="form-input text-sm col-span-2 bg-slate-50 cursor-not-allowed"
+          />
+        )}
         {!isPart && (
           <input
             type="text"
@@ -1471,16 +1976,16 @@ function ReplacementLineRow(props: {
         </label>
         <label className="flex flex-col">
           <span className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">
-            سعر الوحدة (ج.م) {line.isFree ? '(مجاني)' : ''}
+            سعر الوحدة (ج.م) {line.isFree ? '(مجاني)' : isPart ? '' : '(من المخزن)'}
           </span>
           <input
             type="number"
             min={0}
             step="0.01"
             value={line.unitPrice}
-            disabled={line.isFree}
+            disabled={line.isFree || !isPart}
             onChange={(e) => onChange({ unitPrice: Math.max(0, Number(e.target.value) || 0) })}
-            className="form-input text-sm disabled:opacity-60"
+            className="form-input text-sm disabled:opacity-60 disabled:bg-slate-50 disabled:cursor-not-allowed"
           />
         </label>
         <input
@@ -1511,59 +2016,170 @@ function ReplacementLineRow(props: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Step 3 — settlement summary
+// Inventory product picker (replacement lines)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function Step3Summary(props: {
+function InventoryProductPicker(props: {
+  productCards: ProductCard[];
+  inventoryItems: InventoryItem[];
+  onPick: (card: ProductCard) => void;
+  onClose: () => void;
+}) {
+  const { productCards, inventoryItems, onPick, onClose } = props;
+  if (productCards.length === 0) {
+    return (
+      <div className="rounded-xl border-2 border-dashed border-[hsl(var(--border))] p-4 text-center text-xs text-[hsl(var(--muted-foreground))]">
+        جارٍ تحميل قائمة المنتجات…
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/20 p-3 mb-3">
+      <div className="flex items-center justify-between mb-2">
+        <h5 className="text-xs font-bold">اختر منتج بديل من المخزن</h5>
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"
+          aria-label="إغلاق"
+        >
+          <X size={14} />
+        </button>
+      </div>
+      <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+        {productCards.map((card) => {
+          const inv = card.isInventory
+            ? (inventoryItems.find((i) => i.id === card.value) ?? null)
+            : null;
+          const outOfStock = (inv?.available ?? 1) <= 0;
+          return (
+            <button
+              type="button"
+              key={`pick-${card.value}`}
+              onClick={() => onPick(card)}
+              disabled={outOfStock}
+              className={`relative w-full aspect-square rounded-xl border-2 flex flex-col items-center justify-center gap-1 overflow-hidden transition-all ${
+                outOfStock
+                  ? 'border-red-200 bg-red-50 opacity-50 cursor-not-allowed'
+                  : 'border-[hsl(var(--border))] hover:border-[hsl(var(--primary))]/50 bg-white'
+              }`}
+            >
+              <InventoryThumbnail
+                src={card.image}
+                alt={card.label}
+                emoji={card.emoji}
+                fill
+                sizes="(max-width: 768px) 30vw, 120px"
+                className="object-cover"
+                emojiClassName="text-2xl"
+              />
+              {inv && (
+                <div
+                  className={`absolute top-1 right-1 px-1.5 py-0.5 rounded-full text-[8px] font-bold z-10 ${
+                    inv.available > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'
+                  }`}
+                >
+                  {inv.available} متاح
+                </div>
+              )}
+              <span className="text-[10px] font-bold text-white bg-black/50 px-1 rounded absolute bottom-1 z-10">
+                {card.label}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step 3 — settlement
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface Step3Props {
   kind: AdjustmentKind;
   order: OrderSummary;
+  activeAddress: ChildOrderShipAddress;
+  addressMode: AddressMode;
+  setAddressMode: (m: AddressMode) => void;
+  newAddressRegion: string;
+  setNewAddressRegion: (s: string) => void;
+  newAddressDistrict: string;
+  setNewAddressDistrict: (s: string) => void;
+  newAddressNeighborhood: string;
+  setNewAddressNeighborhood: (s: string) => void;
+  newAddressLine: string;
+  setNewAddressLine: (s: string) => void;
+  hierarchicalRegions: ShippingGovernorate[];
+  feeResolution: { fee: number; source: string; label: string };
+  shippingPayer: ShippingPayer;
+  setShippingPayer: (p: ShippingPayer) => void;
+  shippingBaseAmount: number;
+  customerShippingShare: number;
+  companyShippingShare: number;
   returnedValue: number;
   replacementValue: number;
   priceDifferenceAbs: number;
   priceDirection: PriceDifferenceDirection;
-  shippingBaseAmount: number;
-  setShippingBaseAmount: (n: number) => void;
-  shippingPayer: ShippingPayer;
-  setShippingPayer: (p: ShippingPayer) => void;
-  shippingCustomerShare: number;
-  shippingCompanyShare: number;
-  customerCollectAmount: number;
-  companyRefundAmount: number;
+  eligibleRefund: number;
+  effectiveRefund: number;
+  refundMode: RefundMode;
+  setRefundMode: (m: RefundMode) => void;
+  refundAmountInput: number;
+  setRefundAmountInput: (n: number) => void;
+  companyDeductionEnabled: boolean;
+  setCompanyDeductionEnabled: (b: boolean) => void;
+  companyDeductionAmount: number;
+  setCompanyDeductionAmount: (n: number) => void;
+  companyDeductionReason: string;
+  setCompanyDeductionReason: (s: string) => void;
+  companyDeduction: number;
+  finalRefundToCustomer: number;
+  finalAmountDueFromCustomer: number;
   previewChildOrderNum: string | null;
   operationalNote: string;
   setOperationalNote: (s: string) => void;
   onPreviewInvoice: () => void;
-}) {
+}
+
+function Step3Summary(props: Step3Props) {
   const isExchange = props.kind === 'exchange_full' || props.kind === 'exchange_partial';
   return (
     <>
+      {/* Address picker */}
+      <AddressPicker
+        order={props.order}
+        addressMode={props.addressMode}
+        setAddressMode={props.setAddressMode}
+        newAddressRegion={props.newAddressRegion}
+        setNewAddressRegion={props.setNewAddressRegion}
+        newAddressDistrict={props.newAddressDistrict}
+        setNewAddressDistrict={props.setNewAddressDistrict}
+        newAddressNeighborhood={props.newAddressNeighborhood}
+        setNewAddressNeighborhood={props.setNewAddressNeighborhood}
+        newAddressLine={props.newAddressLine}
+        setNewAddressLine={props.setNewAddressLine}
+        hierarchicalRegions={props.hierarchicalRegions}
+        activeAddress={props.activeAddress}
+      />
+
       {/* Shipping */}
       <section className="card-section p-4">
         <h4 className="text-sm font-bold mb-2 flex items-center gap-1.5">
           <Truck size={14} /> الشحن للطلب الفرعي
         </h4>
-        <label className="flex flex-col">
-          <span className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">
-            مصاريف الشحن
-            {props.order.region && (
-              <span className="mr-1 text-[10px]">
-                ({props.order.region}
-                {props.order.district ? ` — ${props.order.district}` : ''})
-              </span>
-            )}
-          </span>
-          <input
-            type="number"
-            min={0}
-            step="0.01"
-            value={props.shippingBaseAmount}
-            onChange={(e) => props.setShippingBaseAmount(Math.max(0, Number(e.target.value) || 0))}
-            className="form-input text-sm bg-[hsl(var(--muted))]/40 font-mono"
-          />
-          <span className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1">
-            مأخوذة تلقائيًا من سعر شحن المنطقة. عدّلها فقط للحالات الخاصة.
-          </span>
-        </label>
+        <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/40 p-3 text-xs space-y-1">
+          <div className="flex justify-between items-center">
+            <span className="text-[hsl(var(--muted-foreground))]">مصاريف الشحن</span>
+            <span className="font-mono font-bold">{fmtEgp(props.shippingBaseAmount)}</span>
+          </div>
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
+            {props.feeResolution.source === 'none'
+              ? 'لا يوجد سعر شحن مكوّن للمنطقة المحددة — راجع الإعدادات.'
+              : `محسوبة تلقائيًا من إعدادات المنطقة (${props.feeResolution.label}).`}
+          </p>
+        </div>
         <div className="mt-3">
           <span className="block text-[11px] text-[hsl(var(--muted-foreground))] mb-1">
             من يتحمل الشحن؟
@@ -1573,7 +2189,7 @@ function Step3Summary(props: {
               active={props.shippingPayer === 'customer'}
               onClick={() => props.setShippingPayer('customer')}
               label="العميل"
-              hint="تخصم/تضاف على فاتورة التسوية"
+              hint="يخصم من الاسترداد أو يضاف على التحصيل"
             />
             <ShippingPayerButton
               active={props.shippingPayer === 'company'}
@@ -1582,8 +2198,120 @@ function Step3Summary(props: {
               hint="الشحن = 0 على العميل"
             />
           </div>
+          <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+            <div className="rounded-lg bg-white border border-[hsl(var(--border))] px-2 py-1.5">
+              <span className="text-[hsl(var(--muted-foreground))] block text-[10px]">
+                يتحمل العميل
+              </span>
+              <span className="font-mono font-bold">{fmtEgp(props.customerShippingShare)}</span>
+            </div>
+            <div className="rounded-lg bg-white border border-[hsl(var(--border))] px-2 py-1.5">
+              <span className="text-[hsl(var(--muted-foreground))] block text-[10px]">
+                تتحمل الشركة
+              </span>
+              <span className="font-mono font-bold">{fmtEgp(props.companyShippingShare)}</span>
+            </div>
+          </div>
         </div>
       </section>
+
+      {/* Refund mode (only meaningful when there's a refund possibility) */}
+      {props.eligibleRefund > 0 && (
+        <section className="card-section p-4">
+          <h4 className="text-sm font-bold mb-2 flex items-center gap-1.5">
+            <Wallet size={14} /> طريقة الاسترداد / التسوية المالية
+          </h4>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {(['full', 'partial', 'none', 'price_diff'] as RefundMode[])
+              .filter((m) => isExchange || m !== 'price_diff')
+              .map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => props.setRefundMode(m)}
+                  className={`text-xs rounded-xl border px-3 py-2 transition-colors ${
+                    props.refundMode === m
+                      ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/5 text-[hsl(var(--primary))] font-semibold'
+                      : 'border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/40'
+                  }`}
+                >
+                  {REFUND_MODE_LABEL_AR[m]}
+                </button>
+              ))}
+          </div>
+          {props.refundMode === 'partial' && (
+            <label className="flex flex-col mt-2">
+              <span className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">
+                المبلغ المسترد للعميل (الحد الأقصى: {fmtEgp(props.eligibleRefund)})
+              </span>
+              <input
+                type="number"
+                min={0}
+                max={props.eligibleRefund}
+                step="0.01"
+                value={props.refundAmountInput}
+                onChange={(e) =>
+                  props.setRefundAmountInput(Math.max(0, Number(e.target.value) || 0))
+                }
+                className="form-input text-sm font-mono"
+                dir="ltr"
+              />
+            </label>
+          )}
+          {props.refundMode === 'none' && (
+            <p className="text-[11px] text-amber-700 mt-2">
+              العميل لن يسترد أي مبلغ. تأكد من اختيارك قبل المتابعة.
+            </p>
+          )}
+        </section>
+      )}
+
+      {/* Company deduction */}
+      {props.eligibleRefund > 0 && (
+        <section className="card-section p-4">
+          <label className="flex items-center gap-2 text-sm font-bold mb-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={props.companyDeductionEnabled}
+              onChange={(e) => props.setCompanyDeductionEnabled(e.target.checked)}
+            />
+            استقطاع من مبلغ الاسترداد
+          </label>
+          {props.companyDeductionEnabled && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <label className="flex flex-col">
+                <span className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">
+                  قيمة الاستقطاع (ج.م)
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  max={props.eligibleRefund}
+                  value={props.companyDeductionAmount}
+                  onChange={(e) =>
+                    props.setCompanyDeductionAmount(Math.max(0, Number(e.target.value) || 0))
+                  }
+                  className="form-input text-sm font-mono"
+                  dir="ltr"
+                />
+              </label>
+              <label className="flex flex-col">
+                <span className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">
+                  سبب الاستقطاع
+                </span>
+                <input
+                  type="text"
+                  value={props.companyDeductionReason}
+                  onChange={(e) => props.setCompanyDeductionReason(e.target.value)}
+                  placeholder="مثال: استخدام بسيط للمنتج"
+                  className="form-input text-sm"
+                />
+              </label>
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Settlement summary card */}
       <section className="card-section p-4">
@@ -1591,7 +2319,7 @@ function Step3Summary(props: {
           <Wallet size={14} /> ملخص التسوية
         </h4>
         <div className="rounded-xl bg-[hsl(var(--muted))]/40 p-3 text-sm space-y-1.5">
-          <SummaryRow label="قيمة العناصر المرتجعة" value={fmtEgp(props.returnedValue)} />
+          <SummaryRow label="قيمة العناصر المرتجعة/المستبدلة" value={fmtEgp(props.returnedValue)} />
           {isExchange && (
             <SummaryRow label="قيمة العناصر البديلة" value={fmtEgp(props.replacementValue)} />
           )}
@@ -1599,28 +2327,35 @@ function Step3Summary(props: {
             <SummaryRow
               label={
                 props.priceDirection === 'customer_pays'
-                  ? 'فرق سعر (يدفعه العميل)'
-                  : 'فرق سعر (يُسترد للعميل)'
+                  ? 'فرق سعر على العميل'
+                  : 'فرق سعر لصالح العميل'
               }
               value={fmtEgp(props.priceDifferenceAbs)}
               tone={props.priceDirection === 'customer_pays' ? 'amber' : 'emerald'}
             />
           )}
           <SummaryRow label="مصاريف الشحن" value={fmtEgp(props.shippingBaseAmount)} />
-          <SummaryRow label="يتحمل العميل من الشحن" value={fmtEgp(props.shippingCustomerShare)} />
-          <SummaryRow label="تتحمل الشركة من الشحن" value={fmtEgp(props.shippingCompanyShare)} />
-          <div className="border-t border-[hsl(var(--border))]/60 my-1" />
-          {props.customerCollectAmount > 0 ? (
+          <SummaryRow label="يتحمل العميل من الشحن" value={fmtEgp(props.customerShippingShare)} />
+          <SummaryRow label="تتحمل الشركة من الشحن" value={fmtEgp(props.companyShippingShare)} />
+          {props.companyDeduction > 0 && (
             <SummaryRow
-              label="المبلغ المطلوب من العميل"
-              value={fmtEgp(props.customerCollectAmount)}
+              label="استقطاع من الاسترداد"
+              value={fmtEgp(props.companyDeduction)}
+              tone="amber"
+            />
+          )}
+          <div className="border-t border-[hsl(var(--border))]/60 my-1" />
+          {props.finalAmountDueFromCustomer > 0 ? (
+            <SummaryRow
+              label="الإجمالي المطلوب من العميل"
+              value={fmtEgp(props.finalAmountDueFromCustomer)}
               emphasis
               tone="emerald"
             />
-          ) : props.companyRefundAmount > 0 ? (
+          ) : props.finalRefundToCustomer > 0 ? (
             <SummaryRow
-              label="المبلغ المسترد للعميل"
-              value={fmtEgp(props.companyRefundAmount)}
+              label="صافي المسترد للعميل"
+              value={fmtEgp(props.finalRefundToCustomer)}
               emphasis
               tone="amber"
             />
@@ -1636,7 +2371,7 @@ function Step3Summary(props: {
       <section className="card-section p-4">
         <h4 className="text-sm font-bold mb-2">طلب الشحن المرتبط</h4>
         <div className="text-xs text-[hsl(var(--muted-foreground))] space-y-1">
-          <p>سيتم إنشاء طلب شحن مباشر يظهر في صفحة الطلبات للجدولة، ومرتبط بالطلب الأصلي:</p>
+          <p>سيتم إنشاء طلب شحن مباشر يظهر في صفحة الطلبات للجدولة:</p>
           <div className="rounded-xl bg-[hsl(var(--muted))]/40 p-3 flex items-center justify-between text-sm">
             <span className="text-[hsl(var(--muted-foreground))]">رقم الطلب الفرعي المتوقع</span>
             <span className="font-mono font-bold text-[hsl(var(--foreground))]">
@@ -1673,7 +2408,7 @@ function Step3Summary(props: {
           <div>
             <h4 className="text-sm font-bold">معاينة الفاتورة</h4>
             <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-0.5">
-              تفتح في نافذة منفصلة جاهزة للطباعة.
+              تفتح في نافذة منفصلة جاهزة للطباعة — أو داخل الصفحة لو منع المتصفح النوافذ المنبثقة.
             </p>
           </div>
           <button
@@ -1739,5 +2474,165 @@ function SummaryRow(props: {
         {props.value}
       </span>
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Address picker
+// ─────────────────────────────────────────────────────────────────────────────
+
+function AddressPicker(props: {
+  order: OrderSummary;
+  addressMode: AddressMode;
+  setAddressMode: (m: AddressMode) => void;
+  newAddressRegion: string;
+  setNewAddressRegion: (s: string) => void;
+  newAddressDistrict: string;
+  setNewAddressDistrict: (s: string) => void;
+  newAddressNeighborhood: string;
+  setNewAddressNeighborhood: (s: string) => void;
+  newAddressLine: string;
+  setNewAddressLine: (s: string) => void;
+  hierarchicalRegions: ShippingGovernorate[];
+  activeAddress: ChildOrderShipAddress;
+}) {
+  const sameLabel = addressLabelOf({
+    region: props.order.region,
+    district: props.order.district,
+    neighborhood: props.order.neighborhood,
+    address: props.order.address,
+  });
+
+  const selectedGov: ShippingGovernorate | null =
+    props.hierarchicalRegions.find((g) => g.name === props.newAddressRegion) ?? null;
+  // Top-level areas under the governorate. After
+  // `normalizeCoverageHierarchy` the area entries are the ones
+  // without a `parent` field (their nested neighborhoods live in
+  // `.children`).
+  const areas: ShippingDistrict[] = (selectedGov?.districts ?? []).filter(
+    (d: ShippingDistrict) => !d.parent
+  );
+  const selectedArea: ShippingDistrict | null =
+    areas.find((a: ShippingDistrict) => a.name === props.newAddressDistrict) ?? null;
+  const neighborhoods: ShippingDistrict[] = selectedArea?.children ?? [];
+
+  return (
+    <section className="card-section p-4">
+      <h4 className="text-sm font-bold mb-2 flex items-center gap-1.5">
+        <MapPin size={14} /> عنوان الشحن
+      </h4>
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={() => props.setAddressMode('same')}
+          className={`flex items-start gap-2 text-right rounded-xl border px-3 py-2 transition-colors ${
+            props.addressMode === 'same'
+              ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/5 text-[hsl(var(--primary))]'
+              : 'border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/40'
+          }`}
+        >
+          <Home size={14} className="mt-0.5 flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-bold">نفس عنوان الطلب</p>
+            <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5 truncate">
+              {sameLabel || 'غير محدد'}
+            </p>
+          </div>
+        </button>
+        <button
+          type="button"
+          onClick={() => props.setAddressMode('new')}
+          className={`flex items-start gap-2 text-right rounded-xl border px-3 py-2 transition-colors ${
+            props.addressMode === 'new'
+              ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/5 text-[hsl(var(--primary))]'
+              : 'border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/40'
+          }`}
+        >
+          <Plus size={14} className="mt-0.5 flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-bold">إضافة عنوان جديد</p>
+            <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
+              يستخدم للطلب الفرعي ويُضاف للعميل تلقائيًا.
+            </p>
+          </div>
+        </button>
+      </div>
+
+      {props.addressMode === 'new' && (
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <label className="flex flex-col col-span-2 sm:col-span-1">
+            <span className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">المحافظة *</span>
+            <select
+              value={props.newAddressRegion}
+              onChange={(e) => {
+                props.setNewAddressRegion(e.target.value);
+                props.setNewAddressDistrict('');
+                props.setNewAddressNeighborhood('');
+              }}
+              className="form-input text-sm"
+            >
+              <option value="">اختر المحافظة</option>
+              {props.hierarchicalRegions.map((g) => (
+                <option key={g.name} value={g.name}>
+                  {g.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col col-span-2 sm:col-span-1">
+            <span className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">
+              المنطقة / الحي
+            </span>
+            <select
+              value={props.newAddressDistrict}
+              onChange={(e) => {
+                props.setNewAddressDistrict(e.target.value);
+                props.setNewAddressNeighborhood('');
+              }}
+              disabled={!selectedGov}
+              className="form-input text-sm disabled:opacity-50"
+            >
+              <option value="">اختر المنطقة</option>
+              {areas.map((a) => (
+                <option key={a.name} value={a.name}>
+                  {a.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {neighborhoods.length > 0 && (
+            <label className="flex flex-col col-span-2 sm:col-span-1">
+              <span className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">
+                القرية / الشياخة
+              </span>
+              <select
+                value={props.newAddressNeighborhood}
+                onChange={(e) => props.setNewAddressNeighborhood(e.target.value)}
+                className="form-input text-sm"
+              >
+                <option value="">اختر القرية</option>
+                {neighborhoods.map((n) => (
+                  <option key={n.name} value={n.name}>
+                    {n.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <label className="flex flex-col col-span-2">
+            <span className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">
+              العنوان التفصيلي *
+            </span>
+            <textarea
+              rows={2}
+              value={props.newAddressLine}
+              onChange={(e) => props.setNewAddressLine(e.target.value)}
+              placeholder="مثال: شارع ٩، الدور ٢، شقة ٣"
+              className="form-input text-sm"
+            />
+          </label>
+        </div>
+      )}
+    </section>
   );
 }
