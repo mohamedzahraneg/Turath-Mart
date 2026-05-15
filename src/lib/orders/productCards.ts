@@ -170,6 +170,7 @@ interface RawInventoryRow {
   price: number | null;
   category: string | null;
   colors: string[] | null;
+  status?: string | null;
 }
 
 /** Load the merged product catalog: live inventory rows + (optionally)
@@ -177,18 +178,44 @@ interface RawInventoryRow {
  *  intentionally DO NOT mix the static catalog with the inventory
  *  catalog when both exist — admin-managed inventory rows always win
  *  to avoid duplicates when an inventory entry shares a name with a
- *  static type. */
+ *  static type.
+ *
+ *  Phase Inventory-Categories-Safer-Archive-1 — the order modals only
+ *  ever pick from `status = 'active'` rows. Archived and inactive
+ *  products stay in the inventory page but disappear from the order
+ *  picker. The query falls back to the legacy column shape if the
+ *  `status` column doesn't exist yet (e.g. between deploy and
+ *  migration apply), so AddOrder / EditOrder never crash mid-rollout. */
 export async function loadProductCards(
   supabase: SupabaseClient
 ): Promise<{ items: InventoryItem[]; cards: ProductCard[] }> {
-  const { data, error } = await supabase
+  let rows: RawInventoryRow[] | null = null;
+
+  const withStatus = await supabase
     .from('turath_masr_inventory')
-    .select('id, name, sku, available, price, category, colors');
-  if (error) {
-    console.warn('[productCards] inventory load failed:', error);
-    return { items: [], cards: buildStaticCards() };
+    .select('id, name, sku, available, price, category, colors, status')
+    .eq('status', 'active');
+  if (!withStatus.error) {
+    rows = (withStatus.data as RawInventoryRow[] | null) ?? [];
+  } else {
+    // 42703 = undefined column. Other errors get logged and treated as empty.
+    const msg = (withStatus.error.message || '').toLowerCase();
+    if (msg.includes('status') && msg.includes('does not exist')) {
+      const legacy = await supabase
+        .from('turath_masr_inventory')
+        .select('id, name, sku, available, price, category, colors');
+      if (legacy.error) {
+        console.warn('[productCards] inventory load failed (legacy):', legacy.error);
+        return { items: [], cards: buildStaticCards() };
+      }
+      rows = (legacy.data as RawInventoryRow[] | null) ?? [];
+    } else {
+      console.warn('[productCards] inventory load failed:', withStatus.error);
+      return { items: [], cards: buildStaticCards() };
+    }
   }
-  const items: InventoryItem[] = ((data as RawInventoryRow[] | null) || []).map((row) => ({
+
+  const items: InventoryItem[] = (rows ?? []).map((row) => ({
     id: row.id,
     name: row.name,
     sku: row.sku ?? '',

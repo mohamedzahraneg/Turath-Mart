@@ -2,34 +2,33 @@
 // src/app/inventory/page.tsx
 //
 // Phase Inventory-UI-Redesign-1 — redesigned inventory dashboard.
+// Phase Inventory-Categories-Safer-Archive-1 — adds:
 //
-// What ships here:
-//   • Header with breadcrumb to /dashboard and three real-action buttons
-//     (add product / CSV export / refresh).
-//   • Six KPI cards driven by `computeStats` (products / available /
-//     withdrawn / inventory value / low / out).
-//   • Smart-filter container (status chips + category chips + search +
-//     color + sort) plus a cards/table view toggle.
-//   • Card grid view + table view of the filtered+sorted result.
-//   • Right-side product drawer (الملخص / الألوان / الطلبات المرتبطة /
-//     الإعدادات) with NO placeholder movement/additions tabs.
-//   • Existing add/edit modal extracted into `InventoryEditModal` —
-//     behaviour preserved verbatim (auto-SKU, multi-image carousel,
-//     colors chips).
-//   • Low-stock alert banner when low+out > 0.
-//   • Loading / error / empty / filtered-empty states.
+//   • Lifecycle status (active / inactive / archived) with extended
+//     filter chips and a default of "نشط" so archived rows don't
+//     clutter the default view.
+//   • Hard delete REPLACED with archive — `update({status:'archived',
+//     archived_at, archived_by, archive_reason})`. No more
+//     `.delete()` on `turath_masr_inventory`.
+//   • Active ↔ inactive toggle (via drawer settings) and a "استعادة
+//     من الأرشيف" restore button for admins.
+//   • Categories pulled from the new `turath_masr_inventory_categories`
+//     table (with graceful fallback to the legacy unique-from-rows
+//     list if the table is missing — i.e. the brief window between
+//     deploy and migration apply).
+//   • KPI cards now exclude archived rows from totals (lifecycle
+//     active+inactive only).
+//   • CSV export gains 3 columns (الحالة / سبب الأرشفة / تاريخ
+//     الأرشفة).
+//   • The inventory fetch uses a graceful try/fallback: it first
+//     selects the new columns (`status`, `category_id`, `archived_*`,
+//     `updated_at`) and falls back to the legacy column list if the
+//     migration hasn't been applied yet, so the page never crashes
+//     mid-rollout.
 //
-// What does NOT ship here (deferred per the system plan):
-//   • Movements ledger, additions log, variants, suppliers, cost price.
-//   • Order-flow integration (decrement on create / restore on return).
-//   • Soft-delete / archive — hard delete is preserved but now gated
-//     behind a confirm step.
-//
-// The `withdrawn` numbers are still derived from
-// `turath_masr_orders.products` ilike-parsing (preserved from the old
-// page) because the `withdrawn` column on `turath_masr_inventory` is
-// unused by the rest of the app today. This derivation moves to the
-// movement ledger in Phase Inventory-Movement-Ledger-1.
+// What still does NOT ship here (deferred):
+//   • Movements ledger, additions log, variants, suppliers, cost
+//     price, order-flow integration, supplier purchases.
 // ─────────────────────────────────────────────────────────────────────────────
 'use client';
 
@@ -37,15 +36,20 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Package, RefreshCw } from 'lucide-react';
 
 import AppLayout from '@/components/AppLayout';
+import { useAuth } from '@/contexts/AuthContext';
+import { usePermissions } from '@/hooks/usePermissions';
 import { createClient } from '@/lib/supabase/client';
 import {
   computeStats,
   exportInventoryCsv,
   matchesStatus,
+  productLifecycle,
   sortInventory,
   uniqueCategories,
   uniqueColors,
+  type Category,
   type InventoryItem,
+  type LifecycleStatus,
   type SortOption,
   type StatusFilter,
   type ViewMode,
@@ -73,6 +77,14 @@ interface InventoryRowDb {
   category: string | null;
   colors: string[] | null;
   created_at: string | null;
+  // Optional columns — present after the migration applies, undefined
+  // otherwise. Treated as `status='active'` when missing.
+  status?: string | null;
+  category_id?: string | null;
+  archived_at?: string | null;
+  archived_by?: string | null;
+  archive_reason?: string | null;
+  updated_at?: string | null;
 }
 
 interface OrderProductsRow {
@@ -80,16 +92,65 @@ interface OrderProductsRow {
   status: string | null;
 }
 
+interface CategoryRowDb {
+  id: string;
+  name: string;
+  slug: string;
+  sort_order: number | null;
+  is_active: boolean | null;
+}
+
+const NEW_COLUMNS =
+  'id, name, sku, available, withdrawn, min_stock, price, category, colors, created_at, status, category_id, archived_at, archived_by, archive_reason, updated_at';
+const LEGACY_COLUMNS =
+  'id, name, sku, available, withdrawn, min_stock, price, category, colors, created_at';
+
+function isMissingColumnError(err: { message?: string | null } | null | undefined): boolean {
+  if (!err) return false;
+  const msg = (err.message || '').toLowerCase();
+  return msg.includes('does not exist') || msg.includes('column');
+}
+
+function mapInventoryRow(r: InventoryRowDb): InventoryItem {
+  const rawStatus = (r.status ?? 'active') as string;
+  const status: LifecycleStatus =
+    rawStatus === 'inactive' || rawStatus === 'archived' ? rawStatus : 'active';
+  return {
+    id: r.id,
+    name: r.name ?? '',
+    sku: r.sku ?? '',
+    available: r.available ?? 0,
+    withdrawn: r.withdrawn ?? 0,
+    minStock: r.min_stock ?? 0,
+    price: Number(r.price ?? 0),
+    category: r.category ?? '',
+    colors: r.colors ?? [],
+    images: [],
+    created_at: r.created_at,
+    status,
+    category_id: r.category_id ?? null,
+    archived_at: r.archived_at ?? null,
+    archived_by: r.archived_by ?? null,
+    archive_reason: r.archive_reason ?? null,
+    updated_at: r.updated_at ?? null,
+  };
+}
+
 export default function InventoryPage() {
+  const { user } = useAuth();
+  const perms = usePermissions();
+  const isAdmin = perms.isAdmin;
+
   const [items, setItems] = useState<InventoryItem[]>([]);
+  const [categoryRows, setCategoryRows] = useState<Category[]>([]);
   const [withdrawnByName, setWithdrawnByName] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Filters
+  // Filters — default = 'active' so archived hide unless explicitly chosen.
   const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('active');
   const [category, setCategory] = useState<string>(ALL_CATEGORIES_KEY);
   const [colorFilter, setColorFilter] = useState<string>(ALL_COLORS_KEY);
   const [sort, setSort] = useState<SortOption>('newest');
@@ -105,37 +166,63 @@ export default function InventoryPage() {
     setLoadError(null);
     try {
       const supabase = createClient();
-      const [invRes, ordRes] = await Promise.all([
-        supabase
-          .from('turath_masr_inventory')
-          .select(
-            'id, name, sku, available, withdrawn, min_stock, price, category, colors, created_at'
-          )
-          .order('created_at', { ascending: false }),
-        supabase.from('turath_masr_orders').select('products, status'),
-      ]);
 
-      if (invRes.error) {
+      // 1. Inventory — try new columns first, fall back to legacy on
+      //    missing-column errors (covers the deploy-before-migration
+      //    window).
+      let invRows: InventoryRowDb[] = [];
+      let invError: { message?: string | null } | null = null;
+
+      const invNew = await supabase
+        .from('turath_masr_inventory')
+        .select(NEW_COLUMNS)
+        .order('created_at', { ascending: false });
+      if (!invNew.error) {
+        invRows = (invNew.data ?? []) as InventoryRowDb[];
+      } else if (isMissingColumnError(invNew.error)) {
+        const invLegacy = await supabase
+          .from('turath_masr_inventory')
+          .select(LEGACY_COLUMNS)
+          .order('created_at', { ascending: false });
+        if (!invLegacy.error) {
+          invRows = (invLegacy.data ?? []) as InventoryRowDb[];
+        } else {
+          invError = invLegacy.error;
+        }
+      } else {
+        invError = invNew.error;
+      }
+
+      if (invError) {
         setLoadError('تعذر تحميل بيانات المخزن');
         setItems([]);
       } else {
-        const rows = (invRes.data ?? []) as InventoryRowDb[];
-        const mapped: InventoryItem[] = rows.map((r) => ({
-          id: r.id,
-          name: r.name ?? '',
-          sku: r.sku ?? '',
-          available: r.available ?? 0,
-          withdrawn: r.withdrawn ?? 0,
-          minStock: r.min_stock ?? 0,
-          price: Number(r.price ?? 0),
-          category: r.category ?? '',
-          colors: r.colors ?? [],
-          images: [],
-          created_at: r.created_at,
-        }));
-        setItems(mapped);
+        setItems(invRows.map(mapInventoryRow));
       }
 
+      // 2. Categories — best-effort. Missing-table is silent (the
+      //    page falls back to deriving categories from the
+      //    `category` text values on the inventory rows).
+      const catRes = await supabase
+        .from('turath_masr_inventory_categories')
+        .select('id, name, slug, sort_order, is_active')
+        .eq('is_active', true)
+        .order('sort_order', { ascending: true });
+      if (!catRes.error && catRes.data) {
+        const rows = catRes.data as CategoryRowDb[];
+        setCategoryRows(
+          rows.map((c) => ({
+            id: c.id,
+            name: c.name,
+            slug: c.slug,
+            sort_order: c.sort_order ?? 100,
+            is_active: c.is_active ?? true,
+          }))
+        );
+      }
+
+      // 3. Orders → withdrawn map (preserved from prior phase).
+      const ordRes = await supabase.from('turath_masr_orders').select('products, status');
       if (!ordRes.error && ordRes.data) {
         const orderRows = ordRes.data as OrderProductsRow[];
         const map: Record<string, number> = {};
@@ -193,13 +280,24 @@ export default function InventoryPage() {
     void loadAll(true);
   }, [loadAll]);
 
+  // Lookup a category by its display name (used when saving so we can
+  // populate `category_id` alongside the legacy text `category`).
+  const findCategoryByName = useCallback(
+    (name: string): Category | null => {
+      const trimmed = (name || '').trim();
+      if (!trimmed) return null;
+      return categoryRows.find((c) => c.name === trimmed) ?? null;
+    },
+    [categoryRows]
+  );
+
   const handleSave = useCallback(
     async (item: InventoryItem) => {
       try {
         const supabase = createClient();
         const isNew = item.id.startsWith('inv-');
-        const dbItem = {
-          id: isNew ? undefined : item.id,
+        const matchedCategory = findCategoryByName(item.category);
+        const baseItem = {
           name: item.name,
           sku: item.sku,
           available: item.available,
@@ -210,14 +308,35 @@ export default function InventoryPage() {
           images: item.images || [],
           colors: item.colors || [],
         };
+
         if (isNew) {
-          await supabase.from('turath_masr_inventory').insert([dbItem]);
+          // Try the new shape first (includes status + category_id).
+          // Fall back to the legacy shape if those columns are missing.
+          const newShape = {
+            ...baseItem,
+            status: 'active' as const,
+            ...(matchedCategory ? { category_id: matchedCategory.id } : {}),
+          };
+          const ins = await supabase.from('turath_masr_inventory').insert([newShape]);
+          if (ins.error && isMissingColumnError(ins.error)) {
+            await supabase.from('turath_masr_inventory').insert([baseItem]);
+          }
         } else {
-          await supabase.from('turath_masr_inventory').update(dbItem).eq('id', item.id);
+          const updateShape = {
+            ...baseItem,
+            ...(matchedCategory ? { category_id: matchedCategory.id } : {}),
+          };
+          const upd = await supabase
+            .from('turath_masr_inventory')
+            .update(updateShape)
+            .eq('id', item.id);
+          if (upd.error && isMissingColumnError(upd.error)) {
+            await supabase.from('turath_masr_inventory').update(baseItem).eq('id', item.id);
+          }
         }
+
         setEditItem(undefined);
         await loadAll(true);
-        // Keep the drawer in sync if we just edited the open product.
         if (drawerItem && !isNew && drawerItem.id === item.id) {
           setDrawerItem({ ...drawerItem, ...item });
         }
@@ -225,30 +344,130 @@ export default function InventoryPage() {
         console.error('[inventory] save failed', err);
       }
     },
-    [loadAll, drawerItem]
+    [loadAll, drawerItem, findCategoryByName]
   );
 
-  const handleDelete = useCallback(
+  const handleArchive = useCallback(
     async (item: InventoryItem) => {
       if (typeof window === 'undefined') return;
-      const confirmMessage = `هل تريد بالتأكيد حذف "${item.name}"؟ هذا الإجراء نهائي ولا يمكن التراجع عنه.`;
+      if (productLifecycle(item) === 'archived') return;
+      const confirmMessage = `هل تريد أرشفة "${item.name}"؟\nلن يظهر المنتج في الطلبات الجديدة أو الاختيارات النشطة، لكن بياناته وسجله ستبقى محفوظة.`;
       if (!window.confirm(confirmMessage)) return;
       try {
         const supabase = createClient();
-        await supabase.from('turath_masr_inventory').delete().eq('id', item.id);
+        const payload = {
+          status: 'archived' as const,
+          archived_at: new Date().toISOString(),
+          archived_by: user?.id ?? null,
+          archive_reason: 'أرشفة من صفحة المخزن',
+        };
+        const res = await supabase.from('turath_masr_inventory').update(payload).eq('id', item.id);
+        if (res.error) {
+          if (isMissingColumnError(res.error)) {
+            window.alert(
+              'الأرشفة تتطلب تطبيق الترحيل (Migration) الجديد على قاعدة البيانات أولًا.'
+            );
+          } else {
+            console.error('[inventory] archive failed', res.error);
+          }
+          return;
+        }
         if (drawerItem && drawerItem.id === item.id) setDrawerItem(null);
         await loadAll(true);
       } catch (err) {
-        console.error('[inventory] delete failed', err);
+        console.error('[inventory] archive failed', err);
+      }
+    },
+    [loadAll, drawerItem, user?.id]
+  );
+
+  const handleSetStatus = useCallback(
+    async (item: InventoryItem, nextStatus: 'active' | 'inactive') => {
+      try {
+        const supabase = createClient();
+        const res = await supabase
+          .from('turath_masr_inventory')
+          .update({ status: nextStatus })
+          .eq('id', item.id);
+        if (res.error) {
+          if (isMissingColumnError(res.error)) {
+            window.alert(
+              'تغيير الحالة يتطلب تطبيق الترحيل (Migration) الجديد على قاعدة البيانات أولًا.'
+            );
+          } else {
+            console.error('[inventory] set status failed', res.error);
+          }
+          return;
+        }
+        await loadAll(true);
+        if (drawerItem && drawerItem.id === item.id) {
+          setDrawerItem({ ...drawerItem, status: nextStatus });
+        }
+      } catch (err) {
+        console.error('[inventory] set status failed', err);
       }
     },
     [loadAll, drawerItem]
   );
 
+  const handleRestore = useCallback(
+    async (item: InventoryItem) => {
+      if (!isAdmin) return;
+      try {
+        const supabase = createClient();
+        const res = await supabase
+          .from('turath_masr_inventory')
+          .update({
+            status: 'active',
+            archived_at: null,
+            archived_by: null,
+            archive_reason: null,
+          })
+          .eq('id', item.id);
+        if (res.error) {
+          if (isMissingColumnError(res.error)) {
+            window.alert('الاستعادة من الأرشيف تتطلب تطبيق الترحيل (Migration) الجديد أولًا.');
+          } else {
+            console.error('[inventory] restore failed', res.error);
+          }
+          return;
+        }
+        await loadAll(true);
+        if (drawerItem && drawerItem.id === item.id) {
+          setDrawerItem({
+            ...drawerItem,
+            status: 'active',
+            archived_at: null,
+            archived_by: null,
+            archive_reason: null,
+          });
+        }
+      } catch (err) {
+        console.error('[inventory] restore failed', err);
+      }
+    },
+    [loadAll, drawerItem, isAdmin]
+  );
+
   // ── Derived view state ────────────────────────────────────────────────
-  const categories = useMemo(() => uniqueCategories(items), [items]);
+  // Categories: prefer DB rows; fall back to derived-from-inventory.
+  const categoryNames = useMemo(() => {
+    if (categoryRows.length > 0) return categoryRows.map((c) => c.name);
+    return uniqueCategories(items);
+  }, [categoryRows, items]);
+
   const colors = useMemo(() => uniqueColors(items), [items]);
-  const stats = useMemo(() => computeStats(items, withdrawnByName), [items, withdrawnByName]);
+
+  // KPI cards exclude archived rows so "قيمة المخزون" reflects only
+  // sellable inventory.
+  const nonArchivedItems = useMemo(
+    () => items.filter((i) => productLifecycle(i) !== 'archived'),
+    [items]
+  );
+  const stats = useMemo(
+    () => computeStats(nonArchivedItems, withdrawnByName),
+    [nonArchivedItems, withdrawnByName]
+  );
 
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -269,7 +488,7 @@ export default function InventoryPage() {
 
   const hasFilters =
     search.trim().length > 0 ||
-    statusFilter !== 'all' ||
+    statusFilter !== 'active' ||
     category !== ALL_CATEGORIES_KEY ||
     colorFilter !== ALL_COLORS_KEY;
 
@@ -282,6 +501,14 @@ export default function InventoryPage() {
   const handleAdd = useCallback(() => setEditItem(null), []);
   const handleEdit = useCallback((item: InventoryItem) => setEditItem(item), []);
   const handleView = useCallback((item: InventoryItem) => setDrawerItem(item), []);
+
+  // Fallback category list for the edit modal — DB list when present,
+  // derived names otherwise, plus a safety fallback for first-run
+  // empty databases.
+  const editModalCategoryOptions =
+    categoryNames.length > 0
+      ? categoryNames
+      : ['حامل مصحف', 'مصحف', 'كشاف', 'كرسي', 'كعبة', 'قطع صيانة', 'تغليف', 'هدايا', 'أخرى'];
 
   return (
     <AppLayout currentPath="/inventory">
@@ -314,7 +541,7 @@ export default function InventoryPage() {
           statusFilter={statusFilter}
           onStatusFilter={setStatusFilter}
           category={category}
-          categories={categories}
+          categories={categoryNames}
           onCategory={setCategory}
           colorFilter={colorFilter}
           colors={colors}
@@ -349,7 +576,7 @@ export default function InventoryPage() {
             withdrawnByName={withdrawnByName}
             onView={handleView}
             onEdit={handleEdit}
-            onDelete={handleDelete}
+            onArchive={handleArchive}
           />
         ) : (
           <InventoryTable
@@ -357,7 +584,7 @@ export default function InventoryPage() {
             withdrawnByName={withdrawnByName}
             onView={handleView}
             onEdit={handleEdit}
-            onDelete={handleDelete}
+            onArchive={handleArchive}
           />
         )}
       </div>
@@ -366,9 +593,7 @@ export default function InventoryPage() {
         <InventoryEditModal
           item={editItem}
           allItems={items}
-          categoryOptions={
-            categories.length > 0 ? categories : ['حوامل', 'إكسسوارات', 'أثاث', 'كتب', 'ديكور']
-          }
+          categoryOptions={editModalCategoryOptions}
           onClose={() => setEditItem(undefined)}
           onSave={handleSave}
         />
@@ -378,14 +603,15 @@ export default function InventoryPage() {
         <InventoryDrawer
           item={drawerItem}
           withdrawn={withdrawnByName[drawerItem.name.trim()] || 0}
+          isAdmin={isAdmin}
           onClose={() => setDrawerItem(null)}
           onEdit={(item) => {
             setDrawerItem(null);
             setEditItem(item);
           }}
-          onDelete={(item) => {
-            void handleDelete(item);
-          }}
+          onArchive={handleArchive}
+          onSetStatus={handleSetStatus}
+          onRestore={handleRestore}
         />
       )}
     </AppLayout>

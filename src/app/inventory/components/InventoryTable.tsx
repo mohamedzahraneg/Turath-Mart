@@ -4,19 +4,26 @@
 // Phase Inventory-UI-Redesign-1 — table view, evolved from the previous
 // inventory page table. Adds two columns (تاريخ الإضافة, الحالة as a
 // proper chip) and a "view" action that opens the new product drawer.
+//
+// Phase Inventory-Categories-Safer-Archive-1 — the "حذف" icon becomes
+// "أرشفة"; a "دورة الحياة" column shows the lifecycle pill (نشط /
+// موقوف / مؤرشف) next to the existing stock chip; archived rows
+// render dimmed.
 // ─────────────────────────────────────────────────────────────────────────────
 'use client';
 
 import React from 'react';
-import { AlertTriangle, CheckCircle, Edit2, Eye, Trash2, XCircle } from 'lucide-react';
+import { AlertTriangle, Archive, CheckCircle, Edit2, Eye, Pause, XCircle } from 'lucide-react';
 
 import { InventoryThumbnail, inventoryThumbnailUrl } from '@/lib/inventory/InventoryThumbnail';
 import {
   formatDate,
   formatMoney,
   formatNumber,
+  productLifecycle,
   productStatus,
   type InventoryItem,
+  type LifecycleStatus,
 } from '@/lib/inventory/inventoryStats';
 
 interface Props {
@@ -24,7 +31,7 @@ interface Props {
   withdrawnByName: Record<string, number>;
   onView: (item: InventoryItem) => void;
   onEdit: (item: InventoryItem) => void;
-  onDelete: (item: InventoryItem) => void;
+  onArchive: (item: InventoryItem) => void;
 }
 
 const HEADERS = [
@@ -37,7 +44,8 @@ const HEADERS = [
   'المتاح',
   'المسحوب',
   'الحد الأدنى',
-  'الحالة',
+  'دورة الحياة',
+  'حالة المخزون',
   'تاريخ الإضافة',
   'الإجراءات',
 ];
@@ -47,7 +55,7 @@ export default function InventoryTable({
   withdrawnByName,
   onView,
   onEdit,
-  onDelete,
+  onArchive,
 }: Props) {
   return (
     <div
@@ -72,11 +80,19 @@ export default function InventoryTable({
             {items.map((item) => {
               const withdrawn = withdrawnByName[item.name.trim()] || 0;
               const status = productStatus(item);
+              const lifecycle = productLifecycle(item);
+              const isArchived = lifecycle === 'archived';
               return (
                 <tr
                   key={item.id}
                   className={`hover:bg-[hsl(var(--muted))]/30 transition-colors ${
-                    status === 'out' ? 'bg-red-50/30' : status === 'low' ? 'bg-amber-50/30' : ''
+                    isArchived
+                      ? 'opacity-70'
+                      : status === 'out'
+                        ? 'bg-red-50/30'
+                        : status === 'low'
+                          ? 'bg-amber-50/30'
+                          : ''
                   }`}
                 >
                   <td className="px-4 py-3">
@@ -158,6 +174,9 @@ export default function InventoryTable({
                     {formatNumber(item.minStock || 0)}
                   </td>
                   <td className="px-4 py-3">
+                    <LifecycleChip lifecycle={lifecycle} />
+                  </td>
+                  <td className="px-4 py-3">
                     {status === 'out' ? (
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-50 text-red-700 border border-red-200">
                         <XCircle size={10} /> نفد
@@ -195,11 +214,12 @@ export default function InventoryTable({
                       </button>
                       <button
                         type="button"
-                        onClick={() => onDelete(item)}
-                        className="p-1.5 hover:bg-red-50 text-red-600 rounded-lg"
-                        title="حذف"
+                        onClick={() => onArchive(item)}
+                        disabled={isArchived}
+                        className="p-1.5 hover:bg-amber-50 text-amber-700 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed"
+                        title={isArchived ? 'مؤرشف بالفعل' : 'أرشفة'}
                       >
-                        <Trash2 size={14} />
+                        <Archive size={14} />
                       </button>
                     </div>
                   </td>
@@ -210,5 +230,27 @@ export default function InventoryTable({
         </table>
       </div>
     </div>
+  );
+}
+
+function LifecycleChip({ lifecycle }: { lifecycle: LifecycleStatus }) {
+  if (lifecycle === 'archived') {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-gray-100 text-gray-700 border border-gray-300 whitespace-nowrap">
+        <Archive size={10} /> مؤرشف
+      </span>
+    );
+  }
+  if (lifecycle === 'inactive') {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-orange-50 text-orange-700 border border-orange-200 whitespace-nowrap">
+        <Pause size={10} /> موقوف
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 whitespace-nowrap">
+      <CheckCircle size={10} /> نشط
+    </span>
   );
 }

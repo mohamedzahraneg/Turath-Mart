@@ -1,22 +1,26 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // src/app/inventory/components/InventoryCardGrid.tsx
 //
-// Phase Inventory-UI-Redesign-1 — visual card grid. Each card renders a
-// thumbnail (via the cached `/api/inventory/[id]/thumbnail` route), name,
-// SKU, category pill, color chips, price, available qty, status badge,
-// stock progress bar, and three action icons (view / edit / delete).
+// Phase Inventory-UI-Redesign-1 — visual card grid.
+// Phase Inventory-Categories-Safer-Archive-1 — "حذف" becomes "أرشفة"
+// (parent owns the soft-delete UPDATE), and each card now shows a
+// lifecycle pill (نشط / موقوف / مؤرشف) next to the stock pill.
+// Archived cards render dimmed so they're visually distinct when the
+// "مؤرشف" filter is active.
 // ─────────────────────────────────────────────────────────────────────────────
 'use client';
 
 import React from 'react';
-import { AlertTriangle, CheckCircle, Edit2, Eye, Trash2, XCircle } from 'lucide-react';
+import { Archive, CheckCircle, Edit2, Eye, Pause, XCircle, AlertTriangle } from 'lucide-react';
 
 import { InventoryThumbnail, inventoryThumbnailUrl } from '@/lib/inventory/InventoryThumbnail';
 import {
   formatMoney,
   formatNumber,
+  productLifecycle,
   productStatus,
   type InventoryItem,
+  type LifecycleStatus,
 } from '@/lib/inventory/inventoryStats';
 
 interface Props {
@@ -24,7 +28,7 @@ interface Props {
   withdrawnByName: Record<string, number>;
   onView: (item: InventoryItem) => void;
   onEdit: (item: InventoryItem) => void;
-  onDelete: (item: InventoryItem) => void;
+  onArchive: (item: InventoryItem) => void;
 }
 
 export default function InventoryCardGrid({
@@ -32,13 +36,15 @@ export default function InventoryCardGrid({
   withdrawnByName,
   onView,
   onEdit,
-  onDelete,
+  onArchive,
 }: Props) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4" dir="rtl">
       {items.map((item) => {
         const withdrawn = withdrawnByName[item.name.trim()] || 0;
         const status = productStatus(item);
+        const lifecycle = productLifecycle(item);
+        const isArchived = lifecycle === 'archived';
         const totalEverHandled = (item.available || 0) + withdrawn;
         const progressPct =
           totalEverHandled > 0
@@ -50,7 +56,9 @@ export default function InventoryCardGrid({
         return (
           <div
             key={item.id}
-            className="rounded-2xl border border-[hsl(var(--border))] bg-white p-4 flex flex-col gap-3 hover:shadow-md transition-shadow"
+            className={`rounded-2xl border border-[hsl(var(--border))] bg-white p-4 flex flex-col gap-3 hover:shadow-md transition-shadow ${
+              isArchived ? 'opacity-70' : ''
+            }`}
           >
             {/* Thumbnail */}
             <button
@@ -68,7 +76,10 @@ export default function InventoryCardGrid({
                 className="object-cover group-hover:scale-105 transition-transform duration-300"
                 emojiClassName="text-5xl"
               />
-              <StatusBadge status={status} className="absolute top-2 right-2" />
+              <div className="absolute top-2 right-2 flex flex-col items-end gap-1">
+                <LifecycleBadge lifecycle={lifecycle} />
+                <StatusBadge status={status} />
+              </div>
             </button>
 
             {/* Name + SKU */}
@@ -170,10 +181,12 @@ export default function InventoryCardGrid({
               </button>
               <button
                 type="button"
-                onClick={() => onDelete(item)}
-                className="flex-1 inline-flex items-center justify-center gap-1 py-1.5 rounded-lg text-xs font-semibold text-red-600 hover:bg-red-50"
+                onClick={() => onArchive(item)}
+                disabled={isArchived}
+                className="flex-1 inline-flex items-center justify-center gap-1 py-1.5 rounded-lg text-xs font-semibold text-amber-700 hover:bg-amber-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                title={isArchived ? 'مؤرشف بالفعل' : 'أرشفة المنتج'}
               >
-                <Trash2 size={13} /> حذف
+                <Archive size={13} /> {isArchived ? 'مؤرشف' : 'أرشفة'}
               </button>
             </div>
           </div>
@@ -215,4 +228,32 @@ function StatusBadge({
       <CheckCircle size={10} /> متاح
     </span>
   );
+}
+
+function LifecycleBadge({
+  lifecycle,
+  className,
+}: {
+  lifecycle: LifecycleStatus;
+  className?: string;
+}) {
+  if (lifecycle === 'archived') {
+    return (
+      <span
+        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-gray-100 text-gray-700 border border-gray-300 ${className ?? ''}`}
+      >
+        <Archive size={10} /> مؤرشف
+      </span>
+    );
+  }
+  if (lifecycle === 'inactive') {
+    return (
+      <span
+        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-orange-50 text-orange-700 border border-orange-200 ${className ?? ''}`}
+      >
+        <Pause size={10} /> موقوف
+      </span>
+    );
+  }
+  return null; // active = no chrome needed (stock badge says it all)
 }
