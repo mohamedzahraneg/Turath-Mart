@@ -133,6 +133,24 @@ export interface AdjustmentLine {
    * difference math reflects only chargeable items.
    */
   isFree?: boolean;
+  /**
+   * Phase Returns-Exchange-1 Fix1 — how the line's value contributes
+   * to the settlement total. Only meaningful on `return_lines`.
+   *
+   *   'full'     — contribute `quantity × unitPrice [+ flashlight]`
+   *                (the legacy behaviour, default for back-compat).
+   *   'partial'  — contribute `partial_value` directly (a lump sum
+   *                the operator typed, e.g. for "broken part of a
+   *                holder" worth 100 ج.م out of a 2,399 ج.م holder).
+   *                Must be ≤ the full line value.
+   */
+  value_mode?: 'full' | 'partial';
+  /**
+   * Phase Returns-Exchange-1 Fix1 — explicit per-line value when
+   * `value_mode === 'partial'`. Caller enforces `0 ≤ partial_value ≤
+   * full line value`. Ignored when `value_mode !== 'partial'`.
+   */
+  partial_value?: number;
 }
 
 /**
@@ -290,13 +308,32 @@ export function computeLineTotal(line: AdjustmentLine): number {
 }
 
 /**
+ * Phase Returns-Exchange-1 Fix1 — contributing value of a line,
+ * honouring the partial-value override. For full-value lines this
+ * equals `computeLineTotal`. For partial-value lines this is the
+ * operator's typed lump sum, clamped to `[0, fullLineTotal]` so a
+ * stray over-entry can never inflate the settlement past the
+ * original line's worth.
+ */
+export function computeLineContribution(line: AdjustmentLine): number {
+  const full = computeLineTotal(line);
+  if (line.value_mode !== 'partial') return full;
+  const partial = Math.max(0, Number(line.partial_value) || 0);
+  return Math.min(full, partial);
+}
+
+/**
  * Sum a set of adjustment lines. Used both for "value of returned
  * items" and "value of replacement items" in the same way.
+ *
+ * Phase Returns-Exchange-1 Fix1 — uses `computeLineContribution` so
+ * partial-value lines (a piece of a holder, not the whole holder)
+ * contribute their typed lump sum instead of the full product price.
  */
 export function sumAdjustmentLines(lines: AdjustmentLine[]): number {
   let total = 0;
   for (const line of lines) {
-    total += computeLineTotal(line);
+    total += computeLineContribution(line);
   }
   return total;
 }
@@ -655,7 +692,7 @@ export function sumChargeableReplacementLines(lines: AdjustmentLine[]): number {
   let total = 0;
   for (const line of lines) {
     if (line.isFree) continue;
-    total += computeLineTotal(line);
+    total += computeLineContribution(line);
   }
   return round2(total);
 }

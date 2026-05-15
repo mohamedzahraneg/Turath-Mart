@@ -18,9 +18,11 @@
 
 import {
   ADJUSTMENT_KIND_LABEL_AR,
+  REFUND_MODE_LABEL_AR,
   type AdjustmentKind,
   type AdjustmentLine,
   type PriceDifferenceDirection,
+  type RefundMode,
 } from './orderAdjustments';
 
 export interface AdjustmentInvoicePayload {
@@ -31,6 +33,10 @@ export interface AdjustmentInvoicePayload {
   phone: string;
   /** Region / district / neighborhood as a single human label. */
   addressLabel: string;
+  /** Phase Returns-Exchange-1 Fix1 — flag the address as either the
+   *  parent's or a new one (so the invoice shows which the operator
+   *  picked). Falls back to "same" when not provided. */
+  addressChoice?: 'same' | 'new';
   /** Settlement type — drives the title + reason label. */
   kind: AdjustmentKind;
   /** Mandatory reason — already validated upstream. */
@@ -48,9 +54,17 @@ export interface AdjustmentInvoicePayload {
   shippingBaseAmount: number;
   shippingCustomerAmount: number;
   shippingCompanyAmount: number;
+  /** Phase Returns-Exchange-1 Fix1 — human-readable region source label
+   *  (e.g. "يستخدم سعر شحن المحافظة"). Optional. */
+  shippingFeeSourceLabel?: string | null;
   /** Money owed / due. */
   customerCollectAmount: number;
   companyRefundAmount: number;
+  /** Phase Returns-Exchange-1 Fix1 — refund mode picked by the operator. */
+  refundMode?: RefundMode;
+  /** Phase Returns-Exchange-1 Fix1 — company deduction (reduces refund). */
+  companyDeductionAmount?: number;
+  companyDeductionReason?: string | null;
   /** Linked child order number (e.g. 2605131-R1). May be null when
    *  the caller previews before persistence completes. */
   childOrderNum: string | null;
@@ -156,7 +170,7 @@ function renderLinesTable(title: string, lines: AdjustmentLine[]): string {
 function renderSummaryTable(payload: AdjustmentInvoicePayload): string {
   const rows: string[] = [];
   rows.push(
-    `<tr><td>قيمة العناصر المرتجعة</td><td class="num">${fmt(payload.originalSelectedValue)}</td></tr>`
+    `<tr><td>قيمة العناصر المرتجعة/المستبدلة</td><td class="num">${fmt(payload.originalSelectedValue)}</td></tr>`
   );
   if (payload.replacementLines.length > 0) {
     rows.push(
@@ -170,7 +184,7 @@ function renderSummaryTable(payload: AdjustmentInvoicePayload): string {
     );
   }
   rows.push(
-    `<tr><td>مصاريف الشحن</td><td class="num">${fmt(payload.shippingBaseAmount)}</td></tr>`
+    `<tr><td>مصاريف الشحن${payload.shippingFeeSourceLabel ? ` <span class="muted">(${escapeHtml(payload.shippingFeeSourceLabel)})</span>` : ''}</td><td class="num">${fmt(payload.shippingBaseAmount)}</td></tr>`
   );
   rows.push(
     `<tr><td>يتحمل العميل من الشحن</td><td class="num">${fmt(payload.shippingCustomerAmount)}</td></tr>`
@@ -178,6 +192,22 @@ function renderSummaryTable(payload: AdjustmentInvoicePayload): string {
   rows.push(
     `<tr><td>تتحمل الشركة من الشحن</td><td class="num">${fmt(payload.shippingCompanyAmount)}</td></tr>`
   );
+  // Phase Returns-Exchange-1 Fix1 — refund mode + company deduction
+  // surfaced in the invoice so the accounting side has a complete
+  // picture (refund mode chosen, any company-eaten deduction).
+  if (payload.refundMode) {
+    rows.push(
+      `<tr><td>طريقة الاسترداد</td><td class="num">${escapeHtml(REFUND_MODE_LABEL_AR[payload.refundMode])}</td></tr>`
+    );
+  }
+  if ((payload.companyDeductionAmount ?? 0) > 0) {
+    const reason = payload.companyDeductionReason
+      ? ` <span class="muted">(${escapeHtml(payload.companyDeductionReason)})</span>`
+      : '';
+    rows.push(
+      `<tr><td>استقطاع من الاسترداد${reason}</td><td class="num">${fmt(payload.companyDeductionAmount ?? 0)}</td></tr>`
+    );
+  }
   if (payload.customerCollectAmount > 0) {
     rows.push(
       `<tr class="row-emphasis"><td>المبلغ المطلوب من العميل</td><td class="num">${fmt(payload.customerCollectAmount)}</td></tr>`
@@ -185,7 +215,7 @@ function renderSummaryTable(payload: AdjustmentInvoicePayload): string {
   }
   if (payload.companyRefundAmount > 0) {
     rows.push(
-      `<tr class="row-refund"><td>المبلغ المسترد للعميل</td><td class="num">${fmt(payload.companyRefundAmount)}</td></tr>`
+      `<tr class="row-refund"><td>صافي المسترد للعميل</td><td class="num">${fmt(payload.companyRefundAmount)}</td></tr>`
     );
   }
   return `
@@ -338,6 +368,16 @@ export function generateAdjustmentInvoiceHTML(payload: AdjustmentInvoicePayload)
     .summary table td:first-child { color: #4b5563; }
     .summary table .row-emphasis td { background: #ecfdf5; color: #065f46; font-weight: 700; }
     .summary table .row-refund td { background: #fef3c7; color: #92400e; font-weight: 700; }
+    .muted { color: #9ca3af; font-size: 11px; }
+    .address-tag {
+      display: inline-block;
+      background: #eef2ff;
+      color: #3730a3;
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      margin-inline-start: 4px;
+    }
     .notes p {
       background: #f9fafb;
       border: 1px solid #e5e7eb;
@@ -402,7 +442,7 @@ export function generateAdjustmentInvoiceHTML(payload: AdjustmentInvoicePayload)
     <div class="customer-block">
       <div><span class="label">العميل:</span><br /><strong>${escapeHtml(payload.customer)}</strong></div>
       <div><span class="label">الهاتف:</span><br /><strong>${escapeHtml(payload.phone)}</strong></div>
-      <div style="grid-column: 1 / -1;"><span class="label">العنوان:</span><br />${escapeHtml(payload.addressLabel)}</div>
+      <div style="grid-column: 1 / -1;"><span class="label">عنوان الشحن:</span><br />${escapeHtml(payload.addressLabel)}${payload.addressChoice === 'new' ? '<span class="address-tag">عنوان جديد</span>' : ''}</div>
     </div>
     <div class="reason-block">
       <span class="label">${escapeHtml(reasonLabel(payload.kind))}:</span>
@@ -421,20 +461,108 @@ export function generateAdjustmentInvoiceHTML(payload: AdjustmentInvoicePayload)
 </html>`;
 }
 
+/** Loading shell written into the popup immediately so the user
+ *  doesn't see a blank tab while we finish rendering. */
+const POPUP_LOADING_SHELL = `<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <title>جارٍ تجهيز الفاتورة…</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; color: #4b5563; }
+  </style>
+</head>
+<body>جارٍ تجهيز الفاتورة…</body>
+</html>`;
+
+export interface OpenInvoiceResult {
+  /** Whether the popup window was successfully opened. */
+  opened: boolean;
+  /** Reference to the opened window when `opened === true`. */
+  popup: Window | null;
+  /** The rendered HTML — always returned so the caller can fall back
+   *  to a same-window iframe when the popup is blocked. */
+  html: string;
+}
+
 /**
- * Open a new browser window, write the invoice HTML into it, and
- * surface print controls. Returns the popup `Window` reference for
- * caller-side cleanup (e.g. focus management). Returns `null` when
- * popup blockers prevent the open — the caller can fall back to a
- * toast prompting the user to allow pop-ups.
+ * Open a popup, write a loading shell synchronously (so the popup
+ * blocker doesn't fire on the empty about:blank), then write the real
+ * invoice HTML and trigger print after a short delay so the browser
+ * has time to layout the document.
+ *
+ * Critical invariants
+ * -------------------
+ *   • Must be called inside the user's click handler. Any `await` in
+ *     the calling site BEFORE this call will turn the popup blocker
+ *     on. The wizard collects all payload data synchronously, so this
+ *     holds.
+ *   • Features string must NOT contain `noopener`/`noreferrer` — those
+ *     interfere with `document.write` in some browsers (the popup
+ *     reports as detached and the write silently fails).
+ *
+ * Returns a structured result so the caller can distinguish "popup
+ * blocked" (render in-page fallback) from "wrote successfully" (no
+ * further action needed) and always has the HTML at hand.
  */
-export function openAdjustmentInvoiceWindow(payload: AdjustmentInvoicePayload): Window | null {
-  if (typeof window === 'undefined') return null;
+export function openAdjustmentInvoiceWindow(payload: AdjustmentInvoicePayload): OpenInvoiceResult {
   const html = generateAdjustmentInvoiceHTML(payload);
-  const popup = window.open('', '_blank', 'noopener,noreferrer,width=860,height=900');
-  if (!popup) return null;
-  popup.document.open();
-  popup.document.write(html);
-  popup.document.close();
-  return popup;
+  if (typeof window === 'undefined') {
+    return { opened: false, popup: null, html };
+  }
+  const popup = window.open('', '_blank', 'width=860,height=900');
+  if (!popup) {
+    return { opened: false, popup: null, html };
+  }
+  try {
+    // Loading shell first so the popup blocker sees a real document.
+    popup.document.open();
+    popup.document.write(POPUP_LOADING_SHELL);
+    popup.document.close();
+    // Real invoice HTML on the next tick so the browser has parsed
+    // the shell and committed it to the popup's history.
+    setTimeout(() => {
+      try {
+        if (popup.closed) return;
+        popup.document.open();
+        popup.document.write(html);
+        popup.document.close();
+        try {
+          popup.focus();
+        } catch {
+          /* focus can fail when the user has clicked back to the main window */
+        }
+        setTimeout(() => {
+          try {
+            if (!popup.closed) popup.print();
+          } catch {
+            /* print can fail if popup got closed mid-render */
+          }
+        }, 300);
+      } catch (writeErr) {
+        console.warn('[adjustmentInvoice] popup write failed:', writeErr);
+      }
+    }, 50);
+  } catch (err) {
+    console.warn('[adjustmentInvoice] popup open exception:', err);
+    return { opened: false, popup, html };
+  }
+  return { opened: true, popup, html };
+}
+
+/**
+ * Build a Blob URL for the invoice HTML. Used by the in-page fallback
+ * when the popup is blocked — the caller renders an `<iframe src={url}>`
+ * inside a modal, or hands the URL to a download link. Caller MUST
+ * call `URL.revokeObjectURL(url)` when the iframe is unmounted to
+ * avoid leaking the blob.
+ */
+export function buildAdjustmentInvoiceBlobUrl(
+  payload: AdjustmentInvoicePayload
+): { url: string; html: string } | null {
+  if (typeof window === 'undefined' || typeof URL === 'undefined') return null;
+  const html = generateAdjustmentInvoiceHTML(payload);
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  return { url, html };
 }

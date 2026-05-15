@@ -40,6 +40,23 @@ export interface ChildOrderParentSnapshot {
   warranty?: string | null;
 }
 
+/**
+ * Phase Returns-Exchange-1 Fix1 — the address the child shipping
+ * order actually ships to / picks up from. Defaults to the parent's
+ * address but the operator can pick a new one in step 3 of the
+ * wizard. When the new address differs from the parent's, the next
+ * past-addresses lookup for this customer surfaces it automatically
+ * (the dedup runs off `turath_masr_orders`).
+ */
+export interface ChildOrderShipAddress {
+  region: string;
+  district?: string | null;
+  neighborhood?: string | null;
+  address: string;
+  /** Optional secondary phone for delivery — falls back to parent.phone2. */
+  phone2?: string | null;
+}
+
 export interface ChildOrderInputs {
   parent: ChildOrderParentSnapshot;
   /** Derived from `buildChildOrderNum(parent.orderNum, kind, siblings)`. */
@@ -62,6 +79,10 @@ export interface ChildOrderInputs {
   reason: string;
   createdBy: string;
   createdByUserId: string | null;
+  /** Phase Returns-Exchange-1 Fix1 — address override. When null the
+   *  builder reuses the parent's address. When supplied the child
+   *  order ships to / picks up from this address instead. */
+  shipAddress?: ChildOrderShipAddress | null;
 }
 
 /** Render a stable shipping-task label for the products column. */
@@ -125,6 +146,19 @@ export function buildChildOrderRow(inputs: ChildOrderInputs): Record<string, unk
   if (inputs.operationalNote && inputs.operationalNote.trim()) {
     notesParts.push(`ملاحظات للمندوب: ${inputs.operationalNote.trim()}`);
   }
+  // Phase Returns-Exchange-1 Fix1 — pick the actual ship address.
+  // Falls back to the parent's address when the wizard didn't
+  // override it (most cases). When overridden, the new address
+  // automatically lands in the customer's past-addresses list the
+  // next time someone queries `turath_masr_orders` for this phone.
+  const ship = inputs.shipAddress ?? null;
+  const shipRegion = ship?.region ?? inputs.parent.region;
+  const shipDistrict = ship ? (ship.district ?? null) : (inputs.parent.district ?? null);
+  const shipNeighborhood = ship
+    ? (ship.neighborhood ?? null)
+    : (inputs.parent.neighborhood ?? null);
+  const shipAddressLine = ship?.address ?? inputs.parent.address;
+  const shipPhone2 = ship?.phone2 ?? inputs.parent.phone2 ?? null;
   return {
     id: `order-${now.getTime()}`,
     order_num: inputs.childOrderNum,
@@ -132,11 +166,11 @@ export function buildChildOrderRow(inputs: ChildOrderInputs): Record<string, unk
     created_by_user_id: inputs.createdByUserId,
     customer: inputs.parent.customer,
     phone: inputs.parent.phone,
-    phone2: inputs.parent.phone2 ?? null,
-    region: inputs.parent.region,
-    district: inputs.parent.district ?? null,
-    neighborhood: inputs.parent.neighborhood ?? null,
-    address: inputs.parent.address,
+    phone2: shipPhone2,
+    region: shipRegion,
+    district: shipDistrict,
+    neighborhood: shipNeighborhood,
+    address: shipAddressLine,
     products: productsLabel,
     quantity: childQty || 1,
     subtotal,
