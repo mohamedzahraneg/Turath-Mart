@@ -1,19 +1,27 @@
 'use client';
 // ─────────────────────────────────────────────────────────────────────────────
-// /delegates — Phase 23A
+// /delegates — Phase 23A → Phase Delegates-Profile-Live-1
 //
-// Delegate management foundation. Read-only first PR:
-//   • KPI cards calculated from existing `turath_masr_orders` data.
-//   • Delegate list joined with `profiles` (role_id IN r3/r4) and the
-//     legacy `delegate_name` text values still found on orders.
-//   • Detail drawer with multi-tab view (الملخص / الطلبات / التقييمات /
-//     النشاط). Settlements / Custody / Expenses tabs are placeholders
-//     marked قريبًا — those tables don't exist yet and are explicitly
-//     deferred to Phase 23B/C per the user spec.
-//   • Customer ratings come from `turath_masr_delegate_ratings` (added
-//     in migration 20260510180000_delegate_ratings.sql, staged but
-//     not yet applied at first deploy — the page is defensive against
-//     a missing table and renders "لا توجد تقييمات بعد").
+// Delegate management surface. The detail drawer renders a multi-tab
+// view (الملخص / الطلبات / التحصيلات / التوريدات / الأمانات /
+// المصاريف / المستندات / كشف الحساب / التقييمات والشكاوى / النشاط).
+//
+// Every tab is wired to live data:
+//   • الملخص — `turath_masr_orders` + `turath_masr_delegate_settlements`
+//     + `turath_masr_delegate_custody` + `turath_masr_delegate_expenses`.
+//     The `totalSettled` / `remainingDue` KPI cards finally surface
+//     the real aggregates (Phase Delegates-Profile-Live-1 fix — those
+//     two cards used to print the literal "قريبًا" even though the
+//     numbers were already computed in the reducer).
+//   • التوريدات / الأمانات / المصاريف / المستندات / التقييمات —
+//     real-time fetches scoped per delegate by `delegate_profile_id`
+//     with `delegate_name` fallback for legacy rows.
+//   • التقييمات والشكاوى — now also fetches complaints from
+//     `turath_masr_crm_complaints` filtered by the delegate's order
+//     numbers (Phase Delegates-Profile-Live-1).
+//   • النشاط — now also fetches relevant audit-log rows from
+//     `turath_masr_audit_logs` for the delegate's orders so the tab
+//     is more than just an order list (Phase Delegates-Profile-Live-1).
 //
 // Performance posture (mirrors Phase 22Q + Phase E1 conventions):
 //   • Explicit narrow column lists on every Supabase query.
@@ -1949,6 +1957,10 @@ export default function DelegatesPage() {
           onAddCustody={() => setCustodyTargetKey(selected.delegate.key)}
           onAddExpense={() => setExpenseTargetKey(selected.delegate.key)}
           onChangeCustodyStatus={(row, nextStatus) => setCustodyStatusTarget({ row, nextStatus })}
+          /* Phase Delegates-Profile-Live-1 — bumps the page-level
+             reloadTick so every per-delegate slice re-fetches without
+             closing the drawer. */
+          onRefresh={() => setReloadTick((n) => n + 1)}
           /* Phase 23D — CSV export gated on admin only. The drawer
              passes this through to the AccountStatementTab to hide
              the export button for non-admin viewers. */
@@ -2961,6 +2973,10 @@ interface DrawerProps {
   // mutation lives at the page level.
   onApproveExpense?: (row: ExpenseRow) => void;
   onRejectExpense?: (row: ExpenseRow) => void;
+  // Phase Delegates-Profile-Live-1 — drawer header refresh button.
+  // Forwarded up to the page so the parent can bump `reloadTick`
+  // and re-fetch every per-delegate slice.
+  onRefresh?: () => void;
 }
 
 function DelegateDrawer({
@@ -2989,6 +3005,7 @@ function DelegateDrawer({
   onVoidCustody,
   onApproveExpense,
   onRejectExpense,
+  onRefresh,
 }: DrawerProps) {
   const a = aggregate;
 
@@ -3065,14 +3082,32 @@ function DelegateDrawer({
               )}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))]"
-            aria-label="إغلاق"
-          >
-            <X size={16} />
-          </button>
+          <div className="flex items-center gap-1">
+            {/* Phase Delegates-Profile-Live-1 — refresh button. Re-runs
+                every per-delegate slice (orders, settlements,
+                custody, expenses, documents, ratings) without
+                closing the drawer. Hidden when the page didn't pass
+                a handler. */}
+            {onRefresh && (
+              <button
+                type="button"
+                onClick={onRefresh}
+                className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))]"
+                aria-label="تحديث بيانات المندوب"
+                title="تحديث"
+              >
+                <RotateCcw size={14} />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-[hsl(var(--muted))]"
+              aria-label="إغلاق"
+            >
+              <X size={16} />
+            </button>
+          </div>
         </div>
 
         {/* Tab bar */}
@@ -3153,7 +3188,13 @@ function DelegateDrawer({
           )}
           {activeTab === 'ratings' && <RatingsTab a={a} />}
           {activeTab === 'activity' && <ActivityTab a={a} />}
-          {activeTab === 'placeholder' && <PlaceholderTab kind={placeholderTab} />}
+          {/* Phase Delegates-Profile-Live-1 — the `placeholder` branch
+              is intentionally not rendered. The tab id is still in the
+              union for back-compat with serialised drawer state from
+              older sessions; if it ever fires, the user sees nothing
+              instead of a fake "قريبًا" card. The `PlaceholderTab`
+              function below is kept as dead code so the prop wiring
+              doesn't break on re-introduction of placeholder tabs. */}
         </div>
       </div>
     </div>
@@ -3329,8 +3370,26 @@ function SummaryTab({ a }: { a: DelegateAggregate }) {
           label="متوسط التقييم"
           value={a.averageRating != null ? `${a.averageRating.toFixed(1)} / 5` : 'لا تقييم'}
         />
-        <KpiCard icon={<Wallet size={16} />} label="إجمالي التوريد" value="قريبًا" placeholder />
-        <KpiCard icon={<Wallet size={16} />} label="المتبقي عليه" value="قريبًا" placeholder />
+        {/* Phase Delegates-Profile-Live-1 — these cards used to render
+            the literal "قريبًا" placeholder even though the values are
+            already computed in the aggregate. Now they surface the
+            real `totalSettled` (sum of active settlements) and
+            `remainingDue` (collected − settled). */}
+        <KpiCard
+          icon={<Wallet size={16} className="text-blue-600" />}
+          label="إجمالي التوريد"
+          value={fmtMoney(a.totalSettled)}
+        />
+        <KpiCard
+          icon={
+            <Wallet
+              size={16}
+              className={a.remainingDue > 0 ? 'text-red-600' : 'text-emerald-600'}
+            />
+          }
+          label="المتبقي عليه"
+          value={fmtMoney(a.remainingDue)}
+        />
       </div>
     </div>
   );
@@ -3384,116 +3443,412 @@ function OrdersTab({ a }: { a: DelegateAggregate }) {
   );
 }
 
-function RatingsTab({ a }: { a: DelegateAggregate }) {
-  if (a.ratings.length === 0) {
-    return (
-      <p className="text-sm text-[hsl(var(--muted-foreground))]">
-        لا توجد تقييمات بعد لهذا المندوب.
-      </p>
-    );
+/**
+ * Phase Delegates-Profile-Live-1 — complaint row shape used inside
+ * `RatingsTab`. We only project the columns we render so the tab
+ * stays light over a small `IN (...)` filter.
+ */
+interface DelegateComplaintRow {
+  id: string;
+  subject: string | null;
+  status: string | null;
+  resolution_status: string | null;
+  complaint_type: string | null;
+  priority: string | null;
+  notes: string | null;
+  order_num: string | null;
+  child_order_num: string | null;
+  customer_phone: string | null;
+  created_at: string;
+}
+
+const COMPLAINT_STATUS_LABEL_AR: Record<string, string> = {
+  open: 'مفتوحة',
+  in_progress: 'قيد المعالجة',
+  done: 'تم الحل',
+  resolved: 'تم الحل',
+  closed: 'مغلقة',
+  cancelled: 'ملغاة',
+};
+
+function complaintToneClass(status: string | null): string {
+  switch ((status ?? '').toLowerCase()) {
+    case 'open':
+      return 'border-rose-200 bg-rose-50/60 text-rose-800';
+    case 'in_progress':
+      return 'border-amber-200 bg-amber-50/60 text-amber-800';
+    case 'done':
+    case 'resolved':
+    case 'closed':
+      return 'border-emerald-200 bg-emerald-50/60 text-emerald-800';
+    default:
+      return 'border-[hsl(var(--border))] bg-white text-[hsl(var(--foreground))]';
   }
+}
+
+function RatingsTab({ a }: { a: DelegateAggregate }) {
+  // Phase Delegates-Profile-Live-1 — complaints surfaced inline. We
+  // query `turath_masr_crm_complaints` on-demand (when the tab opens)
+  // filtered by the delegate's order numbers. Best-effort: a missing
+  // table or RLS rejection falls through to an empty list, the
+  // ratings section still renders normally.
+  const [complaints, setComplaints] = React.useState<DelegateComplaintRow[]>([]);
+  const [complaintsLoading, setComplaintsLoading] = React.useState(true);
+  const [complaintsError, setComplaintsError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    const orderNums = Array.from(
+      new Set(a.ordersForDelegate.map((o) => o.order_num).filter(Boolean))
+    );
+    if (orderNums.length === 0) {
+      setComplaints([]);
+      setComplaintsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      setComplaintsLoading(true);
+      setComplaintsError(null);
+      try {
+        const supabase = createClient();
+        // Match either the parent `order_num` or a related child
+        // shipping `child_order_num` so adjustment-driven complaints
+        // still attach to the delegate that owns the parent order.
+        const { data, error } = await supabase
+          .from('turath_masr_crm_complaints')
+          .select(
+            'id, subject, status, resolution_status, complaint_type, priority, notes, order_num, child_order_num, customer_phone, created_at'
+          )
+          .or(
+            `order_num.in.(${orderNums.map((n) => `"${n}"`).join(',')}),child_order_num.in.(${orderNums.map((n) => `"${n}"`).join(',')})`
+          )
+          .order('created_at', { ascending: false })
+          .limit(50);
+        if (cancelled) return;
+        if (error) {
+          // Missing table or RLS rejection — soft-fail.
+          console.warn('[RatingsTab] complaints fetch failed:', error);
+          setComplaintsError(null);
+          setComplaints([]);
+        } else {
+          setComplaints((data as DelegateComplaintRow[] | null) ?? []);
+        }
+      } catch (err) {
+        if (cancelled) return;
+        console.warn('[RatingsTab] complaints fetch exception:', err);
+        setComplaints([]);
+      } finally {
+        if (!cancelled) setComplaintsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [a.ordersForDelegate]);
+
   return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl p-3">
-        <Star size={16} className="text-amber-500" />
-        <div>
-          <p className="text-sm font-bold text-amber-800">
-            متوسط التقييم: {a.averageRating?.toFixed(1) ?? '—'} / 5
+    <div className="space-y-4">
+      {/* Ratings section */}
+      <section className="space-y-3">
+        <h4 className="text-xs font-bold text-[hsl(var(--muted-foreground))]">التقييمات</h4>
+        {a.ratings.length === 0 ? (
+          <p className="text-sm text-[hsl(var(--muted-foreground))]">
+            لا توجد تقييمات بعد لهذا المندوب.
           </p>
-          <p className="text-[11px] text-amber-700">
-            من {a.ratings.length} تقييم خلال آخر 90 يومًا
-          </p>
-        </div>
-      </div>
-      <div className="space-y-2">
-        {a.ratings.map((r) => (
-          <div key={r.id} className="border border-[hsl(var(--border))] rounded-xl p-3 bg-white">
-            <div className="flex items-center justify-between gap-2 mb-1">
-              <div className="flex items-center gap-1 text-amber-500">
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <Star key={i} size={12} fill={i < r.rating ? 'currentColor' : 'none'} />
-                ))}
+        ) : (
+          <>
+            <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl p-3">
+              <Star size={16} className="text-amber-500" />
+              <div>
+                <p className="text-sm font-bold text-amber-800">
+                  متوسط التقييم: {a.averageRating?.toFixed(1) ?? '—'} / 5
+                </p>
+                <p className="text-[11px] text-amber-700">
+                  من {a.ratings.length} تقييم خلال آخر 90 يومًا
+                </p>
               </div>
-              <span className="text-[10px] font-mono text-[hsl(var(--muted-foreground))]">
-                {formatDateAr(r.created_at)}
-              </span>
             </div>
-            {r.comment ? (
-              <p className="text-sm text-[hsl(var(--foreground))] italic leading-relaxed">
-                &ldquo;{r.comment}&rdquo;
-              </p>
-            ) : (
-              <p className="text-xs text-[hsl(var(--muted-foreground))]">بدون ملاحظات.</p>
-            )}
-            <p className="text-[10px] text-[hsl(var(--muted-foreground))] font-mono mt-1">
-              طلب #{r.order_id.slice(0, 8)}
-            </p>
+            <div className="space-y-2">
+              {a.ratings.map((r) => (
+                <div
+                  key={r.id}
+                  className="border border-[hsl(var(--border))] rounded-xl p-3 bg-white"
+                >
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <div className="flex items-center gap-1 text-amber-500">
+                      {Array.from({ length: 5 }).map((_, i) => (
+                        <Star key={i} size={12} fill={i < r.rating ? 'currentColor' : 'none'} />
+                      ))}
+                    </div>
+                    <span className="text-[10px] font-mono text-[hsl(var(--muted-foreground))]">
+                      {formatDateAr(r.created_at)}
+                    </span>
+                  </div>
+                  {r.comment ? (
+                    <p className="text-sm text-[hsl(var(--foreground))] italic leading-relaxed">
+                      &ldquo;{r.comment}&rdquo;
+                    </p>
+                  ) : (
+                    <p className="text-xs text-[hsl(var(--muted-foreground))]">بدون ملاحظات.</p>
+                  )}
+                  <p className="text-[10px] text-[hsl(var(--muted-foreground))] font-mono mt-1">
+                    طلب #{r.order_id.slice(0, 8)}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </section>
+
+      {/* Complaints section — Phase Delegates-Profile-Live-1 */}
+      <section className="space-y-3">
+        <h4 className="text-xs font-bold text-[hsl(var(--muted-foreground))]">الشكاوى</h4>
+        {complaintsLoading ? (
+          <p className="text-xs text-[hsl(var(--muted-foreground))]">جاري تحميل الشكاوى...</p>
+        ) : complaintsError ? (
+          <p className="text-xs text-rose-600">{complaintsError}</p>
+        ) : complaints.length === 0 ? (
+          <p className="text-sm text-[hsl(var(--muted-foreground))]">
+            لا توجد شكاوى مرتبطة بطلبات هذا المندوب.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {complaints.map((c) => {
+              const statusLabel =
+                COMPLAINT_STATUS_LABEL_AR[(c.resolution_status ?? c.status ?? '').toLowerCase()] ??
+                c.resolution_status ??
+                c.status ??
+                '—';
+              return (
+                <div
+                  key={c.id}
+                  className={`border rounded-xl p-3 ${complaintToneClass(c.resolution_status ?? c.status)}`}
+                >
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <p className="text-sm font-bold truncate">{c.subject || 'شكوى بدون عنوان'}</p>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/70 border border-[hsl(var(--border))]">
+                      {statusLabel}
+                    </span>
+                  </div>
+                  {c.notes && (
+                    <p className="text-xs leading-relaxed mb-1 line-clamp-2">{c.notes}</p>
+                  )}
+                  <div className="flex items-center justify-between text-[10px] text-[hsl(var(--muted-foreground))] font-mono">
+                    <span>
+                      {c.order_num ? `طلب #${c.order_num}` : ''}
+                      {c.child_order_num ? ` — فرعي #${c.child_order_num}` : ''}
+                    </span>
+                    <span>{formatDateAr(c.created_at)}</span>
+                  </div>
+                </div>
+              );
+            })}
           </div>
-        ))}
-      </div>
+        )}
+      </section>
     </div>
   );
 }
 
+// Phase Delegates-Profile-Live-1 — humanizer for audit-log actions so
+// the Activity tab reads like Arabic copy instead of raw keys.
+const ACTIVITY_ACTION_LABELS_AR: Record<string, string> = {
+  status_change: 'تم تغيير حالة الطلب',
+  order_created: 'تم إنشاء طلب جديد',
+  order_edited: 'تم تعديل الطلب',
+  'order.updated': 'تم تعديل الطلب',
+  payment_updated: 'تم تحديث الدفع',
+  delegate_assigned: 'تم تعيين مندوب',
+  adjustment_created: 'تم إنشاء تسوية',
+  'adjustment.created': 'تم إنشاء تسوية',
+  adjustment_approved: 'تمت الموافقة على التسوية',
+  'adjustment.approved': 'تمت الموافقة على التسوية',
+  adjustment_rejected: 'تم رفض التسوية',
+  'adjustment.rejected': 'تم رفض التسوية',
+  adjustment_completed: 'تم تنفيذ التسوية',
+  'adjustment.completed': 'تم تنفيذ التسوية',
+  adjustment_cancelled: 'تم إلغاء التسوية',
+  'adjustment.cancelled': 'تم إلغاء التسوية',
+  'adjustment.child_order_created': 'تم إنشاء طلب شحن مرتبط',
+};
+
+function humanizeDelegateActivity(
+  action: string,
+  fieldChanged: string | null,
+  newValue: string | null
+): string {
+  const base = ACTIVITY_ACTION_LABELS_AR[action];
+  if (!base) return 'نشاط على الطلب';
+  if (action === 'status_change' || fieldChanged === 'status') {
+    const label = newValue ? (STATUS_LABELS[newValue] ?? newValue) : null;
+    return label ? `${base} إلى ${label}` : base;
+  }
+  if (action === 'order_edited' || action === 'order.updated') {
+    return fieldChanged ? `${base} — ${fieldChanged}` : base;
+  }
+  return base;
+}
+
+interface DelegateAuditRow {
+  id: string;
+  action: string;
+  field_changed: string | null;
+  new_value: string | null;
+  order_num: string;
+  changed_by: string | null;
+  created_at: string;
+}
+
 function ActivityTab({ a }: { a: DelegateAggregate }) {
-  // For Phase 23A we surface activity directly from the orders list
-  // (status changes are recorded in turath_masr_audit_logs but a
-  // per-delegate query against that table is deferred to a later
-  // phase — same conservative scope decision as the placeholder
-  // tabs).
-  const recent = a.ordersForDelegate.slice(0, 30);
-  if (recent.length === 0) {
+  // Phase Delegates-Profile-Live-1 — Activity tab now blends two
+  // streams: (1) the recent orders the delegate is assigned to,
+  // (2) the matching audit-log rows from `turath_masr_audit_logs`
+  // scoped by `order_num IN (...)`. Both lists are merged by
+  // timestamp so the user sees a single chronological feed instead
+  // of an orders-only summary.
+  const recentOrders = a.ordersForDelegate.slice(0, 30);
+  const [auditRows, setAuditRows] = React.useState<DelegateAuditRow[]>([]);
+  const [auditLoading, setAuditLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    const orderNums = Array.from(
+      new Set(a.ordersForDelegate.map((o) => o.order_num).filter(Boolean))
+    );
+    if (orderNums.length === 0) {
+      setAuditRows([]);
+      setAuditLoading(false);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      setAuditLoading(true);
+      try {
+        const supabase = createClient();
+        const { data, error } = await supabase
+          .from('turath_masr_audit_logs')
+          .select('id, action, field_changed, new_value, order_num, changed_by, created_at')
+          .in('order_num', orderNums)
+          .order('created_at', { ascending: false })
+          .limit(50);
+        if (cancelled) return;
+        if (error) {
+          console.warn('[ActivityTab] audit fetch failed:', error);
+          setAuditRows([]);
+        } else {
+          setAuditRows((data as DelegateAuditRow[] | null) ?? []);
+        }
+      } catch (err) {
+        if (cancelled) return;
+        console.warn('[ActivityTab] audit fetch exception:', err);
+        setAuditRows([]);
+      } finally {
+        if (!cancelled) setAuditLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [a.ordersForDelegate]);
+
+  // Merge the two streams. Each entry carries `kind` so the renderer
+  // can pick a label / icon. Sort by created_at desc, cap at 50.
+  type FeedItem =
+    | { kind: 'order'; id: string; ts: string; order: (typeof recentOrders)[number] }
+    | { kind: 'audit'; id: string; ts: string; row: DelegateAuditRow };
+  const feed: FeedItem[] = React.useMemo(() => {
+    const items: FeedItem[] = [
+      ...recentOrders.map(
+        (o): FeedItem => ({
+          kind: 'order',
+          id: `order-${o.id}`,
+          ts: o.created_at ?? '',
+          order: o,
+        })
+      ),
+      ...auditRows.map(
+        (r): FeedItem => ({
+          kind: 'audit',
+          id: `audit-${r.id}`,
+          ts: r.created_at,
+          row: r,
+        })
+      ),
+    ];
+    items.sort((x, y) => (x.ts > y.ts ? -1 : x.ts < y.ts ? 1 : 0));
+    return items.slice(0, 50);
+  }, [recentOrders, auditRows]);
+
+  if (feed.length === 0 && !auditLoading) {
     return <p className="text-sm text-[hsl(var(--muted-foreground))]">لا يوجد نشاط حديث.</p>;
   }
   return (
     <div className="space-y-2">
-      <p className="text-[11px] text-[hsl(var(--muted-foreground))]">
-        نشاط مستخرج من الطلبات (آخر 30 طلبًا). سجل التعديلات الكامل سيُضاف في مرحلة لاحقة.
-      </p>
-      {recent.map((o) => (
-        <div
-          key={o.id}
-          className="flex items-center gap-3 text-xs bg-[hsl(var(--muted))]/30 rounded-xl p-2.5"
-        >
-          <Clock size={12} className="text-[hsl(var(--muted-foreground))] flex-shrink-0" />
-          <div className="flex-1 min-w-0">
-            <p className="font-mono text-[10px] text-[hsl(var(--muted-foreground))]">
-              {formatDateAr(o.created_at)}
-            </p>
-            <p className="font-semibold">
-              {o.order_num} — {STATUS_LABELS[o.status] || o.status}
-            </p>
-            <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate">
-              {o.customer || ''} · {o.region || ''}
-            </p>
+      {auditLoading && (
+        <p className="text-[11px] text-[hsl(var(--muted-foreground))]">جاري تحميل سجل النشاط...</p>
+      )}
+      {feed.map((item) =>
+        item.kind === 'order' ? (
+          <div
+            key={item.id}
+            className="flex items-center gap-3 text-xs bg-[hsl(var(--muted))]/30 rounded-xl p-2.5"
+          >
+            <Clock size={12} className="text-[hsl(var(--muted-foreground))] flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="font-mono text-[10px] text-[hsl(var(--muted-foreground))]">
+                {formatDateAr(item.order.created_at)}
+              </p>
+              <p className="font-semibold">
+                {item.order.order_num} — {STATUS_LABELS[item.order.status] || item.order.status}
+              </p>
+              <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate">
+                {item.order.customer || ''} · {item.order.region || ''}
+              </p>
+            </div>
           </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function PlaceholderTab({ kind }: { kind: string }) {
-  // Phase 23C — all four formerly-placeholder tabs (collections,
-  // settlements, custody, expenses) are now functional. The map is
-  // intentionally empty so any stale `placeholderTab` state from
-  // older sessions falls back to the generic "قريبًا" card. Future
-  // phases that introduce new placeholders should re-populate it.
-  const labels: Record<string, { title: string; sub: string; phase: string }> = {};
-  const cfg = labels[kind] || { title: 'قريبًا', sub: '', phase: '' };
-  return (
-    <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
-      <div className="w-14 h-14 rounded-2xl bg-[hsl(var(--muted))] flex items-center justify-center">
-        <Wallet size={24} className="text-[hsl(var(--muted-foreground))] opacity-60" />
-      </div>
-      <h4 className="text-base font-bold text-[hsl(var(--foreground))]">{cfg.title}</h4>
-      {cfg.sub && <p className="text-xs text-[hsl(var(--muted-foreground))] max-w-md">{cfg.sub}</p>}
-      {cfg.phase && (
-        <p className="text-[10px] text-[hsl(var(--primary))] font-bold">{cfg.phase} — قريبًا</p>
+        ) : (
+          <div
+            key={item.id}
+            className="flex items-center gap-3 text-xs bg-blue-50/40 border border-blue-100 rounded-xl p-2.5"
+          >
+            <Clock size={12} className="text-blue-500 flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="font-mono text-[10px] text-[hsl(var(--muted-foreground))]">
+                {formatDateAr(item.row.created_at)}
+              </p>
+              <p className="font-semibold text-[hsl(var(--foreground))]">
+                {humanizeDelegateActivity(
+                  item.row.action,
+                  item.row.field_changed,
+                  item.row.new_value
+                )}
+                {item.row.order_num && (
+                  <span className="text-[hsl(var(--primary))] font-mono">
+                    {' '}
+                    — #{item.row.order_num}
+                  </span>
+                )}
+              </p>
+              {item.row.changed_by && (
+                <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate">
+                  بواسطة {item.row.changed_by}
+                </p>
+              )}
+            </div>
+          </div>
+        )
       )}
     </div>
   );
 }
+
+// Phase Delegates-Profile-Live-1 — the `PlaceholderTab` component was
+// removed. All formerly-placeholder tabs (collections, settlements,
+// custody, expenses, documents, statement) are now live. The
+// `placeholder` tab id remains in the union and state for back-compat
+// with any serialised drawer state from older sessions, but the
+// drawer no longer renders any "قريبًا" content if it fires — the
+// branch is silently dropped above.
 
 // ─── Phase 23A-Fix1 — Add delegate wizard ──────────────────────────────────
 //
