@@ -162,7 +162,11 @@ const fmtEgp = (n: number): string => `${(Number.isFinite(n) ? n : 0).toLocaleSt
 
 type SettlementType = 'return' | 'exchange';
 type Subtype = 'full' | 'partial';
-type ShippingPayer = 'customer' | 'company';
+// Phase Returns-Exchange-1 Fix2 — `'split'` restored. The legacy
+// schema already accepts this value; we just expose the UX again so
+// the operator can divide the shipping fee between customer and
+// company at arbitrary shares.
+type ShippingPayer = 'customer' | 'company' | 'split';
 type AddressMode = 'same' | 'new';
 
 interface ReturnRow {
@@ -245,6 +249,11 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
 
   // ── Step 3 state — settlement
   const [shippingPayer, setShippingPayer] = useState<ShippingPayer>('company');
+  // Phase Returns-Exchange-1 Fix2 — customer's share of the shipping
+  // fee when the payer is `split`. Clamped to `[0, shippingBaseAmount]`
+  // by the input + the effect below. Ignored for `customer` and
+  // `company` modes (they fully fix the share).
+  const [shippingCustomerShareInput, setShippingCustomerShareInput] = useState(0);
   const [operationalNote, setOperationalNote] = useState('');
   /** Cached sibling count for the child-order suffix preview. */
   const [previewSiblingCount, setPreviewSiblingCount] = useState<number | null>(null);
@@ -368,8 +377,27 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
     order.address,
   ]);
 
+  // Phase Returns-Exchange-1 Fix2 — `regionsLoaded` distinguishes
+  // "not covered" from "still loading". Coverage-based blocks only
+  // fire once the settings payload has arrived.
+  const regionsLoaded = hierarchicalRegions.length > 0;
+
   // ── Resolve shipping fee from the active address's coverage tree.
   const feeResolution = useMemo(() => {
+    if (!regionsLoaded) {
+      // Settings haven't arrived yet — use the parent order's legacy
+      // `shippingFee` as a placeholder so the preview renders. We
+      // also mark source as 'loading' so the coverage-block path
+      // knows to wait.
+      return {
+        fee:
+          addressMode === 'same' && Number.isFinite(order.shippingFee)
+            ? Math.max(0, Number(order.shippingFee) || 0)
+            : 0,
+        source: 'loading' as const,
+        label: 'جارٍ تحميل إعدادات الشحن…',
+      };
+    }
     const govEntry = hierarchicalRegions.find((g) => g.name === activeAddress.region) ?? null;
     const areaEntry: ShippingDistrict | null = activeAddress.district
       ? findArea(activeAddress.region, activeAddress.district, hierarchicalRegions)
@@ -383,26 +411,27 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
             hierarchicalRegions
           )
         : null;
+    // Phase Returns-Exchange-1 Fix2 — when the matched gov / area /
+    // neighborhood is disabled, treat it as not covered. The
+    // resolver doesn't filter by `enabled` on its own.
+    const govDisabled = govEntry?.enabled === false;
+    const areaDisabled = areaEntry?.enabled === false;
+    const neighDisabled = neighEntry?.enabled === false;
+    if (govDisabled || areaDisabled || neighDisabled) {
+      return {
+        fee: 0,
+        source: 'none' as const,
+        label: 'هذه المنطقة غير مفعلة في إعدادات الشحن.',
+      };
+    }
     const resolution = resolveShippingFeeFromCoverage({
       governorate: govEntry,
       area: areaEntry,
       neighborhood: neighEntry,
     });
-    return {
-      ...resolution,
-      // When the address is the parent order's and the regions data
-      // isn't loaded yet, fall back to the original order's
-      // `shippingFee` so the preview isn't a blank "0 ج.م".
-      fee:
-        resolution.source !== 'none'
-          ? resolution.fee
-          : addressMode === 'same' && Number.isFinite(order.shippingFee)
-            ? Math.max(0, Number(order.shippingFee) || 0)
-            : resolution.fee,
-      source: resolution.source,
-      label: resolution.label,
-    };
+    return resolution;
   }, [
+    regionsLoaded,
     hierarchicalRegions,
     activeAddress.region,
     activeAddress.district,
@@ -509,8 +538,15 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
   const customerPaysDifference =
     isExchange && priceDirection === 'customer_pays' ? Math.abs(chargeablePriceDifference) : 0;
 
-  const customerShippingShare = shippingPayer === 'customer' ? shippingBaseAmount : 0;
-  const companyShippingShare = shippingPayer === 'company' ? shippingBaseAmount : 0;
+  // Phase Returns-Exchange-1 Fix2 — derive the actual shares from
+  // the 3-way payer + the customer-share input (only used for split).
+  const customerShippingShare =
+    shippingPayer === 'customer'
+      ? shippingBaseAmount
+      : shippingPayer === 'company'
+        ? 0
+        : Math.min(Math.max(0, Number(shippingCustomerShareInput) || 0), shippingBaseAmount);
+  const companyShippingShare = Math.max(0, shippingBaseAmount - customerShippingShare);
 
   const companyDeduction = companyDeductionEnabled
     ? Math.max(0, Number(companyDeductionAmount) || 0)
@@ -564,6 +600,24 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
     }
   }, [refundMode, eligibleRefund]);
 
+  // ── Phase Returns-Exchange-1 Fix2 — clamp customer-share input to
+  // `[0, shippingBaseAmount]` whenever the payer or the base fee
+  // changes. Switching to `customer` or `company` is a hard-set; the
+  // input only matters for `split` but we keep its value coherent
+  // so flipping back to `split` doesn't show a stale over-the-base
+  // number.
+  useEffect(() => {
+    if (shippingPayer === 'customer') {
+      setShippingCustomerShareInput(shippingBaseAmount);
+    } else if (shippingPayer === 'company') {
+      setShippingCustomerShareInput(0);
+    } else {
+      setShippingCustomerShareInput((curr) =>
+        Math.min(Math.max(0, Number(curr) || 0), shippingBaseAmount)
+      );
+    }
+  }, [shippingPayer, shippingBaseAmount]);
+
   // ── Per-step validators
   const validateStep = (target: 1 | 2 | 3): string | null => {
     if (target >= 2) {
@@ -615,17 +669,32 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
       }
     }
     if (target >= 3) {
-      if (shippingPayer !== 'customer' && shippingPayer !== 'company') {
+      if (
+        shippingPayer !== 'customer' &&
+        shippingPayer !== 'company' &&
+        shippingPayer !== 'split'
+      ) {
         return 'برجاء تحديد من يتحمل الشحن.';
       }
       // Address validation
       if (addressMode === 'new') {
-        if (!newAddressRegion.trim()) return 'برجاء اختيار المحافظة للعنوان الجديد.';
+        if (!newAddressRegion.trim()) return 'برجاء اختيار محافظة مغطاة.';
         if (!newAddressLine.trim()) return 'برجاء إدخال العنوان الجديد.';
       }
       if (!activeAddress.region) return 'برجاء اختيار عنوان شحن صحيح.';
       if (feeResolution.source === 'none') {
-        return 'برجاء تحديد المنطقة لحساب الشحن.';
+        return addressMode === 'same'
+          ? 'عنوان الطلب الحالي غير مغطى حاليًا في إعدادات الشحن. اختر عنوانًا جديدًا.'
+          : 'برجاء تحديد المنطقة لحساب الشحن.';
+      }
+      // Phase Returns-Exchange-1 Fix2 — split-mode requires both
+      // sides contribute > 0 to match the legacy DB CHECK constraint
+      // on `shipping_payer = 'split'`. A 0-100 split should pick
+      // `customer` or `company` instead.
+      if (shippingPayer === 'split') {
+        if (!(customerShippingShare > 0) || !(companyShippingShare > 0)) {
+          return 'عند تقسيم الشحن يجب أن يدفع كل طرف مبلغ أكبر من صفر.';
+        }
       }
       // Refund mode validation
       if (refundMode === 'partial') {
@@ -849,6 +918,8 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
           priceDifference: signedPriceDiff,
           priceDifferenceDirection: priceDirection,
           shippingCustomerAmount: customerShippingShare,
+          shippingBaseAmount,
+          shippingCompanyAmount: companyShippingShare,
           customerCollectAmount: finalAmountDueFromCustomer,
           operationalNote: operationalNote.trim() || null,
           reason: reason.trim(),
@@ -925,9 +996,13 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
         replacement_value: chargeableReplacementValue,
         price_difference: signedPriceDiff,
         price_difference_direction: priceDirection,
+        shipping_fee: shippingBaseAmount,
         shipping_base_amount: shippingBaseAmount,
+        shipping_payer: shippingPayer,
         shipping_customer_amount: customerShippingShare,
         shipping_company_amount: companyShippingShare,
+        customer_shipping_share: customerShippingShare,
+        company_shipping_share: companyShippingShare,
         shipping_fee_source: feeResolution.source,
         refund_mode: refundMode,
         eligible_refund: eligibleRefund,
@@ -937,6 +1012,9 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
         customer_collect_amount: finalAmountDueFromCustomer,
         company_refund_amount: finalRefundToCustomer,
         address_choice: addressMode,
+        selected_region: activeAddress.region,
+        selected_district: activeAddress.district ?? null,
+        selected_neighborhood: activeAddress.neighborhood ?? null,
       };
 
       try {
@@ -1203,6 +1281,8 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
               shippingPayer={shippingPayer}
               setShippingPayer={setShippingPayer}
               shippingBaseAmount={shippingBaseAmount}
+              shippingCustomerShareInput={shippingCustomerShareInput}
+              setShippingCustomerShareInput={setShippingCustomerShareInput}
               customerShippingShare={customerShippingShare}
               companyShippingShare={companyShippingShare}
               returnedValue={totals.returnedValue}
@@ -2116,6 +2196,8 @@ interface Step3Props {
   shippingPayer: ShippingPayer;
   setShippingPayer: (p: ShippingPayer) => void;
   shippingBaseAmount: number;
+  shippingCustomerShareInput: number;
+  setShippingCustomerShareInput: (n: number) => void;
   customerShippingShare: number;
   companyShippingShare: number;
   returnedValue: number;
@@ -2162,16 +2244,22 @@ function Step3Summary(props: Step3Props) {
         setNewAddressLine={props.setNewAddressLine}
         hierarchicalRegions={props.hierarchicalRegions}
         activeAddress={props.activeAddress}
+        feeResolution={props.feeResolution}
       />
 
-      {/* Shipping */}
+      {/* Shipping — Phase Returns-Exchange-1 Fix2: 3-way payer with
+          a customer-share input for `split`. The base fee is read
+          only and comes from the active address's coverage; only the
+          split between customer and company is editable. */}
       <section className="card-section p-4">
         <h4 className="text-sm font-bold mb-2 flex items-center gap-1.5">
           <Truck size={14} /> الشحن للطلب الفرعي
         </h4>
         <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/40 p-3 text-xs space-y-1">
           <div className="flex justify-between items-center">
-            <span className="text-[hsl(var(--muted-foreground))]">مصاريف الشحن</span>
+            <span className="text-[hsl(var(--muted-foreground))]">
+              مصروف الشحن المحدد من السيستم
+            </span>
             <span className="font-mono font-bold">{fmtEgp(props.shippingBaseAmount)}</span>
           </div>
           <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
@@ -2182,32 +2270,66 @@ function Step3Summary(props: Step3Props) {
         </div>
         <div className="mt-3">
           <span className="block text-[11px] text-[hsl(var(--muted-foreground))] mb-1">
-            من يتحمل الشحن؟
+            توزيع مصاريف الشحن
           </span>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
             <ShippingPayerButton
               active={props.shippingPayer === 'customer'}
               onClick={() => props.setShippingPayer('customer')}
-              label="العميل"
+              label="العميل يتحمل الكل"
               hint="يخصم من الاسترداد أو يضاف على التحصيل"
             />
             <ShippingPayerButton
               active={props.shippingPayer === 'company'}
               onClick={() => props.setShippingPayer('company')}
-              label="الشركة"
+              label="الشركة تتحمل الكل"
               hint="الشحن = 0 على العميل"
             />
+            <ShippingPayerButton
+              active={props.shippingPayer === 'split'}
+              onClick={() => props.setShippingPayer('split')}
+              label="تقسيم بين الطرفين"
+              hint="حدد ما يدفعه العميل والباقي على الشركة"
+            />
           </div>
+          {props.shippingPayer === 'split' && (
+            <label className="mt-3 flex flex-col">
+              <span className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1">
+                المبلغ الذي سيدفعه العميل من الشحن (ج.م)
+              </span>
+              <input
+                type="number"
+                min={0}
+                max={props.shippingBaseAmount}
+                step="0.01"
+                value={props.shippingCustomerShareInput}
+                onChange={(e) =>
+                  props.setShippingCustomerShareInput(
+                    Math.min(props.shippingBaseAmount, Math.max(0, Number(e.target.value) || 0))
+                  )
+                }
+                disabled={props.shippingBaseAmount <= 0}
+                className="form-input text-sm font-mono disabled:opacity-50"
+                dir="ltr"
+              />
+              <span className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1">
+                الشركة تتحمل تلقائيًا الباقي:{' '}
+                <span className="font-mono font-bold text-[hsl(var(--foreground))]">
+                  {fmtEgp(props.companyShippingShare)}
+                </span>
+              </span>
+            </label>
+          )}
           <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
             <div className="rounded-lg bg-white border border-[hsl(var(--border))] px-2 py-1.5">
               <span className="text-[hsl(var(--muted-foreground))] block text-[10px]">
-                يتحمل العميل
+                يدفع العميل من الشحن
               </span>
               <span className="font-mono font-bold">{fmtEgp(props.customerShippingShare)}</span>
             </div>
             <div className="rounded-lg bg-white border border-[hsl(var(--border))] px-2 py-1.5">
               <span className="text-[hsl(var(--muted-foreground))] block text-[10px]">
-                تتحمل الشركة
+                تتحمل الشركة من الشحن
               </span>
               <span className="font-mono font-bold">{fmtEgp(props.companyShippingShare)}</span>
             </div>
@@ -2334,8 +2456,8 @@ function Step3Summary(props: Step3Props) {
               tone={props.priceDirection === 'customer_pays' ? 'amber' : 'emerald'}
             />
           )}
-          <SummaryRow label="مصاريف الشحن" value={fmtEgp(props.shippingBaseAmount)} />
-          <SummaryRow label="يتحمل العميل من الشحن" value={fmtEgp(props.customerShippingShare)} />
+          <SummaryRow label="مصروف الشحن من السيستم" value={fmtEgp(props.shippingBaseAmount)} />
+          <SummaryRow label="يدفع العميل من الشحن" value={fmtEgp(props.customerShippingShare)} />
           <SummaryRow label="تتحمل الشركة من الشحن" value={fmtEgp(props.companyShippingShare)} />
           {props.companyDeduction > 0 && (
             <SummaryRow
@@ -2495,6 +2617,10 @@ function AddressPicker(props: {
   setNewAddressLine: (s: string) => void;
   hierarchicalRegions: ShippingGovernorate[];
   activeAddress: ChildOrderShipAddress;
+  /** Phase Returns-Exchange-1 Fix2 — live fee resolution so the
+   *  picker can render the source label and flag a same-address
+   *  that is no longer covered. */
+  feeResolution: { fee: number; source: string; label: string };
 }) {
   const sameLabel = addressLabelOf({
     region: props.order.region,
@@ -2503,18 +2629,33 @@ function AddressPicker(props: {
     address: props.order.address,
   });
 
+  // Phase Returns-Exchange-1 Fix2 — only surface active coverage in
+  // the dropdowns. `enabled !== false` mirrors AddOrderModal's
+  // filter (legacy rows without an `enabled` field default to
+  // enabled). The neighborhood layer follows the same rule.
+  const enabledGovs = props.hierarchicalRegions.filter((g) => g.enabled !== false);
   const selectedGov: ShippingGovernorate | null =
-    props.hierarchicalRegions.find((g) => g.name === props.newAddressRegion) ?? null;
+    enabledGovs.find((g) => g.name === props.newAddressRegion) ?? null;
   // Top-level areas under the governorate. After
   // `normalizeCoverageHierarchy` the area entries are the ones
   // without a `parent` field (their nested neighborhoods live in
   // `.children`).
   const areas: ShippingDistrict[] = (selectedGov?.districts ?? []).filter(
-    (d: ShippingDistrict) => !d.parent
+    (d: ShippingDistrict) => !d.parent && d.enabled !== false
   );
   const selectedArea: ShippingDistrict | null =
     areas.find((a: ShippingDistrict) => a.name === props.newAddressDistrict) ?? null;
-  const neighborhoods: ShippingDistrict[] = selectedArea?.children ?? [];
+  const neighborhoods: ShippingDistrict[] = (selectedArea?.children ?? []).filter(
+    (n: ShippingDistrict) => n.enabled !== false
+  );
+
+  // Phase Returns-Exchange-1 Fix2 — detect when the parent order's
+  // address is no longer in active coverage. The fee resolver
+  // returns `source: 'none'` whenever no level (gov / area /
+  // neighborhood) supplies a valid fee — including when the
+  // matching entries are disabled.
+  const sameAddressNotCovered =
+    props.addressMode === 'same' && props.feeResolution.source === 'none';
 
   return (
     <section className="card-section p-4">
@@ -2558,6 +2699,25 @@ function AddressPicker(props: {
         </button>
       </div>
 
+      {/* Phase Returns-Exchange-1 Fix2 — warn when the original
+          order's address is no longer in active coverage. The
+          operator must pick a new address before submit. */}
+      {sameAddressNotCovered && (
+        <div className="mt-3 rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 text-xs text-rose-700 flex items-start gap-2">
+          <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+          <span>
+            عنوان الطلب الحالي غير مغطى حاليًا في إعدادات الشحن. اختر عنوانًا جديدًا للمتابعة.
+          </span>
+        </div>
+      )}
+
+      {/* Fee-resolution hint when a valid fee resolved. */}
+      {props.feeResolution.source !== 'none' && (
+        <p className="mt-2 text-[10px] text-[hsl(var(--muted-foreground))]">
+          {props.feeResolution.label} — {fmtEgp(props.feeResolution.fee)}
+        </p>
+      )}
+
       {props.addressMode === 'new' && (
         <div className="mt-3 grid grid-cols-2 gap-2">
           <label className="flex flex-col col-span-2 sm:col-span-1">
@@ -2572,7 +2732,7 @@ function AddressPicker(props: {
               className="form-input text-sm"
             >
               <option value="">اختر المحافظة</option>
-              {props.hierarchicalRegions.map((g) => (
+              {enabledGovs.map((g) => (
                 <option key={g.name} value={g.name}>
                   {g.name}
                 </option>

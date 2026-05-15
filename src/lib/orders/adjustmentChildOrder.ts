@@ -69,6 +69,12 @@ export interface ChildOrderInputs {
   priceDifferenceDirection: PriceDifferenceDirection;
   /** Customer's share of the new shipping leg (≤ base). */
   shippingCustomerAmount: number;
+  /** Phase Returns-Exchange-1 Fix2 — the resolved system-side base
+   *  shipping fee for the new shipping leg, and the company's share.
+   *  Both surface in the child order's notes so the shipping team
+   *  sees the full split breakdown next to the reason. */
+  shippingBaseAmount?: number;
+  shippingCompanyAmount?: number;
   /** What the delegate must collect from the customer at delivery. */
   customerCollectAmount: number;
   /** Free-form instructions written by the operator (shown on the
@@ -143,6 +149,17 @@ export function buildChildOrderRow(inputs: ChildOrderInputs): Record<string, unk
     `${reasonLabelFor(inputs.kind)}: ${inputs.reason}`,
     `الطلب الأصلي: #${inputs.parent.orderNum}`,
   ];
+  // Phase Returns-Exchange-1 Fix2 — include the shipping split
+  // breakdown in the child order's notes so the dispatcher /
+  // delegate sees exactly who pays what without re-opening the
+  // adjustment row.
+  const baseAmount = Math.max(0, Number(inputs.shippingBaseAmount ?? 0) || 0);
+  const companyAmount = Math.max(0, Number(inputs.shippingCompanyAmount ?? 0) || 0);
+  if (baseAmount > 0 || shippingForChild > 0 || companyAmount > 0) {
+    notesParts.push(`مصروف الشحن من السيستم: ${baseAmount.toLocaleString('en-US')} ج.م`);
+    notesParts.push(`يدفع العميل من الشحن: ${shippingForChild.toLocaleString('en-US')} ج.م`);
+    notesParts.push(`تتحمل الشركة من الشحن: ${companyAmount.toLocaleString('en-US')} ج.م`);
+  }
   if (inputs.operationalNote && inputs.operationalNote.trim()) {
     notesParts.push(`ملاحظات للمندوب: ${inputs.operationalNote.trim()}`);
   }

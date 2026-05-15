@@ -184,10 +184,10 @@ function renderSummaryTable(payload: AdjustmentInvoicePayload): string {
     );
   }
   rows.push(
-    `<tr><td>مصاريف الشحن${payload.shippingFeeSourceLabel ? ` <span class="muted">(${escapeHtml(payload.shippingFeeSourceLabel)})</span>` : ''}</td><td class="num">${fmt(payload.shippingBaseAmount)}</td></tr>`
+    `<tr><td>مصروف الشحن من السيستم${payload.shippingFeeSourceLabel ? ` <span class="muted">(${escapeHtml(payload.shippingFeeSourceLabel)})</span>` : ''}</td><td class="num">${fmt(payload.shippingBaseAmount)}</td></tr>`
   );
   rows.push(
-    `<tr><td>يتحمل العميل من الشحن</td><td class="num">${fmt(payload.shippingCustomerAmount)}</td></tr>`
+    `<tr><td>يدفع العميل من الشحن</td><td class="num">${fmt(payload.shippingCustomerAmount)}</td></tr>`
   );
   rows.push(
     `<tr><td>تتحمل الشركة من الشحن</td><td class="num">${fmt(payload.shippingCompanyAmount)}</td></tr>`
