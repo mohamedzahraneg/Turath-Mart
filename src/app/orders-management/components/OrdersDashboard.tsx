@@ -1,51 +1,44 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // src/app/orders-management/components/OrdersDashboard.tsx
 //
-// Phase Orders-Page-Redesign-1 — the new orders dashboard surface
-// that replaces the legacy `LiveOrdersDashboard`. Renders:
+// Phase Orders-Page-Redesign-1 Visual Match Fix — dashboard section
+// laid out to match the approved design exactly:
 //
-//   • Smart-filter chips: اليوم / أمس / هذا الأسبوع / هذا الشهر /
-//     الشهر السابق.  Selecting a chip drives the dashboard query
-//     window AND emits the same window upward so the parent can sync
-//     the table.
-//   • KPI cards row — orders count, expected collection (with
-//     delivered share when meaningful), waiting / shipping /
-//     delivered, returns + exchanges.
-//   • Status distribution panel (donut + Arabic legend).
-//   • Recent activity feed.
-//   • "Needs action" alerts with click-through to the table filter.
+//   [ KPI 1 ][ KPI 2 ][ KPI 3 ][ KPI 4 ][ KPI 5 ][ KPI 6 ]   (RTL row)
 //
-// All data flows through the shared `/api/orders/operations-summary`
-// route. No client-side aggregation, no duplicate queries.
+//   [ توزيع الحالات   ] [ أحدث النشاطات   ] [ طلبات تحتاج متابعة ]
+//
+// The smart-filter chips moved out of this component into
+// `OrdersHeader` so the dashed-purple container in the header row
+// matches the visual reference. This component now ONLY renders the
+// KPI row + the three middle cards. All data comes from
+// `/api/orders/operations-summary` — no client-side aggregation.
 //
 // What this component is NOT
 // --------------------------
-//   • Not the orders table. The table lives in `OrdersTableSection`
-//     and runs its own paginated query — the dashboard never
-//     duplicates that read.
-//   • Not the AddOrder / EditOrder / OrderDetail entry points. Those
-//     stay where they are. The dashboard is read-only.
+//   • Not the orders table. `OrdersTableSection` owns the paginated
+//     read.
+//   • Not the AddOrder / EditOrder / OrderDetail entry points.
+//   • Not the date-range header. The header owns the range; this
+//     component is a pure consumer.
 // ─────────────────────────────────────────────────────────────────────────────
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   AlertCircle,
   Bell,
-  Calendar as CalendarIcon,
   ChevronLeft,
   Clock,
   DollarSign,
   Loader2,
   Package,
-  RefreshCw,
   RotateCcw,
   Truck,
-  Wallet,
 } from 'lucide-react';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Range helpers
+// Range helpers (re-exported so the page + header can compute presets)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type DateRangePreset =
@@ -72,9 +65,7 @@ function toIsoDate(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-/** Compute a date range for a smart-filter preset. All dates are in
- *  the user's local timezone — the API converts to UTC `00:00Z`
- *  bounds, so an off-by-a-few-hours skew at midnight is acceptable. */
+/** Compute a date range for a smart-filter preset. */
 export function rangeForPreset(preset: DateRangePreset, now: Date = new Date()): DateRange {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   switch (preset) {
@@ -86,9 +77,7 @@ export function rangeForPreset(preset: DateRangePreset, now: Date = new Date()):
       return { from: toIsoDate(y), to: toIsoDate(y), preset };
     }
     case 'this_week': {
-      // Egypt convention: week starts on Saturday. Compute days back
-      // to last Saturday.
-      const dow = today.getDay(); // 0=Sun..6=Sat
+      const dow = today.getDay();
       const daysBack = (dow + 1) % 7;
       const start = new Date(today);
       start.setDate(today.getDate() - daysBack);
@@ -152,14 +141,7 @@ interface OperationsSummary {
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface Props {
-  /** Driven by the page header — the dashboard reads this and
-   *  re-fetches when it changes. Parent owns the source of truth so
-   *  the table can stay in sync. */
   range: DateRange;
-  /** Emitted when the user clicks a smart-filter chip. */
-  onPresetChange: (preset: DateRangePreset) => void;
-  /** Emitted when the user clicks a "needs action" item — parent
-   *  applies the corresponding filter on the table. */
   onNeedsActionApply?: (filter: Record<string, string>) => void;
 }
 
@@ -171,15 +153,6 @@ const fmtEgp = (n: number): string =>
 
 const fmtNumber = (n: number): string => Number(n || 0).toLocaleString('en-US');
 
-const PRESET_LABELS: Record<DateRangePreset, string> = {
-  today: 'اليوم',
-  yesterday: 'أمس',
-  this_week: 'هذا الأسبوع',
-  this_month: 'هذا الشهر',
-  previous_month: 'الشهر السابق',
-  custom: 'مخصص',
-};
-
 const STATUS_COLORS: Record<string, string> = {
   new: 'hsl(146, 50%, 45%)',
   preparing: 'hsl(217, 80%, 58%)',
@@ -190,7 +163,46 @@ const STATUS_COLORS: Record<string, string> = {
   returned: 'hsl(280, 50%, 55%)',
 };
 
-export default function OrdersDashboard({ range, onPresetChange, onNeedsActionApply }: Props) {
+const KPI_TONES: Record<string, { card: string; icon: string; iconBg: string; line: string }> = {
+  blue: {
+    card: 'bg-blue-50/50 border-blue-100',
+    icon: 'text-blue-600',
+    iconBg: 'bg-blue-100',
+    line: 'stroke-blue-500',
+  },
+  amber: {
+    card: 'bg-amber-50/40 border-amber-100',
+    icon: 'text-amber-600',
+    iconBg: 'bg-amber-100',
+    line: 'stroke-amber-500',
+  },
+  orange: {
+    card: 'bg-orange-50/40 border-orange-100',
+    icon: 'text-orange-600',
+    iconBg: 'bg-orange-100',
+    line: 'stroke-orange-500',
+  },
+  emerald: {
+    card: 'bg-emerald-50/40 border-emerald-100',
+    icon: 'text-emerald-600',
+    iconBg: 'bg-emerald-100',
+    line: 'stroke-emerald-500',
+  },
+  purple: {
+    card: 'bg-purple-50/40 border-purple-100',
+    icon: 'text-purple-600',
+    iconBg: 'bg-purple-100',
+    line: 'stroke-purple-500',
+  },
+  teal: {
+    card: 'bg-teal-50/40 border-teal-100',
+    icon: 'text-teal-600',
+    iconBg: 'bg-teal-100',
+    line: 'stroke-teal-500',
+  },
+};
+
+export default function OrdersDashboard({ range, onNeedsActionApply }: Props) {
   const [summary, setSummary] = useState<OperationsSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -221,8 +233,6 @@ export default function OrdersDashboard({ range, onPresetChange, onNeedsActionAp
     void load();
   }, [load, refreshKey]);
 
-  // Auto-refresh on the global orders-updated / adjustments-updated
-  // events so the dashboard reacts to CRUD without a manual reload.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const handler = () => setRefreshKey((k) => k + 1);
@@ -234,39 +244,8 @@ export default function OrdersDashboard({ range, onPresetChange, onNeedsActionAp
     };
   }, []);
 
-  const isToday = range.preset === 'today';
-  const rangeLabel = useMemo(() => {
-    if (range.preset !== 'custom') return PRESET_LABELS[range.preset];
-    return `${range.from} → ${range.to}`;
-  }, [range]);
-
   return (
-    <section className="space-y-4">
-      {/* Smart-filter row */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          {(['today', 'yesterday', 'this_week', 'this_month', 'previous_month'] as const).map(
-            (p) => (
-              <SmartFilterChip
-                key={p}
-                active={range.preset === p}
-                label={PRESET_LABELS[p]}
-                onClick={() => onPresetChange(p)}
-              />
-            )
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={() => setRefreshKey((k) => k + 1)}
-          disabled={loading}
-          className="flex items-center gap-1.5 text-xs rounded-xl border border-[hsl(var(--border))] bg-white px-3 py-1.5 hover:bg-[hsl(var(--muted))]/40 disabled:opacity-60"
-        >
-          {loading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
-          تحديث
-        </button>
-      </div>
-
+    <section className="space-y-4" dir="rtl">
       {error && (
         <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
           {error}
@@ -274,60 +253,57 @@ export default function OrdersDashboard({ range, onPresetChange, onNeedsActionAp
       )}
 
       {!summary && loading && (
-        <div className="rounded-xl border border-[hsl(var(--border))] bg-white px-3 py-6 text-center text-sm text-[hsl(var(--muted-foreground))]">
+        <div className="rounded-xl border border-[hsl(var(--border))] bg-white px-3 py-10 text-center text-sm text-[hsl(var(--muted-foreground))] flex items-center justify-center gap-2">
+          <Loader2 size={14} className="animate-spin" />
           جاري تحميل لوحة الطلبات...
         </div>
       )}
 
       {summary && (
         <>
-          {/* KPI cards */}
+          {/* KPI row — order matches the reference (RTL): orders →
+              waiting → shipping → delivered → collection → returns. */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             <KpiCard
-              icon={<Package size={16} />}
-              label={isToday ? 'طلبات اليوم' : 'الطلبات في الفترة'}
+              tone="blue"
+              icon={<CalendarBadge />}
+              label="طلبات اليوم"
               value={fmtNumber(summary.kpis.ordersCount)}
-              tone="primary"
-              hint={rangeLabel}
+              hint={range.preset === 'today' ? undefined : 'في الفترة المحددة'}
             />
             <KpiCard
+              tone="amber"
               icon={<Clock size={16} />}
               label="في انتظار الشحن"
               value={fmtNumber(summary.kpis.waitingShipping)}
-              tone="amber"
             />
             <KpiCard
+              tone="orange"
               icon={<Truck size={16} />}
               label="جاري الشحن"
               value={fmtNumber(summary.kpis.inShipping)}
-              tone="orange"
             />
             <KpiCard
-              icon={<CheckIcon />}
-              label={isToday ? 'تم التسليم اليوم' : 'تم التسليم'}
-              value={fmtNumber(summary.kpis.delivered)}
               tone="emerald"
+              icon={<CheckIcon />}
+              label="تم التسليم اليوم"
+              value={fmtNumber(summary.kpis.delivered)}
             />
             <KpiCard
+              tone="purple"
               icon={<DollarSign size={16} />}
-              label={summary.kpis.deliveredTotal > 0 ? 'إجمالي التحصيل (مسلَّم)' : 'تحصيل متوقع'}
+              label={summary.kpis.deliveredTotal > 0 ? 'إجمالي التحصيل' : 'تحصيل متوقع'}
               value={
                 summary.kpis.deliveredTotal > 0
                   ? fmtEgp(summary.kpis.deliveredTotal)
                   : fmtEgp(summary.kpis.expectedTotal)
               }
-              tone="primary"
-              hint={
-                summary.kpis.deliveredTotal > 0 && summary.kpis.expectedTotal > 0
-                  ? `متوقع ${fmtEgp(summary.kpis.expectedTotal)}`
-                  : undefined
-              }
             />
             <KpiCard
+              tone="teal"
               icon={<RotateCcw size={16} />}
-              label={isToday ? 'مرتجعات / استبدالات اليوم' : 'مرتجعات / استبدالات'}
+              label="مرتجعات / استبدالات اليوم"
               value={fmtNumber(summary.kpis.adjustmentsCount)}
-              tone="purple"
               hint={
                 summary.kpis.pendingAdjustments > 0
                   ? `${fmtNumber(summary.kpis.pendingAdjustments)} معلقة`
@@ -336,7 +312,8 @@ export default function OrdersDashboard({ range, onPresetChange, onNeedsActionAp
             />
           </div>
 
-          {/* Distribution + activity + needs-action row */}
+          {/* Three middle cards. In RTL grid order: distribution (right)
+              → activity (center) → needs-action (left). */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <StatusDistributionCard distribution={summary.statusDistribution} />
             <RecentActivityCard activity={summary.recentActivity} />
@@ -349,22 +326,26 @@ export default function OrdersDashboard({ range, onPresetChange, onNeedsActionAp
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Sub-components
+// KPI card
 // ─────────────────────────────────────────────────────────────────────────────
 
-function SmartFilterChip(props: { active: boolean; label: string; onClick: () => void }) {
+function CalendarBadge() {
   return (
-    <button
-      type="button"
-      onClick={props.onClick}
-      className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
-        props.active
-          ? 'bg-[hsl(var(--primary))] border-[hsl(var(--primary))] text-white font-bold shadow-sm'
-          : 'bg-white border-[hsl(var(--border))] text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted))]/40'
-      }`}
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
     >
-      {props.label}
-    </button>
+      <rect x="3" y="4" width="18" height="18" rx="2" />
+      <line x1="16" y1="2" x2="16" y2="6" />
+      <line x1="8" y1="2" x2="8" y2="6" />
+      <line x1="3" y1="10" x2="21" y2="10" />
+    </svg>
   );
 }
 
@@ -385,51 +366,58 @@ function CheckIcon() {
   );
 }
 
-const TONE_CLASSES: Record<string, { ring: string; icon: string }> = {
-  primary: {
-    ring: 'border-[hsl(var(--primary))]/30',
-    icon: 'bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))]',
-  },
-  amber: { ring: 'border-amber-200', icon: 'bg-amber-50 text-amber-700' },
-  orange: { ring: 'border-orange-200', icon: 'bg-orange-50 text-orange-700' },
-  emerald: { ring: 'border-emerald-200', icon: 'bg-emerald-50 text-emerald-700' },
-  purple: { ring: 'border-purple-200', icon: 'bg-purple-50 text-purple-700' },
-  rose: { ring: 'border-rose-200', icon: 'bg-rose-50 text-rose-700' },
-};
-
 function KpiCard(props: {
+  tone: 'blue' | 'amber' | 'orange' | 'emerald' | 'purple' | 'teal';
   icon: React.ReactNode;
   label: string;
   value: string;
-  tone: 'primary' | 'amber' | 'orange' | 'emerald' | 'purple' | 'rose';
   hint?: string;
 }) {
-  const tone = TONE_CLASSES[props.tone] ?? TONE_CLASSES.primary;
+  const tone = KPI_TONES[props.tone];
   return (
-    <div
-      className={`relative rounded-2xl border bg-white p-4 shadow-sm overflow-hidden ${tone.ring}`}
-    >
+    <div className={`relative rounded-2xl border ${tone.card} p-4 overflow-hidden shadow-sm`}>
       <div className="flex items-start justify-between gap-2">
-        <span className="text-[11px] font-bold text-[hsl(var(--muted-foreground))] leading-tight">
-          {props.label}
-        </span>
-        <span className={`w-7 h-7 flex items-center justify-center rounded-lg ${tone.icon}`}>
+        <span
+          className={`w-9 h-9 flex items-center justify-center rounded-xl ${tone.iconBg} ${tone.icon}`}
+        >
           {props.icon}
         </span>
+        <p className="text-[12px] font-bold text-[hsl(var(--muted-foreground))] text-left">
+          {props.label}
+        </p>
       </div>
-      <p className="mt-2 text-lg font-bold font-mono text-[hsl(var(--foreground))]">
+      <p className="mt-3 text-2xl font-bold font-mono text-[hsl(var(--foreground))] text-center">
         {props.value}
       </p>
       {props.hint && (
-        <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1 truncate">
+        <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1 text-center">
           {props.hint}
         </p>
       )}
+      {/* Decorative non-data wave line at the bottom — matches the
+          reference's mini-line style without faking time-series data. */}
+      <svg
+        viewBox="0 0 100 24"
+        preserveAspectRatio="none"
+        className="block w-full h-4 mt-2"
+        aria-hidden
+      >
+        <polyline
+          points="0,18 10,14 20,16 30,10 40,12 50,8 60,12 70,6 80,10 90,4 100,8"
+          fill="none"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className={`${tone.line} opacity-70`}
+        />
+      </svg>
     </div>
   );
 }
 
-// ─── Status distribution ───────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Status distribution
+// ─────────────────────────────────────────────────────────────────────────────
 
 function StatusDistributionCard(props: { distribution: OperationsSummary['statusDistribution'] }) {
   const total = props.distribution.reduce((s, d) => s + d.count, 0);
@@ -437,50 +425,57 @@ function StatusDistributionCard(props: { distribution: OperationsSummary['status
   return (
     <div className="rounded-2xl border border-[hsl(var(--border))] bg-white p-4 shadow-sm">
       <div className="flex items-center justify-between mb-3">
-        <h4 className="text-sm font-bold">توزيع حالات الطلبات</h4>
-        <span className="text-[11px] text-[hsl(var(--muted-foreground))]">
-          إجمالي {fmtNumber(total)}
-        </span>
+        <h4 className="text-sm font-bold flex items-center gap-1.5">توزيع حالات الطلبات</h4>
       </div>
       {total === 0 ? (
-        <p className="text-xs text-[hsl(var(--muted-foreground))] py-6 text-center">
-          لا توجد طلبات في هذه الفترة
+        <p className="text-xs text-[hsl(var(--muted-foreground))] py-10 text-center">
+          لا توجد بيانات في هذه الفترة
         </p>
       ) : (
-        <div className="flex items-center gap-4">
-          <DonutChart segments={nonZero} total={total} />
-          <ul className="flex-1 space-y-1 text-xs">
-            {props.distribution.map((d) => (
-              <li key={d.status} className="flex items-center justify-between py-0.5 px-1">
-                <span className="flex items-center gap-1.5 text-[hsl(var(--foreground))]">
-                  <span
-                    className="w-2.5 h-2.5 rounded-full"
-                    style={{ backgroundColor: STATUS_COLORS[d.status] ?? 'hsl(0, 0%, 50%)' }}
-                  />
-                  {d.label}
-                </span>
-                <span className="font-mono text-[11px] text-[hsl(var(--muted-foreground))]">
-                  {fmtNumber(d.count)} ({d.percentage}%)
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
+        <>
+          <div className="flex items-center gap-4">
+            {/* Legend on the right (RTL — first child renders at the
+                start of the line) so the reading order matches the
+                reference image. */}
+            <ul className="flex-1 space-y-1.5 text-xs">
+              {props.distribution.map((d) => (
+                <li key={d.status} className="flex items-center justify-between">
+                  <span className="flex items-center gap-1.5 text-[hsl(var(--foreground))]">
+                    <span
+                      className="w-2.5 h-2.5 rounded-full"
+                      style={{ backgroundColor: STATUS_COLORS[d.status] ?? 'hsl(0, 0%, 50%)' }}
+                    />
+                    {d.label}
+                  </span>
+                  <span className="font-mono text-[11px] text-[hsl(var(--muted-foreground))]">
+                    {fmtNumber(d.count)} {d.percentage > 0 ? `(${d.percentage}%)` : ''}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <DonutChart segments={nonZero} total={total} />
+          </div>
+          <div className="mt-3 pt-3 border-t border-[hsl(var(--border))] text-center">
+            <span className="text-[11px] font-bold text-[hsl(var(--primary))]">إجمالي الطلبات</span>
+            <span className="text-[11px] text-[hsl(var(--muted-foreground))] mx-1">—</span>
+            <span className="text-[11px] font-mono font-bold">{fmtNumber(total)}</span>
+          </div>
+        </>
       )}
     </div>
   );
 }
 
 function DonutChart(props: { segments: OperationsSummary['statusDistribution']; total: number }) {
-  const SIZE = 110;
-  const STROKE = 16;
+  const SIZE = 130;
+  const STROKE = 18;
   const CX = SIZE / 2;
   const CY = SIZE / 2;
   const R = (SIZE - STROKE) / 2;
   const CIRC = 2 * Math.PI * R;
   let offset = 0;
   return (
-    <div className="relative" style={{ width: SIZE, height: SIZE }}>
+    <div className="relative flex-shrink-0" style={{ width: SIZE, height: SIZE }}>
       <svg width={SIZE} height={SIZE}>
         <circle cx={CX} cy={CY} r={R} fill="none" stroke="hsl(0, 0%, 92%)" strokeWidth={STROKE} />
         {props.segments.map((seg) => {
@@ -506,14 +501,16 @@ function DonutChart(props: { segments: OperationsSummary['statusDistribution']; 
         })}
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-[10px] text-[hsl(var(--muted-foreground))]">إجمالي</span>
-        <span className="text-base font-bold font-mono">{fmtNumber(props.total)}</span>
+        <span className="text-[10px] text-[hsl(var(--muted-foreground))]">إجمالي الطلبات</span>
+        <span className="text-lg font-bold font-mono">{fmtNumber(props.total)}</span>
       </div>
     </div>
   );
 }
 
-// ─── Recent activity ──────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Recent activity
+// ─────────────────────────────────────────────────────────────────────────────
 
 function timeAgo(iso: string): string {
   const ts = new Date(iso).getTime();
@@ -528,6 +525,20 @@ function timeAgo(iso: string): string {
   return `منذ ${d} يوم`;
 }
 
+const ACTIVITY_DOT_COLOR: Record<string, string> = {
+  adjustment_created: 'bg-amber-500',
+  adjustment_approved: 'bg-emerald-500',
+  adjustment_completed: 'bg-emerald-500',
+  adjustment_rejected: 'bg-rose-500',
+  adjustment_cancelled: 'bg-rose-500',
+  order_edited: 'bg-blue-500',
+  order_created: 'bg-green-500',
+};
+
+function activityDotColor(action: string): string {
+  return ACTIVITY_DOT_COLOR[action] ?? 'bg-purple-500';
+}
+
 function RecentActivityCard(props: { activity: OperationsSummary['recentActivity'] }) {
   return (
     <div className="rounded-2xl border border-[hsl(var(--border))] bg-white p-4 shadow-sm">
@@ -537,35 +548,51 @@ function RecentActivityCard(props: { activity: OperationsSummary['recentActivity
         </h4>
       </div>
       {props.activity.length === 0 ? (
-        <p className="text-xs text-[hsl(var(--muted-foreground))] py-6 text-center">
+        <p className="text-xs text-[hsl(var(--muted-foreground))] py-10 text-center">
           لا توجد نشاطات في هذه الفترة
         </p>
       ) : (
-        <ul className="space-y-2">
-          {props.activity.map((a) => (
+        <ul className="space-y-3">
+          {props.activity.slice(0, 5).map((a) => (
             <li key={a.id} className="text-xs flex items-start gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-[hsl(var(--primary))] mt-1.5 flex-shrink-0" />
+              <span
+                className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${activityDotColor(a.action)}`}
+              />
               <div className="flex-1 min-w-0">
-                <p className="text-[hsl(var(--foreground))] truncate">
+                <p className="text-[hsl(var(--foreground))] leading-snug">
                   {a.label}
                   {a.order_num && (
                     <span className="text-[hsl(var(--primary))] font-mono"> #{a.order_num}</span>
                   )}
                 </p>
-                <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
+                <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
                   {timeAgo(a.created_at)}
-                  {a.changed_by ? ` — ${a.changed_by}` : ''}
                 </p>
               </div>
             </li>
           ))}
         </ul>
       )}
+      {props.activity.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-[hsl(var(--border))] text-center">
+          <span className="text-[11px] text-[hsl(var(--muted-foreground))]">عرض جميع النشاطات</span>
+        </div>
+      )}
     </div>
   );
 }
 
-// ─── Needs action ─────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Needs action
+// ─────────────────────────────────────────────────────────────────────────────
+
+const NEEDS_TONES: Record<string, { pill: string; icon: string }> = {
+  no_delegate: { pill: 'bg-rose-100 text-rose-700', icon: 'text-rose-500' },
+  awaiting_schedule: { pill: 'bg-amber-100 text-amber-700', icon: 'text-amber-500' },
+  pending_adjustments: { pill: 'bg-purple-100 text-purple-700', icon: 'text-purple-500' },
+  partial_payments: { pill: 'bg-blue-100 text-blue-700', icon: 'text-blue-500' },
+  delivery_delay: { pill: 'bg-orange-100 text-orange-700', icon: 'text-orange-500' },
+};
 
 function NeedsActionCard(props: {
   items: OperationsSummary['needsAction'];
@@ -578,38 +605,33 @@ function NeedsActionCard(props: {
           <AlertCircle size={14} /> طلبات تحتاج متابعة
         </h4>
       </div>
-      <ul className="space-y-1.5">
+      <ul className="space-y-2">
         {props.items.map((item) => {
-          const hasCount = item.count > 0;
+          const tone = NEEDS_TONES[item.key] ?? {
+            pill: 'bg-slate-100 text-slate-700',
+            icon: 'text-slate-500',
+          };
           return (
-            <li
-              key={item.key}
-              className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2 ${
-                hasCount
-                  ? 'border-amber-200 bg-amber-50/40'
-                  : 'border-[hsl(var(--border))] bg-white'
-              }`}
-            >
-              <div className="flex-1 min-w-0">
-                <p className="text-xs font-bold text-[hsl(var(--foreground))] truncate">
-                  {item.label}
-                </p>
-                <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5 truncate">
-                  {item.description}
-                </p>
+            <li key={item.key} className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 flex-1 min-w-0">
+                <Package size={14} className={`flex-shrink-0 ${tone.icon}`} />
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-[hsl(var(--foreground))] truncate">
+                    {item.label}
+                  </p>
+                  <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate">
+                    {item.description}
+                  </p>
+                </div>
               </div>
               <span
-                className={`text-xs font-bold font-mono w-7 h-7 flex items-center justify-center rounded-full ${
-                  hasCount
-                    ? 'bg-amber-100 text-amber-800'
-                    : 'bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))]'
-                }`}
+                className={`text-xs font-bold font-mono px-2.5 py-1 rounded-lg min-w-[36px] text-center ${tone.pill}`}
               >
                 {fmtNumber(item.count)}
               </span>
               <button
                 type="button"
-                disabled={!hasCount || !item.filter || !props.onApply}
+                disabled={item.count <= 0 || !item.filter || !props.onApply}
                 onClick={() => item.filter && props.onApply?.(item.filter)}
                 className="text-[10px] font-bold text-[hsl(var(--primary))] flex items-center gap-0.5 hover:underline disabled:opacity-30 disabled:cursor-not-allowed"
               >
@@ -620,9 +642,9 @@ function NeedsActionCard(props: {
           );
         })}
       </ul>
+      <div className="mt-3 pt-3 border-t border-[hsl(var(--border))] text-center">
+        <span className="text-[11px] text-[hsl(var(--muted-foreground))]">عرض جميع</span>
+      </div>
     </div>
   );
 }
-
-// Re-export icon shorthand for parent (avoid duplicate imports).
-export { CalendarIcon, Wallet };
