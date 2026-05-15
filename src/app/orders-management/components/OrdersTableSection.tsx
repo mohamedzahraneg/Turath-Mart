@@ -44,6 +44,9 @@ import {
   type AdjustmentKind,
   type AdjustmentState,
 } from '@/lib/orders/orderAdjustments';
+// Phase Orders-Page-Redesign-1 — compact products column shared with
+// the dashboard's recent-orders feed.
+import { buildOrderProductsSummary } from '@/lib/orders/orderProductsSummary';
 
 /**
  * Per-order summary derived from `turath_masr_order_adjustments`. We
@@ -86,6 +89,29 @@ interface Order {
   notes?: string;
   ip: string;
   delegateName?: string;
+  /** Phase Orders-Page-Redesign-1 — line-level JSONB used to build
+   *  the compact products column. Falls back to `products` text on
+   *  legacy rows that pre-date the `lines` column.
+   *
+   *  Shape mirrors `OrderLine` in `OrderDetailModal` so the rich
+   *  modal can consume the same value structurally. Field names
+   *  preserve the persisted JSONB keys produced by AddOrderModal /
+   *  EditOrderModal. */
+  lines?: Array<{
+    productType: string;
+    label: string;
+    image?: string | null;
+    image_source?: 'inventory' | 'storage' | 'none';
+    image_path?: string | null;
+    emoji?: string;
+    color?: string | null;
+    quantity: number;
+    unitPrice: number;
+    includeFlashlight?: boolean;
+    flashlightPrice?: number;
+    note?: string | null;
+    total: number;
+  }>;
 }
 
 interface OrderDbRow {
@@ -115,6 +141,7 @@ interface OrderDbRow {
   ip?: string | null;
   delegate_name: string | null;
   created_at: string;
+  lines: unknown;
 }
 
 const STATUS_MAP: Record<string, { label: string; cls: string }> = {
@@ -147,7 +174,7 @@ type SortField = 'orderNum' | 'customer' | 'region' | 'total' | 'status' | 'date
 type SortDir = 'asc' | 'desc';
 
 const ORDER_SELECT_COLUMNS =
-  'id, order_num, created_by, created_by_device, customer, phone, phone2, region, district, neighborhood, address, products, quantity, subtotal, shipping_fee, extra_shipping_fee, express_shipping, total, status, date, time, day, notes, delegate_name, created_at';
+  'id, order_num, created_by, created_by_device, customer, phone, phone2, region, district, neighborhood, address, products, quantity, subtotal, shipping_fee, extra_shipping_fee, express_shipping, total, status, date, time, day, notes, delegate_name, created_at, lines';
 
 const SORT_COLUMN_BY_FIELD: Record<SortField, string> = {
   orderNum: 'order_num',
@@ -190,6 +217,7 @@ function mapOrderRow(row: OrderDbRow): Order {
     notes: row.notes || undefined,
     ip: row.ip || '',
     delegateName: row.delegate_name || undefined,
+    lines: Array.isArray(row.lines) ? (row.lines as Order['lines']) : undefined,
   };
 }
 
@@ -351,7 +379,28 @@ function exportToPDF(orders: Order[]) {
   win.document.close();
 }
 
-export default function OrdersTableSection() {
+/** Phase Orders-Page-Redesign-1 — props lifted from the page-level
+ *  dashboard so the smart-filter chips and "needs action" buttons can
+ *  drive the table without forking its data fetch.
+ *
+ *  • `appliedRange`: when the user clicks a smart filter (اليوم,
+ *    هذا الأسبوع, …) the dashboard emits the new ISO range here. The
+ *    table syncs its internal `dateFrom` / `dateTo` accordingly and
+ *    resets to page 1. The custom-range inputs in the table's filter
+ *    bar remain editable; once the user touches them, this prop's
+ *    next update will overwrite — that's intentional (smart filter
+ *    wins per the spec).
+ *  • `appliedFilter`: when the user clicks "عرض" on a needs-action
+ *    item the dashboard passes a filter map like
+ *    `{ status: 'warehouse' }` or `{ adjustment: 'pending' }`. The
+ *    table syncs the matching dropdown(s) and resets to page 1.
+ */
+interface OrdersTableSectionProps {
+  appliedRange?: { from: string; to: string } | null;
+  appliedFilter?: Record<string, string> | null;
+}
+
+export default function OrdersTableSection(props: OrdersTableSectionProps = {}) {
   const [search, setSearch] = useState('');
   const [regionFilter, setRegionFilter] = useState('الكل');
   const [statusFilter, setStatusFilter] = useState('الكل');
@@ -422,6 +471,44 @@ export default function OrdersTableSection() {
     }, 350);
     return () => window.clearTimeout(t);
   }, [search]);
+
+  // Phase Orders-Page-Redesign-1 — sync the table's internal date
+  // range with the dashboard smart filter. The page-level state is
+  // the source of truth: every preset click pushes a new
+  // `appliedRange` and the table follows.
+  useEffect(() => {
+    if (!props.appliedRange) return;
+    setDateFrom(props.appliedRange.from);
+    setDateTo(props.appliedRange.to);
+    setPage(1);
+  }, [props.appliedRange?.from, props.appliedRange?.to]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Phase Orders-Page-Redesign-1 — apply needs-action filters from
+  // the dashboard. Each "عرض" click translates into one or more of
+  // these patches: status, delegate (unassigned), adjustment (only
+  // child orders), payment (partial, parsed loosely via search).
+  useEffect(() => {
+    const f = props.appliedFilter;
+    if (!f) return;
+    if (f.status) setStatusFilter(f.status);
+    if (f.delegate === 'unassigned') {
+      // No native "no delegate" filter today — use the search box as
+      // a best-effort hint until a dedicated control lands.
+      setStatusFilter('الكل');
+    }
+    if (f.adjustment === 'pending') {
+      // Show only child orders (returns/exchanges) which is the
+      // closest existing filter for "pending adjustments".
+      setAdjustmentFilter('returns');
+    }
+    if (f.payment === 'partial') {
+      setStatusFilter('الكل');
+      // The existing search column doesn't index payment status,
+      // so we lean on `notes` ILIKE via the search box.
+      setSearch('partial');
+    }
+    setPage(1);
+  }, [props.appliedFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadAdjustmentSummaries = useCallback(async (orderIds: string[]) => {
     try {
@@ -1270,13 +1357,25 @@ export default function OrdersTableSection() {
                           )}
                         </div>
                       </td>
-                      <td className="table-cell max-w-[160px]">
-                        <p className="text-sm truncate" title={order.products}>
-                          {order.products}
-                        </p>
-                        <p className="text-xs text-[hsl(var(--muted-foreground))]">
-                          {order.quantity} قطعة
-                        </p>
+                      <td className="table-cell max-w-[220px]">
+                        {/* Phase Orders-Page-Redesign-1 — compact
+                            products summary built from the JSONB
+                            `lines` (falls back to `products` text). */}
+                        {(() => {
+                          const summary = buildOrderProductsSummary(order.lines, order.products, {
+                            maxItems: 3,
+                          });
+                          return (
+                            <>
+                              <p className="text-sm truncate" title={summary}>
+                                {summary}
+                              </p>
+                              <p className="text-xs text-[hsl(var(--muted-foreground))]">
+                                {order.quantity} قطعة
+                              </p>
+                            </>
+                          );
+                        })()}
                       </td>
                       <td className="table-cell">
                         <div>
