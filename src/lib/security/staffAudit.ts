@@ -109,7 +109,9 @@ export type StaffAuditAction =
   | 'delegate.expense_updated'
   | 'delegate.expense_approved'
   | 'delegate.expense_rejected'
-  | 'delegate.expense_voided';
+  | 'delegate.expense_voided'
+  // ─── Phase Inventory-Additions-Log-1 — inventory stock movements ───
+  | 'inventory.addition_created';
 
 export const STAFF_AUDIT_ACTION_LABEL_AR: Record<StaffAuditAction, string> = {
   'staff.role_changed': 'تغيير الدور',
@@ -193,6 +195,8 @@ export const STAFF_AUDIT_ACTION_LABEL_AR: Record<StaffAuditAction, string> = {
   'delegate.expense_approved': 'اعتماد مصروف مندوب',
   'delegate.expense_rejected': 'رفض مصروف مندوب',
   'delegate.expense_voided': 'إلغاء مصروف مندوب',
+  // Phase Inventory-Additions-Log-1 — inventory stock movements
+  'inventory.addition_created': 'تسجيل إضافة كمية للمخزن',
 };
 
 /**
@@ -206,6 +210,7 @@ export type StaffAuditActionGroup =
   | 'complaints'
   | 'delegates'
   | 'delegateFinance'
+  | 'inventory'
   | 'staff'
   | 'security';
 
@@ -216,6 +221,7 @@ export const STAFF_AUDIT_GROUP_LABEL_AR: Record<StaffAuditActionGroup, string> =
   complaints: 'الشكاوى',
   delegates: 'المناديب',
   delegateFinance: 'مالية المناديب',
+  inventory: 'المخزن',
   staff: 'الموظفون والأدوار',
   security: 'الأمان',
 };
@@ -238,6 +244,7 @@ export function groupForAction(action: string): StaffAuditActionGroup {
   if (action.startsWith('customer.')) return 'customers';
   if (DELEGATE_FINANCE_PREFIXES.some((p) => action.startsWith(p))) return 'delegateFinance';
   if (action.startsWith('delegate.')) return 'delegates';
+  if (action.startsWith('inventory.')) return 'inventory';
   if (action.startsWith('staff.') || action.startsWith('role.')) return 'staff';
   return 'security';
 }

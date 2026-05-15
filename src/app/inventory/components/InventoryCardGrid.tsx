@@ -11,7 +11,16 @@
 'use client';
 
 import React from 'react';
-import { Archive, CheckCircle, Edit2, Eye, Pause, XCircle, AlertTriangle } from 'lucide-react';
+import {
+  AlertTriangle,
+  Archive,
+  CheckCircle,
+  Edit2,
+  Eye,
+  Pause,
+  Plus,
+  XCircle,
+} from 'lucide-react';
 
 import { InventoryThumbnail, inventoryThumbnailUrl } from '@/lib/inventory/InventoryThumbnail';
 import {
@@ -26,17 +35,21 @@ import {
 interface Props {
   items: InventoryItem[];
   withdrawnByName: Record<string, number>;
+  canAddStock: boolean;
   onView: (item: InventoryItem) => void;
   onEdit: (item: InventoryItem) => void;
   onArchive: (item: InventoryItem) => void;
+  onAddStock: (item: InventoryItem) => void;
 }
 
 export default function InventoryCardGrid({
   items,
   withdrawnByName,
+  canAddStock,
   onView,
   onEdit,
   onArchive,
+  onAddStock,
 }: Props) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4" dir="rtl">
@@ -164,7 +177,7 @@ export default function InventoryCardGrid({
             </div>
 
             {/* Actions */}
-            <div className="flex items-center justify-between gap-2 pt-1 border-t border-[hsl(var(--border))]">
+            <div className="flex items-center justify-between gap-1 pt-1 border-t border-[hsl(var(--border))] flex-wrap">
               <button
                 type="button"
                 onClick={() => onView(item)}
@@ -179,6 +192,17 @@ export default function InventoryCardGrid({
               >
                 <Edit2 size={13} /> تعديل
               </button>
+              {canAddStock && (
+                <button
+                  type="button"
+                  onClick={() => onAddStock(item)}
+                  disabled={isArchived}
+                  className="flex-1 inline-flex items-center justify-center gap-1 py-1.5 rounded-lg text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={isArchived ? 'مؤرشف — لا يمكن إضافة كمية' : 'إضافة كمية'}
+                >
+                  <Plus size={13} /> كمية
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => onArchive(item)}

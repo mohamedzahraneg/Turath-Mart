@@ -41,13 +41,18 @@ import { usePermissions } from '@/hooks/usePermissions';
 import { createClient } from '@/lib/supabase/client';
 import {
   computeStats,
+  exportAdditionsCsv,
   exportInventoryCsv,
+  formatDate,
+  formatMoney,
+  formatNumber,
   matchesStatus,
   productLifecycle,
   sortInventory,
   uniqueCategories,
   uniqueColors,
   type Category,
+  type InventoryAdditionWithProduct,
   type InventoryItem,
   type LifecycleStatus,
   type SortOption,
@@ -65,6 +70,8 @@ import InventoryCardGrid from './components/InventoryCardGrid';
 import InventoryTable from './components/InventoryTable';
 import InventoryDrawer from './components/InventoryDrawer';
 import InventoryEditModal from './components/InventoryEditModal';
+import AddStockModal from './components/AddStockModal';
+import { Download, History, Plus, Search } from 'lucide-react';
 
 interface InventoryRowDb {
   id: string;
@@ -98,6 +105,23 @@ interface CategoryRowDb {
   slug: string;
   sort_order: number | null;
   is_active: boolean | null;
+}
+
+interface AdditionWithProductRow {
+  id: string;
+  inventory_id: string;
+  quantity: number | null;
+  unit_cost: number | string | null;
+  total_cost: number | string | null;
+  supplier_id: string | null;
+  supplier_name: string | null;
+  supplier_invoice_num: string | null;
+  received_at: string | null;
+  created_by: string | null;
+  created_by_name: string | null;
+  note: string | null;
+  created_at: string | null;
+  turath_masr_inventory: { name: string | null; sku: string | null } | null;
 }
 
 const NEW_COLUMNS =
@@ -137,13 +161,22 @@ function mapInventoryRow(r: InventoryRowDb): InventoryItem {
 }
 
 export default function InventoryPage() {
-  const { user } = useAuth();
+  const { user, profileFullName } = useAuth();
   const perms = usePermissions();
   const isAdmin = perms.isAdmin;
+  // Phase Inventory-Additions-Log-1 — stock additions require
+  // manager-or-above per the RPC's auth check. We mirror that on the
+  // client so the buttons hide for read-only viewers.
+  const canAddStock = perms.isManagerOrAbove;
+  const actorName: string | null = profileFullName ?? null;
 
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [categoryRows, setCategoryRows] = useState<Category[]>([]);
   const [withdrawnByName, setWithdrawnByName] = useState<Record<string, number>>({});
+  const [globalAdditions, setGlobalAdditions] = useState<InventoryAdditionWithProduct[] | null>(
+    null
+  );
+  const [additionsThisMonth, setAdditionsThisMonth] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -159,6 +192,12 @@ export default function InventoryPage() {
   // Modal / drawer state
   const [editItem, setEditItem] = useState<InventoryItem | null | undefined>(undefined);
   const [drawerItem, setDrawerItem] = useState<InventoryItem | null>(null);
+  const [addStockTarget, setAddStockTarget] = useState<InventoryItem | null>(null);
+
+  // Phase Inventory-Additions-Log-1 — local search for the global
+  // additions log section. Date filters / supplier filters are out of
+  // scope here; the list is capped at the latest 50 rows for now.
+  const [additionsSearch, setAdditionsSearch] = useState('');
 
   const loadAll = useCallback(async (silent: boolean) => {
     if (!silent) setLoading(true);
@@ -219,6 +258,65 @@ export default function InventoryPage() {
             is_active: c.is_active ?? true,
           }))
         );
+      }
+
+      // 2b. Global additions log + this-month KPI — best-effort. If
+      //     the table doesn't exist yet (pre-migration window) both
+      //     the section and the KPI hide gracefully.
+      const addRes = await supabase
+        .from('turath_masr_inventory_additions')
+        .select(
+          'id, inventory_id, quantity, unit_cost, total_cost, supplier_id, supplier_name, supplier_invoice_num, received_at, created_by, created_by_name, note, created_at, turath_masr_inventory(name, sku)'
+        )
+        .order('received_at', { ascending: false })
+        .order('created_at', { ascending: false })
+        .limit(50);
+      if (addRes.error) {
+        // Missing table → hide section + KPI silently.
+        setGlobalAdditions(null);
+        setAdditionsThisMonth(null);
+      } else {
+        const rows = (addRes.data ?? []) as unknown as AdditionWithProductRow[];
+        const mapped: InventoryAdditionWithProduct[] = rows.map((r) => ({
+          id: r.id,
+          inventory_id: r.inventory_id,
+          quantity: Number(r.quantity ?? 0),
+          unit_cost: r.unit_cost == null ? null : Number(r.unit_cost),
+          total_cost: r.total_cost == null ? null : Number(r.total_cost),
+          supplier_id: r.supplier_id,
+          supplier_name: r.supplier_name,
+          supplier_invoice_num: r.supplier_invoice_num,
+          received_at: r.received_at ?? '',
+          created_by: r.created_by,
+          created_by_name: r.created_by_name,
+          note: r.note,
+          created_at: r.created_at ?? '',
+          inventory_name: r.turath_masr_inventory?.name ?? '',
+          inventory_sku: r.turath_masr_inventory?.sku ?? '',
+        }));
+        setGlobalAdditions(mapped);
+
+        // Count units added in the current month using a separate
+        // narrow query. Safe to fail silently — KPI just hides.
+        try {
+          const now = new Date();
+          const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+          const monthRes = await supabase
+            .from('turath_masr_inventory_additions')
+            .select('quantity')
+            .gte('received_at', monthStart);
+          if (!monthRes.error && monthRes.data) {
+            const total = (monthRes.data as { quantity: number | null }[]).reduce(
+              (acc, r) => acc + Number(r.quantity ?? 0),
+              0
+            );
+            setAdditionsThisMonth(total);
+          } else {
+            setAdditionsThisMonth(0);
+          }
+        } catch {
+          setAdditionsThisMonth(0);
+        }
       }
 
       // 3. Orders → withdrawn map (preserved from prior phase).
@@ -501,6 +599,29 @@ export default function InventoryPage() {
   const handleAdd = useCallback(() => setEditItem(null), []);
   const handleEdit = useCallback((item: InventoryItem) => setEditItem(item), []);
   const handleView = useCallback((item: InventoryItem) => setDrawerItem(item), []);
+  const handleAddStock = useCallback((item: InventoryItem) => setAddStockTarget(item), []);
+
+  const handleAddStockDone = useCallback(async () => {
+    await loadAll(true);
+  }, [loadAll]);
+
+  // Filter additions for the global section by free-text on
+  // product/SKU/supplier/invoice. Date filtering is out of scope here;
+  // the underlying query already caps at the latest 50 rows.
+  const filteredAdditions = useMemo(() => {
+    if (!globalAdditions) return [];
+    const term = additionsSearch.trim().toLowerCase();
+    if (!term) return globalAdditions;
+    return globalAdditions.filter((row) => {
+      const hay =
+        `${row.inventory_name} ${row.inventory_sku} ${row.supplier_name ?? ''} ${row.supplier_invoice_num ?? ''}`.toLowerCase();
+      return hay.includes(term);
+    });
+  }, [globalAdditions, additionsSearch]);
+
+  const handleAdditionsExport = useCallback(() => {
+    exportAdditionsCsv(filteredAdditions);
+  }, [filteredAdditions]);
 
   // Fallback category list for the edit modal — DB list when present,
   // derived names otherwise, plus a safety fallback for first-run
@@ -520,7 +641,7 @@ export default function InventoryPage() {
           refreshing={refreshing}
         />
 
-        <InventoryKpiCards stats={stats} />
+        <InventoryKpiCards stats={stats} additionsThisMonth={additionsThisMonth} />
 
         {lowOrOut > 0 && !loading && !loadError && (
           <div
@@ -574,17 +695,35 @@ export default function InventoryPage() {
           <InventoryCardGrid
             items={filtered}
             withdrawnByName={withdrawnByName}
+            canAddStock={canAddStock}
             onView={handleView}
             onEdit={handleEdit}
             onArchive={handleArchive}
+            onAddStock={handleAddStock}
           />
         ) : (
           <InventoryTable
             items={filtered}
             withdrawnByName={withdrawnByName}
+            canAddStock={canAddStock}
             onView={handleView}
             onEdit={handleEdit}
             onArchive={handleArchive}
+            onAddStock={handleAddStock}
+          />
+        )}
+
+        {/* Phase Inventory-Additions-Log-1 — global additions log.
+            Hidden when the additions table is missing (pre-migration).
+            Renders an honest empty state when the table is present
+            but empty. */}
+        {globalAdditions !== null && !loading && !loadError && (
+          <GlobalAdditionsSection
+            additions={filteredAdditions}
+            search={additionsSearch}
+            onSearchChange={setAdditionsSearch}
+            onExport={handleAdditionsExport}
+            canExport={filteredAdditions.length > 0}
           />
         )}
       </div>
@@ -604,6 +743,7 @@ export default function InventoryPage() {
           item={drawerItem}
           withdrawn={withdrawnByName[drawerItem.name.trim()] || 0}
           isAdmin={isAdmin}
+          canAddStock={canAddStock}
           onClose={() => setDrawerItem(null)}
           onEdit={(item) => {
             setDrawerItem(null);
@@ -612,6 +752,18 @@ export default function InventoryPage() {
           onArchive={handleArchive}
           onSetStatus={handleSetStatus}
           onRestore={handleRestore}
+          onAddStock={handleAddStock}
+        />
+      )}
+
+      {addStockTarget && (
+        <AddStockModal
+          item={addStockTarget}
+          allItems={items}
+          actorId={user?.id ?? null}
+          actorName={actorName}
+          onClose={() => setAddStockTarget(null)}
+          onSaved={handleAddStockDone}
         />
       )}
     </AppLayout>
@@ -650,5 +802,126 @@ function EmptyState({ title, description }: { title: string; description: string
       <p className="text-sm font-semibold text-[hsl(var(--foreground))]">{title}</p>
       <p className="text-xs max-w-md">{description}</p>
     </div>
+  );
+}
+
+function GlobalAdditionsSection({
+  additions,
+  search,
+  onSearchChange,
+  onExport,
+  canExport,
+}: {
+  additions: InventoryAdditionWithProduct[];
+  search: string;
+  onSearchChange: (v: string) => void;
+  onExport: () => void;
+  canExport: boolean;
+}) {
+  return (
+    <section className="space-y-3" dir="rtl">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <h2 className="text-lg font-bold text-[hsl(var(--foreground))] flex items-center gap-2">
+          <History size={18} className="text-[hsl(var(--primary))]" />
+          سجل إضافات المنتجات
+        </h2>
+        <button
+          type="button"
+          onClick={onExport}
+          disabled={!canExport}
+          className="text-xs rounded-xl border border-[hsl(var(--border))] bg-white px-3 py-1.5 flex items-center gap-1.5 hover:bg-[hsl(var(--muted))]/40 disabled:opacity-50"
+        >
+          <Download size={13} />
+          تصدير CSV
+        </button>
+      </div>
+
+      <div className="rounded-2xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+        <div className="p-3 border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/30">
+          <div className="relative">
+            <Search
+              size={14}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]"
+            />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => onSearchChange(e.target.value)}
+              placeholder="بحث بالمنتج أو SKU أو المورد أو رقم الفاتورة..."
+              className="w-full pr-9 pl-3 py-2 text-xs border border-[hsl(var(--border))] bg-white rounded-xl focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30"
+            />
+          </div>
+        </div>
+
+        {additions.length === 0 ? (
+          <div className="py-12 flex flex-col items-center justify-center gap-2 text-[hsl(var(--muted-foreground))] text-sm">
+            <Plus size={28} className="opacity-30" />
+            <p>لا توجد إضافات مسجلة بعد.</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto scrollbar-thin">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-[hsl(var(--muted))]/40 border-b border-[hsl(var(--border))]">
+                  {[
+                    'التاريخ',
+                    'المنتج',
+                    'SKU',
+                    'الكمية',
+                    'تكلفة الوحدة',
+                    'إجمالي التكلفة',
+                    'المورد',
+                    'رقم الفاتورة',
+                    'أضيف بواسطة',
+                    'ملاحظة',
+                  ].map((h) => (
+                    <th
+                      key={h}
+                      className="text-right px-3 py-2 text-[11px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap"
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[hsl(var(--border))]">
+                {additions.slice(0, 50).map((row) => (
+                  <tr key={row.id} className="hover:bg-[hsl(var(--muted))]/30 align-top">
+                    <td className="px-3 py-2 text-xs text-[hsl(var(--muted-foreground))] whitespace-nowrap">
+                      {formatDate(row.received_at)}
+                    </td>
+                    <td className="px-3 py-2 text-xs font-semibold truncate max-w-[160px]">
+                      {row.inventory_name || '—'}
+                    </td>
+                    <td className="px-3 py-2 text-xs font-mono text-[hsl(var(--muted-foreground))]">
+                      {row.inventory_sku || '—'}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs font-bold text-emerald-700">
+                      +{formatNumber(row.quantity)}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs">
+                      {row.unit_cost == null ? '—' : formatMoney(row.unit_cost)}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs">
+                      {row.total_cost == null ? '—' : formatMoney(row.total_cost)}
+                    </td>
+                    <td className="px-3 py-2 text-xs truncate max-w-[140px]">
+                      {row.supplier_name || '—'}
+                    </td>
+                    <td className="px-3 py-2 text-xs font-mono">
+                      {row.supplier_invoice_num || '—'}
+                    </td>
+                    <td className="px-3 py-2 text-xs">{row.created_by_name || '—'}</td>
+                    <td className="px-3 py-2 text-xs text-[hsl(var(--muted-foreground))] truncate max-w-[180px]">
+                      {row.note || '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
