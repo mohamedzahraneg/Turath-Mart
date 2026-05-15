@@ -7,7 +7,6 @@ import {
   ChevronUp,
   Eye,
   Trash2,
-  FileText,
   ChevronRight,
   ChevronLeft,
   CheckSquare,
@@ -190,6 +189,40 @@ const SORT_COLUMN_BY_FIELD: Record<SortField, string> = {
 function parseDateStr(dateStr: string): Date {
   const parts = dateStr.split('/').map(Number);
   return new Date(parts[2], parts[1] - 1, parts[0]);
+}
+
+// Phase Orders-Page-Redesign-1 Fix3 — display helpers for the
+// "تاريخ الطلب" cell. The stored values are a DD/MM/YYYY date
+// string + a 24-hour HH:MM:SS time string. The cell shows the
+// Arabic day-of-week + 12-hour time with صباحًا / مساءً so
+// 23:45:06 becomes 11:45 مساءً on the same row.
+const ARABIC_DAYS = [
+  'الأحد',
+  'الاثنين',
+  'الثلاثاء',
+  'الأربعاء',
+  'الخميس',
+  'الجمعة',
+  'السبت',
+] as const;
+
+function formatOrderDayLine(dateStr: string): string {
+  const parts = dateStr.split('/').map((p) => Number(p));
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return dateStr;
+  const [dd, mm, yyyy] = parts;
+  const d = new Date(yyyy, mm - 1, dd);
+  if (Number.isNaN(d.getTime())) return dateStr;
+  return `${ARABIC_DAYS[d.getDay()]} ${dateStr}`;
+}
+
+function formatOrderTime12h(timeStr: string): string {
+  const m = (timeStr ?? '').match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!m) return timeStr;
+  const hour24 = Math.max(0, Math.min(23, Number(m[1])));
+  const minute = m[2];
+  const isPm = hour24 >= 12;
+  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+  return `${hour12}:${minute} ${isPm ? 'مساءً' : 'صباحًا'}`;
 }
 
 function mapOrderRow(row: OrderDbRow): Order {
@@ -762,22 +795,90 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
     statusFilter,
   ]);
 
+  // Phase Orders-Page-Redesign-1 Fix3b — cancel / archive instead of
+  // hard delete. Both the bulk-action button and the per-row trash
+  // icon now flip the order's status to `cancelled` and stamp
+  // `updated_by` for the audit trail. The row stays in the
+  // database so its history (audit logs, adjustments, child orders)
+  // remains intact.
+  //
+  // We intentionally KEEP the handler names (`handleBulkDelete` /
+  // `handleSingleDelete`) so we don't rename every call site; the
+  // body + tooltips + toasts now describe the cancel/archive
+  // behaviour clearly.
   const handleBulkDelete = async () => {
     if (selectedRows.size === 0) return;
-    const confirmed = window.confirm(`هل أنت متأكد من حذف ${selectedRows.size} أوردر؟`);
+    const confirmed = window.confirm(
+      `هل تريد إلغاء / أرشفة ${selectedRows.size} طلب؟\nسيتم نقل الطلبات إلى حالة ملغي ولن يتم حذف بياناتها أو سجلاتها.`
+    );
     if (!confirmed) return;
     try {
       const supabase = createClient();
-      const idsToDelete = Array.from(selectedRows);
-      const { error } = await supabase.from('turath_masr_orders').delete().in('id', idsToDelete);
+      const idsToUpdate = Array.from(selectedRows);
+      const updatePayload: Record<string, unknown> = {
+        status: 'cancelled',
+        updated_at: new Date().toISOString(),
+      };
+      if (user?.id) {
+        updatePayload.updated_by = user.id;
+      }
+      const { error } = await supabase
+        .from('turath_masr_orders')
+        .update(updatePayload)
+        .in('id', idsToUpdate);
       if (error) throw error;
-      toast.success(`تم حذف ${selectedRows.size} أوردر بنجاح`);
+      toast.success(`تم إلغاء / أرشفة ${selectedRows.size} طلب`);
       setSelectedRows(new Set());
       loadOrders();
       window.dispatchEvent(new CustomEvent('turath_masr_orders_updated'));
     } catch (err) {
-      console.error('Bulk delete error:', err);
-      toast.error('حدث خطأ أثناء حذف الأوردرات');
+      console.error('[OrdersTableSection] bulk cancel/archive failed:', err);
+      const msg =
+        err instanceof Error && err.message.includes('42501')
+          ? 'لا تملك صلاحية إلغاء هذه الطلبات. تواصل مع المدير.'
+          : 'حدث خطأ أثناء إلغاء / أرشفة الطلبات';
+      toast.error(msg);
+    }
+  };
+
+  const handleSingleDelete = async (order: Order) => {
+    if (!canManageOrders) {
+      toast.error('ليس لديك صلاحية إلغاء الطلب');
+      return;
+    }
+    const confirmed = window.confirm(
+      `هل تريد إلغاء / أرشفة الطلب #${order.orderNum}؟\nسيتم نقل الطلب إلى حالة ملغي ولن يتم حذف بياناته أو سجلاته.`
+    );
+    if (!confirmed) return;
+    try {
+      const supabase = createClient();
+      const updatePayload: Record<string, unknown> = {
+        status: 'cancelled',
+        updated_at: new Date().toISOString(),
+      };
+      if (user?.id) {
+        updatePayload.updated_by = user.id;
+      }
+      const { error } = await supabase
+        .from('turath_masr_orders')
+        .update(updatePayload)
+        .eq('id', order.id);
+      if (error) throw error;
+      toast.success(`تم إلغاء / أرشفة الطلب #${order.orderNum}`);
+      setSelectedRows((prev) => {
+        const next = new Set(prev);
+        next.delete(order.id);
+        return next;
+      });
+      loadOrders();
+      window.dispatchEvent(new CustomEvent('turath_masr_orders_updated'));
+    } catch (err) {
+      console.error('[OrdersTableSection] single cancel/archive failed:', err);
+      const msg =
+        err instanceof Error && err.message.includes('42501')
+          ? 'لا تملك صلاحية إلغاء هذا الطلب. تواصل مع المدير.'
+          : 'حدث خطأ أثناء إلغاء / أرشفة الطلب';
+      toast.error(msg);
     }
   };
 
@@ -1193,8 +1294,9 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
               <button
                 className="bg-red-500/80 hover:bg-red-600 text-white text-xs px-3 py-1.5 rounded-lg transition-colors font-medium"
                 onClick={handleBulkDelete}
+                title="إلغاء / أرشفة الطلبات المحددة"
               >
-                حذف المحدد
+                إلغاء / أرشفة المحدد
               </button>
               <button
                 className="bg-white/20 hover:bg-white/30 text-white text-xs px-3 py-1.5 rounded-lg transition-colors font-medium"
@@ -1477,16 +1579,26 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
                           <p className="text-xs font-bold text-red-600">غير معين</p>
                         )}
                       </td>
-                      {/* تاريخ الطلب */}
+                      {/* تاريخ الطلب — Fix3: Arabic day name + DD/MM/YYYY
+                          on the first line, 12-hour time with صباحًا /
+                          مساءً on the second line. */}
                       <td className="table-cell">
                         <div>
-                          <p className="text-xs font-medium">{order.date}</p>
+                          <p className="text-xs font-medium">{formatOrderDayLine(order.date)}</p>
                           <p className="text-[10px] text-[hsl(var(--muted-foreground))] font-mono">
-                            {order.time}
+                            {formatOrderTime12h(order.time)}
                           </p>
                         </div>
                       </td>
                       <td className="table-cell">
+                        {/* Phase Orders-Page-Redesign-1 Fix3 — drop
+                            the duplicate "Invoice PDF" button (it
+                            opened the same OrderDetailModal as the
+                            eye icon) and wire the Trash icon to the
+                            single-row delete handler. The delete
+                            button is hidden when the user lacks
+                            `canManageOrders` so the row never shows
+                            a non-functional shell. */}
                         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
                           <button
                             onClick={() => setDetailModal({ order })}
@@ -1502,17 +1614,12 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
                           >
                             <History size={14} />
                           </button>
-                          <button
-                            onClick={() => setDetailModal({ order })}
-                            className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-green-50 text-green-600 transition-colors"
-                            title="عرض الفاتورة PDF"
-                          >
-                            <FileText size={14} />
-                          </button>
                           {canManageOrders && (
                             <button
+                              onClick={() => handleSingleDelete(order)}
                               className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
-                              title="حذف الأوردر"
+                              title="إلغاء / أرشفة الطلب"
+                              aria-label="إلغاء / أرشفة الطلب"
                             >
                               <Trash2 size={14} />
                             </button>
