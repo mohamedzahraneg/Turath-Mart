@@ -382,24 +382,18 @@ function exportToPDF(orders: Order[]) {
 }
 
 /** Phase Orders-Page-Redesign-1 — props lifted from the page-level
- *  dashboard so the smart-filter chips and "needs action" buttons can
- *  drive the table without forking its data fetch.
- *
- *  • `appliedRange`: when the user clicks a smart filter (اليوم,
- *    هذا الأسبوع, …) the dashboard emits the new ISO range here. The
- *    table syncs its internal `dateFrom` / `dateTo` accordingly and
- *    resets to page 1. The custom-range inputs in the table's filter
- *    bar remain editable; once the user touches them, this prop's
- *    next update will overwrite — that's intentional (smart filter
- *    wins per the spec).
- *  • `appliedFilter`: when the user clicks "عرض" on a needs-action
- *    item the dashboard passes a filter map like
- *    `{ status: 'warehouse' }` or `{ adjustment: 'pending' }`. The
- *    table syncs the matching dropdown(s) and resets to page 1.
+ *  dashboard. Fix2 adds the banner controls so the table can show
+ *  the user which dashboard click is currently active and offer a
+ *  one-click clear.
  */
 interface OrdersTableSectionProps {
   appliedRange?: { from: string; to: string } | null;
   appliedFilter?: Record<string, string> | null;
+  /** Human label rendered in the active-filter banner above the
+   *  table. `null` hides the banner. */
+  activeFilterLabel?: string | null;
+  /** Clears the banner + resets the table filters back to neutral. */
+  onClearAppliedFilter?: () => void;
 }
 
 export default function OrdersTableSection(props: OrdersTableSectionProps = {}) {
@@ -500,6 +494,18 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
   useEffect(() => {
     const f = props.appliedFilter;
     if (!f) return;
+    // Phase Orders-Page-Redesign-1 Fix2 — `__clear` is the sentinel
+    // the page emits when the user clicks "مسح الفلتر" on the
+    // banner. Reset every filter the dashboard might have set.
+    if (f.__clear === '1') {
+      setStatusFilter('الكل');
+      setDelegateFilter('الكل');
+      setAdjustmentFilter('all');
+      setPaymentMethodFilter('الكل');
+      setSearch('');
+      setPage(1);
+      return;
+    }
     if (f.status) setStatusFilter(f.status);
     if (f.delegate === 'unassigned') {
       setDelegateFilter('__unassigned__');
@@ -1044,6 +1050,26 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
           </div>
           <h3 className="text-base font-bold text-[hsl(var(--foreground))]">جميع الطلبات</h3>
         </div>
+
+        {/* Phase Orders-Page-Redesign-1 Fix2 — banner shown while a
+            dashboard-driven filter is active. Clicking "مسح الفلتر"
+            wipes every dashboard-managed filter via the page-level
+            handler so the user can return to the smart-filter view. */}
+        {props.activeFilterLabel && (
+          <div className="mx-4 mb-3 flex items-center justify-between gap-3 rounded-xl border border-purple-200 bg-purple-50/60 px-3 py-2">
+            <div className="flex items-center gap-2 text-xs text-purple-800">
+              <span className="font-bold">فلتر نشط من لوحة العمليات:</span>
+              <span className="font-semibold">{props.activeFilterLabel}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => props.onClearAppliedFilter?.()}
+              className="text-[11px] font-bold text-purple-700 hover:underline"
+            >
+              مسح الفلتر
+            </button>
+          </div>
+        )}
 
         <div className="px-4 pb-3 flex flex-wrap items-center gap-2">
           <div className="relative flex-1 min-w-[200px] max-w-[420px]">

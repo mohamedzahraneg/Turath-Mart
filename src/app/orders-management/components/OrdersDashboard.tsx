@@ -103,14 +103,22 @@ export function rangeForPreset(preset: DateRangePreset, now: Date = new Date()):
 
 interface OperationsSummary {
   range: { from: string | null; to: string | null; preset: string | null };
+  compareRange: { from: string | null; to: string | null; preset: string | null } | null;
   kpis: {
     ordersCount: number;
+    ordersDeltaPercent: number | null;
+    waitingShipping: number;
+    waitingDeltaPercent: number | null;
+    inShipping: number;
+    inShippingDeltaPercent: number | null;
+    delivered: number;
+    deliveredDeltaPercent: number | null;
     expectedTotal: number;
     deliveredTotal: number;
-    waitingShipping: number;
-    inShipping: number;
-    delivered: number;
+    collectionTotal: number;
+    collectionDeltaPercent: number | null;
     adjustmentsCount: number;
+    adjustmentsDeltaPercent: number | null;
     pendingAdjustments: number;
   };
   statusDistribution: Array<{
@@ -124,6 +132,7 @@ interface OperationsSummary {
     action: string;
     label: string;
     order_num: string | null;
+    customer_name: string | null;
     changed_by: string | null;
     created_at: string;
   }>;
@@ -133,6 +142,15 @@ interface OperationsSummary {
     count: number;
     description: string;
     filter: Record<string, string> | null;
+    previewOrders: Array<{
+      order_num: string;
+      customer_name: string;
+      products_summary: string;
+      status: string;
+      status_label: string;
+      total: number;
+      created_at: string;
+    }>;
   }>;
 }
 
@@ -142,7 +160,11 @@ interface OperationsSummary {
 
 interface Props {
   range: DateRange;
-  onNeedsActionApply?: (filter: Record<string, string>) => void;
+  /** Emitted when the user clicks "عرض" on a needs-action item or
+   *  clicks a status row in the distribution legend. The page applies
+   *  the filter to the table, scrolls to the table, and shows an
+   *  active-filter banner with the supplied human label. */
+  onApplyTableFilter?: (filter: Record<string, string>, label: string) => void;
 }
 
 const fmtEgp = (n: number): string =>
@@ -202,7 +224,32 @@ const KPI_TONES: Record<string, { card: string; icon: string; iconBg: string; li
   },
 };
 
-export default function OrdersDashboard({ range, onNeedsActionApply }: Props) {
+/**
+ * Translate a delta percent value into the small Arabic helper line
+ * the KPI cards print under the number. The page-spec `compareRange`
+ * label distinguishes "عن أمس" (today's special case) from "عن
+ * الفترة السابقة" for wider windows.
+ */
+function deltaLine(
+  current: number,
+  delta: number | null,
+  preset: DateRangePreset
+): { text: string; tone: 'positive' | 'negative' | 'flat' | 'new' } {
+  const compareLabel = preset === 'today' ? 'عن أمس' : 'عن الفترة السابقة';
+  if (delta === null) {
+    return current > 0 ? { text: 'جديد', tone: 'new' } : { text: 'بدون تغيير', tone: 'flat' };
+  }
+  if (Math.abs(delta) < 0.05) {
+    return { text: `بدون تغيير ${compareLabel}`, tone: 'flat' };
+  }
+  const sign = delta > 0 ? '+' : '';
+  return {
+    text: `${sign}${delta}% ${compareLabel}`,
+    tone: delta > 0 ? 'positive' : 'negative',
+  };
+}
+
+export default function OrdersDashboard({ range, onApplyTableFilter }: Props) {
   const [summary, setSummary] = useState<OperationsSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -262,62 +309,91 @@ export default function OrdersDashboard({ range, onNeedsActionApply }: Props) {
       {summary && (
         <>
           {/* KPI row — order matches the reference (RTL): orders →
-              waiting → shipping → delivered → collection → returns. */}
+              waiting → shipping → delivered → collection → returns.
+              Each card carries a real delta vs the previous period. */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             <KpiCard
               tone="blue"
               icon={<CalendarBadge />}
               label="طلبات اليوم"
               value={fmtNumber(summary.kpis.ordersCount)}
-              hint={range.preset === 'today' ? undefined : 'في الفترة المحددة'}
+              delta={deltaLine(
+                summary.kpis.ordersCount,
+                summary.kpis.ordersDeltaPercent,
+                range.preset
+              )}
             />
             <KpiCard
               tone="amber"
               icon={<Clock size={16} />}
               label="في انتظار الشحن"
               value={fmtNumber(summary.kpis.waitingShipping)}
+              delta={deltaLine(
+                summary.kpis.waitingShipping,
+                summary.kpis.waitingDeltaPercent,
+                range.preset
+              )}
             />
             <KpiCard
               tone="orange"
               icon={<Truck size={16} />}
               label="جاري الشحن"
               value={fmtNumber(summary.kpis.inShipping)}
+              delta={deltaLine(
+                summary.kpis.inShipping,
+                summary.kpis.inShippingDeltaPercent,
+                range.preset
+              )}
             />
             <KpiCard
               tone="emerald"
               icon={<CheckIcon />}
               label="تم التسليم اليوم"
               value={fmtNumber(summary.kpis.delivered)}
+              delta={deltaLine(
+                summary.kpis.delivered,
+                summary.kpis.deliveredDeltaPercent,
+                range.preset
+              )}
             />
             <KpiCard
               tone="purple"
               icon={<DollarSign size={16} />}
               label={summary.kpis.deliveredTotal > 0 ? 'إجمالي التحصيل' : 'تحصيل متوقع'}
-              value={
-                summary.kpis.deliveredTotal > 0
-                  ? fmtEgp(summary.kpis.deliveredTotal)
-                  : fmtEgp(summary.kpis.expectedTotal)
-              }
+              value={fmtEgp(summary.kpis.collectionTotal)}
+              delta={deltaLine(
+                summary.kpis.collectionTotal,
+                summary.kpis.collectionDeltaPercent,
+                range.preset
+              )}
             />
             <KpiCard
               tone="teal"
               icon={<RotateCcw size={16} />}
               label="مرتجعات / استبدالات اليوم"
               value={fmtNumber(summary.kpis.adjustmentsCount)}
-              hint={
-                summary.kpis.pendingAdjustments > 0
-                  ? `${fmtNumber(summary.kpis.pendingAdjustments)} معلقة`
-                  : undefined
-              }
+              delta={deltaLine(
+                summary.kpis.adjustmentsCount,
+                summary.kpis.adjustmentsDeltaPercent,
+                range.preset
+              )}
             />
           </div>
 
           {/* Three middle cards. In RTL grid order: distribution (right)
               → activity (center) → needs-action (left). */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <StatusDistributionCard distribution={summary.statusDistribution} />
+            <StatusDistributionCard
+              distribution={summary.statusDistribution}
+              onStatusClick={(status, label) =>
+                onApplyTableFilter?.({ status }, `حالة الطلب: ${label}`)
+              }
+            />
             <RecentActivityCard activity={summary.recentActivity} />
-            <NeedsActionCard items={summary.needsAction} onApply={onNeedsActionApply} />
+            <NeedsActionCard
+              items={summary.needsAction}
+              onApply={(filter, label) => onApplyTableFilter?.(filter, label)}
+            />
           </div>
         </>
       )}
@@ -366,40 +442,59 @@ function CheckIcon() {
   );
 }
 
+const DELTA_TONE_CLASS: Record<'positive' | 'negative' | 'flat' | 'new', string> = {
+  positive: 'text-emerald-600',
+  negative: 'text-rose-600',
+  flat: 'text-[hsl(var(--muted-foreground))]',
+  new: 'text-blue-600',
+};
+
 function KpiCard(props: {
   tone: 'blue' | 'amber' | 'orange' | 'emerald' | 'purple' | 'teal';
   icon: React.ReactNode;
   label: string;
   value: string;
-  hint?: string;
+  delta?: { text: string; tone: 'positive' | 'negative' | 'flat' | 'new' };
 }) {
   const tone = KPI_TONES[props.tone];
+  const deltaArrow =
+    props.delta?.tone === 'positive'
+      ? '▲'
+      : props.delta?.tone === 'negative'
+        ? '▼'
+        : props.delta?.tone === 'new'
+          ? '★'
+          : '·';
   return (
-    <div className={`relative rounded-2xl border ${tone.card} p-4 overflow-hidden shadow-sm`}>
+    <div className={`relative rounded-2xl border ${tone.card} p-3 overflow-hidden shadow-sm`}>
       <div className="flex items-start justify-between gap-2">
         <span
-          className={`w-9 h-9 flex items-center justify-center rounded-xl ${tone.iconBg} ${tone.icon}`}
+          className={`w-8 h-8 flex items-center justify-center rounded-xl ${tone.iconBg} ${tone.icon}`}
         >
           {props.icon}
         </span>
-        <p className="text-[12px] font-bold text-[hsl(var(--muted-foreground))] text-left">
+        <p className="text-[11px] font-bold text-[hsl(var(--muted-foreground))] text-left leading-tight">
           {props.label}
         </p>
       </div>
-      <p className="mt-3 text-2xl font-bold font-mono text-[hsl(var(--foreground))] text-center">
+      <p className="mt-2 text-xl font-bold font-mono text-[hsl(var(--foreground))] text-center">
         {props.value}
       </p>
-      {props.hint && (
-        <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1 text-center">
-          {props.hint}
+      {props.delta && (
+        <p
+          className={`text-[10px] mt-1 text-center font-semibold ${DELTA_TONE_CLASS[props.delta.tone]}`}
+        >
+          <span className="inline-block ml-1">{deltaArrow}</span>
+          {props.delta.text}
         </p>
       )}
-      {/* Decorative non-data wave line at the bottom — matches the
-          reference's mini-line style without faking time-series data. */}
+      {/* Decorative non-data wave — visual filler to match the
+          reference's mini-line style without inventing time-series
+          data. The text-delta line above carries the actual signal. */}
       <svg
         viewBox="0 0 100 24"
         preserveAspectRatio="none"
-        className="block w-full h-4 mt-2"
+        className="block w-full h-3 mt-1"
         aria-hidden
       >
         <polyline
@@ -408,7 +503,7 @@ function KpiCard(props: {
           strokeWidth="1.6"
           strokeLinecap="round"
           strokeLinejoin="round"
-          className={`${tone.line} opacity-70`}
+          className={`${tone.line} opacity-50`}
         />
       </svg>
     </div>
@@ -419,7 +514,10 @@ function KpiCard(props: {
 // Status distribution
 // ─────────────────────────────────────────────────────────────────────────────
 
-function StatusDistributionCard(props: { distribution: OperationsSummary['statusDistribution'] }) {
+function StatusDistributionCard(props: {
+  distribution: OperationsSummary['statusDistribution'];
+  onStatusClick?: (status: string, label: string) => void;
+}) {
   const total = props.distribution.reduce((s, d) => s + d.count, 0);
   const nonZero = props.distribution.filter((d) => d.count > 0);
   return (
@@ -434,22 +532,27 @@ function StatusDistributionCard(props: { distribution: OperationsSummary['status
       ) : (
         <>
           <div className="flex items-center gap-4">
-            {/* Legend on the right (RTL — first child renders at the
-                start of the line) so the reading order matches the
-                reference image. */}
             <ul className="flex-1 space-y-1.5 text-xs">
               {props.distribution.map((d) => (
-                <li key={d.status} className="flex items-center justify-between">
-                  <span className="flex items-center gap-1.5 text-[hsl(var(--foreground))]">
-                    <span
-                      className="w-2.5 h-2.5 rounded-full"
-                      style={{ backgroundColor: STATUS_COLORS[d.status] ?? 'hsl(0, 0%, 50%)' }}
-                    />
-                    {d.label}
-                  </span>
-                  <span className="font-mono text-[11px] text-[hsl(var(--muted-foreground))]">
-                    {fmtNumber(d.count)} {d.percentage > 0 ? `(${d.percentage}%)` : ''}
-                  </span>
+                <li key={d.status}>
+                  <button
+                    type="button"
+                    onClick={() => props.onStatusClick?.(d.status, d.label)}
+                    disabled={d.count === 0 || !props.onStatusClick}
+                    className="w-full flex items-center justify-between rounded-md px-1 py-0.5 hover:bg-[hsl(var(--muted))]/40 disabled:cursor-default disabled:hover:bg-transparent"
+                    title={d.count > 0 ? `عرض طلبات ${d.label}` : ''}
+                  >
+                    <span className="flex items-center gap-1.5 text-[hsl(var(--foreground))]">
+                      <span
+                        className="w-2.5 h-2.5 rounded-full"
+                        style={{ backgroundColor: STATUS_COLORS[d.status] ?? 'hsl(0, 0%, 50%)' }}
+                      />
+                      {d.label}
+                    </span>
+                    <span className="font-mono text-[11px] text-[hsl(var(--muted-foreground))]">
+                      {fmtNumber(d.count)} {d.percentage > 0 ? `(${d.percentage}%)` : ''}
+                    </span>
+                  </button>
                 </li>
               ))}
             </ul>
@@ -553,24 +656,32 @@ function RecentActivityCard(props: { activity: OperationsSummary['recentActivity
         </p>
       ) : (
         <ul className="space-y-3">
-          {props.activity.slice(0, 5).map((a) => (
-            <li key={a.id} className="text-xs flex items-start gap-2">
-              <span
-                className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${activityDotColor(a.action)}`}
-              />
-              <div className="flex-1 min-w-0">
-                <p className="text-[hsl(var(--foreground))] leading-snug">
-                  {a.label}
-                  {a.order_num && (
-                    <span className="text-[hsl(var(--primary))] font-mono"> #{a.order_num}</span>
-                  )}
-                </p>
-                <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
-                  {timeAgo(a.created_at)}
-                </p>
-              </div>
-            </li>
-          ))}
+          {props.activity.slice(0, 5).map((a) => {
+            // Fix2 — humanized label + optional "من <عميل>" suffix
+            // when the audit row resolves a customer name. The
+            // dashboard never shows raw action keys now.
+            const suffix =
+              a.action === 'order_created' && a.customer_name ? ` من ${a.customer_name}` : '';
+            return (
+              <li key={a.id} className="text-xs flex items-start gap-2">
+                <span
+                  className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${activityDotColor(a.action)}`}
+                />
+                <div className="flex-1 min-w-0">
+                  <p className="text-[hsl(var(--foreground))] leading-snug">
+                    {a.label}
+                    {a.order_num && (
+                      <span className="text-[hsl(var(--primary))] font-mono"> #{a.order_num}</span>
+                    )}
+                    {suffix}
+                  </p>
+                  <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
+                    {timeAgo(a.created_at)}
+                  </p>
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
       {props.activity.length > 0 && (
@@ -596,8 +707,9 @@ const NEEDS_TONES: Record<string, { pill: string; icon: string }> = {
 
 function NeedsActionCard(props: {
   items: OperationsSummary['needsAction'];
-  onApply?: (filter: Record<string, string>) => void;
+  onApply?: (filter: Record<string, string>, label: string) => void;
 }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
   return (
     <div className="rounded-2xl border border-[hsl(var(--border))] bg-white p-4 shadow-sm">
       <div className="flex items-center justify-between mb-3">
@@ -611,33 +723,63 @@ function NeedsActionCard(props: {
             pill: 'bg-slate-100 text-slate-700',
             icon: 'text-slate-500',
           };
+          const isOpen = expanded === item.key;
+          const canDrill = item.count > 0 && (item.previewOrders?.length ?? 0) > 0;
           return (
-            <li key={item.key} className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 flex-1 min-w-0">
-                <Package size={14} className={`flex-shrink-0 ${tone.icon}`} />
-                <div className="min-w-0">
-                  <p className="text-xs font-bold text-[hsl(var(--foreground))] truncate">
-                    {item.label}
-                  </p>
-                  <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate">
-                    {item.description}
-                  </p>
-                </div>
+            <li key={item.key} className="rounded-lg">
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  disabled={!canDrill}
+                  onClick={() => setExpanded(isOpen ? null : item.key)}
+                  className="flex items-center gap-2 flex-1 min-w-0 text-right disabled:cursor-default"
+                  title={canDrill ? 'انقر لعرض نماذج من الطلبات' : ''}
+                >
+                  <Package size={14} className={`flex-shrink-0 ${tone.icon}`} />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-bold text-[hsl(var(--foreground))] truncate">
+                      {item.label}
+                    </p>
+                    <p className="text-[10px] text-[hsl(var(--muted-foreground))] truncate">
+                      {item.description}
+                    </p>
+                  </div>
+                </button>
+                <span
+                  className={`text-xs font-bold font-mono px-2.5 py-1 rounded-lg min-w-[36px] text-center ${tone.pill}`}
+                >
+                  {fmtNumber(item.count)}
+                </span>
+                <button
+                  type="button"
+                  disabled={item.count <= 0 || !item.filter || !props.onApply}
+                  onClick={() => item.filter && props.onApply?.(item.filter, `${item.label}`)}
+                  className="text-[10px] font-bold text-[hsl(var(--primary))] flex items-center gap-0.5 hover:underline disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                  عرض
+                  <ChevronLeft size={12} />
+                </button>
               </div>
-              <span
-                className={`text-xs font-bold font-mono px-2.5 py-1 rounded-lg min-w-[36px] text-center ${tone.pill}`}
-              >
-                {fmtNumber(item.count)}
-              </span>
-              <button
-                type="button"
-                disabled={item.count <= 0 || !item.filter || !props.onApply}
-                onClick={() => item.filter && props.onApply?.(item.filter)}
-                className="text-[10px] font-bold text-[hsl(var(--primary))] flex items-center gap-0.5 hover:underline disabled:opacity-30 disabled:cursor-not-allowed"
-              >
-                عرض
-                <ChevronLeft size={12} />
-              </button>
+              {isOpen && item.previewOrders.length > 0 && (
+                <div className="mt-2 rounded-lg bg-[hsl(var(--muted))]/30 p-2 space-y-1">
+                  {item.previewOrders.map((o) => (
+                    <div
+                      key={`${item.key}-${o.order_num}`}
+                      className="flex items-center justify-between text-[10px] gap-2"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="font-mono text-[hsl(var(--primary))]">#{o.order_num}</p>
+                        <p className="truncate text-[hsl(var(--muted-foreground))]">
+                          {o.customer_name || '—'} — {o.products_summary}
+                        </p>
+                      </div>
+                      <span className="text-[9px] text-[hsl(var(--muted-foreground))] flex-shrink-0">
+                        {o.status_label}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </li>
           );
         })}

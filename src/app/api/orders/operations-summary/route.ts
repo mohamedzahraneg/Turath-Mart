@@ -4,35 +4,31 @@
 // Phase Orders-Page-Redesign-1 — single aggregate endpoint that feeds
 // the new orders-management dashboard:
 //
-//   • KPI cards (orders count, waiting/in-shipping/delivered, returns
-//     count, expected collection total).
+//   • KPI cards with a real comparison delta vs the previous
+//     equivalent period (today→yesterday, week→previous week, etc.).
 //   • Status distribution rows (count + percentage per status).
-//   • Recent activity feed (latest audit-log entries within range).
-//   • "Needs action" counts (orders without delegate, awaiting
-//     scheduling, pending adjustments, partial payments, delivery
-//     delays).
+//   • Recent activity feed (latest audit-log entries within range)
+//     with humanized Arabic labels — no raw `status_change` keys.
+//   • "Needs action" counts + a small preview list of the top 5
+//     matching orders per item so the dashboard can show details
+//     inline without round-tripping back to the table.
 //
-// Why a single route instead of N client-side queries:
-//   – Six independent counts × every smart-filter click would burn
-//     egress and round-trips. One route runs them in parallel and
-//     returns ~1 KB of JSON.
-//   – Server-side fan-out also lets us share a single supabase
-//     client (auth cookies + RLS) so each query enforces the same
-//     row-visibility rules as the rest of the app.
+// Fix2 additions
+//   – `compareRange` field in the response so the UI can render
+//     "X% عن أمس / عن الفترة السابقة".
+//   – `kpis.*DeltaPercent` numeric fields. When the previous period
+//     was zero we return `null` (UI shows "جديد" or "بدون تغيير"
+//     instead of inventing ∞%).
+//   – `recentActivity[i].label` is now a fully humanized Arabic
+//     phrase (e.g. "تم تغيير حالة الطلب إلى جاري الشحن").
+//   – `needsAction[i].previewOrders` carries up to 5 sample rows.
 //
 // Privacy / authorisation
-//   – SSR Supabase client built from the request's cookies. No
-//     service-role bypass. RLS does the gating, exactly as a direct
-//     client-side query would.
-//   – Anonymous requests get the same RLS-empty rows the direct
-//     queries would return; we never 401 to keep the error surface
-//     small.
+//   – SSR Supabase client built from request cookies. No service-
+//     role bypass. RLS gates every read.
 //
 // What this route is NOT
 //   – Not a replacement for the main paginated orders table query.
-//     The table continues to fetch its own page-of-25 (or whatever
-//     `perPage` is set to) from `turath_masr_orders` so we don't
-//     duplicate the heavier read here.
 //   – No image / base64 / token in the response.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -40,6 +36,7 @@ import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { buildOrderProductsSummary } from '@/lib/orders/orderProductsSummary';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -67,9 +64,6 @@ async function buildSupabaseClient(): Promise<SupabaseClient> {
 }
 
 // ─── Status taxonomy ────────────────────────────────────────────────
-// Mirrors the status labels used by `OrdersTableSection`'s STATUS_MAP
-// so the dashboard reads the same Arabic labels the table renders.
-// Keep this in sync if the table's set ever grows.
 const STATUS_LABELS: Record<string, string> = {
   new: 'جديد',
   preparing: 'في المعالجة',
@@ -81,6 +75,8 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 const KNOWN_STATUSES = Object.keys(STATUS_LABELS);
+
+// ─── Range helpers ─────────────────────────────────────────────────
 
 interface RangeSpec {
   from: string | null;
@@ -99,17 +95,12 @@ function readRange(url: URL): RangeSpec {
   };
 }
 
-/** Apply optional from/to filters on `created_at`. The caller can
- *  also pass a column override (e.g. `decided_at` for adjustment
- *  rows). */
 function applyDateRange<
   T extends { gte: (col: string, v: string) => T; lt: (col: string, v: string) => T },
 >(q: T, range: RangeSpec, column: string = 'created_at'): T {
   let out: T = q;
   if (range.from) out = out.gte(column, `${range.from}T00:00:00Z`);
   if (range.to) {
-    // `to` is inclusive — push to the next day at 00:00 UTC so the
-    // bound is exclusive on the SQL side.
     const next = nextDay(range.to);
     out = out.lt(column, `${next}T00:00:00Z`);
   }
@@ -120,23 +111,52 @@ function nextDay(yyyyMmDd: string): string {
   const [y, m, d] = yyyyMmDd.split('-').map((x) => Number(x));
   const dt = new Date(Date.UTC(y, m - 1, d));
   dt.setUTCDate(dt.getUTCDate() + 1);
+  return formatYmd(dt);
+}
+
+function shiftDays(yyyyMmDd: string, days: number): string {
+  const [y, m, d] = yyyyMmDd.split('-').map((x) => Number(x));
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  return formatYmd(dt);
+}
+
+function formatYmd(dt: Date): string {
   const yy = dt.getUTCFullYear();
   const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
   const dd = String(dt.getUTCDate()).padStart(2, '0');
   return `${yy}-${mm}-${dd}`;
 }
 
-// ─── KPI / status queries ───────────────────────────────────────────
+function daysBetween(fromYmd: string, toYmd: string): number {
+  const a = new Date(`${fromYmd}T00:00:00Z`).getTime();
+  const b = new Date(`${toYmd}T00:00:00Z`).getTime();
+  return Math.round((b - a) / (24 * 60 * 60 * 1000)) + 1;
+}
+
+/**
+ * Compute the comparison range for the dashboard delta.
+ * Strategy: same-length window immediately preceding the current
+ * range. Works uniformly for today / yesterday / this_week /
+ * custom. For `this_month` / `previous_month` it still picks the
+ * same number of days back — close enough for "vs الشهر السابق"
+ * intent without over-engineering calendar-month diffs.
+ */
+function computeCompareRange(range: RangeSpec): RangeSpec | null {
+  if (!range.from || !range.to) return null;
+  const days = daysBetween(range.from, range.to);
+  if (!Number.isFinite(days) || days <= 0) return null;
+  const prevTo = shiftDays(range.from, -1);
+  const prevFrom = shiftDays(prevTo, -(days - 1));
+  return { from: prevFrom, to: prevTo, preset: 'previous' };
+}
+
+// ─── KPI queries ────────────────────────────────────────────────────
 
 async function countStatuses(
   supabase: SupabaseClient,
   range: RangeSpec
 ): Promise<Record<string, number>> {
-  // Single round-trip: project just `status`, range-filtered, capped
-  // to 5,000 rows so a runaway range query can't OOM the route. Each
-  // row is a few bytes; this is still cheaper than five `count: exact`
-  // calls in parallel because Supabase aggregates them client-side
-  // here.
   const baseQuery = supabase
     .from('turath_masr_orders')
     .select('status', { count: 'exact' })
@@ -158,9 +178,6 @@ async function sumTotalCollection(
   supabase: SupabaseClient,
   range: RangeSpec
 ): Promise<{ expectedTotal: number; deliveredTotal: number }> {
-  // Use two scoped reads: one for the expected sum across the range,
-  // one restricted to `status = 'delivered'` so the dashboard can
-  // surface "collected so far" alongside "expected".
   const expectedReq = applyDateRange(
     supabase.from('turath_masr_orders').select('total').limit(5000),
     range
@@ -207,6 +224,87 @@ async function countAdjustments(
   return { total: total ?? 0, pending: pending ?? 0 };
 }
 
+interface KpiBundle {
+  ordersCount: number;
+  expectedTotal: number;
+  deliveredTotal: number;
+  waitingShipping: number;
+  inShipping: number;
+  delivered: number;
+  adjustmentsCount: number;
+  pendingAdjustments: number;
+}
+
+async function loadKpiBundle(supabase: SupabaseClient, range: RangeSpec): Promise<KpiBundle> {
+  const [statusCounts, sums, adjCounts] = await Promise.all([
+    countStatuses(supabase, range),
+    sumTotalCollection(supabase, range),
+    countAdjustments(supabase, range),
+  ]);
+  const ordersCount = Object.values(statusCounts).reduce((s, n) => s + n, 0);
+  return {
+    ordersCount,
+    expectedTotal: sums.expectedTotal,
+    deliveredTotal: sums.deliveredTotal,
+    waitingShipping: statusCounts['warehouse'] ?? 0,
+    inShipping: statusCounts['shipping'] ?? 0,
+    delivered: statusCounts['delivered'] ?? 0,
+    adjustmentsCount: adjCounts.total,
+    pendingAdjustments: adjCounts.pending,
+  };
+}
+
+/**
+ * Convert a (current, previous) pair into a delta percent. Returns
+ * `null` when previous is 0 so the UI can render "جديد"/"بدون تغيير"
+ * instead of an ∞ — see Spec §B.
+ */
+function deltaPercent(current: number, previous: number): number | null {
+  if (!Number.isFinite(previous) || previous === 0) return null;
+  const pct = ((current - previous) / previous) * 100;
+  if (!Number.isFinite(pct)) return null;
+  return +pct.toFixed(1);
+}
+
+// ─── Recent activity ───────────────────────────────────────────────
+
+const ACTION_LABELS_AR: Record<string, string> = {
+  status_change: 'تم تغيير حالة الطلب',
+  order_created: 'تم إنشاء طلب جديد',
+  order_edited: 'تم تعديل الطلب',
+  'order.updated': 'تم تعديل الطلب',
+  payment_updated: 'تم تحديث الدفع',
+  delegate_assigned: 'تم تعيين مندوب',
+  adjustment_created: 'تم إنشاء تسوية',
+  'adjustment.created': 'تم إنشاء تسوية',
+  adjustment_approved: 'تمت الموافقة على التسوية',
+  'adjustment.approved': 'تمت الموافقة على التسوية',
+  adjustment_rejected: 'تم رفض التسوية',
+  'adjustment.rejected': 'تم رفض التسوية',
+  adjustment_completed: 'تم تنفيذ التسوية',
+  'adjustment.completed': 'تم تنفيذ التسوية',
+  adjustment_cancelled: 'تم إلغاء التسوية',
+  'adjustment.cancelled': 'تم إلغاء التسوية',
+  'adjustment.child_order_created': 'تم إنشاء طلب شحن مرتبط',
+};
+
+function humanizeActivity(
+  action: string,
+  fieldChanged: string | null,
+  newValue: string | null
+): string {
+  const base = ACTION_LABELS_AR[action];
+  if (!base) return 'نشاط على الطلب';
+  if (action === 'status_change' || fieldChanged === 'status') {
+    const newLabel = newValue ? (STATUS_LABELS[newValue] ?? newValue) : null;
+    return newLabel ? `${base} إلى ${newLabel}` : base;
+  }
+  if (action === 'order_edited' || action === 'order.updated') {
+    return fieldChanged ? `${base} — ${fieldChanged}` : base;
+  }
+  return base;
+}
+
 async function fetchRecentActivity(
   supabase: SupabaseClient,
   range: RangeSpec
@@ -216,6 +314,7 @@ async function fetchRecentActivity(
     action: string;
     label: string;
     order_num: string | null;
+    customer_name: string | null;
     changed_by: string | null;
     created_at: string;
   }>
@@ -233,33 +332,62 @@ async function fetchRecentActivity(
     console.warn('[operations-summary] recent activity failed:', error);
     return [];
   }
-  return (
-    (data as Array<{
-      id: string;
-      action: string;
-      field_changed: string | null;
-      new_value: string | null;
-      order_num: string | null;
-      changed_by: string | null;
-      created_at: string;
-    }> | null) ?? []
-  ).map((row) => ({
+  type Row = {
+    id: string;
+    action: string;
+    field_changed: string | null;
+    new_value: string | null;
+    order_num: string | null;
+    changed_by: string | null;
+    created_at: string;
+  };
+  const rows = (data as Row[] | null) ?? [];
+
+  // Best-effort customer lookup for the order numbers we just
+  // fetched, in one round-trip. Lets the dashboard render
+  // "تم إنشاء طلب جديد #2605123 من أحمد محمد" without an N+1.
+  const orderNums = Array.from(
+    new Set(rows.map((r) => r.order_num).filter((n): n is string => Boolean(n)))
+  );
+  let customerByOrderNum = new Map<string, string>();
+  if (orderNums.length > 0) {
+    try {
+      const { data: customers } = await supabase
+        .from('turath_masr_orders')
+        .select('order_num, customer')
+        .in('order_num', orderNums)
+        .limit(orderNums.length);
+      customerByOrderNum = new Map(
+        ((customers as Array<{ order_num: string; customer: string | null }> | null) ?? []).map(
+          (c) => [c.order_num, c.customer ?? '']
+        )
+      );
+    } catch (err) {
+      console.warn('[operations-summary] customer lookup skipped:', err);
+    }
+  }
+
+  return rows.map((row) => ({
     id: row.id,
     action: row.action,
-    label:
-      row.action === 'adjustment_created'
-        ? 'تم إنشاء تسوية'
-        : row.action === 'order_edited'
-          ? `تم تعديل الطلب — ${row.field_changed ?? ''}`.trim()
-          : row.action.startsWith('adjustment_')
-            ? row.action.replace('adjustment_', 'تسوية — ')
-            : row.field_changed
-              ? `${row.field_changed}: ${row.new_value ?? ''}`.trim()
-              : row.action,
+    label: humanizeActivity(row.action, row.field_changed, row.new_value),
     order_num: row.order_num,
+    customer_name: row.order_num ? (customerByOrderNum.get(row.order_num) ?? null) : null,
     changed_by: row.changed_by,
     created_at: row.created_at,
   }));
+}
+
+// ─── Needs action with preview rows ────────────────────────────────
+
+interface PreviewOrder {
+  order_num: string;
+  customer_name: string;
+  products_summary: string;
+  status: string;
+  status_label: string;
+  total: number;
+  created_at: string;
 }
 
 interface NeedsActionItem {
@@ -268,6 +396,37 @@ interface NeedsActionItem {
   count: number;
   description: string;
   filter: Record<string, string> | null;
+  previewOrders: PreviewOrder[];
+}
+
+type RawPreviewRow = {
+  order_num: string;
+  customer: string | null;
+  status: string;
+  total: number | null;
+  created_at: string;
+  lines: unknown;
+  products: string | null;
+};
+
+function toPreviewOrder(row: RawPreviewRow): PreviewOrder {
+  const lines = Array.isArray(row.lines)
+    ? (row.lines as Array<{
+        label?: string | null;
+        productType?: string | null;
+        color?: string | null;
+        quantity?: number | null;
+      }>)
+    : [];
+  return {
+    order_num: row.order_num,
+    customer_name: row.customer ?? '',
+    products_summary: buildOrderProductsSummary(lines, row.products ?? null, { maxItems: 2 }),
+    status: row.status,
+    status_label: STATUS_LABELS[row.status] ?? row.status,
+    total: Number(row.total) || 0,
+    created_at: row.created_at,
+  };
 }
 
 async function fetchNeedsAction(
@@ -277,46 +436,58 @@ async function fetchNeedsAction(
   const NOW = new Date();
   const fiveDaysAgo = new Date(NOW.getTime() - 5 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-  // All five queries fire in parallel.
+  const PREVIEW_COLS = 'order_num, customer, status, total, created_at, lines, products';
+
+  // Each request returns the count AND up to 5 newest matching rows
+  // in a single round-trip via `{ count: 'exact' }` + `.limit(5)`.
   const withoutDelegateReq = applyDateRange(
     supabase
       .from('turath_masr_orders')
-      .select('id', { count: 'exact', head: true })
+      .select(PREVIEW_COLS, { count: 'exact' })
       .or('delegate_name.is.null,delegate_name.eq.')
-      .in('status', ['new', 'preparing', 'warehouse']),
+      .in('status', ['new', 'preparing', 'warehouse'])
+      .order('created_at', { ascending: false })
+      .limit(5),
     range
   );
   const awaitingScheduleReq = applyDateRange(
     supabase
       .from('turath_masr_orders')
-      .select('id', { count: 'exact', head: true })
+      .select(PREVIEW_COLS, { count: 'exact' })
       .is('scheduled_delivery_date', null)
-      .eq('status', 'warehouse'),
+      .eq('status', 'warehouse')
+      .order('created_at', { ascending: false })
+      .limit(5),
     range
   );
+  // Pending adjustments are rows in `turath_masr_order_adjustments`;
+  // we surface their parent order numbers via the `order_num` column
+  // on the adjustment row itself.
   const pendingAdjReq = applyDateRange(
     supabase
       .from('turath_masr_order_adjustments')
-      .select('id', { count: 'exact', head: true })
-      .eq('state', 'pending'),
+      .select('id, order_num, kind, state, created_at', { count: 'exact' })
+      .eq('state', 'pending')
+      .order('created_at', { ascending: false })
+      .limit(5),
     range
   );
-  // Partial payments: the V2 envelope stores `"status":"partial"` in
-  // the notes JSON marker. ILIKE is a fast tsearch path that doesn't
-  // need a function index.
   const partialPayReq = applyDateRange(
     supabase
       .from('turath_masr_orders')
-      .select('id', { count: 'exact', head: true })
-      .ilike('notes', '%"status":"partial"%'),
+      .select(PREVIEW_COLS, { count: 'exact' })
+      .ilike('notes', '%"status":"partial"%')
+      .order('created_at', { ascending: false })
+      .limit(5),
     range
   );
-  // Shipping orders older than 5 days are very likely delayed.
   const delayedReq = supabase
     .from('turath_masr_orders')
-    .select('id', { count: 'exact', head: true })
+    .select(PREVIEW_COLS, { count: 'exact' })
     .eq('status', 'shipping')
-    .lt('created_at', `${fiveDaysAgo}T00:00:00Z`);
+    .lt('created_at', `${fiveDaysAgo}T00:00:00Z`)
+    .order('created_at', { ascending: false })
+    .limit(5);
 
   const [withoutDelegate, awaitingSchedule, pendingAdj, partialPay, delayed] = await Promise.all([
     withoutDelegateReq,
@@ -326,13 +497,40 @@ async function fetchNeedsAction(
     delayedReq,
   ]);
 
-  const out: NeedsActionItem[] = [
+  // Adjustments item needs a second lookup to hydrate the parent
+  // order details. Best-effort: if the parent rows can't be read,
+  // we just surface order_num + placeholder label.
+  const adjRows =
+    (pendingAdj.data as Array<{ order_num: string; kind: string; created_at: string }> | null) ??
+    [];
+  let adjustmentPreview: PreviewOrder[] = [];
+  if (adjRows.length > 0) {
+    const parentOrderNums = adjRows.map((r) => r.order_num);
+    try {
+      const { data: parents } = await supabase
+        .from('turath_masr_orders')
+        .select(PREVIEW_COLS)
+        .in('order_num', parentOrderNums);
+      const byNum = new Map<string, RawPreviewRow>(
+        ((parents as RawPreviewRow[] | null) ?? []).map((p) => [p.order_num, p])
+      );
+      adjustmentPreview = adjRows
+        .map((r) => byNum.get(r.order_num))
+        .filter((p): p is RawPreviewRow => Boolean(p))
+        .map(toPreviewOrder);
+    } catch (err) {
+      console.warn('[operations-summary] adjustment preview parents skipped:', err);
+    }
+  }
+
+  const items: NeedsActionItem[] = [
     {
       key: 'no_delegate',
       label: 'طلبات بدون مندوب',
       count: withoutDelegate.count ?? 0,
       description: 'لم يتم تعيين مندوب بعد',
       filter: { delegate: 'unassigned' },
+      previewOrders: ((withoutDelegate.data as RawPreviewRow[] | null) ?? []).map(toPreviewOrder),
     },
     {
       key: 'awaiting_schedule',
@@ -340,6 +538,7 @@ async function fetchNeedsAction(
       count: awaitingSchedule.count ?? 0,
       description: 'لم يتم تحديد موعد الشحن',
       filter: { status: 'warehouse' },
+      previewOrders: ((awaitingSchedule.data as RawPreviewRow[] | null) ?? []).map(toPreviewOrder),
     },
     {
       key: 'pending_adjustments',
@@ -347,6 +546,7 @@ async function fetchNeedsAction(
       count: pendingAdj.count ?? 0,
       description: 'تحتاج إلى معالجة',
       filter: { adjustment: 'pending' },
+      previewOrders: adjustmentPreview,
     },
     {
       key: 'partial_payments',
@@ -354,6 +554,7 @@ async function fetchNeedsAction(
       count: partialPay.count ?? 0,
       description: 'لم يتم سداد المبلغ بالكامل',
       filter: { payment: 'partial' },
+      previewOrders: ((partialPay.data as RawPreviewRow[] | null) ?? []).map(toPreviewOrder),
     },
     {
       key: 'delivery_delay',
@@ -361,9 +562,10 @@ async function fetchNeedsAction(
       count: delayed.count ?? 0,
       description: 'تجاوزت تاريخ التسليم المتوقع',
       filter: { status: 'shipping', delay: 'over_5d' },
+      previewOrders: ((delayed.data as RawPreviewRow[] | null) ?? []).map(toPreviewOrder),
     },
   ];
-  return out;
+  return items;
 }
 
 // ─── Route handler ─────────────────────────────────────────────────
@@ -371,21 +573,31 @@ async function fetchNeedsAction(
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const range = readRange(url);
+  const compareRange = computeCompareRange(range);
   const supabase = await buildSupabaseClient();
 
   try {
-    const [statusCounts, sums, adjCounts, recentActivity, needsAction] = await Promise.all([
-      countStatuses(supabase, range),
-      sumTotalCollection(supabase, range),
-      countAdjustments(supabase, range),
-      fetchRecentActivity(supabase, range),
-      fetchNeedsAction(supabase, range),
-    ]);
+    const [statusCounts, currentKpis, previousKpis, recentActivity, needsAction] =
+      await Promise.all([
+        countStatuses(supabase, range),
+        loadKpiBundle(supabase, range),
+        compareRange
+          ? loadKpiBundle(supabase, compareRange)
+          : Promise.resolve<KpiBundle>({
+              ordersCount: 0,
+              expectedTotal: 0,
+              deliveredTotal: 0,
+              waitingShipping: 0,
+              inShipping: 0,
+              delivered: 0,
+              adjustmentsCount: 0,
+              pendingAdjustments: 0,
+            }),
+        fetchRecentActivity(supabase, range),
+        fetchNeedsAction(supabase, range),
+      ]);
 
-    const ordersCount = Object.values(statusCounts).reduce((s, n) => s + n, 0);
-    const waitingShipping = statusCounts['warehouse'] ?? 0;
-    const inShipping = statusCounts['shipping'] ?? 0;
-    const delivered = statusCounts['delivered'] ?? 0;
+    const ordersCount = currentKpis.ordersCount;
 
     const statusDistribution = KNOWN_STATUSES.map((status) => {
       const count = statusCounts[status] ?? 0;
@@ -396,9 +608,6 @@ export async function GET(request: Request) {
         percentage: ordersCount > 0 ? +((count / ordersCount) * 100).toFixed(1) : 0,
       };
     });
-
-    // Surface unknown statuses (anything outside the canonical set) so
-    // the donut doesn't lose rows when a new status sneaks in.
     for (const [key, count] of Object.entries(statusCounts)) {
       if (!KNOWN_STATUSES.includes(key)) {
         statusDistribution.push({
@@ -410,18 +619,37 @@ export async function GET(request: Request) {
       }
     }
 
+    const collectionTotal =
+      currentKpis.deliveredTotal > 0 ? currentKpis.deliveredTotal : currentKpis.expectedTotal;
+    const previousCollectionTotal =
+      previousKpis.deliveredTotal > 0 ? previousKpis.deliveredTotal : previousKpis.expectedTotal;
+
     return NextResponse.json(
       {
         range,
+        compareRange,
         kpis: {
-          ordersCount,
-          expectedTotal: sums.expectedTotal,
-          deliveredTotal: sums.deliveredTotal,
-          waitingShipping,
-          inShipping,
-          delivered,
-          adjustmentsCount: adjCounts.total,
-          pendingAdjustments: adjCounts.pending,
+          ordersCount: currentKpis.ordersCount,
+          ordersDeltaPercent: deltaPercent(currentKpis.ordersCount, previousKpis.ordersCount),
+          waitingShipping: currentKpis.waitingShipping,
+          waitingDeltaPercent: deltaPercent(
+            currentKpis.waitingShipping,
+            previousKpis.waitingShipping
+          ),
+          inShipping: currentKpis.inShipping,
+          inShippingDeltaPercent: deltaPercent(currentKpis.inShipping, previousKpis.inShipping),
+          delivered: currentKpis.delivered,
+          deliveredDeltaPercent: deltaPercent(currentKpis.delivered, previousKpis.delivered),
+          expectedTotal: currentKpis.expectedTotal,
+          deliveredTotal: currentKpis.deliveredTotal,
+          collectionTotal,
+          collectionDeltaPercent: deltaPercent(collectionTotal, previousCollectionTotal),
+          adjustmentsCount: currentKpis.adjustmentsCount,
+          adjustmentsDeltaPercent: deltaPercent(
+            currentKpis.adjustmentsCount,
+            previousKpis.adjustmentsCount
+          ),
+          pendingAdjustments: currentKpis.pendingAdjustments,
         },
         statusDistribution,
         recentActivity,
@@ -430,10 +658,6 @@ export async function GET(request: Request) {
       {
         status: 200,
         headers: {
-          // Per-user (RLS-gated); no shared caching. Short cache so
-          // repeated dashboard renders within the same minute reuse
-          // the response, but a fresh smart-filter click always
-          // re-fetches via cache-busting URL params.
           'Cache-Control': 'private, max-age=30, stale-while-revalidate=60',
         },
       }
