@@ -4,13 +4,23 @@
 // Phase Inventory-UI-Redesign-1 — shared types + pure helpers used across
 // the redesigned `/inventory` surface. Pure JS only; no React, no DB.
 //
+// Phase Inventory-Categories-Safer-Archive-1 — adds:
+//   • LifecycleStatus ('active' | 'inactive' | 'archived') + helper
+//     `productLifecycle(item)` defaulting to 'active' for rows that
+//     pre-date the migration.
+//   • Extended `StatusFilter` chip set covering both lifecycle states
+//     (نشط / موقوف / مؤرشف) and stock states (منخفض / نفد). Default
+//     `'active'` so archived rows hide unless explicitly requested.
+//   • `Category` shape + DB-backed category helpers.
+//   • CSV export gains `الحالة` / `سبب الأرشفة` / `تاريخ الأرشفة`.
+//
 // `withdrawn` numbers on this page are still derived at runtime from
 // `turath_masr_orders.products` because the `withdrawn` column on
 // `turath_masr_inventory` is unused by the app (always 0). That derivation
-// stays in `page.tsx` for now — Phase 4 (movement ledger) replaces it. The
-// helpers here only need a `realWithdrawnByName` map and don't care where
-// it came from.
+// stays in `page.tsx` for now — Phase 4 (movement ledger) replaces it.
 // ─────────────────────────────────────────────────────────────────────────────
+
+export type LifecycleStatus = 'active' | 'inactive' | 'archived';
 
 export interface InventoryItem {
   id: string;
@@ -24,11 +34,30 @@ export interface InventoryItem {
   images?: string[];
   colors?: string[];
   created_at?: string | null;
+  /** Phase Inventory-Categories-Safer-Archive-1 — present after the
+   *  migration applies; undefined on pre-migration rows. Treat
+   *  undefined as `'active'` everywhere. */
+  status?: LifecycleStatus;
+  category_id?: string | null;
+  archived_at?: string | null;
+  archived_by?: string | null;
+  archive_reason?: string | null;
+  updated_at?: string | null;
 }
 
+export interface Category {
+  id: string;
+  name: string;
+  slug: string;
+  sort_order: number;
+  is_active: boolean;
+}
+
+/** Stock health of a single row (independent of lifecycle status). */
 export type ProductStatus = 'available' | 'low' | 'out';
 
-export type StatusFilter = 'all' | 'available' | 'low' | 'out';
+/** Six chips: lifecycle (active/inactive/archived) + stock (low/out) + all. */
+export type StatusFilter = 'all' | 'active' | 'inactive' | 'archived' | 'low' | 'out';
 
 export type SortOption = 'newest' | 'name' | 'price' | 'qty_asc' | 'low_first';
 
@@ -43,6 +72,10 @@ export interface InventoryStats {
   outOfStockCount: number;
 }
 
+export function productLifecycle(item: InventoryItem): LifecycleStatus {
+  return item.status ?? 'active';
+}
+
 export function productStatus(item: InventoryItem): ProductStatus {
   if (item.available <= 0) return 'out';
   if (item.available <= item.minStock) return 'low';
@@ -50,8 +83,26 @@ export function productStatus(item: InventoryItem): ProductStatus {
 }
 
 export function matchesStatus(item: InventoryItem, filter: StatusFilter): boolean {
-  if (filter === 'all') return true;
-  return productStatus(item) === filter;
+  const lifecycle = productLifecycle(item);
+  switch (filter) {
+    case 'all':
+      return true;
+    case 'active':
+      return lifecycle === 'active';
+    case 'inactive':
+      return lifecycle === 'inactive';
+    case 'archived':
+      return lifecycle === 'archived';
+    case 'low':
+      // Stock filters only make sense for non-archived rows.
+      if (lifecycle === 'archived') return false;
+      return item.available > 0 && item.available <= item.minStock;
+    case 'out':
+      if (lifecycle === 'archived') return false;
+      return item.available <= 0;
+    default:
+      return true;
+  }
 }
 
 export function computeStats(
@@ -138,11 +189,16 @@ export function sortInventory(items: InventoryItem[], sort: SortOption): Invento
 
 function statusRank(item: InventoryItem): number {
   const s = productStatus(item);
-  // Order: out (0) → low (1) → available (2)
   if (s === 'out') return 0;
   if (s === 'low') return 1;
   return 2;
 }
+
+export const LIFECYCLE_LABELS: Record<LifecycleStatus, string> = {
+  active: 'نشط',
+  inactive: 'موقوف',
+  archived: 'مؤرشف',
+};
 
 export function formatMoney(n: number): string {
   const safe = Number.isFinite(n) ? n : 0;
@@ -174,6 +230,9 @@ export function formatDate(iso: string | null | undefined): string {
 
 // Phase Inventory-UI-Redesign-1 — client-side CSV export of currently
 // filtered rows. UTF-8 BOM so Excel opens Arabic correctly.
+// Phase Inventory-Categories-Safer-Archive-1 — adds الحالة / سبب
+// الأرشفة / تاريخ الأرشفة columns. Pre-migration rows export with
+// "نشط" for status and empty archive columns.
 export function exportInventoryCsv(items: InventoryItem[]): void {
   if (typeof window === 'undefined') return;
 
@@ -187,6 +246,9 @@ export function exportInventoryCsv(items: InventoryItem[]): void {
     'الحد الأدنى',
     'الألوان',
     'تاريخ الإضافة',
+    'الحالة',
+    'سبب الأرشفة',
+    'تاريخ الأرشفة',
   ];
 
   const rows = items.map((item) => [
@@ -199,6 +261,9 @@ export function exportInventoryCsv(items: InventoryItem[]): void {
     String(item.minStock ?? 0),
     (item.colors ?? []).join(' / '),
     item.created_at ?? '',
+    LIFECYCLE_LABELS[productLifecycle(item)],
+    item.archive_reason ?? '',
+    item.archived_at ?? '',
   ]);
 
   const csv = [header, ...rows].map((line) => line.map(csvEscape).join(',')).join('\r\n');

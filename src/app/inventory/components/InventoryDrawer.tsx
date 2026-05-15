@@ -2,28 +2,38 @@
 // src/app/inventory/components/InventoryDrawer.tsx
 //
 // Phase Inventory-UI-Redesign-1 — right-side product details drawer with
-// four tabs. NO movement / additions tabs in this phase — those need real
-// data sources that don't exist yet, and the spec is explicit about not
-// showing placeholder content.
+// four tabs. NO movement / additions tabs in this phase.
+//
+// Phase Inventory-Categories-Safer-Archive-1 — adds:
+//   • Lifecycle chip (نشط / موقوف / مؤرشف) shown alongside the stock
+//     chip in the summary tab and the settings tab.
+//   • Settings tab now hosts the active ↔ inactive toggle, an archive
+//     button (replaces the previous hard delete), and a "استعادة من
+//     الأرشيف" admin-only restore for archived rows.
+//   • A small banner explains that archived products are hidden from
+//     the order picker but remain in the inventory history.
 //
 // Tabs:
-//   • الملخص — factsheet, image, inventory value
+//   • الملخص — factsheet, image, inventory value, lifecycle + stock chips
 //   • الألوان — chips, or honest empty state if no colors
 //   • الطلبات المرتبطة — last 10 orders whose `products` text contains
 //     the product name (lightweight ilike). Falls back to an honest
 //     empty state on error.
-//   • الإعدادات — read-only metadata + edit / delete launchers
+//   • الإعدادات — read-only metadata + edit / lifecycle actions
 // ─────────────────────────────────────────────────────────────────────────────
 'use client';
 
 import React, { useEffect, useState } from 'react';
 import {
   AlertTriangle,
+  Archive,
   CheckCircle,
   Edit2,
   Package,
+  Pause,
+  Play,
   RefreshCw,
-  Trash2,
+  RotateCcw,
   X,
   XCircle,
 } from 'lucide-react';
@@ -34,8 +44,10 @@ import {
   formatDate,
   formatMoney,
   formatNumber,
+  productLifecycle,
   productStatus,
   type InventoryItem,
+  type LifecycleStatus,
 } from '@/lib/inventory/inventoryStats';
 
 type Tab = 'summary' | 'colors' | 'orders' | 'settings';
@@ -43,14 +55,27 @@ type Tab = 'summary' | 'colors' | 'orders' | 'settings';
 interface Props {
   item: InventoryItem;
   withdrawn: number;
+  isAdmin: boolean;
   onClose: () => void;
   onEdit: (item: InventoryItem) => void;
-  onDelete: (item: InventoryItem) => void;
+  onArchive: (item: InventoryItem) => void;
+  onSetStatus: (item: InventoryItem, nextStatus: 'active' | 'inactive') => void;
+  onRestore: (item: InventoryItem) => void;
 }
 
-export default function InventoryDrawer({ item, withdrawn, onClose, onEdit, onDelete }: Props) {
+export default function InventoryDrawer({
+  item,
+  withdrawn,
+  isAdmin,
+  onClose,
+  onEdit,
+  onArchive,
+  onSetStatus,
+  onRestore,
+}: Props) {
   const [activeTab, setActiveTab] = useState<Tab>('summary');
   const status = productStatus(item);
+  const lifecycle = productLifecycle(item);
   const inventoryValue = (item.available || 0) * (item.price || 0);
 
   return (
@@ -91,6 +116,10 @@ export default function InventoryDrawer({ item, withdrawn, onClose, onEdit, onDe
               <p className="text-[11px] text-[hsl(var(--muted-foreground))] font-mono truncate">
                 {item.sku}
               </p>
+              <div className="flex items-center gap-1.5 mt-1">
+                <LifecycleChip lifecycle={lifecycle} />
+                <StatusChip status={status} />
+              </div>
             </div>
           </div>
           <button
@@ -137,6 +166,7 @@ export default function InventoryDrawer({ item, withdrawn, onClose, onEdit, onDe
               item={item}
               withdrawn={withdrawn}
               status={status}
+              lifecycle={lifecycle}
               inventoryValue={inventoryValue}
             />
           )}
@@ -146,8 +176,12 @@ export default function InventoryDrawer({ item, withdrawn, onClose, onEdit, onDe
             <SettingsTab
               item={item}
               status={status}
+              lifecycle={lifecycle}
+              isAdmin={isAdmin}
               onEdit={() => onEdit(item)}
-              onDelete={() => onDelete(item)}
+              onArchive={() => onArchive(item)}
+              onSetStatus={(next) => onSetStatus(item, next)}
+              onRestore={() => onRestore(item)}
             />
           )}
         </div>
@@ -162,11 +196,13 @@ function SummaryTab({
   item,
   withdrawn,
   status,
+  lifecycle,
   inventoryValue,
 }: {
   item: InventoryItem;
   withdrawn: number;
   status: ReturnType<typeof productStatus>;
+  lifecycle: LifecycleStatus;
   inventoryValue: number;
 }) {
   return (
@@ -186,8 +222,21 @@ function SummaryTab({
         <Row label="الفئة" value={item.category || '—'} />
         <Row label="SKU" value={item.sku} mono />
         <Row label="تاريخ الإضافة" value={formatDate(item.created_at)} />
-        <Row label="الحالة" value={<StatusChip status={status} />} />
+        <Row label="آخر تحديث" value={formatDate(item.updated_at)} />
+        <Row label="دورة الحياة" value={<LifecycleChip lifecycle={lifecycle} />} />
+        <Row label="حالة المخزون" value={<StatusChip status={status} />} />
       </div>
+
+      {lifecycle === 'archived' && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-800 flex items-start gap-2">
+          <Archive size={13} className="mt-0.5 shrink-0" />
+          <div className="flex-1">
+            <p className="font-semibold mb-0.5">هذا المنتج مؤرشف</p>
+            {item.archived_at && <p>تاريخ الأرشفة: {formatDate(item.archived_at)}</p>}
+            {item.archive_reason && <p>السبب: {item.archive_reason}</p>}
+          </div>
+        </div>
+      )}
 
       <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/30 p-3 text-[11px] text-[hsl(var(--muted-foreground))] flex items-start gap-2">
         <Package size={13} className="mt-0.5 shrink-0" />
@@ -264,6 +313,28 @@ function StatusChip({ status }: { status: ReturnType<typeof productStatus> }) {
   );
 }
 
+function LifecycleChip({ lifecycle }: { lifecycle: LifecycleStatus }) {
+  if (lifecycle === 'archived') {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-gray-100 text-gray-700 border border-gray-300">
+        <Archive size={10} /> مؤرشف
+      </span>
+    );
+  }
+  if (lifecycle === 'inactive') {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-orange-50 text-orange-700 border border-orange-200">
+        <Pause size={10} /> موقوف
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+      <CheckCircle size={10} /> نشط
+    </span>
+  );
+}
+
 // ─── Colors ─────────────────────────────────────────────────────────────────
 
 function ColorsTab({ item }: { item: InventoryItem }) {
@@ -318,10 +389,6 @@ function OrdersTab({ item }: { item: InventoryItem }) {
     (async () => {
       try {
         const supabase = createClient();
-        // Phase Inventory-UI-Redesign-1 — lightweight match by name only.
-        // Order rows store products as a free-text summary string, so an
-        // ilike is the safest cheap filter without Phase 4's order_lines
-        // reference table. Limit 10 by recency.
         const safeName = item.name.replace(/[%_]/g, '').trim();
         if (!safeName) {
           if (!cancelled) {
@@ -417,13 +484,21 @@ function OrdersTab({ item }: { item: InventoryItem }) {
 function SettingsTab({
   item,
   status,
+  lifecycle,
+  isAdmin,
   onEdit,
-  onDelete,
+  onArchive,
+  onSetStatus,
+  onRestore,
 }: {
   item: InventoryItem;
   status: ReturnType<typeof productStatus>;
+  lifecycle: LifecycleStatus;
+  isAdmin: boolean;
   onEdit: () => void;
-  onDelete: () => void;
+  onArchive: () => void;
+  onSetStatus: (next: 'active' | 'inactive') => void;
+  onRestore: () => void;
 }) {
   return (
     <div className="space-y-4">
@@ -437,7 +512,9 @@ function SettingsTab({
         <Row label="عدد الألوان" value={String((item.colors ?? []).length)} />
         <Row label="عدد الصور" value={String((item.images ?? []).length)} />
         <Row label="تاريخ الإضافة" value={formatDate(item.created_at)} />
-        <Row label="الحالة" value={<StatusChip status={status} />} />
+        <Row label="آخر تحديث" value={formatDate(item.updated_at)} />
+        <Row label="دورة الحياة" value={<LifecycleChip lifecycle={lifecycle} />} />
+        <Row label="حالة المخزون" value={<StatusChip status={status} />} />
       </div>
 
       <div className="flex flex-col gap-2">
@@ -449,16 +526,53 @@ function SettingsTab({
           <Edit2 size={15} />
           تعديل المنتج
         </button>
-        <button
-          type="button"
-          onClick={onDelete}
-          className="w-full flex items-center justify-center gap-2 border border-red-200 text-red-700 hover:bg-red-50 text-sm font-semibold rounded-xl py-2.5"
-        >
-          <Trash2 size={15} />
-          حذف المنتج
-        </button>
+
+        {lifecycle === 'active' && (
+          <button
+            type="button"
+            onClick={() => onSetStatus('inactive')}
+            className="w-full flex items-center justify-center gap-2 border border-orange-200 text-orange-700 hover:bg-orange-50 text-sm font-semibold rounded-xl py-2.5"
+          >
+            <Pause size={15} />
+            إيقاف المنتج
+          </button>
+        )}
+
+        {lifecycle === 'inactive' && (
+          <button
+            type="button"
+            onClick={() => onSetStatus('active')}
+            className="w-full flex items-center justify-center gap-2 border border-emerald-200 text-emerald-700 hover:bg-emerald-50 text-sm font-semibold rounded-xl py-2.5"
+          >
+            <Play size={15} />
+            تفعيل المنتج
+          </button>
+        )}
+
+        {lifecycle !== 'archived' && (
+          <button
+            type="button"
+            onClick={onArchive}
+            className="w-full flex items-center justify-center gap-2 border border-amber-300 text-amber-800 hover:bg-amber-50 text-sm font-semibold rounded-xl py-2.5"
+          >
+            <Archive size={15} />
+            أرشفة المنتج
+          </button>
+        )}
+
+        {lifecycle === 'archived' && isAdmin && (
+          <button
+            type="button"
+            onClick={onRestore}
+            className="w-full flex items-center justify-center gap-2 border border-emerald-300 text-emerald-700 hover:bg-emerald-50 text-sm font-semibold rounded-xl py-2.5"
+          >
+            <RotateCcw size={15} />
+            استعادة من الأرشيف
+          </button>
+        )}
+
         <p className="text-[11px] text-[hsl(var(--muted-foreground))] text-center">
-          الحذف نهائي في هذه المرحلة. سيتم استبداله بأرشفة آمنة في مرحلة لاحقة.
+          المنتج المؤرشف يظل في سجل المخزون لكنه يختفي من خيارات إنشاء الطلبات الجديدة.
         </p>
       </div>
     </div>

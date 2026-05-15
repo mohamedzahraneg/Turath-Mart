@@ -34,9 +34,15 @@ interface Props {
   onView: (v: ViewMode) => void;
 }
 
+// Phase Inventory-Categories-Safer-Archive-1 — six chips combining
+// lifecycle (نشط / موقوف / مؤرشف) and stock (منخفض / نفد) with a
+// catch-all "الكل" first. Default selection lives in the parent and
+// is "active" so archived rows hide by default.
 const STATUS_LABELS: { key: StatusFilter; label: string }[] = [
   { key: 'all', label: 'الكل' },
-  { key: 'available', label: 'متاح' },
+  { key: 'active', label: 'نشط' },
+  { key: 'inactive', label: 'موقوف' },
+  { key: 'archived', label: 'مؤرشف' },
   { key: 'low', label: 'منخفض' },
   { key: 'out', label: 'نفد' },
 ];
