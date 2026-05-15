@@ -18,6 +18,8 @@ import {
   History,
   RefreshCw,
   Zap,
+  Download,
+  Wallet,
 } from 'lucide-react';
 import { toast, Toaster } from 'sonner';
 import StatusUpdateModal from './StatusUpdateModal';
@@ -405,6 +407,14 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
   const [regionFilter, setRegionFilter] = useState('الكل');
   const [statusFilter, setStatusFilter] = useState('الكل');
   const [productFilter, setProductFilter] = useState('الكل');
+  // Phase Orders-Page-Redesign-1 Visual Match Fix — new filter
+  // dropdowns visible in the table toolbar (delegate + payment
+  // method). The delegate filter narrows the rows to a single
+  // courier (or "غير معين"); the payment filter narrows by the
+  // checkout-V2 envelope's `payment.method` value persisted inside
+  // `notes`.
+  const [delegateFilter, setDelegateFilter] = useState('الكل');
+  const [paymentMethodFilter, setPaymentMethodFilter] = useState('الكل');
   // Phase 25B — filter by adjustment type (all / parent / return-child /
   // exchange-child). Operates purely on the order_num pattern so we
   // don't need to JOIN the adjustments table.
@@ -492,9 +502,7 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
     if (!f) return;
     if (f.status) setStatusFilter(f.status);
     if (f.delegate === 'unassigned') {
-      // No native "no delegate" filter today — use the search box as
-      // a best-effort hint until a dedicated control lands.
-      setStatusFilter('الكل');
+      setDelegateFilter('__unassigned__');
     }
     if (f.adjustment === 'pending') {
       // Show only child orders (returns/exchanges) which is the
@@ -589,6 +597,23 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
       } else if (adjustmentFilter === 'exchanges') {
         query = query.ilike('order_num', '%-E%');
       }
+      // Phase Orders-Page-Redesign-1 Visual Match Fix — delegate
+      // filter. `__unassigned__` is the sentinel for "no delegate"
+      // (Supabase doesn't have a single op for `IS NULL OR = ''`
+      // so we OR the two predicates).
+      if (delegateFilter === '__unassigned__') {
+        query = query.or('delegate_name.is.null,delegate_name.eq.');
+      } else if (delegateFilter !== 'الكل') {
+        query = query.eq('delegate_name', delegateFilter);
+      }
+      // Phase Orders-Page-Redesign-1 Visual Match Fix — payment
+      // method filter via the checkout-V2 envelope's `"method":"…"`
+      // marker inside `notes`. Fragile but cheap — no migration
+      // needed.
+      if (paymentMethodFilter !== 'الكل') {
+        const safe = paymentMethodFilter.replace(/"/g, '');
+        query = query.ilike('notes', `%"method":"${safe}"%`);
+      }
       const dateFromIso = dateInputToIsoStart(dateFrom);
       const dateToIso = dateInputToIsoExclusiveEnd(dateTo);
       if (dateFromIso) {
@@ -623,9 +648,11 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
     dateFrom,
     dateTo,
     debouncedSearch,
+    delegateFilter,
     loadAdjustmentSummaries,
     page,
     perPage,
+    paymentMethodFilter,
     productFilter,
     regionFilter,
     sortDir,
@@ -976,163 +1003,148 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
           </div>
         )}
 
-        {/* Filters */}
-        <div className="p-4 border-b border-[hsl(var(--border))] space-y-3">
-          <div className="flex flex-col sm:flex-row gap-3">
-            <div className="relative flex-1">
-              <Search
-                size={16}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]"
-              />
-              <input
-                type="text"
-                className="input-field pr-9"
-                placeholder="بحث بالاسم، رقم الأوردر، أو الموبايل..."
-                value={search}
-                onChange={(e) => {
-                  setSearch(e.target.value);
-                  setPage(1);
-                }}
-              />
-            </div>
-            <div className="flex gap-2 flex-wrap">
-              <select
-                className="input-field w-auto text-sm"
-                value={regionFilter}
-                onChange={(e) => {
-                  setRegionFilter(e.target.value);
-                  setPage(1);
-                }}
+        {/* Phase Orders-Page-Redesign-1 Visual Match Fix — section
+            title + toolbar matching the reference. Title on the
+            right (RTL), filters in the middle, actions on the left.
+            Date inputs are now part of OrdersHeader's smart filter
+            row, not duplicated here. */}
+        <div className="px-4 pt-4 pb-2 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <button
+                className="flex items-center gap-1.5 px-3 py-2 bg-[hsl(217,80%,30%)] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
+                onClick={() => setShowExportMenu(!showExportMenu)}
               >
-                {REGIONS.map((r) => (
-                  <option key={`region-filter-${r}`} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </select>
-              <select
-                className="input-field w-auto text-sm"
-                value={statusFilter}
-                onChange={(e) => {
-                  setStatusFilter(e.target.value);
-                  setPage(1);
-                }}
-              >
-                {statusOptions.map((s) => (
-                  <option key={`status-filter-${s}`} value={s}>
-                    {s === 'الكل' ? 'كل الحالات' : STATUS_MAP[s]?.label || s}
-                  </option>
-                ))}
-              </select>
-              <select
-                className="input-field w-auto text-sm"
-                value={productFilter}
-                onChange={(e) => {
-                  setProductFilter(e.target.value);
-                  setPage(1);
-                }}
-              >
-                {PRODUCT_FILTER_OPTIONS.map((p) => (
-                  <option key={`product-filter-${p.value}`} value={p.value}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-              {/* Phase 25B — adjustment filter */}
-              <select
-                className="input-field w-auto text-sm"
-                value={adjustmentFilter}
-                onChange={(e) => {
-                  setAdjustmentFilter(
-                    e.target.value as 'all' | 'parents' | 'returns' | 'exchanges'
-                  );
-                  setPage(1);
-                }}
-              >
-                <option value="all">كل الطلبات</option>
-                <option value="parents">الطلبات الأصلية فقط</option>
-                <option value="returns">طلبات المرتجع</option>
-                <option value="exchanges">طلبات الاستبدال</option>
-              </select>
-              <div className="relative">
-                <button
-                  className="flex items-center gap-1.5 px-3 py-2 bg-[hsl(var(--primary))] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
-                  onClick={() => setShowExportMenu(!showExportMenu)}
-                >
-                  <FileText size={14} />
-                  تصدير
-                </button>
-                {showExportMenu && (
-                  <div className="absolute left-0 top-full mt-1 bg-white border border-[hsl(var(--border))] rounded-xl shadow-lg z-20 min-w-[160px] overflow-hidden">
-                    <button
-                      className="w-full flex items-center gap-2 px-4 py-2.5 text-sm hover:bg-[hsl(var(--muted))] transition-colors text-right"
-                      onClick={() => {
-                        exportToCSV(filtered);
-                        setShowExportMenu(false);
-                      }}
-                    >
-                      تصدير Excel (CSV)
-                    </button>
-                    <button
-                      className="w-full flex items-center gap-2 px-4 py-2.5 text-sm hover:bg-[hsl(var(--muted))] transition-colors text-right border-t border-[hsl(var(--border))]"
-                      onClick={() => {
-                        exportToPDF(filtered);
-                        setShowExportMenu(false);
-                      }}
-                    >
-                      تصدير PDF
-                    </button>
-                  </div>
-                )}
-              </div>
+                <Download size={14} />
+                تصدير
+              </button>
+              {showExportMenu && (
+                <div className="absolute left-0 top-full mt-1 bg-white border border-[hsl(var(--border))] rounded-xl shadow-lg z-20 min-w-[160px] overflow-hidden">
+                  <button
+                    className="w-full flex items-center gap-2 px-4 py-2.5 text-sm hover:bg-[hsl(var(--muted))] transition-colors text-right"
+                    onClick={() => {
+                      exportToCSV(filtered);
+                      setShowExportMenu(false);
+                    }}
+                  >
+                    تصدير Excel (CSV)
+                  </button>
+                  <button
+                    className="w-full flex items-center gap-2 px-4 py-2.5 text-sm hover:bg-[hsl(var(--muted))] transition-colors text-right border-t border-[hsl(var(--border))]"
+                    onClick={() => {
+                      exportToPDF(filtered);
+                      setShowExportMenu(false);
+                    }}
+                  >
+                    تصدير PDF
+                  </button>
+                </div>
+              )}
             </div>
           </div>
-          <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-xs text-[hsl(var(--muted-foreground))] font-semibold">
-              فلتر التاريخ:
-            </span>
-            <div className="flex items-center gap-2">
-              <label className="text-xs text-[hsl(var(--muted-foreground))]">من</label>
-              <input
-                type="date"
-                className="input-field w-auto text-sm py-1.5"
-                value={dateFrom}
-                onChange={(e) => {
-                  setDateFrom(e.target.value);
-                  setPage(1);
-                }}
-                dir="ltr"
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <label className="text-xs text-[hsl(var(--muted-foreground))]">إلى</label>
-              <input
-                type="date"
-                className="input-field w-auto text-sm py-1.5"
-                value={dateTo}
-                onChange={(e) => {
-                  setDateTo(e.target.value);
-                  setPage(1);
-                }}
-                dir="ltr"
-              />
-            </div>
-            {(dateFrom || dateTo) && (
-              <button
-                className="text-xs text-red-500 hover:underline"
-                onClick={() => {
-                  setDateFrom('');
-                  setDateTo('');
-                  setPage(1);
-                }}
-              >
-                مسح
-              </button>
-            )}
-            <span className="text-xs text-[hsl(var(--muted-foreground))] mr-auto">
+          <h3 className="text-base font-bold text-[hsl(var(--foreground))]">جميع الطلبات</h3>
+        </div>
+
+        <div className="px-4 pb-3 flex flex-wrap items-center gap-2">
+          <div className="relative flex-1 min-w-[200px] max-w-[420px]">
+            <Search
+              size={14}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]"
+            />
+            <input
+              type="text"
+              className="input-field pr-9 text-sm"
+              placeholder="بحث برقم الطلب أو اسم العميل أو الهاتف..."
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(1);
+              }}
+            />
+          </div>
+          <select
+            className="input-field w-auto text-xs"
+            value={delegateFilter}
+            onChange={(e) => {
+              setDelegateFilter(e.target.value);
+              setPage(1);
+            }}
+            aria-label="المندوب"
+          >
+            <option value="الكل">المندوب</option>
+            <option value="__unassigned__">غير معين</option>
+            {delegates.map((d) => (
+              <option key={`delegate-filter-${d}`} value={d}>
+                {d}
+              </option>
+            ))}
+          </select>
+          <select
+            className="input-field w-auto text-xs"
+            value={regionFilter}
+            onChange={(e) => {
+              setRegionFilter(e.target.value);
+              setPage(1);
+            }}
+            aria-label="منطقة الشحن"
+          >
+            {REGIONS.map((r) => (
+              <option key={`region-filter-${r}`} value={r}>
+                {r === 'الكل' ? 'منطقة الشحن' : r}
+              </option>
+            ))}
+          </select>
+          <select
+            className="input-field w-auto text-xs"
+            value={paymentMethodFilter}
+            onChange={(e) => {
+              setPaymentMethodFilter(e.target.value);
+              setPage(1);
+            }}
+            aria-label="طريقة الدفع"
+          >
+            <option value="الكل">طريقة الدفع</option>
+            <option value="كاش">كاش</option>
+            <option value="فودافون كاش">فودافون كاش</option>
+            <option value="إنستاباي">إنستاباي</option>
+            <option value="تحويل بنكي">تحويل بنكي</option>
+            <option value="بطاقة">بطاقة</option>
+            <option value="أخرى">أخرى</option>
+          </select>
+          <select
+            className="input-field w-auto text-xs"
+            value={statusFilter}
+            onChange={(e) => {
+              setStatusFilter(e.target.value);
+              setPage(1);
+            }}
+            aria-label="حالة الطلب"
+          >
+            {statusOptions.map((s) => (
+              <option key={`status-filter-${s}`} value={s}>
+                {s === 'الكل' ? 'حالة الطلب' : STATUS_MAP[s]?.label || s}
+              </option>
+            ))}
+          </select>
+          <select
+            className="input-field w-auto text-xs"
+            value={adjustmentFilter}
+            onChange={(e) => {
+              setAdjustmentFilter(e.target.value as 'all' | 'parents' | 'returns' | 'exchanges');
+              setPage(1);
+            }}
+            aria-label="نوع الطلب"
+          >
+            <option value="all">كل الطلبات</option>
+            <option value="parents">الطلبات الأصلية فقط</option>
+            <option value="returns">طلبات المرتجع</option>
+            <option value="exchanges">طلبات الاستبدال</option>
+          </select>
+          {(productFilter !== 'الكل' || dateFrom || dateTo) && (
+            <span className="text-[10px] text-[hsl(var(--muted-foreground))] mr-auto">
               {loadingOrders ? 'جارٍ التحميل...' : `${totalOrders.toLocaleString('en-US')} نتيجة`}
             </span>
-          </div>
+          )}
         </div>
 
         {/* Bulk action bar - للمخولين فقط */}
@@ -1172,6 +1184,10 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
         <div className="overflow-x-auto scrollbar-thin">
           <table className="w-full min-w-[1000px]">
             <thead>
+              {/* Phase Orders-Page-Redesign-1 Visual Match Fix —
+                  column order matches the reference image (RTL):
+                  رقم الطلب / العميل / المنتجات / الحالة / الدفع /
+                  منطقة الشحن / المندوب / تاريخ الطلب / الإجراءات. */}
               <tr className="border-b border-[hsl(var(--border))]">
                 <th className="table-header w-10">
                   <input
@@ -1187,10 +1203,9 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
                   onClick={() => handleSort('orderNum')}
                 >
                   <div className="flex items-center gap-1">
-                    رقم الأوردر <SortIcon field="orderNum" />
+                    رقم الطلب <SortIcon field="orderNum" />
                   </div>
                 </th>
-                <th className="table-header">المسجل</th>
                 <th
                   className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors"
                   onClick={() => handleSort('customer')}
@@ -1199,24 +1214,7 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
                     العميل <SortIcon field="customer" />
                   </div>
                 </th>
-                <th className="table-header">الموبايل</th>
-                <th
-                  className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors"
-                  onClick={() => handleSort('region')}
-                >
-                  <div className="flex items-center gap-1">
-                    المنطقة <SortIcon field="region" />
-                  </div>
-                </th>
                 <th className="table-header">المنتجات</th>
-                <th
-                  className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors"
-                  onClick={() => handleSort('total')}
-                >
-                  <div className="flex items-center gap-1">
-                    الإجمالي <SortIcon field="total" />
-                  </div>
-                </th>
                 <th
                   className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors"
                   onClick={() => handleSort('status')}
@@ -1227,19 +1225,36 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
                 </th>
                 <th
                   className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors"
+                  onClick={() => handleSort('total')}
+                >
+                  <div className="flex items-center gap-1">
+                    الدفع <SortIcon field="total" />
+                  </div>
+                </th>
+                <th
+                  className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors"
+                  onClick={() => handleSort('region')}
+                >
+                  <div className="flex items-center gap-1">
+                    منطقة الشحن <SortIcon field="region" />
+                  </div>
+                </th>
+                <th className="table-header">المندوب</th>
+                <th
+                  className="table-header cursor-pointer hover:bg-[hsl(var(--border))] transition-colors"
                   onClick={() => handleSort('date')}
                 >
                   <div className="flex items-center gap-1">
-                    التاريخ <SortIcon field="date" />
+                    تاريخ الطلب <SortIcon field="date" />
                   </div>
                 </th>
-                <th className="table-header">إجراءات</th>
+                <th className="table-header">الإجراءات</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[hsl(var(--border))]">
               {loadingOrders && paginated.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="text-center py-16">
+                  <td colSpan={10} className="text-center py-16">
                     <div className="flex flex-col items-center gap-3">
                       <div className="w-14 h-14 bg-[hsl(var(--muted))] rounded-2xl flex items-center justify-center">
                         <RefreshCw
@@ -1255,7 +1270,7 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
                 </tr>
               ) : paginated.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="text-center py-16">
+                  <td colSpan={10} className="text-center py-16">
                     <div className="flex flex-col items-center gap-3">
                       <div className="w-14 h-14 bg-[hsl(var(--muted))] rounded-2xl flex items-center justify-center">
                         <CheckSquare size={28} className="text-[hsl(var(--muted-foreground))]" />
@@ -1287,6 +1302,7 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
                           aria-label={`تحديد أوردر ${order.orderNum}`}
                         />
                       </td>
+                      {/* رقم الطلب */}
                       <td className="table-cell">
                         <span className="font-mono text-xs font-bold text-[hsl(var(--primary))]">
                           {order.orderNum}
@@ -1318,15 +1334,18 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
                           );
                         })()}
                       </td>
-                      <td className="table-cell">
-                        <p className="text-xs font-medium">{order.createdBy}</p>
-                      </td>
+                      {/* العميل — name + phone underneath (the old
+                          standalone "الموبايل" column is folded in
+                          to match the reference layout). */}
                       <td className="table-cell">
                         <div>
                           <p className="font-semibold text-sm">{order.customer}</p>
+                          <p className="text-[11px] text-[hsl(var(--muted-foreground))] font-mono">
+                            {order.phone}
+                          </p>
                           {order.notes && (
                             <p
-                              className="text-[10px] text-amber-600 truncate max-w-[140px]"
+                              className="text-[10px] text-amber-600 truncate max-w-[160px]"
                               title={order.notes}
                             >
                               ملاحظة: {order.notes}
@@ -1334,33 +1353,8 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
                           )}
                         </div>
                       </td>
-                      <td className="table-cell">
-                        <div>
-                          <p className="text-sm font-mono">{order.phone}</p>
-                          {order.phone2 && (
-                            <p className="text-xs text-[hsl(var(--muted-foreground))] font-mono">
-                              {order.phone2}
-                            </p>
-                          )}
-                        </div>
-                      </td>
-                      <td className="table-cell">
-                        <div>
-                          <span className="text-sm bg-[hsl(var(--muted))] px-2 py-0.5 rounded-lg text-[hsl(var(--foreground))] font-medium">
-                            {order.region}
-                          </span>
-                          {order.district && (
-                            <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
-                              {order.district}
-                              {order.neighborhood ? ` — ${order.neighborhood}` : ''}
-                            </p>
-                          )}
-                        </div>
-                      </td>
+                      {/* المنتجات */}
                       <td className="table-cell max-w-[220px]">
-                        {/* Phase Orders-Page-Redesign-1 — compact
-                            products summary built from the JSONB
-                            `lines` (falls back to `products` text). */}
                         {(() => {
                           const summary = buildOrderProductsSummary(order.lines, order.products, {
                             maxItems: 3,
@@ -1370,23 +1364,14 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
                               <p className="text-sm truncate" title={summary}>
                                 {summary}
                               </p>
-                              <p className="text-xs text-[hsl(var(--muted-foreground))]">
+                              <p className="text-[11px] text-[hsl(var(--muted-foreground))]">
                                 {order.quantity} قطعة
                               </p>
                             </>
                           );
                         })()}
                       </td>
-                      <td className="table-cell">
-                        <div>
-                          <p className="font-bold font-mono text-sm">
-                            {order.total.toLocaleString('en-US')} ج.م
-                          </p>
-                          <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
-                            {order.expressShipping ? 'شحن سريع' : 'شحن'}: {order.shippingFee} ج.م
-                          </p>
-                        </div>
-                      </td>
+                      {/* الحالة */}
                       <td className="table-cell">
                         <button
                           className={`badge ${st.cls} cursor-pointer hover:opacity-80 transition-opacity`}
@@ -1397,11 +1382,6 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
                         >
                           {st.label}
                         </button>
-                        {/* Phase 25A — adjustment chip. Shown only
-                            when this order has at least one open
-                            (pending / approved / completed) return or
-                            exchange. Click does nothing here; the
-                            full details live inside OrderDetailModal. */}
                         {adjustmentMap[order.id]?.highlight && (
                           <div className="mt-1 flex items-center gap-1 flex-wrap">
                             <span
@@ -1427,6 +1407,51 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
                           </div>
                         )}
                       </td>
+                      {/* الدفع — total amount + small wallet icon.
+                          Payment-method parsing from notes is left to
+                          OrderDetailModal so the cell stays light. */}
+                      <td className="table-cell">
+                        <div className="flex items-center gap-1.5">
+                          <Wallet
+                            size={13}
+                            className="text-[hsl(var(--muted-foreground))] flex-shrink-0"
+                          />
+                          <div>
+                            <p className="font-bold font-mono text-sm">
+                              {order.total.toLocaleString('en-US')} ج.م
+                            </p>
+                            <p className="text-[10px] text-[hsl(var(--muted-foreground))]">
+                              {order.expressShipping ? 'شحن سريع' : 'شحن'}: {order.shippingFee} ج.م
+                            </p>
+                          </div>
+                        </div>
+                      </td>
+                      {/* منطقة الشحن */}
+                      <td className="table-cell">
+                        <div>
+                          <span className="text-sm bg-[hsl(var(--muted))] px-2 py-0.5 rounded-lg text-[hsl(var(--foreground))] font-medium">
+                            {order.region}
+                          </span>
+                          {order.district && (
+                            <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
+                              {order.district}
+                              {order.neighborhood ? ` — ${order.neighborhood}` : ''}
+                            </p>
+                          )}
+                        </div>
+                      </td>
+                      {/* المندوب — highlight "غير معين" in red as
+                          the reference shows when the field is empty. */}
+                      <td className="table-cell">
+                        {order.delegateName ? (
+                          <p className="text-xs font-bold text-[hsl(var(--foreground))]">
+                            {order.delegateName}
+                          </p>
+                        ) : (
+                          <p className="text-xs font-bold text-red-600">غير معين</p>
+                        )}
+                      </td>
+                      {/* تاريخ الطلب */}
                       <td className="table-cell">
                         <div>
                           <p className="text-xs font-medium">{order.date}</p>
