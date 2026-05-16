@@ -161,6 +161,20 @@ function buildInitialLines(order: EditableOrder): DraftOrderLine[] {
         : null;
     const inferredInventoryId = explicitInventoryId ?? productTypeAsUuid;
     const explicitSku = typeof l.sku === 'string' && l.sku.trim() ? l.sku.trim() : null;
+    // Phase Inventory-Variants-1B2 — carry variant identity forward
+    // when present on the persisted row. Old orders without
+    // `variant_id` simply leave the draft fields null and continue
+    // operating at the base product level.
+    const explicitVariantId =
+      typeof l.variant_id === 'string' && l.variant_id.trim() ? l.variant_id.trim() : null;
+    const explicitVariantLabel =
+      explicitVariantId && typeof l.variant_label === 'string' && l.variant_label.trim()
+        ? l.variant_label.trim()
+        : null;
+    const explicitVariantSku =
+      explicitVariantId && typeof l.variant_sku === 'string' && l.variant_sku.trim()
+        ? l.variant_sku.trim()
+        : null;
     return {
       id: `existing-${idCounter}-${productType}`,
       productType,
@@ -179,6 +193,9 @@ function buildInitialLines(order: EditableOrder): DraftOrderLine[] {
       image_path: typeof l.image_path === 'string' ? l.image_path : undefined,
       inventory_id: inferredInventoryId,
       sku: inferredInventoryId ? explicitSku : null,
+      variant_id: explicitVariantId,
+      variant_label: explicitVariantLabel,
+      variant_sku: explicitVariantSku,
     };
   });
 }
@@ -542,6 +559,42 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
             : null;
         payload.inventory_id = resolvedInventoryId;
         payload.sku = resolvedInventoryId ? (draftSku ?? liveSku) : null;
+        // Phase Inventory-Variants-1B2 — persist variant identity.
+        // Precedence:
+        //   1. The draft's own variant_id (set by OrderLinesEditor's
+        //      color-change / swap handlers + initial hydration).
+        //   2. For same-product edits, the live row's variant_id —
+        //      preserves variant identity on color-only edits where
+        //      OrderLinesEditor's onChange path didn't re-resolve.
+        //   3. Otherwise null (line falls back to base inventory).
+        const draftVariantId =
+          typeof draft.variant_id === 'string' && draft.variant_id.trim()
+            ? draft.variant_id.trim()
+            : null;
+        const liveVariantId =
+          sameProduct && liveSource && typeof liveSource.variant_id === 'string'
+            ? (liveSource.variant_id as string).trim() || null
+            : null;
+        const resolvedVariantId = draftVariantId ?? liveVariantId;
+        const draftVariantLabel =
+          typeof draft.variant_label === 'string' && draft.variant_label.trim()
+            ? draft.variant_label.trim()
+            : null;
+        const liveVariantLabel =
+          sameProduct && liveSource && typeof liveSource.variant_label === 'string'
+            ? (liveSource.variant_label as string).trim() || null
+            : null;
+        const draftVariantSku =
+          typeof draft.variant_sku === 'string' && draft.variant_sku.trim()
+            ? draft.variant_sku.trim()
+            : null;
+        const liveVariantSku =
+          sameProduct && liveSource && typeof liveSource.variant_sku === 'string'
+            ? (liveSource.variant_sku as string).trim() || null
+            : null;
+        payload.variant_id = resolvedVariantId;
+        payload.variant_label = resolvedVariantId ? (draftVariantLabel ?? liveVariantLabel) : null;
+        payload.variant_sku = resolvedVariantId ? (draftVariantSku ?? liveVariantSku) : null;
         return payload;
       });
       const newSubtotal = newLines.reduce(

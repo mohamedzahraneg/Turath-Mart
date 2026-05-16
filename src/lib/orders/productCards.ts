@@ -83,6 +83,22 @@ export interface InventoryItem {
   colors: string[];
 }
 
+/** Phase Inventory-Variants-1B2 — display-shape for one variant row.
+ *  Mirrors a row in `turath_masr_inventory_variants`. Attached to
+ *  the parent ProductCard so the order modals can resolve a
+ *  variant_id from a picked color without re-querying. */
+export interface ProductVariantCard {
+  id: string;
+  inventory_id: string;
+  variant_type: string;
+  variant_value: string;
+  variant_label: string;
+  sku?: string | null;
+  available: number;
+  reserved: number;
+  status: 'active' | 'inactive' | 'archived' | string;
+}
+
 export interface ProductCard {
   value: string;
   label: string;
@@ -102,6 +118,16 @@ export interface ProductCard {
    *  time. Stays frozen on the saved order line so historical
    *  display doesn't change if inventory.sku is renamed later. */
   sku?: string | null;
+  /** Phase Inventory-Order-Identity-1 — base product `available`
+   *  for sellable math. Optional because static-product cards have
+   *  no inventory row. */
+  available?: number;
+  /** Phase Inventory-Reservations-1A — base product `reserved`. */
+  reserved?: number;
+  /** Phase Inventory-Variants-1B2 — active variants attached at
+   *  load time. Empty / missing when the product has no variants
+   *  or the variants table is missing (pre-migration). */
+  variants?: ProductVariantCard[];
 }
 
 export interface DraftOrderLine {
@@ -140,6 +166,19 @@ export interface DraftOrderLine {
    *  on same-product edits). Declared here so the type covers the
    *  full draft round-trip. */
   note?: string | null;
+  /** Phase Inventory-Variants-1B2 — resolved variant id for this
+   *  line. Populated when the picked color matches an active,
+   *  baselined variant on the parent product card. Persisted in
+   *  the saved order line jsonb; the reserve / reconcile / fulfill
+   *  RPCs route stock effects to the variant when this is set. */
+  variant_id?: string | null;
+  /** Phase Inventory-Variants-1B2 — Arabic label snapshot for the
+   *  variant. Stays frozen on the line so a later variant rename
+   *  doesn't rewrite historical orders. */
+  variant_label?: string | null;
+  /** Phase Inventory-Variants-1B2 — variant SKU snapshot, same
+   *  freeze-at-add semantics as `sku`. */
+  variant_sku?: string | null;
 }
 
 // ─── Factory ─────────────────────────────────────────────────────────────
@@ -173,6 +212,14 @@ export function createDraftLine(card: ProductCard): DraftOrderLine {
   const inventoryId =
     card.id && card.id.trim() ? card.id.trim() : card.isInventory ? card.value : null;
   const sku = card.sku && String(card.sku).trim() ? String(card.sku).trim() : null;
+  // Phase Inventory-Variants-1B2 — resolve a variant for the default
+  // color. Only baselined variants (available + reserved > 0)
+  // become first-class on the draft; unbaselined variants stay
+  // anonymous and the line continues to operate at the base-product
+  // level until the operator sets a baseline via stock count. This
+  // safety valve keeps existing order flow unchanged on day 0 after
+  // 1B1's seed (which populates variants with available = 0).
+  const variant = pickVariantForLine(card, defaultColor);
   return {
     id: generateLineId(),
     productType: card.value,
@@ -187,6 +234,9 @@ export function createDraftLine(card: ProductCard): DraftOrderLine {
     emoji: card.emoji,
     inventory_id: inventoryId,
     sku: inventoryId ? sku : null,
+    variant_id: variant?.id ?? null,
+    variant_label: variant?.variant_label ?? null,
+    variant_sku: variant?.sku ?? null,
   };
 }
 
@@ -201,6 +251,25 @@ interface RawInventoryRow {
   category: string | null;
   colors: string[] | null;
   status?: string | null;
+  // Phase Inventory-Reservations-1 — newest optional column. The
+  // loader tries it first; the fallback queries drop it.
+  reserved?: number | null;
+}
+
+/** Phase Inventory-Variants-1B2 — raw row shape returned by the
+ *  variants query. Kept loose because the table is shared with the
+ *  inventory drawer (which has its own typed loader). */
+interface RawVariantRow {
+  id: string;
+  inventory_id: string;
+  variant_type: string | null;
+  variant_value: string | null;
+  variant_label: string | null;
+  sku: string | null;
+  available: number | null;
+  reserved: number | null;
+  status: string | null;
+  sort_order: number | null;
 }
 
 /** Load the merged product catalog: live inventory rows + (optionally)
@@ -215,32 +284,50 @@ interface RawInventoryRow {
  *  products stay in the inventory page but disappear from the order
  *  picker. The query falls back to the legacy column shape if the
  *  `status` column doesn't exist yet (e.g. between deploy and
- *  migration apply), so AddOrder / EditOrder never crash mid-rollout. */
+ *  migration apply), so AddOrder / EditOrder never crash mid-rollout.
+ *
+ *  Phase Inventory-Variants-1B2 — after the base inventory load, we
+ *  fetch active variants for the loaded product ids and attach them
+ *  to each ProductCard. The query is best-effort: if the variants
+ *  table is missing (pre-Phase-1A) or the read fails, cards ship
+ *  without `variants` and the order flow naturally falls back to the
+ *  base-product behaviour. We DO NOT seed quantities into variants
+ *  here — the column attached to the card mirrors live row state. */
 export async function loadProductCards(
   supabase: SupabaseClient
 ): Promise<{ items: InventoryItem[]; cards: ProductCard[] }> {
   let rows: RawInventoryRow[] | null = null;
 
-  const withStatus = await supabase
+  const withReservedStatus = await supabase
     .from('turath_masr_inventory')
-    .select('id, name, sku, available, price, category, colors, status')
+    .select('id, name, sku, available, price, category, colors, status, reserved')
     .eq('status', 'active');
-  if (!withStatus.error) {
-    rows = (withStatus.data as RawInventoryRow[] | null) ?? [];
+  if (!withReservedStatus.error) {
+    rows = (withReservedStatus.data as RawInventoryRow[] | null) ?? [];
   } else {
-    // 42703 = undefined column. Other errors get logged and treated as empty.
-    const msg = (withStatus.error.message || '').toLowerCase();
-    if (msg.includes('status') && msg.includes('does not exist')) {
-      const legacy = await supabase
+    const msg = (withReservedStatus.error.message || '').toLowerCase();
+    const isMissingCol = msg.includes('does not exist') || msg.includes('column');
+    if (isMissingCol) {
+      // Fallback A: status exists but reserved doesn't.
+      const withStatus = await supabase
         .from('turath_masr_inventory')
-        .select('id, name, sku, available, price, category, colors');
-      if (legacy.error) {
-        console.warn('[productCards] inventory load failed (legacy):', legacy.error);
-        return { items: [], cards: buildStaticCards() };
+        .select('id, name, sku, available, price, category, colors, status')
+        .eq('status', 'active');
+      if (!withStatus.error) {
+        rows = (withStatus.data as RawInventoryRow[] | null) ?? [];
+      } else {
+        // Fallback B: neither status nor reserved (legacy).
+        const legacy = await supabase
+          .from('turath_masr_inventory')
+          .select('id, name, sku, available, price, category, colors');
+        if (legacy.error) {
+          console.warn('[productCards] inventory load failed (legacy):', legacy.error);
+          return { items: [], cards: buildStaticCards() };
+        }
+        rows = (legacy.data as RawInventoryRow[] | null) ?? [];
       }
-      rows = (legacy.data as RawInventoryRow[] | null) ?? [];
     } else {
-      console.warn('[productCards] inventory load failed:', withStatus.error);
+      console.warn('[productCards] inventory load failed:', withReservedStatus.error);
       return { items: [], cards: buildStaticCards() };
     }
   }
@@ -257,22 +344,73 @@ export async function loadProductCards(
   if (items.length === 0) {
     return { items: [], cards: buildStaticCards() };
   }
-  const cards: ProductCard[] = items.map((item) => ({
-    value: item.id,
-    label: item.name,
-    basePrice: item.price,
-    emoji: '📦',
-    hasColor: item.colors.length > 0,
-    image: inventoryThumbnailUrl(item.id),
-    isInventory: true,
-    colors: item.colors,
-    category: item.category,
-    // Phase Inventory-Order-Identity-1 — surface identity fields on
-    // the card so downstream serializers don't have to re-derive
-    // them from `value` / `isInventory`.
-    id: item.id,
-    sku: item.sku || null,
-  }));
+
+  // Phase Inventory-Variants-1B2 — attach active variants to each
+  // card. The query is best-effort: a missing-table error (pre-1A)
+  // or any other failure leaves the cards without variants and the
+  // order flow keeps working at the base-product level.
+  const inventoryIds = items.map((i) => i.id);
+  const variantsByInventory = new Map<string, ProductVariantCard[]>();
+  try {
+    const variantRes = await supabase
+      .from('turath_masr_inventory_variants')
+      .select(
+        'id, inventory_id, variant_type, variant_value, variant_label, sku, available, reserved, status, sort_order'
+      )
+      .in('inventory_id', inventoryIds)
+      .eq('status', 'active')
+      .order('sort_order', { ascending: true })
+      .order('variant_label', { ascending: true });
+    if (variantRes.error) {
+      const vmsg = (variantRes.error.message || '').toLowerCase();
+      if (!(vmsg.includes('does not exist') || vmsg.includes('relation'))) {
+        console.warn('[productCards] variants load failed:', variantRes.error);
+      }
+    } else {
+      for (const v of (variantRes.data ?? []) as RawVariantRow[]) {
+        const entry: ProductVariantCard = {
+          id: v.id,
+          inventory_id: v.inventory_id,
+          variant_type: v.variant_type ?? 'color',
+          variant_value: v.variant_value ?? '',
+          variant_label: v.variant_label ?? v.variant_value ?? '',
+          sku: v.sku ?? null,
+          available: Number(v.available ?? 0),
+          reserved: Number(v.reserved ?? 0),
+          status: (v.status ?? 'active') as ProductVariantCard['status'],
+        };
+        const bucket = variantsByInventory.get(entry.inventory_id);
+        if (bucket) bucket.push(entry);
+        else variantsByInventory.set(entry.inventory_id, [entry]);
+      }
+    }
+  } catch (variantErr) {
+    console.warn('[productCards] variants load threw:', variantErr);
+  }
+
+  const cards: ProductCard[] = items.map((item) => {
+    const row = (rows ?? []).find((r) => r.id === item.id) ?? null;
+    return {
+      value: item.id,
+      label: item.name,
+      basePrice: item.price,
+      emoji: '📦',
+      hasColor: item.colors.length > 0,
+      image: inventoryThumbnailUrl(item.id),
+      isInventory: true,
+      colors: item.colors,
+      category: item.category,
+      // Phase Inventory-Order-Identity-1 — surface identity fields on
+      // the card so downstream serializers don't have to re-derive
+      // them from `value` / `isInventory`.
+      id: item.id,
+      sku: item.sku || null,
+      // Phase Inventory-Variants-1B2 — base quantities + variants.
+      available: item.available,
+      reserved: Number(row?.reserved ?? 0),
+      variants: variantsByInventory.get(item.id),
+    };
+  });
   return { items, cards };
 }
 
@@ -323,4 +461,79 @@ export function maxStockForLine(
   if (!inv) return Infinity;
   const taken = otherLinesSameProduct.reduce((sum, l) => sum + (Number(l.quantity) || 0), 0);
   return Math.max(0, inv.available - taken);
+}
+
+// ─── Variant helpers (Phase Inventory-Variants-1B2) ──────────────────────
+
+/** Sellable quantity for a single variant — `available - reserved`,
+ *  clamped to zero so the math never goes negative. */
+export function variantSellable(variant: ProductVariantCard): number {
+  return Math.max(0, (variant.available ?? 0) - (variant.reserved ?? 0));
+}
+
+/** A variant is "baselined" once an operator has touched its
+ *  quantities. Until that point the seed row (`available=0`,
+ *  `reserved=0`) is functionally indistinguishable from "no variant
+ *  yet" and the order flow MUST continue to operate at the base
+ *  product level — otherwise the day-1 1A seed would block every
+ *  inventory-backed colored order. Operators baseline via the
+ *  stock-count workflow once 1B3 surfaces the variant picker there. */
+export function isVariantBaselined(variant: ProductVariantCard | null | undefined): boolean {
+  if (!variant) return false;
+  return (variant.available ?? 0) + (variant.reserved ?? 0) > 0;
+}
+
+function normalizeColor(value: string | null | undefined): string {
+  if (typeof value !== 'string') return '';
+  return value.trim().toLowerCase();
+}
+
+/** Find the matching variant for a picked color. Match by either
+ *  `variant_value` or `variant_label`, case-insensitive after trim.
+ *  Returns `null` when the card has no variants, the color is empty,
+ *  or no active variant matches. Inactive / archived variants are
+ *  ignored (the loader already filters by `status='active'`, but a
+ *  defensive guard keeps the helper safe to use against any source
+ *  of variants). */
+export function resolveVariantForColor(
+  card: ProductCard | null | undefined,
+  color: string | null | undefined
+): ProductVariantCard | null {
+  if (!card || !card.variants || card.variants.length === 0) return null;
+  const target = normalizeColor(color);
+  if (!target) return null;
+  for (const v of card.variants) {
+    if (v.status !== 'active') continue;
+    if (normalizeColor(v.variant_value) === target) return v;
+    if (normalizeColor(v.variant_label) === target) return v;
+  }
+  return null;
+}
+
+/** Pick the right variant for a draft line, applying the
+ *  baseline safety valve. Returns `null` either when no variant
+ *  matches the color OR when the matched variant hasn't been
+ *  baselined yet — in both cases the line should continue to
+ *  operate at the base product level. */
+export function pickVariantForLine(
+  card: ProductCard | null | undefined,
+  color: string | null | undefined
+): ProductVariantCard | null {
+  const variant = resolveVariantForColor(card, color);
+  if (!variant) return null;
+  if (!isVariantBaselined(variant)) return null;
+  return variant;
+}
+
+/** Stock-aware max quantity available for a specific variant given
+ *  the current set of lines pointing at that variant. Returns
+ *  Infinity when no variant is selected (the line operates at the
+ *  base product level — caller falls back to `maxStockForLine`). */
+export function maxStockForVariant(
+  variant: ProductVariantCard | null | undefined,
+  otherLinesSameVariant: DraftOrderLine[]
+): number {
+  if (!variant) return Infinity;
+  const taken = otherLinesSameVariant.reduce((sum, l) => sum + (Number(l.quantity) || 0), 0);
+  return Math.max(0, variantSellable(variant) - taken);
 }
