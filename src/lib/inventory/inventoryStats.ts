@@ -187,6 +187,29 @@ export interface InventoryStockCountWithProduct extends InventoryStockCount {
   inventory_sku: string;
 }
 
+/** Phase Inventory-Variants-1A — row shape for
+ *  `turath_masr_inventory_variants`. One row per variant of a base
+ *  product (today: per color). Quantities live here but are NOT yet
+ *  wired to the order-flow RPCs; Phase 1B will teach
+ *  reserve / fulfill / count / movement to operate on `variant_id`. */
+export interface InventoryVariant {
+  id: string;
+  inventory_id: string;
+  variant_type: string;
+  variant_value: string;
+  variant_label: string;
+  sku: string | null;
+  barcode: string | null;
+  available: number;
+  reserved: number;
+  min_stock: number;
+  status: LifecycleStatus;
+  sort_order: number;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /** Stock health of a single row (independent of lifecycle status). */
 export type ProductStatus = 'available' | 'low' | 'out';
 
