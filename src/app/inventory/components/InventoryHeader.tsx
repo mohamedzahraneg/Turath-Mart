@@ -10,16 +10,23 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { ChevronLeft, Download, Plus, RefreshCw, Warehouse } from 'lucide-react';
+import { Activity, ChevronLeft, Download, Plus, RefreshCw, Warehouse } from 'lucide-react';
 
 interface Props {
   onAdd: () => void;
   onRefresh: () => void;
   onExport: (() => void) | null;
+  onRecordMovement: (() => void) | null;
   refreshing?: boolean;
 }
 
-export default function InventoryHeader({ onAdd, onRefresh, onExport, refreshing }: Props) {
+export default function InventoryHeader({
+  onAdd,
+  onRefresh,
+  onExport,
+  onRecordMovement,
+  refreshing,
+}: Props) {
   return (
     <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between" dir="rtl">
       <div className="text-right order-1 xl:order-2 flex items-start justify-end">
@@ -50,6 +57,16 @@ export default function InventoryHeader({ onAdd, onRefresh, onExport, refreshing
           <Plus size={16} />
           <span>إضافة منتج</span>
         </button>
+        {onRecordMovement && (
+          <button
+            type="button"
+            onClick={onRecordMovement}
+            className="text-sm rounded-xl border border-[hsl(217,80%,30%)] text-[hsl(217,80%,30%)] bg-white px-3 py-1.5 flex items-center gap-1.5 hover:bg-[hsl(217,80%,30%)]/10 font-semibold"
+          >
+            <Activity size={14} />
+            <span>تسجيل حركة</span>
+          </button>
+        )}
         {onExport && (
           <button
             type="button"
