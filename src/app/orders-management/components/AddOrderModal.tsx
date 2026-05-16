@@ -90,6 +90,16 @@ import {
 // `unoptimized` reasoning are unchanged from Phase E1-Fix1.1; see the
 // shared module for the full comment block.
 import { InventoryThumbnail, inventoryThumbnailUrl } from '@/lib/inventory/InventoryThumbnail';
+// Phase Inventory-Variants-1B2 — pull the variant helpers from the
+// shared `productCards.ts`. AddOrderModal still uses its OWN local
+// `OrderLine` / `ProductCard` shapes (it predates the shared editor)
+// so we import only the variant helpers + type, not the modal's
+// catalog primitives.
+import {
+  pickVariantForLine,
+  type ProductVariantCard,
+  type ProductCard as ProductCardLib,
+} from '@/lib/orders/productCards';
 // Phase 22O — returning-customer smart card + lookup helpers. The
 // card is presentational; the lookup function lives in this file
 // (it owns the Supabase client + state).
@@ -350,6 +360,10 @@ interface ProductCard {
    *  for pre-submit validation + UI display. Undefined pre-migration
    *  → treated as 0 by `sellableQty`. */
   reserved?: number;
+  /** Phase Inventory-Variants-1B2 — active variants for this product
+   *  card, attached at load time. Empty / missing when the product
+   *  has no variants seeded or the variants table is unavailable. */
+  variants?: ProductVariantCard[];
 }
 
 // Phase 24C — prefill shape for the new "create order from customer
@@ -389,6 +403,12 @@ interface OrderLine {
   includeFlashlight: boolean;
   flashlightPrice: number;
   note: string;
+  // Phase Inventory-Variants-1B2 — variant identity (optional;
+  // null until the picked color resolves to a baselined variant
+  // on the parent product card).
+  variant_id?: string | null;
+  variant_label?: string | null;
+  variant_sku?: string | null;
 }
 
 function createLine(productType: string, basePrice: number): OrderLine {
@@ -401,6 +421,9 @@ function createLine(productType: string, basePrice: number): OrderLine {
     includeFlashlight: false,
     flashlightPrice: 150,
     note: '',
+    variant_id: null,
+    variant_label: null,
+    variant_sku: null,
   };
 }
 
@@ -819,6 +842,56 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
         images: [],
         colors: item.colors || [],
       }));
+      // Phase Inventory-Variants-1B2 — best-effort variants fetch
+      // for the loaded products. Missing-table errors (pre-1A) and
+      // other failures fall back to cards without variants and the
+      // order flow keeps working at the base-product level.
+      const variantsByInventory = new Map<string, ProductVariantCard[]>();
+      try {
+        const variantRes = await supabase
+          .from('turath_masr_inventory_variants')
+          .select(
+            'id, inventory_id, variant_type, variant_value, variant_label, sku, available, reserved, status, sort_order'
+          )
+          .in(
+            'inventory_id',
+            inventoryItems.map((i) => i.id)
+          )
+          .eq('status', 'active')
+          .order('sort_order', { ascending: true })
+          .order('variant_label', { ascending: true });
+        if (variantRes.error) {
+          const vmsg = (variantRes.error.message || '').toLowerCase();
+          if (!(vmsg.includes('does not exist') || vmsg.includes('relation'))) {
+            console.warn('[AddOrderModal] variants load failed:', variantRes.error);
+          }
+        } else {
+          for (const v of ((variantRes.data ?? []) as Array<Record<string, unknown>>) || []) {
+            const entry: ProductVariantCard = {
+              id: String(v.id),
+              inventory_id: String(v.inventory_id),
+              variant_type: typeof v.variant_type === 'string' ? v.variant_type : 'color',
+              variant_value: typeof v.variant_value === 'string' ? v.variant_value : '',
+              variant_label:
+                typeof v.variant_label === 'string'
+                  ? v.variant_label
+                  : ((v.variant_value as string) ?? ''),
+              sku: typeof v.sku === 'string' ? v.sku : null,
+              available: Number(v.available ?? 0),
+              reserved: Number(v.reserved ?? 0),
+              status: (typeof v.status === 'string'
+                ? v.status
+                : 'active') as ProductVariantCard['status'],
+            };
+            const bucket = variantsByInventory.get(entry.inventory_id);
+            if (bucket) bucket.push(entry);
+            else variantsByInventory.set(entry.inventory_id, [entry]);
+          }
+        }
+      } catch (variantErr) {
+        console.warn('[AddOrderModal] variants load threw:', variantErr);
+      }
+
       const inventoryCards: ProductCard[] = inventoryItems.map((item) => ({
         value: item.id,
         label: item.name,
@@ -844,6 +917,8 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
         // them from `value` / `isInventory`.
         id: item.id,
         sku: item.sku || null,
+        // Phase Inventory-Variants-1B2 — attached active variants.
+        variants: variantsByInventory.get(item.id),
       }));
 
       inventoryRef.current = inventoryItems;
@@ -1898,11 +1973,44 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
     } else if (productCard.value === 'holder') {
       line.color = 'brown';
     }
+    // Phase Inventory-Variants-1B2 — resolve a baselined variant for
+    // the default color. `pickVariantForLine` returns null when no
+    // variant matches OR when the matching variant is still at the
+    // 1A seed (`available + reserved = 0`); the line then stays at
+    // the base product level until the operator baselines via stock
+    // count. The cast is safe — the local `ProductCard` interface is
+    // a strict superset of the shared lib type for the fields the
+    // helper reads.
+    const variant = pickVariantForLine(productCard as unknown as ProductCardLib, line.color);
+    line.variant_id = variant?.id ?? null;
+    line.variant_label = variant?.variant_label ?? null;
+    line.variant_sku = variant?.sku ?? null;
     setLines((prev) => [...prev, line]);
   };
 
   const removeLine = (id: string) => {
     setLines((prev) => prev.filter((l) => l.id !== id));
+  };
+
+  // Phase Inventory-Variants-1B2 — colour-aware patch. Resolves the
+  // variant for the new colour and overwrites the line's variant
+  // identity together with the colour. Falls back to clearing the
+  // variant fields when no baselined variant matches.
+  const updateLineColor = (id: string, color: string) => {
+    setLines((prev) =>
+      prev.map((l) => {
+        if (l.id !== id) return l;
+        const card = productCards.find((p) => p.value === l.productType) ?? null;
+        const variant = pickVariantForLine(card as unknown as ProductCardLib | null, color);
+        return {
+          ...l,
+          color,
+          variant_id: variant?.id ?? null,
+          variant_label: variant?.variant_label ?? null,
+          variant_sku: variant?.sku ?? null,
+        };
+      })
+    );
   };
 
   const updateLine = (id: string, patch: Partial<OrderLine>) => {
@@ -2200,6 +2308,24 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
               ? card.value
               : null;
         const sku = inventoryId && card?.sku ? String(card.sku) : null;
+        // Phase Inventory-Variants-1B2 — persist variant identity
+        // when the draft line carries one. The draft is populated
+        // by `pickVariantForLine` on color-change / product-swap,
+        // and only baselined variants make it onto the draft, so
+        // unbaselined variants (e.g. day-1 seeded `available=0` rows)
+        // never get stamped into the saved order. That keeps the
+        // reserve RPC routing the line to the base product until
+        // operators baseline via stock count.
+        const variantId =
+          typeof l.variant_id === 'string' && l.variant_id.trim() ? l.variant_id.trim() : null;
+        const variantLabel =
+          variantId && typeof l.variant_label === 'string' && l.variant_label.trim()
+            ? l.variant_label.trim()
+            : null;
+        const variantSku =
+          variantId && typeof l.variant_sku === 'string' && l.variant_sku.trim()
+            ? l.variant_sku.trim()
+            : null;
         return {
           // Phase Inventory-Reservations-1B — persist the client-side
           // line id so the reserve RPC's idempotency key
@@ -2210,6 +2336,9 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
           productType: l.productType,
           inventory_id: inventoryId,
           sku,
+          variant_id: variantId,
+          variant_label: variantLabel,
+          variant_sku: variantSku,
           label: card?.label || l.productType,
           image: cardImage,
           emoji: card?.emoji || '📦',
@@ -3476,7 +3605,7 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                                     <button
                                       key={`color-${line.id}-${color.value}`}
                                       type="button"
-                                      onClick={() => updateLine(line.id, { color: color.value })}
+                                      onClick={() => updateLineColor(line.id, color.value)}
                                       className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-semibold transition-all ${line.color === color.value ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))]' : 'border-[hsl(var(--border))] hover:border-gray-400'}`}
                                     >
                                       <span

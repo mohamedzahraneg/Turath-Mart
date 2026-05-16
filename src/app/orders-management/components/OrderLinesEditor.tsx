@@ -35,6 +35,7 @@ import {
   createDraftLine,
   lineSubtotal,
   maxStockForLine,
+  pickVariantForLine,
   resolveLineColors,
   type DraftOrderLine,
   type InventoryItem,
@@ -95,6 +96,30 @@ export default function OrderLinesEditor({
     onLinesChange(lines.map((l) => (l.id === id ? { ...l, ...patch } : l)));
   };
 
+  // Phase Inventory-Variants-1B2 — when the operator picks a new
+  // colour, resolve the corresponding variant on the parent product
+  // card and overwrite the line's variant identity together with the
+  // colour itself. The baseline safety valve inside `pickVariantForLine`
+  // returns `null` for any variant that hasn't been baselined yet
+  // (available + reserved = 0), so the line stays at the base-product
+  // level until the operator sets per-variant stock via stock count.
+  const updateLineColor = (id: string, color: string) => {
+    onLinesChange(
+      lines.map((l) => {
+        if (l.id !== id) return l;
+        const card = productCards.find((p) => p.value === l.productType) ?? null;
+        const variant = pickVariantForLine(card, color);
+        return {
+          ...l,
+          color,
+          variant_id: variant?.id ?? null,
+          variant_label: variant?.variant_label ?? null,
+          variant_sku: variant?.sku ?? null,
+        };
+      })
+    );
+  };
+
   // Replace a line's product with a different card. Used by the
   // per-line "تغيير المنتج" select. Stock-checked the same way
   // `addLine` is. Preserves the line id so the React key + audit
@@ -132,6 +157,14 @@ export default function OrderLinesEditor({
         )
       : Infinity;
     const newQty = Math.min(Math.max(1, current.quantity), Math.max(1, remainingCap));
+    // Phase Inventory-Variants-1B2 — a product swap also retargets
+    // the variant identity. Resolve against the new card's default
+    // colour; if no baselined variant matches, drop the variant
+    // fields entirely so the line falls back to the base product.
+    const swappedVariant = pickVariantForLine(card, defaultColor);
+    const swappedInventoryId =
+      card.id && card.id.trim() ? card.id.trim() : card.isInventory ? card.value : null;
+    const swappedSku = swappedInventoryId && card.sku ? String(card.sku) : null;
     onLinesChange(
       lines.map((l) =>
         l.id === id
@@ -150,6 +183,18 @@ export default function OrderLinesEditor({
               image_source: card.isInventory ? 'inventory' : undefined,
               image_path: null,
               quantity: newQty,
+              // Phase Inventory-Order-Identity-1 — retarget identity
+              // so the line carries the new product's inventory id /
+              // sku instead of the previous one's. Without this the
+              // saved line would stamp the old product's id even
+              // though the serializer overrides it (defence in depth).
+              inventory_id: swappedInventoryId,
+              sku: swappedInventoryId ? swappedSku : null,
+              // Phase Inventory-Variants-1B2 — variant identity for
+              // the new product/colour pair.
+              variant_id: swappedVariant?.id ?? null,
+              variant_label: swappedVariant?.variant_label ?? null,
+              variant_sku: swappedVariant?.sku ?? null,
             }
           : l
       )
@@ -329,7 +374,7 @@ export default function OrderLinesEditor({
                           <button
                             key={`color-${line.id}-${color.value}`}
                             type="button"
-                            onClick={() => updateLine(line.id, { color: color.value })}
+                            onClick={() => updateLineColor(line.id, color.value)}
                             className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-semibold transition-all ${
                               line.color === color.value
                                 ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))]'
