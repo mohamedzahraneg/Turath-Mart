@@ -92,6 +92,10 @@ import {
   type ProductCard,
 } from '@/lib/orders/productCards';
 import OrderLinesEditor from './OrderLinesEditor';
+import AddressCoveragePicker, {
+  type AddressCoverageStatus,
+  type AddressCoverageValue,
+} from './AddressCoveragePicker';
 import { addAuditLog } from './AuditLogModal';
 
 // Re-exported from OrderDetailModal; copying the shape here keeps
@@ -242,10 +246,28 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
   const [customerName, setCustomerName] = useState(order.customer || '');
   const [phone, setPhone] = useState(order.phone || '');
   const [phone2, setPhone2] = useState(order.phone2 || '');
-  const [region, setRegion] = useState(order.region || '');
-  const [district, setDistrict] = useState(order.district || '');
-  const [neighborhood, setNeighborhood] = useState(order.neighborhood ?? '');
-  const [address, setAddress] = useState(order.address || '');
+
+  // Phase Orders-Edit-Address-Shipping-1 — single source of truth
+  // for the address cascade. Mirrors the four legacy state vars
+  // (region / district / neighborhood / address) but lives behind
+  // the new `<AddressCoveragePicker>` so the cascade can be filtered
+  // against the active coverage hierarchy + drive shipping fee
+  // recalculation. The four DB columns
+  // (region, district, neighborhood, address) are still persisted
+  // separately; only the React state is consolidated.
+  const [addressValue, setAddressValue] = useState<AddressCoverageValue>({
+    governorate: order.region || '',
+    area: order.district || '',
+    neighborhood: order.neighborhood ?? '',
+    detailedAddress: order.address || '',
+  });
+  const [coverageStatus, setCoverageStatus] = useState<AddressCoverageStatus>({
+    covered: false,
+    reason: 'no_governorate',
+    fee: null,
+    legacyMismatch: false,
+    ready: false,
+  });
 
   const [freeShipping, setFreeShipping] = useState(order.shippingFee === 0);
   const [expressShipping, setExpressShipping] = useState(order.expressShipping === true);
@@ -332,14 +354,26 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
   // ─── Recompute totals ──────────────────────────────────────────────────
 
   const subtotal = useMemo(() => lines.reduce((acc, l) => acc + lineSubtotal(l), 0), [lines]);
-  // Shipping fee logic: we only know the live regionFee when the
-  // operator opened from a region that has a per-region fee in
-  // settings. For v1 we preserve the original `shippingFee` unless
-  // `freeShipping` flips. Editing the express toggle ALONE doesn't
-  // change the saved fee because we don't have the live regionFee
-  // here. This keeps the edit surgical and prevents accidentally
-  // overwriting a customer-specific fee.
-  const shippingFee = freeShipping ? 0 : Number(order.shippingFee) || 0;
+  // Phase Orders-Edit-Address-Shipping-1 — shipping fee is now
+  // driven by the coverage picker's status. Priority order:
+  //   1. `freeShipping` toggle → 0 (explicit override).
+  //   2. Coverage status not yet ready (regions still loading) →
+  //      preserve the saved `order.shippingFee` so the totals card
+  //      doesn't flash to 0 while the network call lands.
+  //   3. Coverage resolved → use the picker's resolved fee.
+  //      The resolver already handles the
+  //      neighborhood → area → governorate inheritance; `source ===
+  //      'none'` means "no fee configured" and produces fee=0.
+  // Save-time validation rejects an `'none'`-source fee when the
+  // address actually changed (see handleSave).
+  const savedShippingFee = Number(order.shippingFee) || 0;
+  const resolvedShippingFee = coverageStatus.fee?.fee ?? null;
+  const shippingFee = freeShipping
+    ? 0
+    : resolvedShippingFee !== null
+      ? resolvedShippingFee
+      : savedShippingFee;
+  const shippingFeeDelta = shippingFee - savedShippingFee;
   const holderQuantity = useMemo(
     () =>
       lines.reduce(
@@ -378,11 +412,37 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
 
   // ─── Validations ───────────────────────────────────────────────────────
 
+  const addressChanged =
+    addressValue.governorate.trim() !== (order.region || '').trim() ||
+    addressValue.area.trim() !== (order.district || '').trim() ||
+    addressValue.neighborhood.trim() !== ((order.neighborhood ?? '') as string).trim() ||
+    addressValue.detailedAddress.trim() !== (order.address || '').trim();
+
   const validate = (): string | null => {
     if (!customerName.trim()) return 'اسم العميل مطلوب';
     if (!phone.trim() || phone.trim().length < 7) return 'رقم الهاتف غير صالح';
-    if (!region.trim()) return 'المحافظة مطلوبة';
-    if (!address.trim() || address.trim().length < 5) return 'العنوان قصير جدًا';
+    if (!addressValue.governorate.trim()) return 'المحافظة مطلوبة';
+    if (!addressValue.detailedAddress.trim() || addressValue.detailedAddress.trim().length < 5)
+      return 'العنوان قصير جدًا';
+    // Phase Orders-Edit-Address-Shipping-1 — when the operator
+    // changed the address path, the new selection MUST resolve to
+    // active coverage. Untouched legacy addresses (the operator
+    // didn't open the picker) can save without a coverage check so
+    // pre-existing orders keep editing for non-address fields.
+    if (addressChanged && coverageStatus.ready && !coverageStatus.covered && !freeShipping) {
+      return 'لا يمكن حفظ الطلب لأن منطقة الشحن غير مفعّلة أو لا يوجد لها سعر شحن.';
+    }
+    // Even if address path is OK, refuse to save when the resolver
+    // returns `source === 'none'` (i.e. no fee configured anywhere
+    // up the chain). Free shipping bypasses this guard.
+    if (
+      addressChanged &&
+      coverageStatus.ready &&
+      coverageStatus.fee?.source === 'none' &&
+      !freeShipping
+    ) {
+      return 'لا يمكن حفظ الطلب لأن منطقة الشحن غير مفعّلة أو لا يوجد لها سعر شحن.';
+    }
     if (lines.length === 0) return 'يجب أن يحتوي الطلب على منتج واحد على الأقل';
     for (const l of lines) {
       if ((Number(l.quantity) || 0) <= 0) return 'كمية كل منتج يجب أن تكون 1 على الأقل';
@@ -672,14 +732,19 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
         customer: customerName.trim(),
         phone: phone.trim(),
         phone2: phone2.trim() || null,
-        region: region.trim(),
-        district: district.trim() || null,
-        neighborhood: neighborhood.trim() || null,
-        address: address.trim(),
+        // Phase Orders-Edit-Address-Shipping-1 — write the cascade
+        // fields from the picker's value. Each of the four DB
+        // columns stays distinct (no schema change); only the
+        // React-side source has consolidated.
+        region: addressValue.governorate.trim(),
+        district: addressValue.area.trim() || null,
+        neighborhood: addressValue.neighborhood.trim() || null,
+        address: addressValue.detailedAddress.trim(),
         free_shipping: freeShipping,
         // Preserve the express-shipping flag — we don't have a UI
         // for editing it here; this carries forward the original
-        // value.
+        // value. `shipping_fee` is now recomputed from the picker's
+        // resolved fee (see derivation above).
         shipping_fee: shippingFee,
         lines: newLines,
         products: newProductsSummary,
@@ -709,10 +774,10 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
         customer: customerName.trim(),
         phone: phone.trim(),
         phone2: phone2.trim() || null,
-        region: region.trim(),
-        district: district.trim() || null,
-        neighborhood: neighborhood.trim() || null,
-        address: address.trim(),
+        region: addressValue.governorate.trim(),
+        district: addressValue.area.trim() || null,
+        neighborhood: addressValue.neighborhood.trim() || null,
+        address: addressValue.detailedAddress.trim(),
         freeShipping,
         expressShipping: beforeSnapshot.expressShipping,
         subtotal: newSubtotal,
@@ -753,6 +818,57 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
       }
 
       // Staff audit: one row summarising the whole edit.
+      // Phase Orders-Edit-Address-Shipping-1 — extend the metadata
+      // with structured address + shipping-fee context whenever the
+      // address or fee changed. We only attach these keys when
+      // there's a delta so untouched edits keep the audit payload
+      // small.
+      const addressBefore = {
+        region: beforeSnapshot.region,
+        district: beforeSnapshot.district,
+        neighborhood: beforeSnapshot.neighborhood,
+        address: beforeSnapshot.address,
+      };
+      const addressAfter = {
+        region: afterSnapshot.region,
+        district: afterSnapshot.district,
+        neighborhood: afterSnapshot.neighborhood,
+        address: afterSnapshot.address,
+      };
+      const addressDidChange =
+        addressBefore.region !== addressAfter.region ||
+        (addressBefore.district ?? '') !== (addressAfter.district ?? '') ||
+        (addressBefore.neighborhood ?? '') !== (addressAfter.neighborhood ?? '') ||
+        addressBefore.address !== addressAfter.address;
+      const shippingFeeBefore = beforeSnapshot.shippingFee;
+      const shippingFeeAfter = afterSnapshot.shippingFee;
+      const shippingFeeDeltaAudit = shippingFeeAfter - shippingFeeBefore;
+      const baseAuditMetadata = buildStaffAuditMetadata(
+        order.id,
+        order.orderNum,
+        beforeSnapshot,
+        afterSnapshot,
+        changes
+      );
+      const shippingAuditAddendum: Record<string, unknown> =
+        addressDidChange || shippingFeeDeltaAudit !== 0
+          ? {
+              address_before: addressBefore,
+              address_after: addressAfter,
+              shipping_fee_before: shippingFeeBefore,
+              shipping_fee_after: shippingFeeAfter,
+              shipping_fee_delta: shippingFeeDeltaAudit,
+              // 'free_shipping' / 'governorate' / 'area' /
+              // 'neighborhood' / 'none' / 'saved' — `'saved'` is the
+              // fallback used when regions weren't ready on save
+              // (untouched address), so the audit can tell apart "we
+              // re-resolved the fee" from "we kept the previously
+              // saved fee verbatim".
+              shipping_fee_source: freeShipping
+                ? 'free_shipping'
+                : (coverageStatus.fee?.source ?? 'saved'),
+            }
+          : {};
       try {
         await writeStaffAuditLog(supabase, {
           action: 'order.updated',
@@ -765,13 +881,7 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
             id: order.id,
             label: order.orderNum,
           },
-          metadata: buildStaffAuditMetadata(
-            order.id,
-            order.orderNum,
-            beforeSnapshot,
-            afterSnapshot,
-            changes
-          ),
+          metadata: { ...baseAuditMetadata, ...shippingAuditAddendum },
         });
       } catch (staffAuditErr) {
         console.warn('[edit-order] staff audit failed:', staffAuditErr);
@@ -870,10 +980,10 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
         customer: customerName.trim(),
         phone: phone.trim(),
         phone2: phone2.trim() || undefined,
-        region: region.trim(),
-        district: district.trim() || undefined,
-        neighborhood: neighborhood.trim() || null,
-        address: address.trim(),
+        region: addressValue.governorate.trim(),
+        district: addressValue.area.trim() || undefined,
+        neighborhood: addressValue.neighborhood.trim() || null,
+        address: addressValue.detailedAddress.trim(),
         products: newProductsSummary,
         subtotal: newSubtotal,
         shippingFee,
@@ -961,13 +1071,18 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
               <Field label="اسم العميل *" value={customerName} onChange={setCustomerName} />
               <Field label="رقم الهاتف *" value={phone} onChange={setPhone} dir="ltr" />
               <Field label="رقم هاتف إضافي" value={phone2} onChange={setPhone2} dir="ltr" />
-              <Field label="المحافظة *" value={region} onChange={setRegion} />
-              <Field label="المنطقة / الحي" value={district} onChange={setDistrict} />
-              <Field label="القرية / الشياخة" value={neighborhood} onChange={setNeighborhood} />
-              <div className="sm:col-span-2">
-                <Field label="العنوان *" value={address} onChange={setAddress} multiline />
-              </div>
             </div>
+            {/* Phase Orders-Edit-Address-Shipping-1 — coverage-aware
+                cascade. Filters governorate/area/neighborhood to
+                active coverage, surfaces a legacy-mismatch banner
+                when the saved address doesn't map to a covered path,
+                and drives the shipping fee resolution in the section
+                below. */}
+            <AddressCoveragePicker
+              value={addressValue}
+              onChange={setAddressValue}
+              onStatusChange={setCoverageStatus}
+            />
           </section>
 
           <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
@@ -1002,6 +1117,39 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
                 شحن سريع (يتم تعديله من المنشئ فقط حاليًا)
               </label>
             </div>
+            {/* Phase Orders-Edit-Address-Shipping-1 — region-aware
+                fee preview. Hidden when free-shipping overrides the
+                resolved fee, and while the coverage hierarchy is
+                still loading (`fee === null`). The delta row only
+                appears when the resolved fee differs from the saved
+                one, so non-address edits stay quiet. */}
+            {!freeShipping && coverageStatus.fee !== null && (
+              <div className="space-y-1">
+                <div className="text-xs flex items-center justify-between">
+                  <span className="text-[hsl(var(--muted-foreground))]">سعر الشحن حسب المنطقة</span>
+                  <span className="font-mono font-semibold" dir="ltr">
+                    {coverageStatus.fee.fee.toLocaleString('en-US')} ج.م
+                  </span>
+                </div>
+                {shippingFeeDelta !== 0 && (
+                  <div className="text-xs flex items-center justify-between">
+                    <span className="text-[hsl(var(--muted-foreground))]">فرق الشحن</span>
+                    <span
+                      className={`font-mono font-semibold ${shippingFeeDelta > 0 ? 'text-rose-700' : 'text-emerald-700'}`}
+                      dir="ltr"
+                    >
+                      {shippingFeeDelta > 0 ? '+' : ''}
+                      {shippingFeeDelta.toLocaleString('en-US')} ج.م
+                    </span>
+                  </div>
+                )}
+                {coverageStatus.fee.source !== 'none' && (
+                  <p className="text-[11px] text-[hsl(var(--muted-foreground))]">
+                    {coverageStatus.fee.label}
+                  </p>
+                )}
+              </div>
+            )}
           </section>
 
           <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
