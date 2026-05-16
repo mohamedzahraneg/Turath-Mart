@@ -56,6 +56,7 @@ import {
   type InventoryItem,
   type InventoryMovement,
   type InventoryStockCount,
+  type InventoryVariant,
   type LifecycleStatus,
   type MovementType,
 } from '@/lib/inventory/inventoryStats';
@@ -441,8 +442,187 @@ function LifecycleChip({ lifecycle }: { lifecycle: LifecycleStatus }) {
 
 // ─── Colors ─────────────────────────────────────────────────────────────────
 
+// Phase Inventory-Variants-1A — DB row shape for the joined variant
+// query. `available / reserved / min_stock` live in the table but
+// remain INACTIVE in 1A: the order-flow RPCs (reserve / fulfill /
+// stock count / movements) still operate on `turath_masr_inventory`
+// directly. 1B will wire `variant_id` into those paths.
+interface RawVariantRow {
+  id: string;
+  inventory_id: string;
+  variant_type: string;
+  variant_value: string;
+  variant_label: string;
+  sku: string | null;
+  barcode: string | null;
+  available: number | null;
+  reserved: number | null;
+  min_stock: number | null;
+  status: string | null;
+  sort_order: number | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
 function ColorsTab({ item }: { item: InventoryItem }) {
-  const colors = item.colors ?? [];
+  // Phase Inventory-Variants-1A — try to load real variant rows for
+  // this product. Falls back to the legacy `colors[]` chip view when
+  // the table doesn't exist yet (pre-migration) or no variants have
+  // been seeded (e.g. a product with no colors array).
+  const [variants, setVariants] = useState<InventoryVariant[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [missingTable, setMissingTable] = useState(false);
+  const legacyColors = item.colors ?? [];
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setMissingTable(false);
+    (async () => {
+      try {
+        const supabase = createClient();
+        const { data, error: err } = await supabase
+          .from('turath_masr_inventory_variants')
+          .select(
+            'id, inventory_id, variant_type, variant_value, variant_label, sku, barcode, available, reserved, min_stock, status, sort_order, metadata, created_at, updated_at'
+          )
+          .eq('inventory_id', item.id)
+          .order('sort_order', { ascending: true })
+          .order('variant_label', { ascending: true });
+
+        if (cancelled) return;
+        if (err) {
+          const msg = (err.message || '').toLowerCase();
+          if (msg.includes('does not exist') || msg.includes('relation')) {
+            setMissingTable(true);
+            setVariants([]);
+          } else {
+            // Non-fatal: render the legacy chip fallback below.
+            setVariants([]);
+          }
+          return;
+        }
+        const mapped: InventoryVariant[] = (data as RawVariantRow[]).map((r) => {
+          const rawStatus = (r.status ?? 'active') as string;
+          const lifecycle: LifecycleStatus =
+            rawStatus === 'inactive' || rawStatus === 'archived'
+              ? (rawStatus as LifecycleStatus)
+              : 'active';
+          return {
+            id: r.id,
+            inventory_id: r.inventory_id,
+            variant_type: r.variant_type ?? 'color',
+            variant_value: r.variant_value ?? '',
+            variant_label: r.variant_label ?? r.variant_value ?? '',
+            sku: r.sku,
+            barcode: r.barcode,
+            available: Number(r.available ?? 0),
+            reserved: Number(r.reserved ?? 0),
+            min_stock: Number(r.min_stock ?? 0),
+            status: lifecycle,
+            sort_order: Number(r.sort_order ?? 0),
+            metadata: r.metadata,
+            created_at: r.created_at ?? '',
+            updated_at: r.updated_at ?? '',
+          };
+        });
+        setVariants(mapped);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [item.id]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-10 text-[hsl(var(--muted-foreground))] gap-2 text-sm">
+        <RefreshCw size={14} className="animate-spin" />
+        جاري التحميل...
+      </div>
+    );
+  }
+
+  // Pre-migration: render the legacy chip view so the tab still
+  // shows useful info on day-0 deploys.
+  if (missingTable) {
+    return (
+      <div className="space-y-3">
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-amber-800 text-xs">
+          جدول المتغيرات غير مفعّل بعد. يتم عرض الألوان من بيانات المنتج الحالية.
+        </div>
+        <LegacyColorsChips colors={legacyColors} />
+      </div>
+    );
+  }
+
+  // Migration applied but this product has no variants seeded — most
+  // likely a no-color product. Render the legacy chip view (which
+  // shows the same empty state) for continuity.
+  if (!variants || variants.length === 0) {
+    return (
+      <div className="space-y-3">
+        <LegacyColorsChips colors={legacyColors} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-3 text-amber-800 text-[11px] leading-relaxed">
+        كميات المتغيرات غير مفعّلة بعد. الكمية الحالية للمنتج تبقى على مستوى المنتج الأساسي (
+        {formatNumber(item.available)} متاح). سيتم تفعيل التتبع لكل لون في المرحلة التالية بعد ضبط
+        الأرصدة عبر تسجيل الجرد.
+      </div>
+
+      <div className="rounded-2xl border border-[hsl(var(--border))] bg-white overflow-x-auto scrollbar-thin">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-[hsl(var(--muted))]/40 border-b border-[hsl(var(--border))]">
+              {['اللون', 'SKU', 'المتاح', 'المحجوز', 'قابل للبيع', 'الحالة'].map((h) => (
+                <th
+                  key={h}
+                  className="text-right px-3 py-2 text-[11px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap"
+                >
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[hsl(var(--border))]">
+            {variants.map((v) => {
+              const sellable = Math.max(0, v.available - v.reserved);
+              return (
+                <tr key={v.id} className="hover:bg-[hsl(var(--muted))]/30 align-top">
+                  <td className="px-3 py-2 text-xs font-semibold">{v.variant_label}</td>
+                  <td className="px-3 py-2 text-xs font-mono text-[hsl(var(--muted-foreground))]">
+                    {v.sku || '—'}
+                  </td>
+                  <td className="px-3 py-2 font-mono text-xs">{formatNumber(v.available)}</td>
+                  <td className="px-3 py-2 font-mono text-xs">{formatNumber(v.reserved)}</td>
+                  <td className="px-3 py-2 font-mono text-xs font-bold">
+                    {formatNumber(sellable)}
+                  </td>
+                  <td className="px-3 py-2 text-xs">
+                    <LifecycleChip lifecycle={v.status} />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// Phase Inventory-Variants-1A — fallback chip view (the pre-variants
+// rendering). Used when the variants table is missing or empty for
+// the current product.
+function LegacyColorsChips({ colors }: { colors: string[] }) {
   if (colors.length === 0) {
     return (
       <div className="text-center py-12 text-[hsl(var(--muted-foreground))]">
