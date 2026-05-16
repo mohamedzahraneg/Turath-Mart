@@ -139,6 +139,19 @@ function buildInitialLines(order: EditableOrder): DraftOrderLine[] {
   return lines.map((l) => {
     idCounter += 1;
     const productType = typeof l.productType === 'string' ? l.productType : '';
+    // Phase Inventory-Order-Identity-1 — carry existing identity
+    // forward into the draft. If the row has no explicit
+    // `inventory_id` but `productType` happens to be a UUID
+    // (legacy pre-Phase-1 inventory linkage) treat that as the
+    // identity so the edit save can persist it explicitly.
+    const explicitInventoryId =
+      typeof l.inventory_id === 'string' && l.inventory_id.trim() ? l.inventory_id.trim() : null;
+    const productTypeAsUuid =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(productType)
+        ? productType
+        : null;
+    const inferredInventoryId = explicitInventoryId ?? productTypeAsUuid;
+    const explicitSku = typeof l.sku === 'string' && l.sku.trim() ? l.sku.trim() : null;
     return {
       id: `existing-${idCounter}-${productType}`,
       productType,
@@ -155,6 +168,8 @@ function buildInitialLines(order: EditableOrder): DraftOrderLine[] {
           ? (l.image_source as 'inventory' | 'storage' | 'none')
           : undefined,
       image_path: typeof l.image_path === 'string' ? l.image_path : undefined,
+      inventory_id: inferredInventoryId,
+      sku: inferredInventoryId ? explicitSku : null,
     };
   });
 }
@@ -486,6 +501,38 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
           if (draft.image_source) payload.image_source = draft.image_source;
           if (draft.image_path) payload.image_path = draft.image_path;
         }
+        // Phase Inventory-Order-Identity-1 — persist `inventory_id` +
+        // `sku` so future stock / reservation phases have a stable
+        // handle. Precedence:
+        //   1. The draft's own identity (set by createDraftLine when
+        //      the user added or swapped a card).
+        //   2. For same-product edits, carry the live row's identity.
+        //   3. Legacy fallback: when `productType` is a raw UUID
+        //      (the pre-Phase-1 inventory linkage), treat it as the
+        //      inventory id.
+        const draftInventoryId =
+          typeof draft.inventory_id === 'string' && draft.inventory_id.trim()
+            ? draft.inventory_id.trim()
+            : null;
+        const liveInventoryId =
+          sameProduct && liveSource && typeof liveSource.inventory_id === 'string'
+            ? (liveSource.inventory_id as string).trim() || null
+            : null;
+        const productTypeAsUuid = (() => {
+          const pt = (draft.productType ?? '').trim();
+          return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(pt)
+            ? pt
+            : null;
+        })();
+        const resolvedInventoryId = draftInventoryId ?? liveInventoryId ?? productTypeAsUuid;
+        const draftSku =
+          typeof draft.sku === 'string' && draft.sku.trim() ? draft.sku.trim() : null;
+        const liveSku =
+          sameProduct && liveSource && typeof liveSource.sku === 'string'
+            ? (liveSource.sku as string).trim() || null
+            : null;
+        payload.inventory_id = resolvedInventoryId;
+        payload.sku = resolvedInventoryId ? (draftSku ?? liveSku) : null;
         return payload;
       });
       const newSubtotal = newLines.reduce(

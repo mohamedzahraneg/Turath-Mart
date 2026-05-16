@@ -93,6 +93,15 @@ export interface ProductCard {
   isInventory?: boolean;
   colors?: string[];
   category?: string;
+  /** Phase Inventory-Order-Identity-1 — explicit inventory id for
+   *  inventory-backed cards (mirrors `turath_masr_inventory.id`).
+   *  `null` / `undefined` for static catalog cards. Future stock
+   *  RPCs always read identity from here, never from `value`. */
+  id?: string | null;
+  /** Phase Inventory-Order-Identity-1 — SKU snapshot at card-load
+   *  time. Stays frozen on the saved order line so historical
+   *  display doesn't change if inventory.sku is renamed later. */
+  sku?: string | null;
 }
 
 export interface DraftOrderLine {
@@ -118,6 +127,19 @@ export interface DraftOrderLine {
   image_source?: 'inventory' | 'storage' | 'none';
   image_path?: string | null;
   emoji?: string;
+  /** Phase Inventory-Order-Identity-1 — canonical inventory id when
+   *  this line came from an inventory-backed card (or was inferred
+   *  from a legacy `productType` UUID). `null` for static products.
+   *  Stock-affecting phases (reservation, fulfillment, returns)
+   *  read identity from here. */
+  inventory_id?: string | null;
+  /** Phase Inventory-Order-Identity-1 — SKU snapshot captured at
+   *  add-time. Frozen — never re-fetched from live inventory. */
+  sku?: string | null;
+  /** Optional carry-through note (the EditOrderModal preserves it
+   *  on same-product edits). Declared here so the type covers the
+   *  full draft round-trip. */
+  note?: string | null;
 }
 
 // ─── Factory ─────────────────────────────────────────────────────────────
@@ -145,6 +167,12 @@ export function createDraftLine(card: ProductCard): DraftOrderLine {
       : card.value === 'holder'
         ? HOLDER_COLOR_PALETTE[0].value
         : '';
+  // Phase Inventory-Order-Identity-1 — capture identity from the
+  // card so saves can persist `inventory_id` + `sku` without
+  // re-running the resolution at serialize-time.
+  const inventoryId =
+    card.id && card.id.trim() ? card.id.trim() : card.isInventory ? card.value : null;
+  const sku = card.sku && String(card.sku).trim() ? String(card.sku).trim() : null;
   return {
     id: generateLineId(),
     productType: card.value,
@@ -157,6 +185,8 @@ export function createDraftLine(card: ProductCard): DraftOrderLine {
     image: card.image ?? undefined,
     image_source: card.isInventory ? 'inventory' : undefined,
     emoji: card.emoji,
+    inventory_id: inventoryId,
+    sku: inventoryId ? sku : null,
   };
 }
 
@@ -237,6 +267,11 @@ export async function loadProductCards(
     isInventory: true,
     colors: item.colors,
     category: item.category,
+    // Phase Inventory-Order-Identity-1 — surface identity fields on
+    // the card so downstream serializers don't have to re-derive
+    // them from `value` / `isInventory`.
+    id: item.id,
+    sku: item.sku || null,
   }));
   return { items, cards };
 }

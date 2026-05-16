@@ -330,6 +330,18 @@ interface ProductCard {
   isInventory?: boolean;
   colors?: string[];
   category?: string;
+  /** Phase Inventory-Order-Identity-1 — explicit inventory id for
+   *  inventory-backed cards. Null for static catalog cards. Stock
+   *  RPCs read identity from here, never from `value`. */
+  id?: string | null;
+  /** Phase Inventory-Order-Identity-1 — `turath_masr_inventory.sku`
+   *  snapshot at card-load time. Frozen on save. */
+  sku?: string | null;
+  /** Inventory stock count (already populated by the inventoryCards
+   *  builder below for UI gating). Phase Inventory-Order-Identity-1
+   *  surfaces it on the typed shape so other call sites can read it
+   *  without `as any` casts. */
+  available?: number;
 }
 
 // Phase 24C — prefill shape for the new "create order from customer
@@ -799,6 +811,11 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
         colors: item.colors,
         category: item.category,
         available: item.available,
+        // Phase Inventory-Order-Identity-1 — surface identity fields
+        // so the save-time line serializer doesn't have to re-derive
+        // them from `value` / `isInventory`.
+        id: item.id,
+        sku: item.sku || null,
       }));
 
       inventoryRef.current = inventoryItems;
@@ -2112,8 +2129,21 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
         // preserved.
         const cardImage =
           card?.image && !card.image.startsWith('/api/inventory/') ? card.image : null;
+        // Phase Inventory-Order-Identity-1 — capture inventory id + sku
+        // alongside the line so future stock / reservation phases have
+        // a stable handle. Falls back to a UUID-shaped `productType`
+        // when the card isn't inventory-backed (covers legacy paths).
+        const inventoryId =
+          card?.id && card.id.trim()
+            ? card.id.trim()
+            : card?.isInventory && card.value
+              ? card.value
+              : null;
+        const sku = inventoryId && card?.sku ? String(card.sku) : null;
         return {
           productType: l.productType,
+          inventory_id: inventoryId,
+          sku,
           label: card?.label || l.productType,
           image: cardImage,
           emoji: card?.emoji || '📦',

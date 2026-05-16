@@ -101,6 +101,14 @@ export interface AdjustmentLine {
   id?: string;
   /** Product type / SKU label. */
   productType: string;
+  /** Phase Inventory-Order-Identity-1 — canonical inventory id snapshot
+   *  copied from the source order line (for return lines) or from the
+   *  picked card (for replacement lines). `null` for static products
+   *  or pre-Phase-1 historical lines that never carried an identity. */
+  inventory_id?: string | null;
+  /** Phase Inventory-Order-Identity-1 — frozen `turath_masr_inventory.sku`
+   *  snapshot. Display-only here; future stock RPCs read `inventory_id`. */
+  sku?: string | null;
   /** Display label (Arabic). */
   label?: string;
   /** Colour / variant if relevant. */
