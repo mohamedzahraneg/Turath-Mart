@@ -74,6 +74,10 @@ import {
 // Phase 26D-1 — staff audit log on adjustment decisions + child order
 // + auto-created complaint.
 import { writeStaffAuditLog } from '@/lib/security/staffAudit';
+// Phase Inventory-Returns-Stock-1 — fires `return_in` movements
+// against `inventory_apply_movement` when a return adjustment
+// transitions to `completed` with `return_to_stock` lines.
+import { applyReturnStockEffects } from '@/lib/inventory/returnStockClient';
 import { UserStamp } from '@/components/UserStamp';
 
 interface OrderLine {
@@ -914,12 +918,103 @@ export default function OrderDetailModal({ order, onClose }: Props) {
       } catch (auditErr) {
         console.warn('[OrderDetailModal] staff audit decision failed:', auditErr);
       }
+
+      // Phase Inventory-Returns-Stock-1 — when a return adjustment
+      // is COMPLETED (physical goods received), apply the per-line
+      // stock dispositions. We fire only on transitions INTO
+      // `completed`, only for `return_*` kinds, and only for lines
+      // marked `return_to_stock` with an inventory id. The helper is
+      // idempotent: a second completion attempt skips any line whose
+      // `return_in` movement is already on the ledger.
+      let returnStockResult: Awaited<ReturnType<typeof applyReturnStockEffects>> | null = null;
+      if (
+        nextState === 'completed' &&
+        (adjustment.kind === 'return_full' || adjustment.kind === 'return_partial')
+      ) {
+        try {
+          returnStockResult = await applyReturnStockEffects({
+            supabase,
+            adjustment,
+            actorName: decidedByName,
+          });
+          // Per-line outcome bundle goes into staff audit. Success
+          // (any applied) and warning (any failed) get separate rows
+          // so the audit timeline shows actionable signal.
+          if (returnStockResult.failedCount > 0) {
+            try {
+              await writeStaffAuditLog(supabase, {
+                action: 'inventory.return_stock_failed',
+                actorId: user?.id ?? null,
+                actorName: decidedByName,
+                actorRoleId: currentRoleId ?? null,
+                entity: {
+                  type: 'adjustment',
+                  id: adjustment.id,
+                  label: `${ADJUSTMENT_KIND_LABEL_AR[adjustment.kind]} — #${adjustment.order_num}`,
+                },
+                description: `فشل إرجاع ${returnStockResult.failedCount} سطر إلى المخزون من المرتجع #${adjustment.order_num}`,
+                metadata: {
+                  adjustment_id: adjustment.id,
+                  order_id: adjustment.order_id,
+                  order_num: adjustment.order_num,
+                  applied_count: returnStockResult.appliedCount,
+                  total_applied_quantity: returnStockResult.totalAppliedQuantity,
+                  skipped_count: returnStockResult.skippedCount,
+                  failed_count: returnStockResult.failedCount,
+                  outcomes: returnStockResult.outcomes,
+                },
+              });
+            } catch (auditErr) {
+              console.warn('[OrderDetailModal] return_stock_failed audit skipped:', auditErr);
+            }
+            toast.warning(
+              `تم إكمال المرتجع، لكن فشل إرجاع ${returnStockResult.failedCount} سطر إلى المخزون. راجع السجل.`
+            );
+          }
+          if (returnStockResult.appliedCount > 0) {
+            try {
+              await writeStaffAuditLog(supabase, {
+                action: 'inventory.return_stock_applied',
+                actorId: user?.id ?? null,
+                actorName: decidedByName,
+                actorRoleId: currentRoleId ?? null,
+                entity: {
+                  type: 'adjustment',
+                  id: adjustment.id,
+                  label: `${ADJUSTMENT_KIND_LABEL_AR[adjustment.kind]} — #${adjustment.order_num}`,
+                },
+                description: `تم إرجاع ${returnStockResult.appliedCount} سطر (${returnStockResult.totalAppliedQuantity} قطعة) إلى المخزون من المرتجع #${adjustment.order_num}`,
+                metadata: {
+                  adjustment_id: adjustment.id,
+                  order_id: adjustment.order_id,
+                  order_num: adjustment.order_num,
+                  applied_count: returnStockResult.appliedCount,
+                  total_applied_quantity: returnStockResult.totalAppliedQuantity,
+                  skipped_count: returnStockResult.skippedCount,
+                  failed_count: returnStockResult.failedCount,
+                  outcomes: returnStockResult.outcomes,
+                },
+              });
+            } catch (auditErr) {
+              console.warn('[OrderDetailModal] return_stock_applied audit skipped:', auditErr);
+            }
+          }
+        } catch (returnStockErr) {
+          console.error('[OrderDetailModal] applyReturnStockEffects threw:', returnStockErr);
+          toast.warning(
+            'تم إكمال المرتجع، لكن حدث خطأ في تطبيق تأثير المخزون. راجع المخزون يدويًا.'
+          );
+        }
+      }
+
       toast.success(
         nextState === 'approved' && childOrderNum
           ? `تمت الموافقة، وإنشاء الطلب الفرعي #${childOrderNum}`
-          : childCascadeCancelled && childOrderNum
-            ? `تم تحديث حالة التسوية، وإلغاء الطلب الفرعي #${childOrderNum}.`
-            : 'تم تحديث حالة التسوية.'
+          : nextState === 'completed' && returnStockResult && returnStockResult.appliedCount > 0
+            ? `تم إكمال المرتجع وإرجاع ${returnStockResult.totalAppliedQuantity} قطعة إلى المخزون.`
+            : childCascadeCancelled && childOrderNum
+              ? `تم تحديث حالة التسوية، وإلغاء الطلب الفرعي #${childOrderNum}.`
+              : 'تم تحديث حالة التسوية.'
       );
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new Event('turath_masr_order_adjustments_updated'));
