@@ -32,6 +32,7 @@ import {
   formatNumber,
   productLifecycle,
   productStatus,
+  sellableQty,
   type InventoryItem,
   type LifecycleStatus,
 } from '@/lib/inventory/inventoryStats';
@@ -55,6 +56,8 @@ const HEADERS = [
   'الألوان',
   'السعر',
   'المتاح',
+  'المحجوز',
+  'المتاح للبيع',
   'المسحوب',
   'الحد الأدنى',
   'دورة الحياة',
@@ -182,6 +185,26 @@ export default function InventoryTable({
                     >
                       {formatNumber(item.available || 0)}
                     </span>
+                  </td>
+                  <td className="px-4 py-3 font-mono whitespace-nowrap">
+                    {(item.reserved ?? 0) > 0 ? (
+                      <span className="text-purple-700 font-semibold">
+                        {formatNumber(item.reserved ?? 0)}
+                      </span>
+                    ) : (
+                      <span className="text-[hsl(var(--muted-foreground))]">0</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 font-mono font-bold whitespace-nowrap">
+                    {(item.reserved ?? 0) > 0 ? (
+                      <span className="text-[hsl(var(--primary))]">
+                        {formatNumber(sellableQty(item))}
+                      </span>
+                    ) : (
+                      <span className="text-[hsl(var(--muted-foreground))]">
+                        {formatNumber(item.available || 0)}
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3 font-mono text-[hsl(var(--muted-foreground))] whitespace-nowrap">
                     {formatNumber(withdrawn)}

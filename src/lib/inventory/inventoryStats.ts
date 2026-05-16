@@ -43,6 +43,11 @@ export interface InventoryItem {
   archived_by?: string | null;
   archive_reason?: string | null;
   updated_at?: string | null;
+  /** Phase Inventory-Reservations-1 — count of units currently held
+   *  against open orders. `sellable = max(available - reserved, 0)`.
+   *  `undefined` before the Phase Inventory-Reservations-1 migration
+   *  applies; treated as `0` everywhere. */
+  reserved?: number;
 }
 
 export interface Category {
@@ -159,6 +164,23 @@ export interface InventoryStats {
   inventoryValue: number;
   lowStockCount: number;
   outOfStockCount: number;
+  /** Phase Inventory-Reservations-1 — total units held against open
+   *  orders across all non-archived rows. `0` pre-migration. */
+  totalReserved: number;
+  /** Phase Inventory-Reservations-1 — `available − reserved` summed,
+   *  floored at 0 per row so a stale over-reservation doesn't drag
+   *  the aggregate negative. */
+  totalSellable: number;
+}
+
+/** Phase Inventory-Reservations-1 — per-item sellable count.
+ *  Floored at 0 so a stale over-reservation (impossible by the
+ *  CHECK constraint but defensive on the client) doesn't surface
+ *  as a negative number in the UI. */
+export function sellableQty(item: InventoryItem): number {
+  const available = item.available || 0;
+  const reserved = item.reserved || 0;
+  return Math.max(0, available - reserved);
 }
 
 export function productLifecycle(item: InventoryItem): LifecycleStatus {
@@ -203,15 +225,21 @@ export function computeStats(
   let inventoryValue = 0;
   let lowStockCount = 0;
   let outOfStockCount = 0;
+  let totalReserved = 0;
+  let totalSellable = 0;
 
   for (const item of items) {
     const available = item.available || 0;
     const withdrawn = realWithdrawnByName[item.name.trim()] || 0;
     const price = item.price || 0;
+    const reserved = item.reserved || 0;
+    const sellable = Math.max(0, available - reserved);
 
     totalAvailable += available;
     totalWithdrawn += withdrawn;
     inventoryValue += available * price;
+    totalReserved += reserved;
+    totalSellable += sellable;
 
     if (available <= 0) {
       outOfStockCount += 1;
@@ -227,6 +255,8 @@ export function computeStats(
     inventoryValue,
     lowStockCount,
     outOfStockCount,
+    totalReserved,
+    totalSellable,
   };
 }
 
@@ -331,6 +361,8 @@ export function exportInventoryCsv(items: InventoryItem[]): void {
     'الفئة',
     'السعر',
     'المتاح',
+    'المحجوز',
+    'المتاح للبيع',
     'المسحوب',
     'الحد الأدنى',
     'الألوان',
@@ -346,6 +378,8 @@ export function exportInventoryCsv(items: InventoryItem[]): void {
     item.category || '',
     String(item.price ?? 0),
     String(item.available ?? 0),
+    String(item.reserved ?? 0),
+    String(sellableQty(item)),
     String(item.withdrawn ?? 0),
     String(item.minStock ?? 0),
     (item.colors ?? []).join(' / '),

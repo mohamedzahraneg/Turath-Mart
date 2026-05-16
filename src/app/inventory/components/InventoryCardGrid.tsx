@@ -29,6 +29,7 @@ import {
   formatNumber,
   productLifecycle,
   productStatus,
+  sellableQty,
   type InventoryItem,
   type LifecycleStatus,
 } from '@/lib/inventory/inventoryStats';
@@ -177,6 +178,19 @@ export default function InventoryCardGrid({
                 <span>الحد الأدنى: {formatNumber(item.minStock || 0)}</span>
                 <span>المسحوب: {formatNumber(withdrawn)}</span>
               </div>
+              {/* Phase Inventory-Reservations-1 — show محجوز / للبيع
+                  only on rows that actually have a non-zero reserved
+                  count. Hides cleanly pre-migration. */}
+              {(item.reserved ?? 0) > 0 && (
+                <div className="flex items-center justify-between mt-0.5 text-[10px]">
+                  <span className="text-purple-700 font-semibold">
+                    محجوز: {formatNumber(item.reserved ?? 0)}
+                  </span>
+                  <span className="text-[hsl(var(--primary))] font-semibold">
+                    للبيع: {formatNumber(sellableQty(item))}
+                  </span>
+                </div>
+              )}
             </div>
 
             {/* Actions */}

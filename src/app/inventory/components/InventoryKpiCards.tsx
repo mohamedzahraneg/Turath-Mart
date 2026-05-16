@@ -16,6 +16,7 @@ import {
   Activity,
   AlertTriangle,
   Banknote,
+  Lock,
   Package,
   PackagePlus,
   TrendingDown,
@@ -37,16 +38,25 @@ interface Props {
   /** Movements created today across all products. `null` hides the
    *  card pre-migration. */
   movementsToday?: number | null;
+  /** Phase Inventory-Reservations-1 — show the "محجوز للطلبات" card.
+   *  `null` hides the card (before the reservations migration applies,
+   *  or when the parent wants a more compact KPI row). */
+  showReservations?: boolean;
 }
 
 interface Card {
   label: string;
   value: string;
   icon: React.ReactNode;
-  tone: 'blue' | 'green' | 'orange' | 'navy' | 'amber' | 'red' | 'emerald' | 'sky';
+  tone: 'blue' | 'green' | 'orange' | 'navy' | 'amber' | 'red' | 'emerald' | 'sky' | 'purple';
 }
 
-export default function InventoryKpiCards({ stats, additionsThisMonth, movementsToday }: Props) {
+export default function InventoryKpiCards({
+  stats,
+  additionsThisMonth,
+  movementsToday,
+  showReservations,
+}: Props) {
   const cards: Card[] = [
     {
       label: 'إجمالي المنتجات',
@@ -86,6 +96,16 @@ export default function InventoryKpiCards({ stats, additionsThisMonth, movements
     },
   ];
 
+  if (showReservations) {
+    // Phase Inventory-Reservations-1 — replace "نفد المخزون" with a
+    // pair (نفد + محجوز للطلبات) so we don't keep growing the row.
+    cards.push({
+      label: 'محجوز للطلبات',
+      value: formatNumber(stats.totalReserved),
+      icon: <Lock size={20} />,
+      tone: 'purple',
+    });
+  }
   if (typeof additionsThisMonth === 'number') {
     cards.push({
       label: 'إضافات الشهر',
@@ -103,9 +123,15 @@ export default function InventoryKpiCards({ stats, additionsThisMonth, movements
     });
   }
 
-  // Match the xl grid to the actual card count (6 / 7 / 8).
+  // Match the xl grid to the actual card count (6 / 7 / 8 / 9).
   const xlCols =
-    cards.length >= 8 ? 'xl:grid-cols-8' : cards.length === 7 ? 'xl:grid-cols-7' : 'xl:grid-cols-6';
+    cards.length >= 9
+      ? 'xl:grid-cols-9'
+      : cards.length >= 8
+        ? 'xl:grid-cols-8'
+        : cards.length === 7
+          ? 'xl:grid-cols-7'
+          : 'xl:grid-cols-6';
 
   return (
     <div className={`grid grid-cols-2 md:grid-cols-3 ${xlCols} gap-3`} dir="rtl">
@@ -138,4 +164,5 @@ const TONE_BG: Record<Card['tone'], string> = {
   red: 'bg-red-50 text-red-600',
   emerald: 'bg-emerald-100 text-emerald-700',
   sky: 'bg-sky-50 text-sky-600',
+  purple: 'bg-purple-50 text-purple-700',
 };

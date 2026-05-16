@@ -50,6 +50,7 @@ import {
   MOVEMENT_TYPE_LABELS_AR,
   productLifecycle,
   productStatus,
+  sellableQty,
   type InventoryAddition,
   type InventoryItem,
   type InventoryMovement,
@@ -264,6 +265,30 @@ function SummaryTab({
       <div className="rounded-2xl border border-[hsl(var(--border))] bg-white p-4 space-y-2">
         <Row label="الفئة" value={item.category || '—'} />
         <Row label="SKU" value={item.sku} mono />
+        {/* Phase Inventory-Reservations-1 — show reserved + sellable
+            only when the product actually has a non-zero reservation.
+            Keeps the drawer compact pre-migration and on rows with no
+            active orders. */}
+        {(item.reserved ?? 0) > 0 && (
+          <>
+            <Row
+              label="محجوز للطلبات"
+              value={
+                <span className="text-purple-700 font-semibold">
+                  {formatNumber(item.reserved ?? 0)}
+                </span>
+              }
+            />
+            <Row
+              label="المتاح للبيع"
+              value={
+                <span className="text-[hsl(217,80%,30%)] font-semibold">
+                  {formatNumber(sellableQty(item))}
+                </span>
+              }
+            />
+          </>
+        )}
         <Row label="تاريخ الإضافة" value={formatDate(item.created_at)} />
         <Row label="آخر تحديث" value={formatDate(item.updated_at)} />
         <Row label="دورة الحياة" value={<LifecycleChip lifecycle={lifecycle} />} />
