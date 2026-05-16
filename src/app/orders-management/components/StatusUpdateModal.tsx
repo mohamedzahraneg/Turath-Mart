@@ -542,6 +542,76 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
       // 'active' rows to 'released' and decrements `reserved`, so
       // calling it for orders without any reservations is a safe
       // no-op.
+      // Phase Inventory-Delivery-Fulfillment-1 — when the order
+      // transitions INTO 'delivered' (and wasn't already delivered),
+      // call inventory_fulfill_for_order: it converts each active
+      // reservation to fulfilled, decrements `reserved` and
+      // `available`, and writes one `order_out` row to the movement
+      // ledger per fulfilled line. Idempotent: re-running finds no
+      // active rows and returns zeros.
+      if (data.newStatus === 'delivered' && !isDeliveredStatus(order.status)) {
+        try {
+          const fulfillRes = await supabase.rpc('inventory_fulfill_for_order', {
+            p_order_id: order.id,
+            p_order_num: order.orderNum,
+            p_fulfilled_by_name: user.name || null,
+            p_metadata: { context: 'status_update_modal' },
+          });
+          if (fulfillRes.error) {
+            const errMessage = fulfillRes.error.message || 'fulfill failed';
+            console.error('[StatusUpdateModal] inventory fulfillment failed:', fulfillRes.error);
+            toast.warning(
+              'تم تحديث حالة الطلب إلى تم التسليم لكن فشل تحديث المخزون. راجع المخزون فورًا.'
+            );
+            try {
+              await writeStaffAuditLog(supabase, {
+                action: 'inventory.fulfillment_failed',
+                actorId: authUser?.id ?? null,
+                actorName: user.name ?? null,
+                actorRoleId: currentRoleId ?? null,
+                entity: { type: 'order', id: order.id, label: `#${order.orderNum}` },
+                metadata: {
+                  order_id: order.id,
+                  order_num: order.orderNum,
+                  context: 'fulfill_on_delivery',
+                  error_message: errMessage,
+                },
+              });
+            } catch (auditErr) {
+              console.warn('[StatusUpdateModal] fulfillment_failed audit skipped', auditErr);
+            }
+          } else {
+            const fulfillResult = (fulfillRes.data ?? null) as {
+              fulfilled_count?: number;
+              total_fulfilled_quantity?: number;
+              movement_count?: number;
+            } | null;
+            try {
+              await writeStaffAuditLog(supabase, {
+                action: 'inventory.fulfillment_completed',
+                actorId: authUser?.id ?? null,
+                actorName: user.name ?? null,
+                actorRoleId: currentRoleId ?? null,
+                entity: { type: 'order', id: order.id, label: `#${order.orderNum}` },
+                metadata: {
+                  order_id: order.id,
+                  order_num: order.orderNum,
+                  context: 'delivery',
+                  fulfilled_count: fulfillResult?.fulfilled_count ?? null,
+                  total_fulfilled_quantity: fulfillResult?.total_fulfilled_quantity ?? null,
+                  movement_count: fulfillResult?.movement_count ?? null,
+                },
+              });
+            } catch (auditErr) {
+              console.warn('[StatusUpdateModal] fulfillment_completed audit skipped', auditErr);
+            }
+          }
+        } catch (fulfillErr) {
+          console.error('[StatusUpdateModal] inventory fulfillment threw:', fulfillErr);
+          toast.warning('تم تحديث حالة الطلب إلى تم التسليم لكن حدث خطأ في تحديث المخزون.');
+        }
+      }
+
       if (isCancelledStatus(data.newStatus) && !isDeliveredStatus(order.status)) {
         try {
           const releaseRes = await supabase.rpc('inventory_release_for_order', {

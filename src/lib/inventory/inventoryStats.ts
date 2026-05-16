@@ -94,7 +94,12 @@ export type MovementType =
   | 'exchange_out'
   | 'stock_count_adjustment'
   | 'price_change'
-  | 'correction';
+  | 'correction'
+  // Phase Inventory-Delivery-Fulfillment-1 — written by
+  // `inventory_fulfill_for_order` when an order transitions to
+  // `delivered`. Always carries a negative delta and a non-null
+  // `order_num`.
+  | 'order_out';
 
 /** Subset of movement types we expose in the manual movement modal.
  *  Order-flow movements (`addition`, `exchange_*`) are deliberately
@@ -120,6 +125,7 @@ export const MOVEMENT_TYPE_LABELS_AR: Record<MovementType, string> = {
   stock_count_adjustment: 'تسوية جرد',
   price_change: 'تعديل سعر',
   correction: 'تصحيح',
+  order_out: 'خروج لطلب',
 };
 
 export interface InventoryMovement {

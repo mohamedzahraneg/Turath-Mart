@@ -118,7 +118,10 @@ export type StaffAuditAction =
   | 'inventory.reservation_created'
   | 'inventory.reservation_released'
   | 'inventory.reservation_reconciled'
-  | 'inventory.reservation_failed';
+  | 'inventory.reservation_failed'
+  // ─── Phase Inventory-Delivery-Fulfillment-1 — fulfill on delivery ───
+  | 'inventory.fulfillment_completed'
+  | 'inventory.fulfillment_failed';
 
 export const STAFF_AUDIT_ACTION_LABEL_AR: Record<StaffAuditAction, string> = {
   'staff.role_changed': 'تغيير الدور',
@@ -211,6 +214,9 @@ export const STAFF_AUDIT_ACTION_LABEL_AR: Record<StaffAuditAction, string> = {
   'inventory.reservation_released': 'فك حجز مخزون لطلب',
   'inventory.reservation_reconciled': 'تسوية حجز مخزون لطلب',
   'inventory.reservation_failed': 'فشل حجز مخزون لطلب',
+  // Phase Inventory-Delivery-Fulfillment-1 — fulfill on delivery
+  'inventory.fulfillment_completed': 'تسليم طلب وخصم من المخزون',
+  'inventory.fulfillment_failed': 'فشل خصم المخزون بعد تسليم الطلب',
 };
 
 /**
