@@ -21,6 +21,11 @@ import { createClient } from '@/lib/supabase/client';
 // so /roles → الأمان والتدقيق shows operational activity beside
 // the existing per-order timeline.
 import { writeStaffAuditLog } from '@/lib/security/staffAudit';
+// Phase Inventory-Reservations-1C — release reservations when an
+// order transitions to "cancelled". Skipped when the previous
+// status was already 'delivered' (Delivery-Fulfillment phase owns
+// post-delivery stock effects).
+import { isCancelledStatus, isDeliveredStatus } from '@/lib/inventory/orderReservationClient';
 // Phase 22P — structured `note` payload. The audit-log `note`
 // column carries `JSON.stringify({ reason?, note?, schedule? })` so
 // cancellation / return reasons, free-form admin notes, AND the
@@ -527,6 +532,70 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
         }
       } catch (auditErr) {
         console.warn('[StatusUpdateModal] staff audit write failed:', auditErr);
+      }
+
+      // Phase Inventory-Reservations-1C — release any active stock
+      // reservations when the order is cancelled. We skip when the
+      // PREVIOUS status was 'delivered' so the Delivery-Fulfillment
+      // phase remains the sole owner of post-delivery stock effects.
+      // The release RPC is naturally idempotent: it transitions only
+      // 'active' rows to 'released' and decrements `reserved`, so
+      // calling it for orders without any reservations is a safe
+      // no-op.
+      if (isCancelledStatus(data.newStatus) && !isDeliveredStatus(order.status)) {
+        try {
+          const releaseRes = await supabase.rpc('inventory_release_for_order', {
+            p_order_id: order.id,
+            p_reason: 'order_cancelled',
+            p_released_by_name: user.name || null,
+          });
+          if (releaseRes.error) {
+            const errMessage = releaseRes.error.message || 'release failed';
+            console.warn('[StatusUpdateModal] reservation release failed:', releaseRes.error);
+            try {
+              await writeStaffAuditLog(supabase, {
+                action: 'inventory.reservation_failed',
+                actorId: authUser?.id ?? null,
+                actorName: user.name ?? null,
+                actorRoleId: currentRoleId ?? null,
+                entity: { type: 'order', id: order.id, label: `#${order.orderNum}` },
+                metadata: {
+                  order_id: order.id,
+                  order_num: order.orderNum,
+                  context: 'release_on_cancel',
+                  error_message: errMessage,
+                },
+              });
+            } catch (auditErr) {
+              console.warn('[StatusUpdateModal] reservation_failed audit skipped', auditErr);
+            }
+          } else {
+            const releaseResult = (releaseRes.data ?? null) as {
+              released_count?: number;
+              total_quantity?: number;
+            } | null;
+            try {
+              await writeStaffAuditLog(supabase, {
+                action: 'inventory.reservation_released',
+                actorId: authUser?.id ?? null,
+                actorName: user.name ?? null,
+                actorRoleId: currentRoleId ?? null,
+                entity: { type: 'order', id: order.id, label: `#${order.orderNum}` },
+                metadata: {
+                  order_id: order.id,
+                  order_num: order.orderNum,
+                  context: 'cancel',
+                  released_count: releaseResult?.released_count ?? null,
+                  released_quantity: releaseResult?.total_quantity ?? null,
+                },
+              });
+            } catch (auditErr) {
+              console.warn('[StatusUpdateModal] reservation_released audit skipped', auditErr);
+            }
+          }
+        } catch (releaseErr) {
+          console.error('[StatusUpdateModal] reservation release threw:', releaseErr);
+        }
       }
 
       // The "status_change" system notification is now produced by the

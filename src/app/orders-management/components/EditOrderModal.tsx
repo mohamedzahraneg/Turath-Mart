@@ -70,6 +70,15 @@ import {
   type OrderSnapshot,
   type OrderSnapshotLine,
 } from '@/lib/orders/orderChangeDiff';
+// Phase Inventory-Reservations-1C — reconcile reservations after a
+// successful order edit. Helpers normalise the lines payload and
+// gate by status so the Delivery-Fulfillment phase keeps full
+// ownership of post-delivery stock effects.
+import {
+  buildReservationLinesFromOrderLines,
+  hasInventoryBackedLines,
+  isDeliveredStatus,
+} from '@/lib/inventory/orderReservationClient';
 // Phase Orders-Edit-2 — shared product catalog + line editor.
 // Lifts the AddOrderModal's product-grid block into a reusable
 // surface so EditOrderModal supports color / swap / add / delete
@@ -713,6 +722,90 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
         });
       } catch (staffAuditErr) {
         console.warn('[edit-order] staff audit failed:', staffAuditErr);
+      }
+
+      // Phase Inventory-Reservations-1C — reconcile reservations
+      // against the new line set. We skip when the live row was
+      // already delivered (the Delivery-Fulfillment phase owns
+      // post-delivery stock effects) and when neither the old nor
+      // the new lines reference inventory (static-only orders never
+      // produce reservations, so there is nothing to reconcile).
+      // The reconcile RPC itself is idempotent: it releases every
+      // active reservation for the order, then re-reserves from the
+      // supplied lines, so a partial / mid-edit save converges on
+      // the right state.
+      const liveStatus = typeof liveRow.status === 'string' ? liveRow.status : null;
+      const shouldReconcileReservations =
+        !isDeliveredStatus(liveStatus) &&
+        (hasInventoryBackedLines(liveLines) || hasInventoryBackedLines(newLines));
+      if (shouldReconcileReservations) {
+        const reconcileLines = buildReservationLinesFromOrderLines(newLines);
+        try {
+          const reconcileRes = await supabase.rpc('inventory_reconcile_order_lines', {
+            p_order_id: order.id,
+            p_order_num: order.orderNum,
+            p_lines: reconcileLines,
+            p_reason: 'order_edited',
+            p_actor_name: actorLabel,
+            p_allow_oversell: false,
+          });
+          if (reconcileRes.error) {
+            const errMessage = reconcileRes.error.message || 'reconcile failed';
+            console.error('[edit-order] reconcile failed:', reconcileRes.error);
+            toast.warning('تم حفظ التعديلات لكن تعذر تحديث حجز المخزون. راجع المخزون يدويًا.');
+            try {
+              await writeStaffAuditLog(supabase, {
+                action: 'inventory.reservation_failed',
+                actorId: user?.id ?? null,
+                actorName: actorLabel,
+                actorRoleId: currentRoleId ?? null,
+                entity: { type: 'order', id: order.id, label: `#${order.orderNum}` },
+                metadata: {
+                  order_id: order.id,
+                  order_num: order.orderNum,
+                  context: 'reconcile_on_edit',
+                  error_message: errMessage,
+                  line_count: reconcileLines.length,
+                },
+              });
+            } catch (auditErr) {
+              console.warn('[edit-order] reservation_failed audit skipped', auditErr);
+            }
+          } else {
+            const reconcileResult = (reconcileRes.data ?? null) as {
+              release?: { released_count?: number; total_quantity?: number } | null;
+              reserve?: {
+                reserved_count?: number;
+                skipped_count?: number;
+                total_quantity?: number;
+              } | null;
+            } | null;
+            try {
+              await writeStaffAuditLog(supabase, {
+                action: 'inventory.reservation_reconciled',
+                actorId: user?.id ?? null,
+                actorName: actorLabel,
+                actorRoleId: currentRoleId ?? null,
+                entity: { type: 'order', id: order.id, label: `#${order.orderNum}` },
+                metadata: {
+                  order_id: order.id,
+                  order_num: order.orderNum,
+                  line_count: reconcileLines.length,
+                  released_count: reconcileResult?.release?.released_count ?? null,
+                  released_quantity: reconcileResult?.release?.total_quantity ?? null,
+                  reserved_count: reconcileResult?.reserve?.reserved_count ?? null,
+                  reserved_quantity: reconcileResult?.reserve?.total_quantity ?? null,
+                  skipped_count: reconcileResult?.reserve?.skipped_count ?? null,
+                },
+              });
+            } catch (auditErr) {
+              console.warn('[edit-order] reservation_reconciled audit skipped', auditErr);
+            }
+          }
+        } catch (reconcileErr) {
+          console.error('[edit-order] reconcile threw:', reconcileErr);
+          toast.warning('تم حفظ التعديلات لكن حدث خطأ في تحديث حجز المخزون.');
+        }
       }
 
       toast.success(
