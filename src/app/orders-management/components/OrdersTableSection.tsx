@@ -35,6 +35,12 @@ const AuditLogModal = dynamic(() => import('./AuditLogModal'), { ssr: false });
 import { createClient } from '@/lib/supabase/client';
 import { useAuth, getPermissionsForRoleId } from '@/contexts/AuthContext';
 import { canBulkManageOrders } from '@/lib/constants/roles';
+// Phase Inventory-Reservations-1C — release reservations when an
+// order is cancelled / archived from the table. Pulled from the
+// shared client helper so the gating (skip if delivered) matches
+// EditOrderModal and StatusUpdateModal exactly.
+import { writeStaffAuditLog } from '@/lib/security/staffAudit';
+import { isDeliveredStatus } from '@/lib/inventory/orderReservationClient';
 // Phase 25A — surface a small badge next to the order status when one
 // or more return / exchange adjustments are open against the order.
 import {
@@ -478,7 +484,7 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
   }, [allOrders]);
 
   // --- صلاحيات المستخدم (من AuthContext - المصدر الموثوق) ---
-  const { user, currentRoleId, customPermissions: authPermissions } = useAuth();
+  const { user, currentRoleId, profileFullName, customPermissions: authPermissions } = useAuth();
   const canManageOrders = (() => {
     if (canBulkManageOrders(currentRoleId)) return true;
     const perms = Array.isArray(authPermissions)
@@ -806,6 +812,73 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
   // `handleSingleDelete`) so we don't rename every call site; the
   // body + tooltips + toasts now describe the cancel/archive
   // behaviour clearly.
+  // Phase Inventory-Reservations-1C — fire `inventory_release_for_order`
+  // for one cancelled order. Best-effort: never blocks the cancel
+  // flow, only surfaces an audit row + console warning on failure.
+  // Caller is expected to have already gated on `!isDeliveredStatus`
+  // so we can keep this helper free of repeated status checks.
+  const releaseReservationForCancelledOrder = async (
+    supabase: ReturnType<typeof createClient>,
+    orderId: string,
+    orderNum: string
+  ) => {
+    if (!supabase) return;
+    const actorName = (profileFullName ?? '').trim() || user?.email || null;
+    try {
+      const releaseRes = await supabase.rpc('inventory_release_for_order', {
+        p_order_id: orderId,
+        p_reason: 'order_cancelled',
+        p_released_by_name: actorName,
+      });
+      if (releaseRes.error) {
+        const errMessage = releaseRes.error.message || 'release failed';
+        console.warn(`[OrdersTableSection] release for #${orderNum} failed:`, releaseRes.error);
+        try {
+          await writeStaffAuditLog(supabase, {
+            action: 'inventory.reservation_failed',
+            actorId: user?.id ?? null,
+            actorName,
+            actorRoleId: currentRoleId ?? null,
+            entity: { type: 'order', id: orderId, label: `#${orderNum}` },
+            metadata: {
+              order_id: orderId,
+              order_num: orderNum,
+              context: 'release_on_cancel_table',
+              error_message: errMessage,
+            },
+          });
+        } catch (auditErr) {
+          console.warn('[OrdersTableSection] reservation_failed audit skipped', auditErr);
+        }
+        return;
+      }
+      const releaseResult = (releaseRes.data ?? null) as {
+        released_count?: number;
+        total_quantity?: number;
+      } | null;
+      try {
+        await writeStaffAuditLog(supabase, {
+          action: 'inventory.reservation_released',
+          actorId: user?.id ?? null,
+          actorName,
+          actorRoleId: currentRoleId ?? null,
+          entity: { type: 'order', id: orderId, label: `#${orderNum}` },
+          metadata: {
+            order_id: orderId,
+            order_num: orderNum,
+            context: 'cancel_from_table',
+            released_count: releaseResult?.released_count ?? null,
+            released_quantity: releaseResult?.total_quantity ?? null,
+          },
+        });
+      } catch (auditErr) {
+        console.warn('[OrdersTableSection] reservation_released audit skipped', auditErr);
+      }
+    } catch (releaseErr) {
+      console.error(`[OrdersTableSection] release for #${orderNum} threw:`, releaseErr);
+    }
+  };
+
   const handleBulkDelete = async () => {
     if (selectedRows.size === 0) return;
     const confirmed = window.confirm(
@@ -815,6 +888,13 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
     try {
       const supabase = createClient();
       const idsToUpdate = Array.from(selectedRows);
+      // Phase Inventory-Reservations-1C — snapshot per-row status
+      // BEFORE the bulk update so we can skip release for any row
+      // that was already 'delivered'. We trust the local
+      // `allOrders` cache; rows missing from it (unlikely on the
+      // current page) fall through to "release anyway" — release is
+      // idempotent and a no-op when there are no active rows.
+      const statusLookup = new Map(allOrders.map((o) => [o.id, o.status]));
       const updatePayload: Record<string, unknown> = {
         status: 'cancelled',
         updated_at: new Date().toISOString(),
@@ -831,6 +911,27 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
       setSelectedRows(new Set());
       loadOrders();
       window.dispatchEvent(new CustomEvent('turath_masr_orders_updated'));
+
+      // Phase Inventory-Reservations-1C — release reservations for
+      // every cancelled order that wasn't already delivered. Run as
+      // Promise.allSettled so a single failure (RLS, missing row,
+      // network) does not abort the rest. The order DB write has
+      // already succeeded; reservation release is best-effort and
+      // never blocks the user's confirmation toast.
+      const releaseTargets = idsToUpdate
+        .map((id) => {
+          const order = allOrders.find((o) => o.id === id);
+          const status = statusLookup.get(id) ?? null;
+          return { id, orderNum: order?.orderNum ?? id, status };
+        })
+        .filter((row) => !isDeliveredStatus(row.status));
+      if (releaseTargets.length > 0) {
+        await Promise.allSettled(
+          releaseTargets.map((row) =>
+            releaseReservationForCancelledOrder(supabase, row.id, row.orderNum)
+          )
+        );
+      }
     } catch (err) {
       console.error('[OrdersTableSection] bulk cancel/archive failed:', err);
       const msg =
@@ -872,6 +973,13 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
       });
       loadOrders();
       window.dispatchEvent(new CustomEvent('turath_masr_orders_updated'));
+
+      // Phase Inventory-Reservations-1C — release reservations on
+      // the cancelled order. Skip when the order was already
+      // delivered; the Delivery-Fulfillment phase owns that path.
+      if (!isDeliveredStatus(order.status)) {
+        await releaseReservationForCancelledOrder(supabase, order.id, order.orderNum);
+      }
     } catch (err) {
       console.error('[OrdersTableSection] single cancel/archive failed:', err);
       const msg =
@@ -887,6 +995,10 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
     try {
       const supabase = createClient();
       const idsToUpdate = Array.from(selectedRows);
+      // Phase Inventory-Reservations-1C — snapshot statuses before
+      // the bulk update so we can release reservations for rows
+      // transitioning to 'cancelled' from a non-delivered state.
+      const statusLookup = new Map(allOrders.map((o) => [o.id, o.status]));
       // Add updated_by traceability for the orders_editor_update RLS policy.
       const updatePayload: Record<string, unknown> = { status: newStatus };
       if (user?.id) {
@@ -899,6 +1011,29 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
       if (error) throw error;
       const statusLabel = STATUS_MAP[newStatus]?.label || newStatus;
       toast.success(`تم تحديث ${selectedRows.size} أوردر إلى: ${statusLabel}`);
+
+      // Phase Inventory-Reservations-1C — when the bulk transition
+      // is to 'cancelled', release reservations for every row that
+      // wasn't already delivered. Other statuses (preparing,
+      // shipping, etc.) keep reservations active; they only release
+      // on cancel or fulfill on delivery (Delivery-Fulfillment).
+      if (newStatus === 'cancelled') {
+        const releaseTargets = idsToUpdate
+          .map((id) => {
+            const order = allOrders.find((o) => o.id === id);
+            const status = statusLookup.get(id) ?? null;
+            return { id, orderNum: order?.orderNum ?? id, status };
+          })
+          .filter((row) => !isDeliveredStatus(row.status));
+        if (releaseTargets.length > 0) {
+          await Promise.allSettled(
+            releaseTargets.map((row) =>
+              releaseReservationForCancelledOrder(supabase, row.id, row.orderNum)
+            )
+          );
+        }
+      }
+
       setSelectedRows(new Set());
       setBulkStatusModal(false);
       loadOrders();
