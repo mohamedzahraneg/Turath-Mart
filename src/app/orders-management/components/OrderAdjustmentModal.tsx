@@ -130,6 +130,11 @@ interface OrderLine {
   flashlightPrice?: number;
   note?: string | null;
   total: number;
+  /** Phase Inventory-Order-Identity-1 — preserved when the parent
+   *  order's line carries inventory identity. Returns built from
+   *  this line copy the value into AdjustmentLine. */
+  inventory_id?: string | null;
+  sku?: string | null;
 }
 
 interface OrderSummary {
@@ -449,8 +454,26 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
       returnRows
         .filter((r) => r.selected && r.qty > 0)
         .map((r) => {
+          // Phase Inventory-Order-Identity-1 — copy identity from the
+          // source order line so a future return-stock RPC can resolve
+          // the inventory row without parsing `productType`. Falls
+          // through cleanly when the source line predates Phase 1.
+          const sourceInventoryId =
+            typeof r.line.inventory_id === 'string' && r.line.inventory_id.trim()
+              ? r.line.inventory_id.trim()
+              : /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+                    (r.line.productType ?? '').trim()
+                  )
+                ? (r.line.productType ?? '').trim()
+                : null;
+          const sourceSku =
+            sourceInventoryId && typeof r.line.sku === 'string' && r.line.sku.trim()
+              ? r.line.sku.trim()
+              : null;
           const base: AdjustmentLine = {
             productType: r.line.productType,
+            inventory_id: sourceInventoryId,
+            sku: sourceSku,
             label: r.line.label,
             color: r.line.color ?? null,
             quantity: r.qty,
@@ -1151,12 +1174,25 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
   // ─── Replacement editor helpers ───
   const addInventoryReplacement = (card: ProductCard) => {
     const colors = resolveLineColors(card);
+    // Phase Inventory-Order-Identity-1 — pull identity off the card
+    // so the persisted replacement line carries `inventory_id` + `sku`
+    // for future stock RPCs.
+    const cardInventoryId =
+      card.id && card.id.trim()
+        ? card.id.trim()
+        : card.isInventory && card.value
+          ? card.value
+          : null;
+    const cardSku =
+      cardInventoryId && card.sku && String(card.sku).trim() ? String(card.sku).trim() : null;
     setReplacementLines((arr) => [
       ...arr,
       {
         itemType: 'product',
         isFree: false,
         productType: card.value,
+        inventory_id: cardInventoryId,
+        sku: cardSku,
         label: card.label,
         color: colors[0]?.value ?? null,
         quantity: 1,
