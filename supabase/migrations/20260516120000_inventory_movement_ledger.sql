@@ -221,6 +221,14 @@ WHERE NOT EXISTS (
 -- the same locked transaction. Return signature gains `movement_id`;
 -- existing callers that only destructure `addition_id` / `new_available`
 -- continue to work unchanged.
+--
+-- PostgreSQL won't change the OUT parameters of an existing function
+-- via CREATE OR REPLACE, so drop the previous version first. The DROP
+-- is a no-op on fresh databases.
+
+DROP FUNCTION IF EXISTS public.inventory_record_addition(
+  uuid, integer, numeric, uuid, text, text, timestamp with time zone, text, text
+);
 
 CREATE OR REPLACE FUNCTION public.inventory_record_addition(
   p_inventory_id         uuid,
