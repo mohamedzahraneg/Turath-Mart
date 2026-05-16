@@ -879,6 +879,78 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
     }
   };
 
+  // Phase Inventory-Delivery-Fulfillment-1 — fire
+  // `inventory_fulfill_for_order` for one order that has just
+  // transitioned to delivered. Best-effort: never blocks the bulk
+  // status update, only surfaces a warning toast + audit row + log on
+  // failure. Caller is expected to have already gated on
+  // `!isDeliveredStatus(previousStatus)` so a re-delivery click does
+  // not double-decrement.
+  const fulfillReservationForDeliveredOrder = async (
+    supabase: ReturnType<typeof createClient>,
+    orderId: string,
+    orderNum: string
+  ) => {
+    if (!supabase) return;
+    const actorName = (profileFullName ?? '').trim() || user?.email || null;
+    try {
+      const fulfillRes = await supabase.rpc('inventory_fulfill_for_order', {
+        p_order_id: orderId,
+        p_order_num: orderNum,
+        p_fulfilled_by_name: actorName,
+        p_metadata: { context: 'bulk_status_update_table' },
+      });
+      if (fulfillRes.error) {
+        const errMessage = fulfillRes.error.message || 'fulfill failed';
+        console.warn(`[OrdersTableSection] fulfill for #${orderNum} failed:`, fulfillRes.error);
+        try {
+          await writeStaffAuditLog(supabase, {
+            action: 'inventory.fulfillment_failed',
+            actorId: user?.id ?? null,
+            actorName,
+            actorRoleId: currentRoleId ?? null,
+            entity: { type: 'order', id: orderId, label: `#${orderNum}` },
+            metadata: {
+              order_id: orderId,
+              order_num: orderNum,
+              context: 'fulfill_on_bulk_delivery',
+              error_message: errMessage,
+            },
+          });
+        } catch (auditErr) {
+          console.warn('[OrdersTableSection] fulfillment_failed audit skipped', auditErr);
+        }
+        return;
+      }
+      const fulfillResult = (fulfillRes.data ?? null) as {
+        fulfilled_count?: number;
+        total_fulfilled_quantity?: number;
+        movement_count?: number;
+      } | null;
+      try {
+        await writeStaffAuditLog(supabase, {
+          action: 'inventory.fulfillment_completed',
+          actorId: user?.id ?? null,
+          actorName,
+          actorRoleId: currentRoleId ?? null,
+          entity: { type: 'order', id: orderId, label: `#${orderNum}` },
+          metadata: {
+            order_id: orderId,
+            order_num: orderNum,
+            context: 'bulk_delivery_from_table',
+            fulfilled_count: fulfillResult?.fulfilled_count ?? null,
+            total_fulfilled_quantity: fulfillResult?.total_fulfilled_quantity ?? null,
+            movement_count: fulfillResult?.movement_count ?? null,
+          },
+        });
+      } catch (auditErr) {
+        console.warn('[OrdersTableSection] fulfillment_completed audit skipped', auditErr);
+      }
+    } catch (fulfillErr) {
+      console.error(`[OrdersTableSection] fulfill for #${orderNum} threw:`, fulfillErr);
+    }
+  };
+
   const handleBulkDelete = async () => {
     if (selectedRows.size === 0) return;
     const confirmed = window.confirm(
@@ -1029,6 +1101,31 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
           await Promise.allSettled(
             releaseTargets.map((row) =>
               releaseReservationForCancelledOrder(supabase, row.id, row.orderNum)
+            )
+          );
+        }
+      }
+
+      // Phase Inventory-Delivery-Fulfillment-1 — when the bulk
+      // transition is to 'delivered', fulfill reservations for every
+      // row that wasn't already delivered (the RPC is idempotent on
+      // active reservations, but skipping pre-delivered rows keeps
+      // the audit signal clean). Promise.allSettled means a single
+      // failure (negative available, missing inventory) does not
+      // abort the other deliveries — the user already saw the bulk
+      // success toast and audit rows capture any RPC failures.
+      if (newStatus === 'delivered') {
+        const fulfillTargets = idsToUpdate
+          .map((id) => {
+            const order = allOrders.find((o) => o.id === id);
+            const status = statusLookup.get(id) ?? null;
+            return { id, orderNum: order?.orderNum ?? id, status };
+          })
+          .filter((row) => !isDeliveredStatus(row.status));
+        if (fulfillTargets.length > 0) {
+          await Promise.allSettled(
+            fulfillTargets.map((row) =>
+              fulfillReservationForDeliveredOrder(supabase, row.id, row.orderNum)
             )
           );
         }
