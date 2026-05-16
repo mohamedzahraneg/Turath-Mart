@@ -159,6 +159,35 @@ export interface AdjustmentLine {
    * full line value`. Ignored when `value_mode !== 'partial'`.
    */
   partial_value?: number;
+  /**
+   * Phase Inventory-Returns-Stock-1 — what should happen to the
+   * inventory `available` count when this return line is COMPLETED?
+   * Only consumed on `return_lines`; ignored on `replacement_lines`
+   * (exchange stock effects ship in a later phase).
+   *
+   *   'return_to_stock'  — write a `return_in` movement row and
+   *                        increment `available` by `quantity`.
+   *                        Requires `inventory_id` to be set.
+   *   'damaged'          — no stock change; the customer returned
+   *                        the goods but they cannot be resold. A
+   *                        future `damage_out` movement may be
+   *                        recorded once the inventory was first
+   *                        incremented; we intentionally skip that
+   *                        here to avoid double-bookkeeping.
+   *   'no_stock_effect'  — no stock change. Default for partial-
+   *                        value lines, component returns, and any
+   *                        line without an `inventory_id`.
+   *
+   * Default in the UI:
+   *   • `'no_stock_effect'` when `inventory_id` is missing OR
+   *      `value_mode === 'partial'`.
+   *   • `'return_to_stock'` otherwise.
+   *
+   * Persistence: stored in the `return_lines` jsonb on
+   * `turath_masr_order_adjustments`. No DB migration is required —
+   * the column is already jsonb and tolerates new keys.
+   */
+  stock_disposition?: 'return_to_stock' | 'damaged' | 'no_stock_effect';
 }
 
 /**

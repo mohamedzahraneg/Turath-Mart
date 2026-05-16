@@ -183,6 +183,33 @@ interface ReturnRow {
   valueMode: 'full' | 'partial';
   /** Only used when `valueMode === 'partial'`. */
   partialValue: number;
+  /** Phase Inventory-Returns-Stock-1 — what happens to the inventory
+   *  `available` count when this return adjustment is completed.
+   *  Defaults to `'return_to_stock'` when the source line has an
+   *  inventory id, otherwise `'no_stock_effect'`. The persisted
+   *  `return_lines[].stock_disposition` is derived from this field
+   *  (with a safety override forcing `'no_stock_effect'` whenever the
+   *  inventory id is missing, so the RPC can never be called with an
+   *  unresolvable identity). */
+  stockDisposition: 'return_to_stock' | 'damaged' | 'no_stock_effect';
+}
+
+/** Phase Inventory-Returns-Stock-1 — does this order line carry a
+ *  resolvable inventory identity? Falls back to the legacy
+ *  `productType`-as-uuid convention from pre-Phase-Identity-1
+ *  inventory linkage so historical orders still resolve. */
+function lineHasInventoryIdentity(line: OrderLine): boolean {
+  if (typeof line.inventory_id === 'string' && line.inventory_id.trim()) return true;
+  const productType = (line.productType ?? '').trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(productType);
+}
+
+/** Phase Inventory-Returns-Stock-1 — initial disposition picker
+ *  used when seeding ReturnRow state. Mirrors the safety rule
+ *  applied at serialization time: lines with no inventory identity
+ *  cannot be returned to stock. */
+function defaultStockDisposition(line: OrderLine): 'return_to_stock' | 'no_stock_effect' {
+  return lineHasInventoryIdentity(line) ? 'return_to_stock' : 'no_stock_effect';
 }
 
 function deriveKind(t: SettlementType | null, s: Subtype | null): AdjustmentKind | null {
@@ -245,6 +272,9 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
       qty: line.quantity,
       valueMode: 'full',
       partialValue: 0,
+      // Phase Inventory-Returns-Stock-1 — default disposition based
+      // on whether the source line has a resolvable inventory id.
+      stockDisposition: defaultStockDisposition(line),
     }))
   );
   const [replacementLines, setReplacementLines] = useState<AdjustmentLine[]>([]);
@@ -488,6 +518,12 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
           } else {
             base.value_mode = 'full';
           }
+          // Phase Inventory-Returns-Stock-1 — serialize the per-line
+          // stock disposition. Safety override: any line missing an
+          // inventory id is forced to `'no_stock_effect'` so the
+          // adjustment-completion RPC never tries to resolve a
+          // non-existent inventory row.
+          base.stock_disposition = sourceInventoryId ? r.stockDisposition : 'no_stock_effect';
           return base;
         }),
     [returnRows]
@@ -1877,6 +1913,13 @@ function ReturnRowEditor(props: {
   const fullLineTotal = fullLineValue(row.line, row.qty);
   const partialClamped = Math.min(row.partialValue, fullLineTotal);
   const lineValue = row.valueMode === 'partial' ? partialClamped : fullLineTotal;
+  // Phase Inventory-Returns-Stock-1 — only inventory-backed lines
+  // can be returned to stock. Lines without an identity are forced
+  // into `no_stock_effect`; the UI disables the other two buttons so
+  // the operator understands the constraint.
+  const hasInventoryIdentity = lineHasInventoryIdentity(row.line);
+  const effectiveDisposition: 'return_to_stock' | 'damaged' | 'no_stock_effect' =
+    hasInventoryIdentity ? row.stockDisposition : 'no_stock_effect';
   return (
     <div
       className={`rounded-xl border p-3 ${
@@ -1985,6 +2028,66 @@ function ReturnRowEditor(props: {
               لا يمكن أن تتجاوز قيمة الجزء قيمة المنتج الأصلي ({fmtEgp(fullLineTotal)}).
             </p>
           )}
+          {/* Phase Inventory-Returns-Stock-1 — stock disposition picker.
+              Drives the post-completion `inventory_apply_movement` /
+              skip decision in OrderDetailModal. Hidden cost: a wrong
+              choice here means an inventory item either gets
+              double-credited (if the operator later runs a manual
+              inbound movement too) or stays missing from `available`
+              (if `damaged` was picked when the goods were actually
+              resellable). The Arabic helper text below explains the
+              when. */}
+          <div>
+            <span className="text-[11px] text-[hsl(var(--muted-foreground))] block mb-1">
+              تأثير المخزون
+            </span>
+            <div className="flex bg-[hsl(var(--muted))]/40 rounded-lg p-0.5 text-[11px] w-fit">
+              <button
+                type="button"
+                disabled={!hasInventoryIdentity}
+                onClick={() => onChange({ stockDisposition: 'return_to_stock' })}
+                className={`px-2 py-0.5 rounded-md transition-colors ${
+                  effectiveDisposition === 'return_to_stock'
+                    ? 'bg-white shadow-sm font-bold text-[hsl(var(--foreground))]'
+                    : 'text-[hsl(var(--muted-foreground))]'
+                } disabled:opacity-40 disabled:cursor-not-allowed`}
+              >
+                يرجع للمخزون
+              </button>
+              <button
+                type="button"
+                disabled={!hasInventoryIdentity}
+                onClick={() => onChange({ stockDisposition: 'damaged' })}
+                className={`px-2 py-0.5 rounded-md transition-colors ${
+                  effectiveDisposition === 'damaged'
+                    ? 'bg-white shadow-sm font-bold text-[hsl(var(--foreground))]'
+                    : 'text-[hsl(var(--muted-foreground))]'
+                } disabled:opacity-40 disabled:cursor-not-allowed`}
+              >
+                تالف / لا يرجع
+              </button>
+              <button
+                type="button"
+                onClick={() => onChange({ stockDisposition: 'no_stock_effect' })}
+                className={`px-2 py-0.5 rounded-md transition-colors ${
+                  effectiveDisposition === 'no_stock_effect'
+                    ? 'bg-white shadow-sm font-bold text-[hsl(var(--foreground))]'
+                    : 'text-[hsl(var(--muted-foreground))]'
+                }`}
+              >
+                بدون تأثير مخزون
+              </button>
+            </div>
+            {hasInventoryIdentity ? (
+              <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1">
+                سيتم تطبيق تأثير المخزون عند اعتماد / إكمال المرتجع، وليس عند إنشائه.
+              </p>
+            ) : (
+              <p className="text-[10px] text-amber-700 mt-1">
+                لا يوجد ربط مخزن لهذا السطر — لن يحدث تأثير على المخزون.
+              </p>
+            )}
+          </div>
         </div>
       )}
     </div>
