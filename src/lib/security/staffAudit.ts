@@ -113,7 +113,12 @@ export type StaffAuditAction =
   // ─── Phase Inventory-Additions-Log-1 — inventory stock movements ───
   | 'inventory.addition_created'
   // ─── Phase Inventory-Movement-Ledger-1 — manual stock movements ───
-  | 'inventory.movement_created';
+  | 'inventory.movement_created'
+  // ─── Phase Inventory-Reservations-1 — order-driven reservations ───
+  | 'inventory.reservation_created'
+  | 'inventory.reservation_released'
+  | 'inventory.reservation_reconciled'
+  | 'inventory.reservation_failed';
 
 export const STAFF_AUDIT_ACTION_LABEL_AR: Record<StaffAuditAction, string> = {
   'staff.role_changed': 'تغيير الدور',
@@ -201,6 +206,11 @@ export const STAFF_AUDIT_ACTION_LABEL_AR: Record<StaffAuditAction, string> = {
   'inventory.addition_created': 'تسجيل إضافة كمية للمخزن',
   // Phase Inventory-Movement-Ledger-1 — manual stock movements
   'inventory.movement_created': 'تسجيل حركة مخزون',
+  // Phase Inventory-Reservations-1 — order-driven reservations
+  'inventory.reservation_created': 'حجز مخزون لطلب',
+  'inventory.reservation_released': 'فك حجز مخزون لطلب',
+  'inventory.reservation_reconciled': 'تسوية حجز مخزون لطلب',
+  'inventory.reservation_failed': 'فشل حجز مخزون لطلب',
 };
 
 /**

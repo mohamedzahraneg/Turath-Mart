@@ -97,6 +97,8 @@ interface InventoryRowDb {
   archived_by?: string | null;
   archive_reason?: string | null;
   updated_at?: string | null;
+  // Phase Inventory-Reservations-1 — undefined pre-migration. Treated as 0.
+  reserved?: number | null;
 }
 
 interface OrderProductsRow {
@@ -150,7 +152,15 @@ interface MovementWithProductRow {
   turath_masr_inventory: { name: string | null; sku: string | null } | null;
 }
 
+// Phase Inventory-Reservations-1 — `reserved` is the newest optional
+// column. We try it first; if it's missing (between deploy and migration)
+// we fall back to the Phase-2 column set (status/category_id/archived_*),
+// then to the original LEGACY shape. Each tier is sufficient on its own
+// for the page to render; missing optional columns surface as undefined
+// and the UI treats them as zero / safe defaults.
 const NEW_COLUMNS =
+  'id, name, sku, available, withdrawn, min_stock, price, category, colors, created_at, status, category_id, archived_at, archived_by, archive_reason, updated_at, reserved';
+const PRE_RESERVATIONS_COLUMNS =
   'id, name, sku, available, withdrawn, min_stock, price, category, colors, created_at, status, category_id, archived_at, archived_by, archive_reason, updated_at';
 const LEGACY_COLUMNS =
   'id, name, sku, available, withdrawn, min_stock, price, category, colors, created_at';
@@ -183,6 +193,7 @@ function mapInventoryRow(r: InventoryRowDb): InventoryItem {
     archived_by: r.archived_by ?? null,
     archive_reason: r.archive_reason ?? null,
     updated_at: r.updated_at ?? null,
+    reserved: r.reserved ?? 0,
   };
 }
 
@@ -257,14 +268,27 @@ export default function InventoryPage() {
       if (!invNew.error) {
         invRows = (invNew.data ?? []) as InventoryRowDb[];
       } else if (isMissingColumnError(invNew.error)) {
-        const invLegacy = await supabase
+        // Phase Inventory-Reservations-1 — `reserved` may be missing
+        // pre-migration. Try the prior Phase 2 column shape, then the
+        // original LEGACY shape.
+        const invPreReservations = await supabase
           .from('turath_masr_inventory')
-          .select(LEGACY_COLUMNS)
+          .select(PRE_RESERVATIONS_COLUMNS)
           .order('created_at', { ascending: false });
-        if (!invLegacy.error) {
-          invRows = (invLegacy.data ?? []) as InventoryRowDb[];
+        if (!invPreReservations.error) {
+          invRows = (invPreReservations.data ?? []) as InventoryRowDb[];
+        } else if (isMissingColumnError(invPreReservations.error)) {
+          const invLegacy = await supabase
+            .from('turath_masr_inventory')
+            .select(LEGACY_COLUMNS)
+            .order('created_at', { ascending: false });
+          if (!invLegacy.error) {
+            invRows = (invLegacy.data ?? []) as InventoryRowDb[];
+          } else {
+            invError = invLegacy.error;
+          }
         } else {
-          invError = invLegacy.error;
+          invError = invPreReservations.error;
         }
       } else {
         invError = invNew.error;
@@ -660,6 +684,16 @@ export default function InventoryPage() {
     [nonArchivedItems, withdrawnByName]
   );
 
+  // Phase Inventory-Reservations-1 — show the "محجوز للطلبات" KPI +
+  // sellable columns only when the `reserved` column is actually
+  // present on the loaded rows (i.e. post-migration). Pre-migration
+  // rows return `reserved: 0` from `mapInventoryRow` (defensive
+  // default), but we don't want to show a uniformly-zero column to
+  // users before the feature is live. We surface it whenever ANY
+  // row in the live dataset reports `reserved > 0`. The first
+  // successful reservation flips the entire UI on automatically.
+  const reservationsAvailable = useMemo(() => items.some((i) => (i.reserved ?? 0) > 0), [items]);
+
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
     const filteredItems = items.filter((item) => {
@@ -761,6 +795,7 @@ export default function InventoryPage() {
           stats={stats}
           additionsThisMonth={additionsThisMonth}
           movementsToday={movementsToday}
+          showReservations={reservationsAvailable}
         />
 
         {lowOrOut > 0 && !loading && !loadError && (
