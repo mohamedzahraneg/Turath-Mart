@@ -100,6 +100,7 @@ import {
 } from '@/lib/orders/adjustmentInvoice';
 import {
   loadProductCards,
+  pickVariantForLine,
   resolveLineColors,
   type InventoryItem,
   type ProductCard,
@@ -135,6 +136,13 @@ interface OrderLine {
    *  this line copy the value into AdjustmentLine. */
   inventory_id?: string | null;
   sku?: string | null;
+  /** Phase Inventory-Variants-1B3 — frozen variant id snapshot from
+   *  the original order line (when the line was placed against a
+   *  baselined variant). Propagated onto return lines so the return
+   *  stock client can re-credit the variant row. */
+  variant_id?: string | null;
+  variant_label?: string | null;
+  variant_sku?: string | null;
 }
 
 interface OrderSummary {
@@ -500,10 +508,31 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
             sourceInventoryId && typeof r.line.sku === 'string' && r.line.sku.trim()
               ? r.line.sku.trim()
               : null;
+          // Phase Inventory-Variants-1B3 — copy variant identity from
+          // the source line. Only meaningful when the line also has
+          // an inventory id; without the parent product context the
+          // RPC could not validate the variant→inventory link.
+          const sourceVariantId =
+            sourceInventoryId && typeof r.line.variant_id === 'string' && r.line.variant_id.trim()
+              ? r.line.variant_id.trim()
+              : null;
+          const sourceVariantLabel =
+            sourceVariantId &&
+            typeof r.line.variant_label === 'string' &&
+            r.line.variant_label.trim()
+              ? r.line.variant_label.trim()
+              : null;
+          const sourceVariantSku =
+            sourceVariantId && typeof r.line.variant_sku === 'string' && r.line.variant_sku.trim()
+              ? r.line.variant_sku.trim()
+              : null;
           const base: AdjustmentLine = {
             productType: r.line.productType,
             inventory_id: sourceInventoryId,
             sku: sourceSku,
+            variant_id: sourceVariantId,
+            variant_label: sourceVariantLabel,
+            variant_sku: sourceVariantSku,
             label: r.line.label,
             color: r.line.color ?? null,
             quantity: r.qty,
@@ -1221,6 +1250,14 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
           : null;
     const cardSku =
       cardInventoryId && card.sku && String(card.sku).trim() ? String(card.sku).trim() : null;
+    // Phase Inventory-Variants-1B3 — resolve the variant for the
+    // seeded default color through the same `pickVariantForLine` gate
+    // that AddOrder / EditOrder use. The helper returns `null` when
+    // the variant hasn't been baselined yet, so day-1 lines keep
+    // operating at the base product scope until operators baseline
+    // via stock count.
+    const defaultColor = colors[0]?.value ?? null;
+    const seededVariant = pickVariantForLine(card, defaultColor);
     setReplacementLines((arr) => [
       ...arr,
       {
@@ -1229,8 +1266,11 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
         productType: card.value,
         inventory_id: cardInventoryId,
         sku: cardSku,
+        variant_id: seededVariant?.id ?? null,
+        variant_label: seededVariant?.variant_label ?? null,
+        variant_sku: seededVariant?.sku ?? null,
         label: card.label,
-        color: colors[0]?.value ?? null,
+        color: defaultColor,
         quantity: 1,
         unitPrice: Math.max(0, Number(card.basePrice) || 0),
         includeFlashlight: false,
@@ -1260,7 +1300,32 @@ export default function OrderAdjustmentModal({ order, onClose, onCreated }: Prop
   };
 
   const updateReplacementLine = (idx: number, patch: Partial<AdjustmentLine>) => {
-    setReplacementLines((arr) => arr.map((l, i) => (i === idx ? { ...l, ...patch } : l)));
+    setReplacementLines((arr) =>
+      arr.map((l, i) => {
+        if (i !== idx) return l;
+        const next = { ...l, ...patch };
+        // Phase Inventory-Variants-1B3 — re-resolve the variant id
+        // whenever the operator changes the color on a replacement
+        // line that points at an inventory product. The same
+        // `pickVariantForLine` gate that AddOrder / EditOrder use
+        // applies, so unbaselined variants still resolve to null and
+        // the line keeps operating at the base product scope.
+        if (
+          'color' in patch &&
+          typeof next.inventory_id === 'string' &&
+          next.inventory_id.trim().length > 0
+        ) {
+          const card = productCards.find(
+            (c) => c.isInventory && c.id && c.id.trim() === next.inventory_id?.trim()
+          );
+          const resolved = pickVariantForLine(card ?? null, next.color ?? null);
+          next.variant_id = resolved?.id ?? null;
+          next.variant_label = resolved?.variant_label ?? null;
+          next.variant_sku = resolved?.sku ?? null;
+        }
+        return next;
+      })
+    );
   };
 
   const removeReplacementLine = (idx: number) => {

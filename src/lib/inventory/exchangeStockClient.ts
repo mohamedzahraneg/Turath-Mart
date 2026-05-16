@@ -142,6 +142,16 @@ function pickInventoryId(line: AdjustmentLine): string | null {
     : null;
 }
 
+/** Phase Inventory-Variants-1B3 — pick the variant id (or null) the
+ *  exchange leg should route through. Returned-leg lines copy this
+ *  from the source order line; replacement-leg lines copy it from
+ *  the picked card + color (set by the OrderAdjustmentModal
+ *  replacement editor). */
+function pickVariantId(line: AdjustmentLine): string | null {
+  const direct = typeof line.variant_id === 'string' ? line.variant_id.trim() : '';
+  return direct.length > 0 ? direct : null;
+}
+
 /** Idempotency check filtered by movement_type AND `leg` so the
  *  returned leg never collides with a prior returns-stock entry on
  *  the same adjustment. */
@@ -253,6 +263,7 @@ export async function applyExchangeStockEffects({
       continue;
     }
 
+    const variantId = pickVariantId(line);
     const metadata = {
       source: 'exchange_adjustment',
       leg: 'returned_item',
@@ -262,6 +273,10 @@ export async function applyExchangeStockEffects({
       ...(line.sku ? { sku: line.sku } : {}),
       ...(line.label ? { label: line.label } : {}),
       ...(line.color ? { color: line.color } : {}),
+      // Phase Inventory-Variants-1B3 — variant audit context.
+      ...(variantId ? { variant_id: variantId } : {}),
+      ...(line.variant_label ? { variant_label: line.variant_label } : {}),
+      ...(line.variant_sku ? { variant_sku: line.variant_sku } : {}),
       stock_disposition: 'return_to_stock',
     };
 
@@ -276,6 +291,7 @@ export async function applyExchangeStockEffects({
         p_order_num: adjustment.order_num,
         p_created_by_name: actorName,
         p_metadata: metadata,
+        p_variant_id: variantId,
       });
       if (rpcResult.error) {
         const errMessage = rpcResult.error.message || 'apply_movement failed';
@@ -371,6 +387,7 @@ export async function applyExchangeStockEffects({
       continue;
     }
 
+    const variantId = pickVariantId(line);
     const metadata = {
       source: 'exchange_adjustment',
       leg: 'replacement_item',
@@ -380,6 +397,10 @@ export async function applyExchangeStockEffects({
       ...(line.sku ? { sku: line.sku } : {}),
       ...(line.label ? { label: line.label } : {}),
       ...(line.color ? { color: line.color } : {}),
+      // Phase Inventory-Variants-1B3 — variant audit context.
+      ...(variantId ? { variant_id: variantId } : {}),
+      ...(line.variant_label ? { variant_label: line.variant_label } : {}),
+      ...(line.variant_sku ? { variant_sku: line.variant_sku } : {}),
       is_free: line.isFree === true,
     };
 
@@ -394,6 +415,7 @@ export async function applyExchangeStockEffects({
         p_order_num: adjustment.order_num,
         p_created_by_name: actorName,
         p_metadata: metadata,
+        p_variant_id: variantId,
       });
       if (rpcResult.error) {
         const errMessage = rpcResult.error.message || 'apply_movement failed';
