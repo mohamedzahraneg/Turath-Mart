@@ -44,6 +44,7 @@ import {
   exportAdditionsCsv,
   exportInventoryCsv,
   exportMovementsCsv,
+  exportStockCountsCsv,
   formatDate,
   formatMoney,
   formatNumber,
@@ -57,6 +58,7 @@ import {
   type InventoryAdditionWithProduct,
   type InventoryItem,
   type InventoryMovementWithProduct,
+  type InventoryStockCountWithProduct,
   type LifecycleStatus,
   type MovementType,
   type SortOption,
@@ -76,7 +78,8 @@ import InventoryDrawer from './components/InventoryDrawer';
 import InventoryEditModal from './components/InventoryEditModal';
 import AddStockModal from './components/AddStockModal';
 import InventoryMovementModal from './components/InventoryMovementModal';
-import { Activity, Download, History, Plus, Search } from 'lucide-react';
+import StockCountModal from './components/StockCountModal';
+import { Activity, ClipboardList, Download, History, Plus, Search } from 'lucide-react';
 
 interface InventoryRowDb {
   id: string;
@@ -152,6 +155,26 @@ interface MovementWithProductRow {
   turath_masr_inventory: { name: string | null; sku: string | null } | null;
 }
 
+// Phase Inventory-Stock-Count-1 — DB row shape for the joined
+// stock-count query. `turath_masr_inventory` is the embedded join
+// (we read name + sku for the table view).
+interface StockCountWithProductRow {
+  id: string;
+  inventory_id: string;
+  counted_quantity: number | null;
+  system_available_before: number | null;
+  quantity_delta: number | null;
+  reason: string | null;
+  note: string | null;
+  movement_id: string | null;
+  counted_by: string | null;
+  counted_by_name: string | null;
+  counted_at: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string | null;
+  turath_masr_inventory: { name: string | null; sku: string | null } | null;
+}
+
 // Phase Inventory-Reservations-1 — `reserved` is the newest optional
 // column. We try it first; if it's missing (between deploy and migration)
 // we fall back to the Phase-2 column set (status/category_id/archived_*),
@@ -218,6 +241,12 @@ export default function InventoryPage() {
     null
   );
   const [movementsToday, setMovementsToday] = useState<number | null>(null);
+  // Phase Inventory-Stock-Count-1 — global stock-count log, capped at
+  // the latest 100 rows. `null` means the table doesn't exist yet
+  // (pre-migration window) so the section hides gracefully.
+  const [globalStockCounts, setGlobalStockCounts] = useState<
+    InventoryStockCountWithProduct[] | null
+  >(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -238,6 +267,10 @@ export default function InventoryPage() {
   // `'__GLOBAL__'` means the modal launched from the header with a
   // product picker, any item means launched from a specific product.
   const [movementTarget, setMovementTarget] = useState<InventoryItem | '__GLOBAL__' | null>(null);
+  // Phase Inventory-Stock-Count-1 — same shape as movementTarget.
+  const [stockCountTarget, setStockCountTarget] = useState<InventoryItem | '__GLOBAL__' | null>(
+    null
+  );
 
   // Phase Inventory-Additions-Log-1 — local search for the global
   // additions log section. Date filters / supplier filters are out of
@@ -247,6 +280,8 @@ export default function InventoryPage() {
   // movements log section.
   const [movementsSearch, setMovementsSearch] = useState('');
   const [movementsTypeFilter, setMovementsTypeFilter] = useState<'all' | MovementType>('all');
+  // Phase Inventory-Stock-Count-1 — global stock-count section search.
+  const [stockCountsSearch, setStockCountsSearch] = useState('');
 
   const loadAll = useCallback(async (silent: boolean) => {
     if (!silent) setLoading(true);
@@ -434,6 +469,41 @@ export default function InventoryPage() {
         } catch {
           setMovementsToday(0);
         }
+      }
+
+      // 2d. Global stock-count log — best-effort. The table doesn't
+      //     exist until the Phase Inventory-Stock-Count-1 migration
+      //     applies; before then the query errors and the UI section
+      //     hides gracefully.
+      const scRes = await supabase
+        .from('turath_masr_inventory_stock_counts')
+        .select(
+          'id, inventory_id, counted_quantity, system_available_before, quantity_delta, reason, note, movement_id, counted_by, counted_by_name, counted_at, metadata, created_at, turath_masr_inventory(name, sku)'
+        )
+        .order('counted_at', { ascending: false })
+        .limit(100);
+      if (scRes.error) {
+        setGlobalStockCounts(null);
+      } else {
+        const rows = (scRes.data ?? []) as unknown as StockCountWithProductRow[];
+        const mapped: InventoryStockCountWithProduct[] = rows.map((r) => ({
+          id: r.id,
+          inventory_id: r.inventory_id,
+          counted_quantity: Number(r.counted_quantity ?? 0),
+          system_available_before: Number(r.system_available_before ?? 0),
+          quantity_delta: Number(r.quantity_delta ?? 0),
+          reason: r.reason ?? '',
+          note: r.note,
+          movement_id: r.movement_id,
+          counted_by: r.counted_by,
+          counted_by_name: r.counted_by_name,
+          counted_at: r.counted_at ?? '',
+          metadata: r.metadata,
+          created_at: r.created_at ?? '',
+          inventory_name: r.turath_masr_inventory?.name ?? '',
+          inventory_sku: r.turath_masr_inventory?.sku ?? '',
+        }));
+        setGlobalStockCounts(mapped);
       }
 
       // 3. Orders → withdrawn map (preserved from prior phase).
@@ -738,6 +808,16 @@ export default function InventoryPage() {
     await loadAll(true);
   }, [loadAll]);
 
+  // Phase Inventory-Stock-Count-1 — stock count modal handlers.
+  const handleRecordStockCount = useCallback(
+    (item: InventoryItem) => setStockCountTarget(item),
+    []
+  );
+  const handleRecordGlobalStockCount = useCallback(() => setStockCountTarget('__GLOBAL__'), []);
+  const handleStockCountDone = useCallback(async () => {
+    await loadAll(true);
+  }, [loadAll]);
+
   // Filter additions for the global section by free-text on
   // product/SKU/supplier/invoice. Date filtering is out of scope here;
   // the underlying query already caps at the latest 50 rows.
@@ -772,6 +852,23 @@ export default function InventoryPage() {
     exportMovementsCsv(filteredMovements);
   }, [filteredMovements]);
 
+  // Phase Inventory-Stock-Count-1 — filter + export for the global
+  // stock-count section. Mirrors the movements pattern.
+  const filteredStockCounts = useMemo(() => {
+    if (!globalStockCounts) return [];
+    const term = stockCountsSearch.trim().toLowerCase();
+    if (!term) return globalStockCounts;
+    return globalStockCounts.filter((row) => {
+      const hay =
+        `${row.inventory_name} ${row.inventory_sku} ${row.reason} ${row.note ?? ''} ${row.counted_by_name ?? ''}`.toLowerCase();
+      return hay.includes(term);
+    });
+  }, [globalStockCounts, stockCountsSearch]);
+
+  const handleStockCountsExport = useCallback(() => {
+    exportStockCountsCsv(filteredStockCounts);
+  }, [filteredStockCounts]);
+
   // Fallback category list for the edit modal — DB list when present,
   // derived names otherwise, plus a safety fallback for first-run
   // empty databases.
@@ -788,6 +885,7 @@ export default function InventoryPage() {
           onRefresh={handleRefresh}
           onExport={items.length > 0 ? handleExport : null}
           onRecordMovement={canAddStock && items.length > 0 ? handleRecordGlobalMovement : null}
+          onRecordStockCount={canAddStock && items.length > 0 ? handleRecordGlobalStockCount : null}
           refreshing={refreshing}
         />
 
@@ -897,6 +995,19 @@ export default function InventoryPage() {
             canExport={filteredAdditions.length > 0}
           />
         )}
+
+        {/* Phase Inventory-Stock-Count-1 — global stock-count log.
+            Hidden pre-migration; renders an honest empty state once
+            the table exists. */}
+        {globalStockCounts !== null && !loading && !loadError && (
+          <GlobalStockCountsSection
+            rows={filteredStockCounts}
+            search={stockCountsSearch}
+            onSearchChange={setStockCountsSearch}
+            onExport={handleStockCountsExport}
+            canExport={filteredStockCounts.length > 0}
+          />
+        )}
       </div>
 
       {editItem !== undefined && (
@@ -925,6 +1036,7 @@ export default function InventoryPage() {
           onRestore={handleRestore}
           onAddStock={handleAddStock}
           onRecordMovement={handleRecordMovement}
+          onRecordStockCount={handleRecordStockCount}
         />
       )}
 
@@ -947,6 +1059,17 @@ export default function InventoryPage() {
           actorName={actorName}
           onClose={() => setMovementTarget(null)}
           onSaved={handleMovementDone}
+        />
+      )}
+
+      {stockCountTarget && (
+        <StockCountModal
+          item={stockCountTarget === '__GLOBAL__' ? null : stockCountTarget}
+          allItems={items}
+          actorId={user?.id ?? null}
+          actorName={actorName}
+          onClose={() => setStockCountTarget(null)}
+          onSaved={handleStockCountDone}
         />
       )}
     </AppLayout>
@@ -1259,6 +1382,132 @@ function GlobalAdditionsSection({
                     <td className="px-3 py-2 text-xs text-[hsl(var(--muted-foreground))] truncate max-w-[180px]">
                       {row.note || '—'}
                     </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// Phase Inventory-Stock-Count-1 — global stock-count log section.
+// Mirrors GlobalMovementsSection's layout (RTL header + search bar +
+// table). Renders the latest 100 count events (already capped by the
+// fetch query). Hidden by the parent until the table exists.
+function GlobalStockCountsSection({
+  rows,
+  search,
+  onSearchChange,
+  onExport,
+  canExport,
+}: {
+  rows: InventoryStockCountWithProduct[];
+  search: string;
+  onSearchChange: (v: string) => void;
+  onExport: () => void;
+  canExport: boolean;
+}) {
+  return (
+    <section className="space-y-3" dir="rtl">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <h2 className="text-lg font-bold text-[hsl(var(--foreground))] flex items-center gap-2">
+          <ClipboardList size={18} className="text-[hsl(var(--primary))]" />
+          سجل جرد المخزون
+        </h2>
+        <button
+          type="button"
+          onClick={onExport}
+          disabled={!canExport}
+          className="text-xs rounded-xl border border-[hsl(var(--border))] bg-white px-3 py-1.5 flex items-center gap-1.5 hover:bg-[hsl(var(--muted))]/40 disabled:opacity-50"
+        >
+          <Download size={13} />
+          تصدير CSV
+        </button>
+      </div>
+
+      <div className="rounded-2xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+        <div className="p-3 border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/30">
+          <div className="relative">
+            <Search
+              size={14}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]"
+            />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => onSearchChange(e.target.value)}
+              placeholder="بحث بالمنتج أو SKU أو السبب أو من قام بالجرد..."
+              className="w-full pr-9 pl-3 py-2 text-xs border border-[hsl(var(--border))] bg-white rounded-xl focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30"
+            />
+          </div>
+        </div>
+
+        {rows.length === 0 ? (
+          <div className="py-12 flex flex-col items-center justify-center gap-2 text-[hsl(var(--muted-foreground))] text-sm">
+            <ClipboardList size={28} className="opacity-30" />
+            <p>لا توجد عمليات جرد مسجلة بعد.</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto scrollbar-thin">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-[hsl(var(--muted))]/40 border-b border-[hsl(var(--border))]">
+                  {[
+                    'التاريخ',
+                    'المنتج',
+                    'SKU',
+                    'النظام قبل',
+                    'المعدود',
+                    'الفرق',
+                    'السبب',
+                    'بواسطة',
+                  ].map((h) => (
+                    <th
+                      key={h}
+                      className="text-right px-3 py-2 text-[11px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap"
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[hsl(var(--border))]">
+                {rows.slice(0, 100).map((row) => (
+                  <tr key={row.id} className="hover:bg-[hsl(var(--muted))]/30 align-top">
+                    <td className="px-3 py-2 text-xs text-[hsl(var(--muted-foreground))] whitespace-nowrap">
+                      {formatDate(row.counted_at)}
+                    </td>
+                    <td className="px-3 py-2 text-xs font-semibold truncate max-w-[160px]">
+                      {row.inventory_name || '—'}
+                    </td>
+                    <td className="px-3 py-2 text-xs font-mono text-[hsl(var(--muted-foreground))]">
+                      {row.inventory_sku || '—'}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs">
+                      {formatNumber(row.system_available_before)}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs font-bold">
+                      {formatNumber(row.counted_quantity)}
+                    </td>
+                    <td
+                      className={`px-3 py-2 font-mono text-xs font-bold ${
+                        row.quantity_delta > 0
+                          ? 'text-emerald-700'
+                          : row.quantity_delta < 0
+                            ? 'text-red-600'
+                            : 'text-[hsl(var(--muted-foreground))]'
+                      }`}
+                    >
+                      {row.quantity_delta > 0 ? '+' : ''}
+                      {formatNumber(row.quantity_delta)}
+                    </td>
+                    <td className="px-3 py-2 text-xs truncate max-w-[180px]">
+                      {row.reason || '—'}
+                    </td>
+                    <td className="px-3 py-2 text-xs">{row.counted_by_name || '—'}</td>
                   </tr>
                 ))}
               </tbody>

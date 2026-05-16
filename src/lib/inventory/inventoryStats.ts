@@ -159,6 +159,34 @@ export interface InventoryMovementWithProduct extends InventoryMovement {
   inventory_sku: string;
 }
 
+/** Phase Inventory-Stock-Count-1 — row shape for
+ *  `turath_masr_inventory_stock_counts`. One row per physical count
+ *  event; carries the counted_quantity, the system available at the
+ *  moment of the count, the resulting delta, the operator-supplied
+ *  reason, and (when delta ≠ 0) a link to the movement row that was
+ *  written to reconcile. */
+export interface InventoryStockCount {
+  id: string;
+  inventory_id: string;
+  counted_quantity: number;
+  system_available_before: number;
+  quantity_delta: number;
+  reason: string;
+  note: string | null;
+  movement_id: string | null;
+  counted_by: string | null;
+  counted_by_name: string | null;
+  counted_at: string;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+}
+
+/** Stock count joined with the parent product for table / CSV rendering. */
+export interface InventoryStockCountWithProduct extends InventoryStockCount {
+  inventory_name: string;
+  inventory_sku: string;
+}
+
 /** Stock health of a single row (independent of lifecycle status). */
 export type ProductStatus = 'available' | 'low' | 'out';
 
@@ -516,4 +544,45 @@ function csvEscape(value: string): string {
     return `"${s.replace(/"/g, '""')}"`;
   }
   return s;
+}
+
+// Phase Inventory-Stock-Count-1 — CSV export of the global stock-count
+// log. Same UTF-8-BOM pattern so Excel renders Arabic correctly.
+export function exportStockCountsCsv(rows: InventoryStockCountWithProduct[]): void {
+  if (typeof window === 'undefined') return;
+
+  const header = [
+    'التاريخ',
+    'المنتج',
+    'SKU',
+    'النظام قبل',
+    'الكمية المعدودة',
+    'الفرق',
+    'السبب',
+    'ملاحظة',
+    'بواسطة',
+  ];
+
+  const rowsCsv = rows.map((r) => [
+    r.counted_at ?? '',
+    r.inventory_name ?? '',
+    r.inventory_sku ?? '',
+    String(r.system_available_before),
+    String(r.counted_quantity),
+    (r.quantity_delta >= 0 ? '+' : '') + String(r.quantity_delta),
+    r.reason ?? '',
+    r.note ?? '',
+    r.counted_by_name ?? '',
+  ]);
+
+  const csv = [header, ...rowsCsv].map((line) => line.map(csvEscape).join(',')).join('\r\n');
+  const blob = new Blob(['﻿', csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `inventory-stock-counts-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }

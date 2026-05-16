@@ -127,7 +127,10 @@ export type StaffAuditAction =
   | 'inventory.return_stock_failed'
   // ─── Phase Inventory-Exchange-Stock-1 — two-leg stock on exchange completion ───
   | 'inventory.exchange_stock_applied'
-  | 'inventory.exchange_stock_failed';
+  | 'inventory.exchange_stock_failed'
+  // ─── Phase Inventory-Stock-Count-1 — physical stock count workflow ───
+  | 'inventory.stock_count_recorded'
+  | 'inventory.stock_count_failed';
 
 export const STAFF_AUDIT_ACTION_LABEL_AR: Record<StaffAuditAction, string> = {
   'staff.role_changed': 'تغيير الدور',
@@ -229,6 +232,9 @@ export const STAFF_AUDIT_ACTION_LABEL_AR: Record<StaffAuditAction, string> = {
   // Phase Inventory-Exchange-Stock-1 — two-leg stock on exchange completion
   'inventory.exchange_stock_applied': 'تطبيق تأثيرات الاستبدال على المخزون',
   'inventory.exchange_stock_failed': 'فشل تطبيق تأثيرات الاستبدال على المخزون',
+  // Phase Inventory-Stock-Count-1 — physical stock count workflow
+  'inventory.stock_count_recorded': 'تسجيل جرد فعلي للمخزن',
+  'inventory.stock_count_failed': 'فشل تسجيل الجرد الفعلي',
 };
 
 /**
