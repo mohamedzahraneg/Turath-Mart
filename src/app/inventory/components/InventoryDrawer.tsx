@@ -30,6 +30,7 @@ import {
   AlertTriangle,
   Archive,
   CheckCircle,
+  ClipboardList,
   Edit2,
   Package,
   Pause,
@@ -54,11 +55,12 @@ import {
   type InventoryAddition,
   type InventoryItem,
   type InventoryMovement,
+  type InventoryStockCount,
   type LifecycleStatus,
   type MovementType,
 } from '@/lib/inventory/inventoryStats';
 
-type Tab = 'summary' | 'colors' | 'movements' | 'additions' | 'orders' | 'settings';
+type Tab = 'summary' | 'colors' | 'movements' | 'additions' | 'stockCount' | 'orders' | 'settings';
 
 interface Props {
   item: InventoryItem;
@@ -74,6 +76,10 @@ interface Props {
   onAddStock: (item: InventoryItem) => void;
   /** Phase Inventory-Movement-Ledger-1 — launches InventoryMovementModal. */
   onRecordMovement: (item: InventoryItem) => void;
+  /** Phase Inventory-Stock-Count-1 — launches StockCountModal for this
+   *  product, pre-selected. The new "الجرد" tab uses this when the
+   *  operator clicks "+ تسجيل جرد". */
+  onRecordStockCount: (item: InventoryItem) => void;
 }
 
 export default function InventoryDrawer({
@@ -88,6 +94,7 @@ export default function InventoryDrawer({
   onRestore,
   onAddStock,
   onRecordMovement,
+  onRecordStockCount,
 }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>('summary');
   const status = productStatus(item);
@@ -156,6 +163,7 @@ export default function InventoryDrawer({
               { key: 'colors', label: 'الألوان' },
               { key: 'movements', label: 'الحركة' },
               { key: 'additions', label: 'الإضافات' },
+              { key: 'stockCount', label: 'الجرد' },
               { key: 'orders', label: 'الطلبات المرتبطة' },
               { key: 'settings', label: 'الإعدادات' },
             ] as { key: Tab; label: string }[]
@@ -204,6 +212,13 @@ export default function InventoryDrawer({
               item={item}
               canAddStock={canAddStock}
               onAddStock={() => onAddStock(item)}
+            />
+          )}
+          {activeTab === 'stockCount' && (
+            <StockCountTab
+              item={item}
+              canAddStock={canAddStock}
+              onRecordStockCount={() => onRecordStockCount(item)}
             />
           )}
           {activeTab === 'orders' && <OrdersTab item={item} />}
@@ -675,6 +690,196 @@ function MovementsTab({
                   {row.order_num || row.supplier_invoice_num || '—'}
                 </td>
                 <td className="px-3 py-2 text-xs">{row.created_by_name || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// Phase Inventory-Stock-Count-1 — per-product stock-count history.
+// Mirrors the MovementsTab structure (loading / missing-table /
+// error / empty / table). Loads the latest 20 counts for this
+// product. Fetch is bound to `item.id` and re-runs on product change.
+interface RawStockCountRow {
+  id: string;
+  inventory_id: string;
+  counted_quantity: number | null;
+  system_available_before: number | null;
+  quantity_delta: number | null;
+  reason: string | null;
+  note: string | null;
+  movement_id: string | null;
+  counted_by: string | null;
+  counted_by_name: string | null;
+  counted_at: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string | null;
+}
+
+function StockCountTab({
+  item,
+  canAddStock,
+  onRecordStockCount,
+}: {
+  item: InventoryItem;
+  canAddStock: boolean;
+  onRecordStockCount: () => void;
+}) {
+  const [rows, setRows] = useState<InventoryStockCount[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [missingTable, setMissingTable] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setMissingTable(false);
+    (async () => {
+      try {
+        const supabase = createClient();
+        const { data, error: err } = await supabase
+          .from('turath_masr_inventory_stock_counts')
+          .select(
+            'id, inventory_id, counted_quantity, system_available_before, quantity_delta, reason, note, movement_id, counted_by, counted_by_name, counted_at, metadata, created_at'
+          )
+          .eq('inventory_id', item.id)
+          .order('counted_at', { ascending: false })
+          .limit(20);
+
+        if (cancelled) return;
+        if (err) {
+          const msg = (err.message || '').toLowerCase();
+          if (msg.includes('does not exist') || msg.includes('relation')) {
+            setMissingTable(true);
+            setRows([]);
+          } else {
+            setError('تعذر تحميل سجل الجرد.');
+          }
+          return;
+        }
+        const mapped: InventoryStockCount[] = (data as RawStockCountRow[]).map((r) => ({
+          id: r.id,
+          inventory_id: r.inventory_id,
+          counted_quantity: Number(r.counted_quantity ?? 0),
+          system_available_before: Number(r.system_available_before ?? 0),
+          quantity_delta: Number(r.quantity_delta ?? 0),
+          reason: r.reason ?? '',
+          note: r.note,
+          movement_id: r.movement_id,
+          counted_by: r.counted_by,
+          counted_by_name: r.counted_by_name,
+          counted_at: r.counted_at ?? '',
+          metadata: r.metadata,
+          created_at: r.created_at ?? '',
+        }));
+        setRows(mapped);
+      } catch {
+        if (!cancelled) setError('تعذر تحميل سجل الجرد.');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [item.id]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-10 text-[hsl(var(--muted-foreground))] gap-2 text-sm">
+        <RefreshCw size={14} className="animate-spin" />
+        جاري التحميل...
+      </div>
+    );
+  }
+  if (missingTable) {
+    return (
+      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-800 text-sm">
+        سجل الجرد غير مفعّل بعد. يجب تطبيق تحديث قاعدة البيانات أولًا.
+      </div>
+    );
+  }
+  if (error) {
+    return <div className="text-center py-10 text-red-600 text-sm">{error}</div>;
+  }
+  const lifecycle = productLifecycle(item);
+  if (!rows || rows.length === 0) {
+    return (
+      <div className="space-y-3">
+        <div className="text-center py-12 text-[hsl(var(--muted-foreground))] text-sm">
+          لا توجد عمليات جرد مسجلة لهذا المنتج بعد.
+        </div>
+        {canAddStock && lifecycle !== 'archived' && (
+          <button
+            type="button"
+            onClick={onRecordStockCount}
+            className="mx-auto block text-sm rounded-xl border border-[hsl(217,80%,30%)] text-[hsl(217,80%,30%)] bg-white px-4 py-2 hover:bg-[hsl(217,80%,30%)]/10 font-semibold flex items-center gap-1.5"
+          >
+            <ClipboardList size={14} />
+            تسجيل جرد لهذا المنتج
+          </button>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      {canAddStock && lifecycle !== 'archived' && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={onRecordStockCount}
+            className="text-xs rounded-xl border border-[hsl(217,80%,30%)] text-[hsl(217,80%,30%)] bg-white px-3 py-1.5 hover:bg-[hsl(217,80%,30%)]/10 font-semibold flex items-center gap-1.5"
+          >
+            <ClipboardList size={13} />
+            تسجيل جرد جديد
+          </button>
+        </div>
+      )}
+      <div className="rounded-2xl border border-[hsl(var(--border))] bg-white overflow-x-auto scrollbar-thin">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-[hsl(var(--muted))]/40 border-b border-[hsl(var(--border))]">
+              {['التاريخ', 'النظام قبل', 'المعدود', 'الفرق', 'السبب', 'بواسطة'].map((h) => (
+                <th
+                  key={h}
+                  className="text-right px-3 py-2 text-[11px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap"
+                >
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[hsl(var(--border))]">
+            {rows.map((row) => (
+              <tr key={row.id} className="hover:bg-[hsl(var(--muted))]/30 align-top">
+                <td className="px-3 py-2 text-xs text-[hsl(var(--muted-foreground))] whitespace-nowrap">
+                  {formatDate(row.counted_at)}
+                </td>
+                <td className="px-3 py-2 font-mono text-xs">
+                  {formatNumber(row.system_available_before)}
+                </td>
+                <td className="px-3 py-2 font-mono text-xs font-bold">
+                  {formatNumber(row.counted_quantity)}
+                </td>
+                <td
+                  className={`px-3 py-2 font-mono text-xs font-bold ${
+                    row.quantity_delta > 0
+                      ? 'text-emerald-700'
+                      : row.quantity_delta < 0
+                        ? 'text-red-600'
+                        : 'text-[hsl(var(--muted-foreground))]'
+                  }`}
+                >
+                  {row.quantity_delta > 0 ? '+' : ''}
+                  {formatNumber(row.quantity_delta)}
+                </td>
+                <td className="px-3 py-2 text-xs truncate max-w-[160px]">{row.reason || '—'}</td>
+                <td className="px-3 py-2 text-xs">{row.counted_by_name || '—'}</td>
               </tr>
             ))}
           </tbody>

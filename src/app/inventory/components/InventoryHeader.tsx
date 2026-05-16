@@ -10,13 +10,24 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { Activity, ChevronLeft, Download, Plus, RefreshCw, Warehouse } from 'lucide-react';
+import {
+  Activity,
+  ChevronLeft,
+  ClipboardList,
+  Download,
+  Plus,
+  RefreshCw,
+  Warehouse,
+} from 'lucide-react';
 
 interface Props {
   onAdd: () => void;
   onRefresh: () => void;
   onExport: (() => void) | null;
   onRecordMovement: (() => void) | null;
+  // Phase Inventory-Stock-Count-1 — opens StockCountModal in global
+  // mode. Null when the viewer lacks manager-or-above perms.
+  onRecordStockCount: (() => void) | null;
   refreshing?: boolean;
 }
 
@@ -25,6 +36,7 @@ export default function InventoryHeader({
   onRefresh,
   onExport,
   onRecordMovement,
+  onRecordStockCount,
   refreshing,
 }: Props) {
   return (
@@ -65,6 +77,16 @@ export default function InventoryHeader({
           >
             <Activity size={14} />
             <span>تسجيل حركة</span>
+          </button>
+        )}
+        {onRecordStockCount && (
+          <button
+            type="button"
+            onClick={onRecordStockCount}
+            className="text-sm rounded-xl border border-[hsl(217,80%,30%)] text-[hsl(217,80%,30%)] bg-white px-3 py-1.5 flex items-center gap-1.5 hover:bg-[hsl(217,80%,30%)]/10 font-semibold"
+          >
+            <ClipboardList size={14} />
+            <span>تسجيل جرد</span>
           </button>
         )}
         {onExport && (
