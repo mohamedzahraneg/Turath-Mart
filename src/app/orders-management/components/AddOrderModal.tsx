@@ -318,6 +318,9 @@ interface InventoryItem {
   category: string;
   images?: string[];
   colors?: string[];
+  /** Phase Inventory-Reservations-1B — units currently held against
+   *  open orders. Undefined pre-migration; treated as 0. */
+  reserved?: number;
 }
 
 interface ProductCard {
@@ -342,6 +345,11 @@ interface ProductCard {
    *  surfaces it on the typed shape so other call sites can read it
    *  without `as any` casts. */
   available?: number;
+  /** Phase Inventory-Reservations-1B — reserved count from the
+   *  inventory row. Used to compute `sellable = available - reserved`
+   *  for pre-submit validation + UI display. Undefined pre-migration
+   *  → treated as 0 by `sellableQty`. */
+  reserved?: number;
 }
 
 // Phase 24C — prefill shape for the new "create order from customer
@@ -771,14 +779,33 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
       //    its emoji instead of a thumbnail. The image-presence check
       //    elsewhere in this file (`product.image && product.image.startsWith(...)`)
       //    short-circuits cleanly when the field is undefined.
-      const { data: invData } = await supabase
+      // Phase Inventory-Reservations-1B — try `reserved` first; fall
+      // back to the legacy select if the column is missing (covers the
+      // deploy-before-migration window).
+      let invData: Array<Record<string, unknown>> | null = null;
+      const invWithReserved = await supabase
         .from('turath_masr_inventory')
-        .select('id, name, sku, available, price, category, colors');
+        .select('id, name, sku, available, reserved, price, category, colors');
+      if (!invWithReserved.error) {
+        invData = (invWithReserved.data as Array<Record<string, unknown>> | null) ?? [];
+      } else {
+        const msg = (invWithReserved.error.message || '').toLowerCase();
+        if (msg.includes('reserved') && msg.includes('does not exist')) {
+          const legacy = await supabase
+            .from('turath_masr_inventory')
+            .select('id, name, sku, available, price, category, colors');
+          invData = (legacy.data as Array<Record<string, unknown>> | null) ?? [];
+        } else {
+          console.warn('[AddOrderModal] inventory load failed:', invWithReserved.error);
+          invData = [];
+        }
+      }
       const inventoryItems: InventoryItem[] = (invData || []).map((item: any) => ({
         id: item.id,
         name: item.name,
         sku: item.sku || '',
         available: item.available || 0,
+        reserved: item.reserved ?? 0,
         price: item.price || 0,
         category: item.category || '',
         // Phase E1-Fix1 — `images` is no longer fetched in the list
@@ -798,6 +825,7 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
         basePrice: item.price,
         emoji: '📦',
         hasColor: (item.colors?.length || 0) > 0,
+        reserved: item.reserved ?? 0,
         // Phase E1-Fix1.1 / E1-Fix3 — thumbnail URL points at the
         // lightweight image endpoint that decodes the base64 stored
         // on the inventory row server-side and serves the raw bytes
@@ -2037,6 +2065,38 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
       return;
     }
 
+    // Phase Inventory-Reservations-1B — pre-submit sellable validation.
+    // For every line backed by an inventory product, refuse to insert
+    // when requested quantity exceeds `available - reserved`. Lines
+    // with no resolvable inventory_id are skipped (static products,
+    // pre-Phase-Identity-1 legacy paths).
+    for (const line of lines) {
+      const fallbackUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        line.productType
+      )
+        ? line.productType
+        : null;
+      const inventoryId = fallbackUuid;
+      if (!inventoryId) continue; // static product → no stock effect
+      const card = productCards.find((p) => p.value === line.productType);
+      if (!card || !card.isInventory) {
+        toast.error(
+          `تعذر التحقق من مخزون "${line.note || line.productType}". حدّث الصفحة وحاول مرة أخرى.`
+        );
+        return;
+      }
+      const cardAvailable = Number(card.available ?? 0);
+      const cardReserved = Number(card.reserved ?? 0);
+      const sellable = Math.max(0, cardAvailable - cardReserved);
+      const requested = Math.max(0, Number(line.quantity) || 0);
+      if (requested > sellable) {
+        toast.error(
+          `الكمية المطلوبة من "${card.label}" أكبر من المتاح للبيع. المتاح للبيع: ${sellable}`
+        );
+        return;
+      }
+    }
+
     setIsSubmitting(true);
     const deviceType = getDeviceType();
 
@@ -2141,6 +2201,12 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
               : null;
         const sku = inventoryId && card?.sku ? String(card.sku) : null;
         return {
+          // Phase Inventory-Reservations-1B — persist the client-side
+          // line id so the reserve RPC's idempotency key
+          // (order_id, line_id) is stable across re-saves, and so a
+          // future EditOrderModal reconcile can match drafts to
+          // existing reservations 1:1.
+          id: l.id,
           productType: l.productType,
           inventory_id: inventoryId,
           sku,
@@ -2208,6 +2274,111 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
 
       if (error) {
         throw error;
+      }
+
+      // Phase Inventory-Reservations-1B — reserve stock against this
+      // freshly-inserted order. The RPC is idempotent on (order_id,
+      // line_id) and skips lines with no resolvable inventory_id, so
+      // static-product orders and pre-Phase-Identity-1 paths are
+      // safe no-ops. On failure we cancel the just-created order
+      // rather than leaving an unreserved active row in the system.
+      const reserveLinesPayload = (newOrder.lines ?? []).filter(
+        (l) => l && (l as { inventory_id?: string | null }).inventory_id
+      );
+      if (reserveLinesPayload.length > 0) {
+        const actorName = (profileFullName ?? '').trim() || user?.email || null;
+        const reserveRes = await supabase.rpc('inventory_reserve_for_order', {
+          p_order_id: newOrder.id,
+          p_order_num: newOrder.orderNum,
+          p_lines: reserveLinesPayload,
+          p_created_by_name: actorName,
+          p_allow_oversell: false,
+        });
+
+        if (reserveRes.error) {
+          const errMessage = reserveRes.error.message || 'reservation failed';
+          console.error('[AddOrderModal] reservation failed', reserveRes.error);
+
+          // Auto-cancel the just-created order so it doesn't sit
+          // active without a matching reservation.
+          let cancelOk = false;
+          try {
+            const cancelRes = await supabase
+              .from('turath_masr_orders')
+              .update({
+                status: 'cancelled',
+                notes: [
+                  newOrder.notes || '',
+                  '— تم الإلغاء تلقائيًا: فشل حجز المخزون.',
+                  errMessage ? `سبب: ${errMessage}` : '',
+                ]
+                  .filter(Boolean)
+                  .join('\n'),
+              })
+              .eq('id', newOrder.id);
+            cancelOk = !cancelRes.error;
+            if (cancelRes.error) {
+              console.error('[AddOrderModal] cancel-after-reserve-fail failed', cancelRes.error);
+            }
+          } catch (cancelErr) {
+            console.error('[AddOrderModal] cancel-after-reserve-fail threw', cancelErr);
+          }
+
+          // Best-effort audit of the failure.
+          try {
+            await writeStaffAuditLog(supabase, {
+              action: 'inventory.reservation_failed',
+              actorId: user?.id ?? null,
+              actorName,
+              actorRoleId: currentRoleId ?? null,
+              entity: { type: 'order', id: newOrder.id, label: `#${newOrder.orderNum}` },
+              metadata: {
+                order_id: newOrder.id,
+                order_num: newOrder.orderNum,
+                line_count: reserveLinesPayload.length,
+                error_message: errMessage,
+                auto_cancelled: cancelOk,
+              },
+            });
+          } catch (auditErr) {
+            console.warn('[AddOrderModal] reservation_failed audit skipped', auditErr);
+          }
+
+          setIsSubmitting(false);
+          toast.error(
+            cancelOk
+              ? 'تم إنشاء الطلب لكن فشل حجز المخزون، وتم إلغاء الطلب تلقائيًا. راجع الكميات وحاول مرة أخرى.'
+              : 'فشل حجز المخزون بعد إنشاء الطلب. راجع الطلب يدويًا فورًا.'
+          );
+          // Bail before the success flow runs.
+          return;
+        }
+
+        // Best-effort audit of the success path.
+        try {
+          const reserveResult = (reserveRes.data ?? null) as {
+            reserved_count?: number;
+            skipped_count?: number;
+            total_quantity?: number;
+          } | null;
+          await writeStaffAuditLog(supabase, {
+            action: 'inventory.reservation_created',
+            actorId: user?.id ?? null,
+            actorName,
+            actorRoleId: currentRoleId ?? null,
+            entity: { type: 'order', id: newOrder.id, label: `#${newOrder.orderNum}` },
+            metadata: {
+              order_id: newOrder.id,
+              order_num: newOrder.orderNum,
+              line_count: reserveLinesPayload.length,
+              reserved_count: reserveResult?.reserved_count ?? null,
+              skipped_count: reserveResult?.skipped_count ?? null,
+              total_reserved_quantity: reserveResult?.total_quantity ?? null,
+            },
+          });
+        } catch (auditErr) {
+          console.warn('[AddOrderModal] reservation_created audit skipped', auditErr);
+        }
       }
 
       // The "new_order" system notification is now produced by the
@@ -3159,15 +3330,35 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
                                 <span className="text-white text-[10px] font-bold">{count}</span>
                               </div>
                             )}
-                            {product.isInventory && (
-                              <div
-                                className={`absolute top-1 right-1 px-1.5 py-0.5 rounded-full text-[8px] font-bold z-10 ${(inventoryRef.current.find((i) => i.id === product.value)?.available || 0) > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}
-                              >
-                                {inventoryRef.current.find((i) => i.id === product.value)
-                                  ?.available || 0}{' '}
-                                متاح
-                              </div>
-                            )}
+                            {product.isInventory &&
+                              (() => {
+                                // Phase Inventory-Reservations-1B — display
+                                // "للبيع" (sellable = available - reserved)
+                                // instead of bare available when any
+                                // reservation exists on the row. Pre-reservation
+                                // rows keep the simple "متاح" badge.
+                                const inv = inventoryRef.current.find(
+                                  (i) => i.id === product.value
+                                );
+                                const avail = inv?.available || 0;
+                                const reserved = inv?.reserved || 0;
+                                const sellable = Math.max(0, avail - reserved);
+                                const hasReservation = reserved > 0;
+                                const showCount = hasReservation ? sellable : avail;
+                                const showLabel = hasReservation ? 'للبيع' : 'متاح';
+                                return (
+                                  <div
+                                    className={`absolute top-1 right-1 px-1.5 py-0.5 rounded-full text-[8px] font-bold z-10 ${showCount > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}
+                                    title={
+                                      hasReservation
+                                        ? `المتاح: ${avail} · المحجوز: ${reserved} · للبيع: ${sellable}`
+                                        : undefined
+                                    }
+                                  >
+                                    {showCount} {showLabel}
+                                  </div>
+                                );
+                              })()}
                             <span
                               className={`text-[10px] font-bold mt-1 relative z-10 ${hasRealImage ? 'text-white bg-black/50 px-1 rounded absolute bottom-1' : 'text-[hsl(var(--foreground))]'}`}
                             >
