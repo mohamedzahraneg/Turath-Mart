@@ -78,6 +78,11 @@ import { writeStaffAuditLog } from '@/lib/security/staffAudit';
 // against `inventory_apply_movement` when a return adjustment
 // transitions to `completed` with `return_to_stock` lines.
 import { applyReturnStockEffects } from '@/lib/inventory/returnStockClient';
+// Phase Inventory-Exchange-Stock-1 — sibling helper. Fires the two
+// legs of exchange stock effects when an exchange adjustment hits
+// `completed`: returned items via `exchange_in`, replacement items
+// via `exchange_out`.
+import { applyExchangeStockEffects } from '@/lib/inventory/exchangeStockClient';
 import { UserStamp } from '@/components/UserStamp';
 
 interface OrderLine {
@@ -1007,14 +1012,108 @@ export default function OrderDetailModal({ order, onClose }: Props) {
         }
       }
 
+      // Phase Inventory-Exchange-Stock-1 — sibling to the return
+      // stock block. When an EXCHANGE adjustment is completed, the
+      // helper fires both legs: returned items → `exchange_in`
+      // (positive delta), replacement items → `exchange_out`
+      // (negative delta). Both legs are idempotent per-line and
+      // gated by inventory identity. Errors on one leg do not abort
+      // the other; the audit row captures every outcome.
+      let exchangeStockResult: Awaited<ReturnType<typeof applyExchangeStockEffects>> | null = null;
+      if (
+        nextState === 'completed' &&
+        (adjustment.kind === 'exchange_full' || adjustment.kind === 'exchange_partial')
+      ) {
+        try {
+          exchangeStockResult = await applyExchangeStockEffects({
+            supabase,
+            adjustment,
+            actorName: decidedByName,
+          });
+          if (exchangeStockResult.failedCount > 0) {
+            try {
+              await writeStaffAuditLog(supabase, {
+                action: 'inventory.exchange_stock_failed',
+                actorId: user?.id ?? null,
+                actorName: decidedByName,
+                actorRoleId: currentRoleId ?? null,
+                entity: {
+                  type: 'adjustment',
+                  id: adjustment.id,
+                  label: `${ADJUSTMENT_KIND_LABEL_AR[adjustment.kind]} — #${adjustment.order_num}`,
+                },
+                description: `فشل تطبيق ${exchangeStockResult.failedCount} حركة استبدال على المخزون للطلب #${adjustment.order_num}`,
+                metadata: {
+                  adjustment_id: adjustment.id,
+                  order_id: adjustment.order_id,
+                  order_num: adjustment.order_num,
+                  exchange_in_count: exchangeStockResult.exchangeInCount,
+                  exchange_out_count: exchangeStockResult.exchangeOutCount,
+                  total_in_quantity: exchangeStockResult.totalInQuantity,
+                  total_out_quantity: exchangeStockResult.totalOutQuantity,
+                  skipped_count: exchangeStockResult.skippedCount,
+                  failed_count: exchangeStockResult.failedCount,
+                  outcomes: exchangeStockResult.outcomes,
+                },
+              });
+            } catch (auditErr) {
+              console.warn('[OrderDetailModal] exchange_stock_failed audit skipped:', auditErr);
+            }
+            toast.warning(
+              `تم إكمال الاستبدال، لكن فشل تطبيق ${exchangeStockResult.failedCount} حركة على المخزون. راجع السجل.`
+            );
+          }
+          if (exchangeStockResult.exchangeInCount > 0 || exchangeStockResult.exchangeOutCount > 0) {
+            try {
+              await writeStaffAuditLog(supabase, {
+                action: 'inventory.exchange_stock_applied',
+                actorId: user?.id ?? null,
+                actorName: decidedByName,
+                actorRoleId: currentRoleId ?? null,
+                entity: {
+                  type: 'adjustment',
+                  id: adjustment.id,
+                  label: `${ADJUSTMENT_KIND_LABEL_AR[adjustment.kind]} — #${adjustment.order_num}`,
+                },
+                description: `تم تطبيق ${exchangeStockResult.exchangeInCount} رجوع و ${exchangeStockResult.exchangeOutCount} خروج بديل للاستبدال #${adjustment.order_num}`,
+                metadata: {
+                  adjustment_id: adjustment.id,
+                  order_id: adjustment.order_id,
+                  order_num: adjustment.order_num,
+                  exchange_in_count: exchangeStockResult.exchangeInCount,
+                  exchange_out_count: exchangeStockResult.exchangeOutCount,
+                  total_in_quantity: exchangeStockResult.totalInQuantity,
+                  total_out_quantity: exchangeStockResult.totalOutQuantity,
+                  skipped_count: exchangeStockResult.skippedCount,
+                  failed_count: exchangeStockResult.failedCount,
+                  outcomes: exchangeStockResult.outcomes,
+                },
+              });
+            } catch (auditErr) {
+              console.warn('[OrderDetailModal] exchange_stock_applied audit skipped:', auditErr);
+            }
+          }
+        } catch (exchangeStockErr) {
+          console.error('[OrderDetailModal] applyExchangeStockEffects threw:', exchangeStockErr);
+          toast.warning(
+            'تم إكمال الاستبدال، لكن حدث خطأ في تطبيق تأثيرات المخزون. راجع المخزون يدويًا.'
+          );
+        }
+      }
+
       toast.success(
         nextState === 'approved' && childOrderNum
           ? `تمت الموافقة، وإنشاء الطلب الفرعي #${childOrderNum}`
           : nextState === 'completed' && returnStockResult && returnStockResult.appliedCount > 0
             ? `تم إكمال المرتجع وإرجاع ${returnStockResult.totalAppliedQuantity} قطعة إلى المخزون.`
-            : childCascadeCancelled && childOrderNum
-              ? `تم تحديث حالة التسوية، وإلغاء الطلب الفرعي #${childOrderNum}.`
-              : 'تم تحديث حالة التسوية.'
+            : nextState === 'completed' &&
+                exchangeStockResult &&
+                (exchangeStockResult.exchangeInCount > 0 ||
+                  exchangeStockResult.exchangeOutCount > 0)
+              ? `تم إكمال الاستبدال وتحديث المخزون (دخول ${exchangeStockResult.totalInQuantity}، خروج ${exchangeStockResult.totalOutQuantity}).`
+              : childCascadeCancelled && childOrderNum
+                ? `تم تحديث حالة التسوية، وإلغاء الطلب الفرعي #${childOrderNum}.`
+                : 'تم تحديث حالة التسوية.'
       );
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new Event('turath_masr_order_adjustments_updated'));

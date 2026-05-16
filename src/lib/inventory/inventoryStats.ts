@@ -120,8 +120,14 @@ export const MOVEMENT_TYPE_LABELS_AR: Record<MovementType, string> = {
   manual_out: 'خصم يدوي',
   damage_out: 'تالف',
   return_in: 'مرتجع من عميل',
-  exchange_in: 'استبدال — دخول',
-  exchange_out: 'استبدال — خروج',
+  // Phase Inventory-Exchange-Stock-1 — clearer Arabic labels.
+  // Previously the labels were the symmetric pair
+  //   "استبدال — دخول" / "استبدال — خروج"
+  // which read as direction-only; updated to call out which side of
+  // the exchange the line represents so the global movement log and
+  // CSV are self-explanatory.
+  exchange_in: 'رجوع من استبدال',
+  exchange_out: 'خروج بديل',
   stock_count_adjustment: 'تسوية جرد',
   price_change: 'تعديل سعر',
   correction: 'تصحيح',

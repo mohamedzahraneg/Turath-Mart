@@ -2108,6 +2108,14 @@ function ReplacementLineRow(props: {
   const isPart = line.itemType === 'part';
   const subtotal = computeLineTotal(line);
   const chargeable = line.isFree ? 0 : subtotal;
+  // Phase Inventory-Exchange-Stock-1 — passive indicator describing
+  // what happens to inventory when the exchange is completed:
+  //   • Real inventory product → `exchange_out` movement (stock -qty)
+  //   • Maintenance part / no inventory id → ledger-silent
+  //   • Free items still exit stock (refund-side concern, not
+  //     stock-side concern).
+  const replacementHasInventoryIdentity =
+    typeof line.inventory_id === 'string' && line.inventory_id.trim().length > 0;
   return (
     <div
       className={`rounded-xl border p-3 space-y-2 ${
@@ -2230,6 +2238,24 @@ function ReplacementLineRow(props: {
           </span>
         )}
       </div>
+
+      {/* Phase Inventory-Exchange-Stock-1 — stock-effect hint.
+          Passive: replacement lines don't expose a 3-button picker
+          because the effect is fully determined by `inventory_id`
+          presence (and the `isFree` flag is a pricing concern, not
+          a stock concern). The hint sets operator expectations
+          before they click "إكمال" on the adjustment. */}
+      {replacementHasInventoryIdentity ? (
+        <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1">
+          {line.isFree
+            ? 'تأثير البديل: مجاني للعميل لكنه سيخرج من المخزون عند إكمال الاستبدال.'
+            : 'تأثير البديل: سيخرج من المخزون عند إكمال الاستبدال.'}
+        </p>
+      ) : (
+        <p className="text-[10px] text-amber-700 mt-1">
+          بديل يدوي / قطعة صيانة: لا يوجد تأثير على المخزون.
+        </p>
+      )}
     </div>
   );
 }
