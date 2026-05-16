@@ -17,6 +17,7 @@
 
 import React, { useCallback, useRef, useState } from 'react';
 import AppLayout from '@/components/AppLayout';
+import { usePermissions } from '@/hooks/usePermissions';
 import OrdersHeader from './components/OrdersHeader';
 import OrdersTableSection from './components/OrdersTableSection';
 import OrdersDashboard, {
@@ -30,6 +31,18 @@ export default function OrdersManagementPage() {
   const [appliedFilter, setAppliedFilter] = useState<Record<string, string> | null>(null);
   const [activeFilterLabel, setActiveFilterLabel] = useState<string | null>(null);
   const tableRef = useRef<HTMLDivElement | null>(null);
+
+  // Phase Orders-Dashboard-Admin-Gate-1 — KPI cards, status
+  // distribution, recent activity, and needs-action panels are
+  // admin-only for now. Conditional render means non-admin users
+  // never mount `<OrdersDashboard>` and the `/api/orders/operations-
+  // summary` fetch is skipped entirely (the fetch lives inside the
+  // component, see OrdersDashboard.tsx). The orders table and its
+  // filters/actions stay governed by their existing permissions.
+  // Currently admin-only; can be expanded later to a dedicated
+  // analytics permission.
+  const perms = usePermissions();
+  const canViewOrdersDashboard = perms.isAdmin;
 
   const handlePresetChange = useCallback((preset: DateRangePreset) => {
     setRange(rangeForPreset(preset));
@@ -79,7 +92,9 @@ export default function OrdersManagementPage() {
           onPresetChange={handlePresetChange}
           onRefresh={handleRefresh}
         />
-        <OrdersDashboard range={range} onApplyTableFilter={handleApplyTableFilter} />
+        {canViewOrdersDashboard && (
+          <OrdersDashboard range={range} onApplyTableFilter={handleApplyTableFilter} />
+        )}
         <div ref={tableRef}>
           <OrdersTableSection
             appliedRange={{ from: range.from, to: range.to }}
