@@ -35,6 +35,7 @@ import { normalizeArabic } from '@/lib/utils/arabic';
 import { sanitizePhoneInput, normalizeEgyptPhone, toEnglishDigits } from '@/lib/phone/egyptPhone';
 // Phase 26D-1 — staff audit on order creation.
 import { writeStaffAuditLog } from '@/lib/security/staffAudit';
+import { syncCustomerFromOrder } from '@/lib/crm/syncCustomerFromOrder';
 // Phase 22N — true hierarchy. The hierarchy transformer converts the
 // raw `settings_regions` array (mixed legacy strings + Phase 22M
 // objects) into nested top-level areas with `children`, applies the
@@ -2516,24 +2517,27 @@ export default function AddOrderModal({ onClose, defaultCustomer, onSuccess }: P
       // as SECURITY DEFINER so r6 (customer service) does not need write
       // access to turath_masr_notifications under the new RLS.
 
-      // Phase 22A: best-effort customer upsert (identity only). Runs
-      // *after* the order has already succeeded, and any error is
-      // logged-and-ignored so it cannot roll back the order. CRM
-      // derives totalOrders / totalSpent live from orders, so this
-      // path writes only phone + full_name + updated_at — never the
-      // stored counters. RLS allows r1/r2/r5/r6 to write customers;
-      // other roles will trip the policy and we accept that silently
-      // since the customer row is non-essential for delivery flow.
-      const { error: customerErr } = await supabase.from('turath_masr_customers').upsert(
-        {
-          phone: newOrder.phone,
-          full_name: newOrder.customer,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'phone' }
-      );
-      if (customerErr) {
-        console.error('Customer upsert (non-blocking):', customerErr);
+      // Phase CRM-Customers-Order-Sync-1 — customer upsert.
+      // Routed through the SECURITY DEFINER RPC + AFTER INSERT
+      // trigger pair so role-RLS no longer silently drops customer
+      // rows for non-CRM operators (the trigger fires regardless of
+      // caller role and the RPC bypasses RLS too). The explicit
+      // helper call here gives a synchronous code path for callers
+      // that want to know if the sync succeeded; the trigger is the
+      // safety net.
+      //
+      // CRM derives totalOrders / totalSpent live from orders, so
+      // the helper writes only phone + full_name + address. The RPC
+      // COALESCEs blanks so re-orders cannot wipe a populated
+      // address. Non-blocking: any error is logged and the order
+      // proceeds.
+      const syncResult = await syncCustomerFromOrder(supabase, {
+        phone: newOrder.phone,
+        fullName: newOrder.customer,
+        address: newOrder.address,
+      });
+      if (!syncResult.ok) {
+        console.warn('[AddOrderModal] customer sync non-blocking:', syncResult);
       }
 
       // Notify other components that orders have been updated

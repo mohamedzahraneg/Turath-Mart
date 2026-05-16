@@ -52,6 +52,7 @@ import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { usePermissions } from '@/hooks/usePermissions';
 import { writeStaffAuditLog } from '@/lib/security/staffAudit';
+import { syncCustomerFromOrder } from '@/lib/crm/syncCustomerFromOrder';
 import {
   appendCheckoutDetailsToNotes,
   parseCheckoutDetailsFromNotes,
@@ -968,6 +969,28 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
         } catch (reconcileErr) {
           console.error('[edit-order] reconcile threw:', reconcileErr);
           toast.warning('تم حفظ التعديلات لكن حدث خطأ في تحديث حجز المخزون.');
+        }
+      }
+
+      // Phase CRM-Customers-Order-Sync-1 — when the customer
+      // identity (name / phone / detailed address) was edited, push
+      // the new values into the CRM customers table so the
+      // /customers dashboard reflects the latest profile. Skipped
+      // when none of the three changed so a product- / quantity-
+      // only edit doesn't issue a redundant write. Non-blocking:
+      // any failure is logged and the edit otherwise succeeds.
+      const customerIdentityChanged =
+        beforeSnapshot.customer !== afterSnapshot.customer ||
+        beforeSnapshot.phone !== afterSnapshot.phone ||
+        beforeSnapshot.address !== afterSnapshot.address;
+      if (customerIdentityChanged) {
+        const syncResult = await syncCustomerFromOrder(supabase, {
+          phone: afterSnapshot.phone,
+          fullName: afterSnapshot.customer,
+          address: afterSnapshot.address,
+        });
+        if (!syncResult.ok) {
+          console.warn('[edit-order] customer sync non-blocking:', syncResult);
         }
       }
 
