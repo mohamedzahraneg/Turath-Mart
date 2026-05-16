@@ -76,6 +76,72 @@ export interface InventoryAdditionWithProduct extends InventoryAddition {
   inventory_sku: string;
 }
 
+/** Phase Inventory-Movement-Ledger-1 — DB-level movement type. The
+ *  CHECK constraint also accepts `'exchange_in'` / `'exchange_out'`
+ *  for future order-flow integration. */
+export type MovementType =
+  | 'addition'
+  | 'manual_in'
+  | 'manual_out'
+  | 'damage_out'
+  | 'return_in'
+  | 'exchange_in'
+  | 'exchange_out'
+  | 'stock_count_adjustment'
+  | 'price_change'
+  | 'correction';
+
+/** Subset of movement types we expose in the manual movement modal.
+ *  Order-flow movements (`addition`, `exchange_*`) are deliberately
+ *  hidden so the manual surface never triggers them. */
+export const MANUAL_MOVEMENT_TYPES = [
+  'manual_in',
+  'manual_out',
+  'damage_out',
+  'return_in',
+  'stock_count_adjustment',
+  'correction',
+] as const;
+export type ManualMovementType = (typeof MANUAL_MOVEMENT_TYPES)[number];
+
+export const MOVEMENT_TYPE_LABELS_AR: Record<MovementType, string> = {
+  addition: 'إضافة كمية',
+  manual_in: 'إضافة يدوية',
+  manual_out: 'خصم يدوي',
+  damage_out: 'تالف',
+  return_in: 'مرتجع من عميل',
+  exchange_in: 'استبدال — دخول',
+  exchange_out: 'استبدال — خروج',
+  stock_count_adjustment: 'تسوية جرد',
+  price_change: 'تعديل سعر',
+  correction: 'تصحيح',
+};
+
+export interface InventoryMovement {
+  id: string;
+  inventory_id: string;
+  movement_type: MovementType;
+  quantity_delta: number;
+  quantity_before: number;
+  quantity_after: number;
+  reason: string | null;
+  reference_type: string | null;
+  reference_id: string | null;
+  order_num: string | null;
+  supplier_invoice_num: string | null;
+  unit_cost: number | null;
+  total_cost: number | null;
+  created_by: string | null;
+  created_by_name: string | null;
+  created_at: string;
+  metadata: Record<string, unknown> | null;
+}
+
+export interface InventoryMovementWithProduct extends InventoryMovement {
+  inventory_name: string;
+  inventory_sku: string;
+}
+
 /** Stock health of a single row (independent of lifecycle status). */
 export type ProductStatus = 'available' | 'low' | 'out';
 
@@ -339,6 +405,58 @@ export function exportAdditionsCsv(rows: InventoryAdditionWithProduct[]): void {
   const a = document.createElement('a');
   a.href = url;
   a.download = `inventory-additions-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+// Phase Inventory-Movement-Ledger-1 — CSV export of the global
+// movements log. Mirrors the table view; UTF-8 BOM so Excel opens
+// Arabic correctly.
+export function exportMovementsCsv(rows: InventoryMovementWithProduct[]): void {
+  if (typeof window === 'undefined') return;
+
+  const header = [
+    'التاريخ',
+    'المنتج',
+    'SKU',
+    'نوع الحركة',
+    'التغيير',
+    'قبل',
+    'بعد',
+    'السبب',
+    'المرجع',
+    'رقم الطلب',
+    'رقم فاتورة المورد',
+    'تكلفة الوحدة',
+    'إجمالي التكلفة',
+    'المستخدم',
+  ];
+
+  const rowsCsv = rows.map((r) => [
+    r.created_at ?? '',
+    r.inventory_name ?? '',
+    r.inventory_sku ?? '',
+    MOVEMENT_TYPE_LABELS_AR[r.movement_type] ?? r.movement_type,
+    (r.quantity_delta >= 0 ? '+' : '') + String(r.quantity_delta),
+    String(r.quantity_before),
+    String(r.quantity_after),
+    r.reason ?? '',
+    r.reference_type ?? '',
+    r.order_num ?? '',
+    r.supplier_invoice_num ?? '',
+    r.unit_cost == null ? '' : String(r.unit_cost),
+    r.total_cost == null ? '' : String(r.total_cost),
+    r.created_by_name ?? '',
+  ]);
+
+  const csv = [header, ...rowsCsv].map((line) => line.map(csvEscape).join(',')).join('\r\n');
+  const blob = new Blob(['﻿', csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `inventory-movements-${new Date().toISOString().slice(0, 10)}.csv`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

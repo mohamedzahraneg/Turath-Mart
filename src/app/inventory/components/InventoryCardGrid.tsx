@@ -12,6 +12,7 @@
 
 import React from 'react';
 import {
+  Activity,
   AlertTriangle,
   Archive,
   CheckCircle,
@@ -40,6 +41,7 @@ interface Props {
   onEdit: (item: InventoryItem) => void;
   onArchive: (item: InventoryItem) => void;
   onAddStock: (item: InventoryItem) => void;
+  onRecordMovement: (item: InventoryItem) => void;
 }
 
 export default function InventoryCardGrid({
@@ -50,6 +52,7 @@ export default function InventoryCardGrid({
   onEdit,
   onArchive,
   onAddStock,
+  onRecordMovement,
 }: Props) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4" dir="rtl">
@@ -201,6 +204,17 @@ export default function InventoryCardGrid({
                   title={isArchived ? 'مؤرشف — لا يمكن إضافة كمية' : 'إضافة كمية'}
                 >
                   <Plus size={13} /> كمية
+                </button>
+              )}
+              {canAddStock && (
+                <button
+                  type="button"
+                  onClick={() => onRecordMovement(item)}
+                  disabled={isArchived}
+                  className="flex-1 inline-flex items-center justify-center gap-1 py-1.5 rounded-lg text-xs font-semibold text-[hsl(217,80%,30%)] hover:bg-[hsl(217,80%,30%)]/10 disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={isArchived ? 'مؤرشف — لا يمكن تسجيل حركة' : 'تسجيل حركة'}
+                >
+                  <Activity size={13} /> حركة
                 </button>
               )}
               <button

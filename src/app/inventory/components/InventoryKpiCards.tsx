@@ -13,6 +13,7 @@
 
 import React from 'react';
 import {
+  Activity,
   AlertTriangle,
   Banknote,
   Package,
@@ -33,16 +34,19 @@ interface Props {
   /** Units added across the additions ledger for the current month.
    *  `null` hides the card (e.g. before the migration applies). */
   additionsThisMonth?: number | null;
+  /** Movements created today across all products. `null` hides the
+   *  card pre-migration. */
+  movementsToday?: number | null;
 }
 
 interface Card {
   label: string;
   value: string;
   icon: React.ReactNode;
-  tone: 'blue' | 'green' | 'orange' | 'navy' | 'amber' | 'red' | 'emerald';
+  tone: 'blue' | 'green' | 'orange' | 'navy' | 'amber' | 'red' | 'emerald' | 'sky';
 }
 
-export default function InventoryKpiCards({ stats, additionsThisMonth }: Props) {
+export default function InventoryKpiCards({ stats, additionsThisMonth, movementsToday }: Props) {
   const cards: Card[] = [
     {
       label: 'إجمالي المنتجات',
@@ -90,9 +94,18 @@ export default function InventoryKpiCards({ stats, additionsThisMonth }: Props) 
       tone: 'emerald',
     });
   }
+  if (typeof movementsToday === 'number') {
+    cards.push({
+      label: 'حركات اليوم',
+      value: formatNumber(movementsToday),
+      icon: <Activity size={20} />,
+      tone: 'sky',
+    });
+  }
 
-  // Switch the xl grid to 7 columns when the additions card is included.
-  const xlCols = cards.length >= 7 ? 'xl:grid-cols-7' : 'xl:grid-cols-6';
+  // Match the xl grid to the actual card count (6 / 7 / 8).
+  const xlCols =
+    cards.length >= 8 ? 'xl:grid-cols-8' : cards.length === 7 ? 'xl:grid-cols-7' : 'xl:grid-cols-6';
 
   return (
     <div className={`grid grid-cols-2 md:grid-cols-3 ${xlCols} gap-3`} dir="rtl">
@@ -124,4 +137,5 @@ const TONE_BG: Record<Card['tone'], string> = {
   amber: 'bg-amber-50 text-amber-700',
   red: 'bg-red-50 text-red-600',
   emerald: 'bg-emerald-100 text-emerald-700',
+  sky: 'bg-sky-50 text-sky-600',
 };

@@ -43,10 +43,12 @@ import {
   computeStats,
   exportAdditionsCsv,
   exportInventoryCsv,
+  exportMovementsCsv,
   formatDate,
   formatMoney,
   formatNumber,
   matchesStatus,
+  MOVEMENT_TYPE_LABELS_AR,
   productLifecycle,
   sortInventory,
   uniqueCategories,
@@ -54,7 +56,9 @@ import {
   type Category,
   type InventoryAdditionWithProduct,
   type InventoryItem,
+  type InventoryMovementWithProduct,
   type LifecycleStatus,
+  type MovementType,
   type SortOption,
   type StatusFilter,
   type ViewMode,
@@ -71,7 +75,8 @@ import InventoryTable from './components/InventoryTable';
 import InventoryDrawer from './components/InventoryDrawer';
 import InventoryEditModal from './components/InventoryEditModal';
 import AddStockModal from './components/AddStockModal';
-import { Download, History, Plus, Search } from 'lucide-react';
+import InventoryMovementModal from './components/InventoryMovementModal';
+import { Activity, Download, History, Plus, Search } from 'lucide-react';
 
 interface InventoryRowDb {
   id: string;
@@ -121,6 +126,27 @@ interface AdditionWithProductRow {
   created_by_name: string | null;
   note: string | null;
   created_at: string | null;
+  turath_masr_inventory: { name: string | null; sku: string | null } | null;
+}
+
+interface MovementWithProductRow {
+  id: string;
+  inventory_id: string;
+  movement_type: string;
+  quantity_delta: number | null;
+  quantity_before: number | null;
+  quantity_after: number | null;
+  reason: string | null;
+  reference_type: string | null;
+  reference_id: string | null;
+  order_num: string | null;
+  supplier_invoice_num: string | null;
+  unit_cost: number | string | null;
+  total_cost: number | string | null;
+  created_by: string | null;
+  created_by_name: string | null;
+  created_at: string | null;
+  metadata: Record<string, unknown> | null;
   turath_masr_inventory: { name: string | null; sku: string | null } | null;
 }
 
@@ -177,6 +203,10 @@ export default function InventoryPage() {
     null
   );
   const [additionsThisMonth, setAdditionsThisMonth] = useState<number | null>(null);
+  const [globalMovements, setGlobalMovements] = useState<InventoryMovementWithProduct[] | null>(
+    null
+  );
+  const [movementsToday, setMovementsToday] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -193,11 +223,19 @@ export default function InventoryPage() {
   const [editItem, setEditItem] = useState<InventoryItem | null | undefined>(undefined);
   const [drawerItem, setDrawerItem] = useState<InventoryItem | null>(null);
   const [addStockTarget, setAddStockTarget] = useState<InventoryItem | null>(null);
+  // Phase Inventory-Movement-Ledger-1 — `null` means modal closed,
+  // `'__GLOBAL__'` means the modal launched from the header with a
+  // product picker, any item means launched from a specific product.
+  const [movementTarget, setMovementTarget] = useState<InventoryItem | '__GLOBAL__' | null>(null);
 
   // Phase Inventory-Additions-Log-1 — local search for the global
   // additions log section. Date filters / supplier filters are out of
   // scope here; the list is capped at the latest 50 rows for now.
   const [additionsSearch, setAdditionsSearch] = useState('');
+  // Phase Inventory-Movement-Ledger-1 — same pattern for the global
+  // movements log section.
+  const [movementsSearch, setMovementsSearch] = useState('');
+  const [movementsTypeFilter, setMovementsTypeFilter] = useState<'all' | MovementType>('all');
 
   const loadAll = useCallback(async (silent: boolean) => {
     if (!silent) setLoading(true);
@@ -316,6 +354,61 @@ export default function InventoryPage() {
           }
         } catch {
           setAdditionsThisMonth(0);
+        }
+      }
+
+      // 2c. Global movements log + today KPI — best-effort. If the
+      //     movements table doesn't exist yet (pre-migration window),
+      //     both the section and the KPI hide gracefully.
+      const movRes = await supabase
+        .from('turath_masr_inventory_movements')
+        .select(
+          'id, inventory_id, movement_type, quantity_delta, quantity_before, quantity_after, reason, reference_type, reference_id, order_num, supplier_invoice_num, unit_cost, total_cost, created_by, created_by_name, created_at, metadata, turath_masr_inventory(name, sku)'
+        )
+        .order('created_at', { ascending: false })
+        .limit(100);
+      if (movRes.error) {
+        setGlobalMovements(null);
+        setMovementsToday(null);
+      } else {
+        const rows = (movRes.data ?? []) as unknown as MovementWithProductRow[];
+        const mapped: InventoryMovementWithProduct[] = rows.map((r) => ({
+          id: r.id,
+          inventory_id: r.inventory_id,
+          movement_type: r.movement_type as MovementType,
+          quantity_delta: Number(r.quantity_delta ?? 0),
+          quantity_before: Number(r.quantity_before ?? 0),
+          quantity_after: Number(r.quantity_after ?? 0),
+          reason: r.reason,
+          reference_type: r.reference_type,
+          reference_id: r.reference_id,
+          order_num: r.order_num,
+          supplier_invoice_num: r.supplier_invoice_num,
+          unit_cost: r.unit_cost == null ? null : Number(r.unit_cost),
+          total_cost: r.total_cost == null ? null : Number(r.total_cost),
+          created_by: r.created_by,
+          created_by_name: r.created_by_name,
+          created_at: r.created_at ?? '',
+          metadata: r.metadata,
+          inventory_name: r.turath_masr_inventory?.name ?? '',
+          inventory_sku: r.turath_masr_inventory?.sku ?? '',
+        }));
+        setGlobalMovements(mapped);
+
+        try {
+          const now = new Date();
+          const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+          const todayRes = await supabase
+            .from('turath_masr_inventory_movements')
+            .select('id', { count: 'exact', head: true })
+            .gte('created_at', dayStart);
+          if (!todayRes.error) {
+            setMovementsToday(todayRes.count ?? 0);
+          } else {
+            setMovementsToday(0);
+          }
+        } catch {
+          setMovementsToday(0);
         }
       }
 
@@ -605,6 +698,12 @@ export default function InventoryPage() {
     await loadAll(true);
   }, [loadAll]);
 
+  const handleRecordMovement = useCallback((item: InventoryItem) => setMovementTarget(item), []);
+  const handleRecordGlobalMovement = useCallback(() => setMovementTarget('__GLOBAL__'), []);
+  const handleMovementDone = useCallback(async () => {
+    await loadAll(true);
+  }, [loadAll]);
+
   // Filter additions for the global section by free-text on
   // product/SKU/supplier/invoice. Date filtering is out of scope here;
   // the underlying query already caps at the latest 50 rows.
@@ -623,6 +722,22 @@ export default function InventoryPage() {
     exportAdditionsCsv(filteredAdditions);
   }, [filteredAdditions]);
 
+  const filteredMovements = useMemo(() => {
+    if (!globalMovements) return [];
+    const term = movementsSearch.trim().toLowerCase();
+    return globalMovements.filter((row) => {
+      if (movementsTypeFilter !== 'all' && row.movement_type !== movementsTypeFilter) return false;
+      if (!term) return true;
+      const hay =
+        `${row.inventory_name} ${row.inventory_sku} ${row.reason ?? ''} ${row.order_num ?? ''} ${row.supplier_invoice_num ?? ''}`.toLowerCase();
+      return hay.includes(term);
+    });
+  }, [globalMovements, movementsSearch, movementsTypeFilter]);
+
+  const handleMovementsExport = useCallback(() => {
+    exportMovementsCsv(filteredMovements);
+  }, [filteredMovements]);
+
   // Fallback category list for the edit modal — DB list when present,
   // derived names otherwise, plus a safety fallback for first-run
   // empty databases.
@@ -638,10 +753,15 @@ export default function InventoryPage() {
           onAdd={handleAdd}
           onRefresh={handleRefresh}
           onExport={items.length > 0 ? handleExport : null}
+          onRecordMovement={canAddStock && items.length > 0 ? handleRecordGlobalMovement : null}
           refreshing={refreshing}
         />
 
-        <InventoryKpiCards stats={stats} additionsThisMonth={additionsThisMonth} />
+        <InventoryKpiCards
+          stats={stats}
+          additionsThisMonth={additionsThisMonth}
+          movementsToday={movementsToday}
+        />
 
         {lowOrOut > 0 && !loading && !loadError && (
           <div
@@ -700,6 +820,7 @@ export default function InventoryPage() {
             onEdit={handleEdit}
             onArchive={handleArchive}
             onAddStock={handleAddStock}
+            onRecordMovement={handleRecordMovement}
           />
         ) : (
           <InventoryTable
@@ -710,6 +831,21 @@ export default function InventoryPage() {
             onEdit={handleEdit}
             onArchive={handleArchive}
             onAddStock={handleAddStock}
+            onRecordMovement={handleRecordMovement}
+          />
+        )}
+
+        {/* Phase Inventory-Movement-Ledger-1 — global movements log
+            renders first (most recent activity); hidden pre-migration. */}
+        {globalMovements !== null && !loading && !loadError && (
+          <GlobalMovementsSection
+            movements={filteredMovements}
+            search={movementsSearch}
+            onSearchChange={setMovementsSearch}
+            typeFilter={movementsTypeFilter}
+            onTypeFilterChange={setMovementsTypeFilter}
+            onExport={handleMovementsExport}
+            canExport={filteredMovements.length > 0}
           />
         )}
 
@@ -753,6 +889,7 @@ export default function InventoryPage() {
           onSetStatus={handleSetStatus}
           onRestore={handleRestore}
           onAddStock={handleAddStock}
+          onRecordMovement={handleRecordMovement}
         />
       )}
 
@@ -764,6 +901,17 @@ export default function InventoryPage() {
           actorName={actorName}
           onClose={() => setAddStockTarget(null)}
           onSaved={handleAddStockDone}
+        />
+      )}
+
+      {movementTarget && (
+        <InventoryMovementModal
+          item={movementTarget === '__GLOBAL__' ? null : movementTarget}
+          allItems={items}
+          actorId={user?.id ?? null}
+          actorName={actorName}
+          onClose={() => setMovementTarget(null)}
+          onSaved={handleMovementDone}
         />
       )}
     </AppLayout>
@@ -802,6 +950,167 @@ function EmptyState({ title, description }: { title: string; description: string
       <p className="text-sm font-semibold text-[hsl(var(--foreground))]">{title}</p>
       <p className="text-xs max-w-md">{description}</p>
     </div>
+  );
+}
+
+function GlobalMovementsSection({
+  movements,
+  search,
+  onSearchChange,
+  typeFilter,
+  onTypeFilterChange,
+  onExport,
+  canExport,
+}: {
+  movements: InventoryMovementWithProduct[];
+  search: string;
+  onSearchChange: (v: string) => void;
+  typeFilter: 'all' | MovementType;
+  onTypeFilterChange: (t: 'all' | MovementType) => void;
+  onExport: () => void;
+  canExport: boolean;
+}) {
+  const typeOptions: { key: 'all' | MovementType; label: string }[] = [
+    { key: 'all', label: 'الكل' },
+    { key: 'addition', label: MOVEMENT_TYPE_LABELS_AR.addition },
+    { key: 'manual_in', label: MOVEMENT_TYPE_LABELS_AR.manual_in },
+    { key: 'manual_out', label: MOVEMENT_TYPE_LABELS_AR.manual_out },
+    { key: 'damage_out', label: MOVEMENT_TYPE_LABELS_AR.damage_out },
+    { key: 'return_in', label: MOVEMENT_TYPE_LABELS_AR.return_in },
+    { key: 'stock_count_adjustment', label: MOVEMENT_TYPE_LABELS_AR.stock_count_adjustment },
+    { key: 'correction', label: MOVEMENT_TYPE_LABELS_AR.correction },
+  ];
+
+  return (
+    <section className="space-y-3" dir="rtl">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <h2 className="text-lg font-bold text-[hsl(var(--foreground))] flex items-center gap-2">
+          <Activity size={18} className="text-[hsl(var(--primary))]" />
+          سجل حركة المخزون
+        </h2>
+        <button
+          type="button"
+          onClick={onExport}
+          disabled={!canExport}
+          className="text-xs rounded-xl border border-[hsl(var(--border))] bg-white px-3 py-1.5 flex items-center gap-1.5 hover:bg-[hsl(var(--muted))]/40 disabled:opacity-50"
+        >
+          <Download size={13} />
+          تصدير CSV
+        </button>
+      </div>
+
+      <div className="rounded-2xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+        <div className="p-3 border-b border-[hsl(var(--border))] bg-[hsl(var(--muted))]/30 space-y-2">
+          <div className="relative">
+            <Search
+              size={14}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-[hsl(var(--muted-foreground))]"
+            />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => onSearchChange(e.target.value)}
+              placeholder="بحث بالمنتج أو SKU أو السبب أو رقم الطلب..."
+              className="w-full pr-9 pl-3 py-2 text-xs border border-[hsl(var(--border))] bg-white rounded-xl focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30"
+            />
+          </div>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {typeOptions.map((opt) => (
+              <button
+                key={opt.key}
+                type="button"
+                onClick={() => onTypeFilterChange(opt.key)}
+                className={`text-[11px] px-2.5 py-1 rounded-xl font-semibold transition-colors ${
+                  typeFilter === opt.key
+                    ? 'bg-[hsl(217,80%,30%)] text-white'
+                    : 'bg-white border border-[hsl(var(--border))] text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted))]/40'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {movements.length === 0 ? (
+          <div className="py-12 flex flex-col items-center justify-center gap-2 text-[hsl(var(--muted-foreground))] text-sm">
+            <Activity size={28} className="opacity-30" />
+            <p>لا توجد حركات مسجلة بعد.</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto scrollbar-thin">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-[hsl(var(--muted))]/40 border-b border-[hsl(var(--border))]">
+                  {[
+                    'التاريخ',
+                    'المنتج',
+                    'SKU',
+                    'نوع الحركة',
+                    'التغيير',
+                    'قبل',
+                    'بعد',
+                    'السبب',
+                    'المرجع',
+                    'المستخدم',
+                  ].map((h) => (
+                    <th
+                      key={h}
+                      className="text-right px-3 py-2 text-[11px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap"
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[hsl(var(--border))]">
+                {movements.slice(0, 100).map((row) => (
+                  <tr key={row.id} className="hover:bg-[hsl(var(--muted))]/30 align-top">
+                    <td className="px-3 py-2 text-xs text-[hsl(var(--muted-foreground))] whitespace-nowrap">
+                      {formatDate(row.created_at)}
+                    </td>
+                    <td className="px-3 py-2 text-xs font-semibold truncate max-w-[160px]">
+                      {row.inventory_name || '—'}
+                    </td>
+                    <td className="px-3 py-2 text-xs font-mono text-[hsl(var(--muted-foreground))]">
+                      {row.inventory_sku || '—'}
+                    </td>
+                    <td className="px-3 py-2 text-xs whitespace-nowrap">
+                      {MOVEMENT_TYPE_LABELS_AR[row.movement_type] ?? row.movement_type}
+                    </td>
+                    <td
+                      className={`px-3 py-2 font-mono text-xs font-bold ${
+                        row.quantity_delta > 0
+                          ? 'text-emerald-700'
+                          : row.quantity_delta < 0
+                            ? 'text-red-600'
+                            : 'text-[hsl(var(--muted-foreground))]'
+                      }`}
+                    >
+                      {row.quantity_delta > 0 ? '+' : ''}
+                      {formatNumber(row.quantity_delta)}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs">
+                      {formatNumber(row.quantity_before)}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs font-bold">
+                      {formatNumber(row.quantity_after)}
+                    </td>
+                    <td className="px-3 py-2 text-xs truncate max-w-[140px]">
+                      {row.reason || '—'}
+                    </td>
+                    <td className="px-3 py-2 text-xs font-mono">
+                      {row.order_num || row.supplier_invoice_num || '—'}
+                    </td>
+                    <td className="px-3 py-2 text-xs">{row.created_by_name || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 

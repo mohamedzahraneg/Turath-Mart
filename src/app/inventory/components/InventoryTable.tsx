@@ -14,6 +14,7 @@
 
 import React from 'react';
 import {
+  Activity,
   AlertTriangle,
   Archive,
   CheckCircle,
@@ -43,6 +44,7 @@ interface Props {
   onEdit: (item: InventoryItem) => void;
   onArchive: (item: InventoryItem) => void;
   onAddStock: (item: InventoryItem) => void;
+  onRecordMovement: (item: InventoryItem) => void;
 }
 
 const HEADERS = [
@@ -69,6 +71,7 @@ export default function InventoryTable({
   onEdit,
   onArchive,
   onAddStock,
+  onRecordMovement,
 }: Props) {
   return (
     <div
@@ -234,6 +237,17 @@ export default function InventoryTable({
                           title={isArchived ? 'مؤرشف — لا يمكن إضافة كمية' : 'إضافة كمية'}
                         >
                           <Plus size={14} />
+                        </button>
+                      )}
+                      {canAddStock && (
+                        <button
+                          type="button"
+                          onClick={() => onRecordMovement(item)}
+                          disabled={isArchived}
+                          className="p-1.5 hover:bg-[hsl(217,80%,30%)]/10 text-[hsl(217,80%,30%)] rounded-lg disabled:opacity-40 disabled:cursor-not-allowed"
+                          title={isArchived ? 'مؤرشف — لا يمكن تسجيل حركة' : 'تسجيل حركة'}
+                        >
+                          <Activity size={14} />
                         </button>
                       )}
                       <button

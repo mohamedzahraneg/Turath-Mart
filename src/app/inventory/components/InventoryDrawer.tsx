@@ -4,26 +4,29 @@
 // Phase Inventory-UI-Redesign-1 — right-side product details drawer.
 // Phase Inventory-Categories-Safer-Archive-1 — adds lifecycle chip,
 //   active ↔ inactive toggle, archive / restore.
-// Phase Inventory-Additions-Log-1 — adds:
-//   • A new "الإضافات" tab listing the latest stock additions for
-//     this product (read from `turath_masr_inventory_additions`).
-//     Falls back to an honest empty / missing-table state.
-//   • "+ إضافة كمية" CTA in the summary tab (and a mirror in the
-//     settings tab) that opens the AddStockModal via the parent.
+// Phase Inventory-Additions-Log-1 — added the "الإضافات" tab + the
+//   "+ إضافة كمية" CTA hook.
+// Phase Inventory-Movement-Ledger-1 — adds:
+//   • A new "الحركة" tab listing the latest movements for this
+//     product (read from `turath_masr_inventory_movements`). Honest
+//     empty / missing-table states.
+//   • "تسجيل حركة" CTA in summary + settings that opens the
+//     InventoryMovementModal via the parent.
 //
 // Tabs:
-//   • الملخص — factsheet, lifecycle + stock chips, + إضافة كمية CTA
-//   • الألوان — chips, or honest empty state if no colors
+//   • الملخص — factsheet, lifecycle + stock chips, two CTAs
+//   • الألوان — chips, or honest empty state
+//   • الحركة — last 50 movements for this product
 //   • الإضافات — last 50 stock additions for this product
 //   • الطلبات المرتبطة — last 10 orders whose `products` text contains
-//     the product name (lightweight ilike). Falls back to an honest
-//     empty state on error.
-//   • الإعدادات — read-only metadata + edit / lifecycle / + قطع
+//     the product name (lightweight ilike)
+//   • الإعدادات — read-only metadata + edit / lifecycle / actions
 // ─────────────────────────────────────────────────────────────────────────────
 'use client';
 
 import React, { useEffect, useState } from 'react';
 import {
+  Activity,
   AlertTriangle,
   Archive,
   CheckCircle,
@@ -44,14 +47,17 @@ import {
   formatDate,
   formatMoney,
   formatNumber,
+  MOVEMENT_TYPE_LABELS_AR,
   productLifecycle,
   productStatus,
   type InventoryAddition,
   type InventoryItem,
+  type InventoryMovement,
   type LifecycleStatus,
+  type MovementType,
 } from '@/lib/inventory/inventoryStats';
 
-type Tab = 'summary' | 'colors' | 'additions' | 'orders' | 'settings';
+type Tab = 'summary' | 'colors' | 'movements' | 'additions' | 'orders' | 'settings';
 
 interface Props {
   item: InventoryItem;
@@ -65,6 +71,8 @@ interface Props {
   onRestore: (item: InventoryItem) => void;
   /** Phase Inventory-Additions-Log-1 — launches AddStockModal for this product. */
   onAddStock: (item: InventoryItem) => void;
+  /** Phase Inventory-Movement-Ledger-1 — launches InventoryMovementModal. */
+  onRecordMovement: (item: InventoryItem) => void;
 }
 
 export default function InventoryDrawer({
@@ -78,6 +86,7 @@ export default function InventoryDrawer({
   onSetStatus,
   onRestore,
   onAddStock,
+  onRecordMovement,
 }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>('summary');
   const status = productStatus(item);
@@ -144,6 +153,7 @@ export default function InventoryDrawer({
             [
               { key: 'summary', label: 'الملخص' },
               { key: 'colors', label: 'الألوان' },
+              { key: 'movements', label: 'الحركة' },
               { key: 'additions', label: 'الإضافات' },
               { key: 'orders', label: 'الطلبات المرتبطة' },
               { key: 'settings', label: 'الإعدادات' },
@@ -177,9 +187,17 @@ export default function InventoryDrawer({
               inventoryValue={inventoryValue}
               canAddStock={canAddStock}
               onAddStock={() => onAddStock(item)}
+              onRecordMovement={() => onRecordMovement(item)}
             />
           )}
           {activeTab === 'colors' && <ColorsTab item={item} />}
+          {activeTab === 'movements' && (
+            <MovementsTab
+              item={item}
+              canAddStock={canAddStock}
+              onRecordMovement={() => onRecordMovement(item)}
+            />
+          )}
           {activeTab === 'additions' && (
             <AdditionsTab
               item={item}
@@ -200,6 +218,7 @@ export default function InventoryDrawer({
               onSetStatus={(next) => onSetStatus(item, next)}
               onRestore={() => onRestore(item)}
               onAddStock={() => onAddStock(item)}
+              onRecordMovement={() => onRecordMovement(item)}
             />
           )}
         </div>
@@ -218,6 +237,7 @@ function SummaryTab({
   inventoryValue,
   canAddStock,
   onAddStock,
+  onRecordMovement,
 }: {
   item: InventoryItem;
   withdrawn: number;
@@ -226,6 +246,7 @@ function SummaryTab({
   inventoryValue: number;
   canAddStock: boolean;
   onAddStock: () => void;
+  onRecordMovement: () => void;
 }) {
   return (
     <div className="space-y-4">
@@ -250,14 +271,24 @@ function SummaryTab({
       </div>
 
       {canAddStock && lifecycle !== 'archived' && (
-        <button
-          type="button"
-          onClick={onAddStock}
-          className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold rounded-xl py-2.5"
-        >
-          <Plus size={15} />
-          إضافة كمية
-        </button>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={onAddStock}
+            className="flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold rounded-xl py-2.5"
+          >
+            <Plus size={15} />
+            إضافة كمية
+          </button>
+          <button
+            type="button"
+            onClick={onRecordMovement}
+            className="flex items-center justify-center gap-2 border border-[hsl(217,80%,30%)] text-[hsl(217,80%,30%)] hover:bg-[hsl(217,80%,30%)]/10 text-sm font-semibold rounded-xl py-2.5"
+          >
+            <Activity size={15} />
+            تسجيل حركة
+          </button>
+        </div>
       )}
 
       {lifecycle === 'archived' && (
@@ -414,6 +445,218 @@ interface RawAdditionRow {
   created_by_name: string | null;
   note: string | null;
   created_at: string | null;
+}
+
+// ─── Movements (per product) ────────────────────────────────────────────────
+
+interface RawMovementRow {
+  id: string;
+  inventory_id: string;
+  movement_type: string;
+  quantity_delta: number | null;
+  quantity_before: number | null;
+  quantity_after: number | null;
+  reason: string | null;
+  reference_type: string | null;
+  reference_id: string | null;
+  order_num: string | null;
+  supplier_invoice_num: string | null;
+  unit_cost: number | string | null;
+  total_cost: number | string | null;
+  created_by: string | null;
+  created_by_name: string | null;
+  created_at: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+function MovementsTab({
+  item,
+  canAddStock,
+  onRecordMovement,
+}: {
+  item: InventoryItem;
+  canAddStock: boolean;
+  onRecordMovement: () => void;
+}) {
+  const [rows, setRows] = useState<InventoryMovement[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [missingTable, setMissingTable] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setMissingTable(false);
+    (async () => {
+      try {
+        const supabase = createClient();
+        const { data, error: err } = await supabase
+          .from('turath_masr_inventory_movements')
+          .select(
+            'id, inventory_id, movement_type, quantity_delta, quantity_before, quantity_after, reason, reference_type, reference_id, order_num, supplier_invoice_num, unit_cost, total_cost, created_by, created_by_name, created_at, metadata'
+          )
+          .eq('inventory_id', item.id)
+          .order('created_at', { ascending: false })
+          .limit(50);
+
+        if (cancelled) return;
+        if (err) {
+          const msg = (err.message || '').toLowerCase();
+          if (msg.includes('does not exist') || msg.includes('relation')) {
+            setMissingTable(true);
+            setRows([]);
+          } else {
+            setError('تعذر تحميل سجل الحركة.');
+          }
+          return;
+        }
+        const mapped: InventoryMovement[] = (data as RawMovementRow[]).map((r) => ({
+          id: r.id,
+          inventory_id: r.inventory_id,
+          movement_type: r.movement_type as MovementType,
+          quantity_delta: Number(r.quantity_delta ?? 0),
+          quantity_before: Number(r.quantity_before ?? 0),
+          quantity_after: Number(r.quantity_after ?? 0),
+          reason: r.reason,
+          reference_type: r.reference_type,
+          reference_id: r.reference_id,
+          order_num: r.order_num,
+          supplier_invoice_num: r.supplier_invoice_num,
+          unit_cost: r.unit_cost == null ? null : Number(r.unit_cost),
+          total_cost: r.total_cost == null ? null : Number(r.total_cost),
+          created_by: r.created_by,
+          created_by_name: r.created_by_name,
+          created_at: r.created_at ?? '',
+          metadata: r.metadata,
+        }));
+        setRows(mapped);
+      } catch {
+        if (!cancelled) setError('تعذر تحميل سجل الحركة.');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [item.id]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-10 text-[hsl(var(--muted-foreground))] gap-2 text-sm">
+        <RefreshCw size={14} className="animate-spin" />
+        جاري التحميل...
+      </div>
+    );
+  }
+  if (missingTable) {
+    return (
+      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-800 text-sm">
+        سجل الحركة غير مفعّل بعد. يجب تطبيق تحديث قاعدة البيانات أولًا.
+      </div>
+    );
+  }
+  if (error) {
+    return <div className="text-center py-10 text-red-600 text-sm">{error}</div>;
+  }
+  if (!rows || rows.length === 0) {
+    return (
+      <div className="space-y-3">
+        <div className="text-center py-12 text-[hsl(var(--muted-foreground))] text-sm">
+          لا توجد حركات مسجلة لهذا المنتج بعد.
+        </div>
+        {canAddStock && productLifecycle(item) !== 'archived' && (
+          <button
+            type="button"
+            onClick={onRecordMovement}
+            className="w-full flex items-center justify-center gap-2 bg-[hsl(217,80%,30%)] hover:bg-[hsl(217,80%,25%)] text-white text-sm font-semibold rounded-xl py-2.5"
+          >
+            <Activity size={15} />
+            تسجيل أول حركة
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-[hsl(var(--muted-foreground))]">
+          آخر {rows.length} حركة لهذا المنتج.
+        </p>
+        {canAddStock && productLifecycle(item) !== 'archived' && (
+          <button
+            type="button"
+            onClick={onRecordMovement}
+            className="inline-flex items-center gap-1 px-3 py-1.5 bg-[hsl(217,80%,30%)] hover:bg-[hsl(217,80%,25%)] text-white text-xs font-semibold rounded-xl"
+          >
+            <Activity size={12} /> تسجيل حركة
+          </button>
+        )}
+      </div>
+
+      <div className="rounded-2xl border border-[hsl(var(--border))] bg-white overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-[hsl(var(--muted))]/40 border-b border-[hsl(var(--border))]">
+              {[
+                'التاريخ',
+                'نوع الحركة',
+                'التغيير',
+                'قبل',
+                'بعد',
+                'السبب',
+                'المرجع',
+                'المستخدم',
+              ].map((h) => (
+                <th
+                  key={h}
+                  className="text-right px-3 py-2 text-[11px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap"
+                >
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[hsl(var(--border))]">
+            {rows.map((row) => (
+              <tr key={row.id} className="hover:bg-[hsl(var(--muted))]/30 align-top">
+                <td className="px-3 py-2 text-xs text-[hsl(var(--muted-foreground))] whitespace-nowrap">
+                  {formatDate(row.created_at)}
+                </td>
+                <td className="px-3 py-2 text-xs whitespace-nowrap">
+                  {MOVEMENT_TYPE_LABELS_AR[row.movement_type] ?? row.movement_type}
+                </td>
+                <td
+                  className={`px-3 py-2 font-mono text-xs font-bold ${
+                    row.quantity_delta > 0
+                      ? 'text-emerald-700'
+                      : row.quantity_delta < 0
+                        ? 'text-red-600'
+                        : 'text-[hsl(var(--muted-foreground))]'
+                  }`}
+                >
+                  {row.quantity_delta > 0 ? '+' : ''}
+                  {formatNumber(row.quantity_delta)}
+                </td>
+                <td className="px-3 py-2 font-mono text-xs">{formatNumber(row.quantity_before)}</td>
+                <td className="px-3 py-2 font-mono text-xs font-bold">
+                  {formatNumber(row.quantity_after)}
+                </td>
+                <td className="px-3 py-2 text-xs truncate max-w-[140px]">{row.reason || '—'}</td>
+                <td className="px-3 py-2 text-xs font-mono">
+                  {row.order_num || row.supplier_invoice_num || '—'}
+                </td>
+                <td className="px-3 py-2 text-xs">{row.created_by_name || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
 function AdditionsTab({
@@ -726,6 +969,7 @@ function SettingsTab({
   onSetStatus,
   onRestore,
   onAddStock,
+  onRecordMovement,
 }: {
   item: InventoryItem;
   status: ReturnType<typeof productStatus>;
@@ -737,6 +981,7 @@ function SettingsTab({
   onSetStatus: (next: 'active' | 'inactive') => void;
   onRestore: () => void;
   onAddStock: () => void;
+  onRecordMovement: () => void;
 }) {
   return (
     <div className="space-y-4">
@@ -764,6 +1009,17 @@ function SettingsTab({
           >
             <Plus size={15} />
             إضافة كمية
+          </button>
+        )}
+
+        {canAddStock && lifecycle !== 'archived' && (
+          <button
+            type="button"
+            onClick={onRecordMovement}
+            className="w-full flex items-center justify-center gap-2 border border-[hsl(217,80%,30%)] text-[hsl(217,80%,30%)] hover:bg-[hsl(217,80%,30%)]/10 text-sm font-semibold rounded-xl py-2.5"
+          >
+            <Activity size={15} />
+            تسجيل حركة
           </button>
         )}
 

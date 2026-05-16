@@ -111,7 +111,9 @@ export type StaffAuditAction =
   | 'delegate.expense_rejected'
   | 'delegate.expense_voided'
   // ─── Phase Inventory-Additions-Log-1 — inventory stock movements ───
-  | 'inventory.addition_created';
+  | 'inventory.addition_created'
+  // ─── Phase Inventory-Movement-Ledger-1 — manual stock movements ───
+  | 'inventory.movement_created';
 
 export const STAFF_AUDIT_ACTION_LABEL_AR: Record<StaffAuditAction, string> = {
   'staff.role_changed': 'تغيير الدور',
@@ -197,6 +199,8 @@ export const STAFF_AUDIT_ACTION_LABEL_AR: Record<StaffAuditAction, string> = {
   'delegate.expense_voided': 'إلغاء مصروف مندوب',
   // Phase Inventory-Additions-Log-1 — inventory stock movements
   'inventory.addition_created': 'تسجيل إضافة كمية للمخزن',
+  // Phase Inventory-Movement-Ledger-1 — manual stock movements
+  'inventory.movement_created': 'تسجيل حركة مخزون',
 };
 
 /**
