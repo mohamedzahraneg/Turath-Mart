@@ -119,6 +119,15 @@ function pickInventoryId(line: AdjustmentLine): string | null {
     : null;
 }
 
+/** Phase Inventory-Variants-1B3 — pick the variant id (or null) the
+ *  return line should credit. The line carries it forward from the
+ *  source order line; an empty / whitespace value falls back to null
+ *  so the RPC operates at base-product scope. */
+function pickVariantId(line: AdjustmentLine): string | null {
+  const direct = typeof line.variant_id === 'string' ? line.variant_id.trim() : '';
+  return direct.length > 0 ? direct : null;
+}
+
 /**
  * For one return line, check if a matching `return_in` movement
  * already exists for (adjustment, line). Used as the idempotency
@@ -228,6 +237,7 @@ export async function applyReturnStockEffects({
       continue;
     }
 
+    const variantId = pickVariantId(line);
     const movementMetadata = {
       source: 'return_adjustment',
       adjustment_id: adjustment.id,
@@ -236,6 +246,12 @@ export async function applyReturnStockEffects({
       ...(line.sku ? { sku: line.sku } : {}),
       ...(line.label ? { label: line.label } : {}),
       ...(line.color ? { color: line.color } : {}),
+      // Phase Inventory-Variants-1B3 — variant audit context. The
+      // RPC reads `p_variant_id` for the actual quantity routing;
+      // these keys are for ledger drilldowns.
+      ...(variantId ? { variant_id: variantId } : {}),
+      ...(line.variant_label ? { variant_label: line.variant_label } : {}),
+      ...(line.variant_sku ? { variant_sku: line.variant_sku } : {}),
       stock_disposition: 'return_to_stock',
     };
 
@@ -250,6 +266,7 @@ export async function applyReturnStockEffects({
         p_order_num: adjustment.order_num,
         p_created_by_name: actorName,
         p_metadata: movementMetadata,
+        p_variant_id: variantId,
       });
       if (rpcResult.error) {
         const errMessage = rpcResult.error.message || 'apply_movement failed';

@@ -34,7 +34,15 @@ import { ChevronDown, ClipboardList, Save, X } from 'lucide-react';
 
 import { createClient } from '@/lib/supabase/client';
 import { writeStaffAuditLog } from '@/lib/security/staffAudit';
-import { formatNumber, type InventoryItem } from '@/lib/inventory/inventoryStats';
+import {
+  formatNumber,
+  type InventoryItem,
+  type InventoryVariant,
+} from '@/lib/inventory/inventoryStats';
+import {
+  loadInventoryVariantsForProduct,
+  variantSellableQty,
+} from '@/lib/inventory/inventoryVariants';
 
 interface Props {
   /** Pre-selected product (when launched from a specific product drawer)
@@ -72,6 +80,11 @@ export default function StockCountModal({
   const [note, setNote] = useState<string>('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Phase Inventory-Variants-1B3 — optional variant picker. When a
+  // variant is chosen the snapshot + countedQty seed flip to the
+  // variant's numbers and the RPC carries `p_variant_id`.
+  const [variants, setVariants] = useState<InventoryVariant[]>([]);
+  const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
 
   // Archived products are not allowed for counts — the RPC will refuse
   // anyway, but we hide them from the picker to set expectations.
@@ -89,18 +102,54 @@ export default function StockCountModal({
     if (item) setSelectedId(item.id);
   }, [item]);
 
+  // Refresh variants whenever the selected product changes. Reset
+  // the variant choice so we don't carry a stale id across products.
+  useEffect(() => {
+    if (!selectedItem) {
+      setVariants([]);
+      setSelectedVariantId(null);
+      return;
+    }
+    let cancelled = false;
+    setSelectedVariantId(null);
+    setVariants([]);
+    (async () => {
+      const supabase = createClient();
+      const rows = await loadInventoryVariantsForProduct(supabase, selectedItem.id);
+      if (!cancelled) setVariants(rows);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedItem]);
+
+  const selectedVariant = useMemo(
+    () => (selectedVariantId ? (variants.find((v) => v.id === selectedVariantId) ?? null) : null),
+    [variants, selectedVariantId]
+  );
+
+  // When a variant is selected, the snapshot + counted-qty seed
+  // come from the variant numbers, not the base product. Otherwise
+  // they come from the product (legacy behaviour).
+  const currentAvailable = selectedVariant
+    ? selectedVariant.available
+    : (selectedItem?.available ?? 0);
+  const currentReserved = selectedVariant
+    ? selectedVariant.reserved
+    : (selectedItem?.reserved ?? 0);
+  const sellable = selectedVariant
+    ? variantSellableQty(selectedVariant)
+    : Math.max(0, currentAvailable - currentReserved);
+  const isArchived = (selectedItem?.status ?? 'active') === 'archived';
+
   // Seed the counted-quantity input with the current system value.
   // The operator's job is then to confirm or override — confirming
   // the system value writes a no-delta count row, which has audit
-  // value on its own.
+  // value on its own. We seed off the snapshot scope (variant vs
+  // base) so flipping the variant picker resets the input sensibly.
   useEffect(() => {
-    setCountedQty(selectedItem?.available ?? 0);
-  }, [selectedItem?.id, selectedItem?.available]);
-
-  const currentAvailable = selectedItem?.available ?? 0;
-  const currentReserved = selectedItem?.reserved ?? 0;
-  const sellable = Math.max(0, currentAvailable - currentReserved);
-  const isArchived = (selectedItem?.status ?? 'active') === 'archived';
+    setCountedQty(currentAvailable);
+  }, [selectedItem?.id, selectedVariantId, currentAvailable]);
 
   const sanitizedCounted = Math.max(0, Math.trunc(countedQty));
   const delta = sanitizedCounted - currentAvailable;
@@ -145,6 +194,7 @@ export default function StockCountModal({
         p_note: trimmedNote || null,
         p_counted_by_name: actorName,
         p_metadata: trimmedNote ? { note: trimmedNote } : {},
+        p_variant_id: selectedVariantId,
       });
 
       if (rpcError) {
@@ -208,6 +258,10 @@ export default function StockCountModal({
             stock_count_id: rpcResult?.stock_count_id ?? null,
             movement_id: rpcResult?.movement_id ?? null,
             reason: reason.trim(),
+            // Phase Inventory-Variants-1B3 — null on base-product counts.
+            variant_id: selectedVariantId,
+            variant_label: selectedVariant?.variant_label ?? null,
+            variant_sku: selectedVariant?.sku ?? null,
           },
         });
       } catch (auditErr) {
@@ -277,6 +331,49 @@ export default function StockCountModal({
               </div>
             )}
           </div>
+
+          {/* Phase Inventory-Variants-1B3 — optional variant picker.
+              When a variant is chosen the snapshot below + counted-qty
+              seed reflect the variant numbers and the RPC carries the
+              variant id. Hidden when the product has no active
+              variants. */}
+          {variants.length > 0 && (
+            <div>
+              <label className="block text-sm font-semibold mb-1.5">اللون / المتغير</label>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedVariantId(null)}
+                  className={`px-3 py-1.5 rounded-xl border text-xs font-semibold ${
+                    selectedVariantId === null
+                      ? 'border-[hsl(217,80%,30%)] bg-[hsl(217,80%,30%)]/10 text-[hsl(217,80%,30%)]'
+                      : 'border-[hsl(var(--border))] bg-white text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted))]'
+                  }`}
+                >
+                  بدون متغير — المنتج الأساسي
+                </button>
+                {variants.map((v) => (
+                  <button
+                    key={v.id}
+                    type="button"
+                    onClick={() => setSelectedVariantId(v.id)}
+                    className={`px-3 py-1.5 rounded-xl border text-xs font-semibold ${
+                      selectedVariantId === v.id
+                        ? 'border-[hsl(217,80%,30%)] bg-[hsl(217,80%,30%)]/10 text-[hsl(217,80%,30%)]'
+                        : 'border-[hsl(var(--border))] bg-white text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted))]'
+                    }`}
+                  >
+                    {v.variant_label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1.5">
+                {selectedVariant
+                  ? `الأرقام أسفل لهذا المتغير فقط.`
+                  : `الأرقام أسفل للمنتج الأساسي (بدون متغير).`}
+              </p>
+            </div>
+          )}
 
           {/* System snapshot */}
           <div className="grid grid-cols-3 gap-2">

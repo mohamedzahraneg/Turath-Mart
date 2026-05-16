@@ -572,10 +572,10 @@ function ColorsTab({ item }: { item: InventoryItem }) {
 
   return (
     <div className="space-y-3">
-      <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-3 text-amber-800 text-[11px] leading-relaxed">
-        كميات المتغيرات غير مفعّلة بعد. الكمية الحالية للمنتج تبقى على مستوى المنتج الأساسي (
-        {formatNumber(item.available)} متاح). سيتم تفعيل التتبع لكل لون في المرحلة التالية بعد ضبط
-        الأرصدة عبر تسجيل الجرد.
+      <div className="rounded-2xl border border-emerald-200 bg-emerald-50/60 p-3 text-emerald-800 text-[11px] leading-relaxed">
+        يمكن إدارة كميات كل لون من خلال تسجيل جرد أو إضافة كمية أو حركة مخزون مع اختيار اللون.
+        الكميات الإجمالية للمنتج الأساسي ({formatNumber(item.available)} متاح) تبقى مرجعًا احتياطيًا
+        للأسطر التي لم تختر لونًا.
       </div>
 
       <div className="rounded-2xl border border-[hsl(var(--border))] bg-white overflow-x-auto scrollbar-thin">

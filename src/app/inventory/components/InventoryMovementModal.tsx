@@ -33,8 +33,13 @@ import {
   formatNumber,
   MOVEMENT_TYPE_LABELS_AR,
   type InventoryItem,
+  type InventoryVariant,
   type ManualMovementType,
 } from '@/lib/inventory/inventoryStats';
+import {
+  loadInventoryVariantsForProduct,
+  variantSellableQty,
+} from '@/lib/inventory/inventoryVariants';
 
 interface Props {
   /** Pre-selected product (when launched from a specific product) or
@@ -102,6 +107,15 @@ export default function InventoryMovementModal({
   const [note, setNote] = useState<string>('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Phase Inventory-Variants-1B3 — optional variant picker. When a
+  // variant is chosen the snapshot below + count seed flip to the
+  // variant numbers and the RPC carries `p_variant_id`. The
+  // `price_change` movement type is NOT exposed by the manual modal
+  // (see TYPE_OPTIONS), so we don't need a separate disabled state
+  // for it here — the picker only ever renders for variant-aware
+  // movement types.
+  const [variants, setVariants] = useState<InventoryVariant[]>([]);
+  const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
 
   const selectableItems = useMemo(
     () => allItems.filter((i) => (i.status ?? 'active') !== 'archived'),
@@ -118,12 +132,43 @@ export default function InventoryMovementModal({
     if (item) setSelectedId(item.id);
   }, [item]);
 
+  // Refresh variants whenever the selected product changes. Reset
+  // the variant choice so we don't carry a stale id across products.
   useEffect(() => {
-    setCountedQty(selectedItem?.available ?? 0);
-  }, [selectedItem?.id, selectedItem?.available]);
+    if (!selectedItem) {
+      setVariants([]);
+      setSelectedVariantId(null);
+      return;
+    }
+    let cancelled = false;
+    setSelectedVariantId(null);
+    setVariants([]);
+    (async () => {
+      const supabase = createClient();
+      const rows = await loadInventoryVariantsForProduct(supabase, selectedItem.id);
+      if (!cancelled) setVariants(rows);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedItem]);
 
-  const currentAvailable = selectedItem?.available ?? 0;
+  const selectedVariant = useMemo(
+    () => (selectedVariantId ? (variants.find((v) => v.id === selectedVariantId) ?? null) : null),
+    [variants, selectedVariantId]
+  );
+
+  const currentAvailable = selectedVariant
+    ? selectedVariant.available
+    : (selectedItem?.available ?? 0);
+  const currentReserved = selectedVariant
+    ? selectedVariant.reserved
+    : (selectedItem?.reserved ?? 0);
   const isArchived = (selectedItem?.status ?? 'active') === 'archived';
+
+  useEffect(() => {
+    setCountedQty(currentAvailable);
+  }, [selectedItem?.id, selectedVariantId, currentAvailable]);
 
   // Compute signed delta for preview + submit.
   const signedDelta: number = useMemo(() => {
@@ -189,6 +234,7 @@ export default function InventoryMovementModal({
         p_unit_cost: unitCost === '' ? null : Number(unitCost),
         p_created_by_name: actorName,
         p_metadata: note.trim() ? { note: note.trim() } : {},
+        p_variant_id: selectedVariantId,
       });
 
       if (rpcError) {
@@ -233,6 +279,10 @@ export default function InventoryMovementModal({
             order_num: orderNum.trim() || null,
             reference_type: referenceType,
             movement_id: rpcResult?.movement_id ?? null,
+            // Phase Inventory-Variants-1B3 — null on base-product movements.
+            variant_id: selectedVariantId,
+            variant_label: selectedVariant?.variant_label ?? null,
+            variant_sku: selectedVariant?.sku ?? null,
           },
         });
       } catch (auditErr) {
@@ -300,8 +350,53 @@ export default function InventoryMovementModal({
             )}
             <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1">
               المتاح حاليًا: {formatNumber(currentAvailable)}
+              {selectedVariant ? ` (للمتغير ${selectedVariant.variant_label})` : ''}
             </p>
           </div>
+
+          {/* Phase Inventory-Variants-1B3 — optional variant picker.
+              When a variant is chosen the snapshot above + delta
+              preview below flip to the variant numbers and the RPC
+              carries the variant id. Hidden when the product has no
+              active variants. */}
+          {variants.length > 0 && (
+            <div>
+              <label className="block text-sm font-semibold mb-1.5">اللون / المتغير</label>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedVariantId(null)}
+                  className={`px-3 py-1.5 rounded-xl border text-xs font-semibold ${
+                    selectedVariantId === null
+                      ? 'border-[hsl(217,80%,30%)] bg-[hsl(217,80%,30%)]/10 text-[hsl(217,80%,30%)]'
+                      : 'border-[hsl(var(--border))] bg-white text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted))]'
+                  }`}
+                >
+                  بدون متغير — المنتج الأساسي
+                </button>
+                {variants.map((v) => (
+                  <button
+                    key={v.id}
+                    type="button"
+                    onClick={() => setSelectedVariantId(v.id)}
+                    className={`px-3 py-1.5 rounded-xl border text-xs font-semibold ${
+                      selectedVariantId === v.id
+                        ? 'border-[hsl(217,80%,30%)] bg-[hsl(217,80%,30%)]/10 text-[hsl(217,80%,30%)]'
+                        : 'border-[hsl(var(--border))] bg-white text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted))]'
+                    }`}
+                  >
+                    {v.variant_label}
+                  </button>
+                ))}
+              </div>
+              {selectedVariant && (
+                <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1.5">
+                  المحجوز: {formatNumber(currentReserved)} · قابل للبيع:{' '}
+                  {formatNumber(variantSellableQty(selectedVariant))}
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Movement type */}
           <div>

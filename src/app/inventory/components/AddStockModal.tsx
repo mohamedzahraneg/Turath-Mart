@@ -24,7 +24,16 @@ import { Calendar, ChevronDown, Plus, Save, X } from 'lucide-react';
 
 import { createClient } from '@/lib/supabase/client';
 import { writeStaffAuditLog } from '@/lib/security/staffAudit';
-import { formatMoney, type InventoryItem } from '@/lib/inventory/inventoryStats';
+import {
+  formatMoney,
+  formatNumber,
+  type InventoryItem,
+  type InventoryVariant,
+} from '@/lib/inventory/inventoryStats';
+import {
+  loadInventoryVariantsForProduct,
+  variantSellableQty,
+} from '@/lib/inventory/inventoryVariants';
 
 interface Props {
   item: InventoryItem;
@@ -63,6 +72,9 @@ export default function AddStockModal({
   const [note, setNote] = useState<string>('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Phase Inventory-Variants-1B3 — optional variant picker.
+  const [variants, setVariants] = useState<InventoryVariant[]>([]);
+  const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
 
   const selectedItem = useMemo(() => {
     if (!allItems || allItems.length === 0) return item;
@@ -72,6 +84,27 @@ export default function AddStockModal({
   useEffect(() => {
     setSelectedId(item.id);
   }, [item.id]);
+
+  // Refresh variants whenever the selected product changes. Reset
+  // the variant choice so we don't carry a stale id across products.
+  useEffect(() => {
+    let cancelled = false;
+    setSelectedVariantId(null);
+    setVariants([]);
+    (async () => {
+      const supabase = createClient();
+      const rows = await loadInventoryVariantsForProduct(supabase, selectedItem.id);
+      if (!cancelled) setVariants(rows);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedItem.id]);
+
+  const selectedVariant = useMemo(
+    () => (selectedVariantId ? (variants.find((v) => v.id === selectedVariantId) ?? null) : null),
+    [variants, selectedVariantId]
+  );
 
   const totalCost = useMemo(() => {
     if (unitCost === '' || !Number.isFinite(Number(unitCost))) return null;
@@ -108,6 +141,7 @@ export default function AddStockModal({
         p_received_at: receivedAtIso,
         p_note: note.trim() || null,
         p_created_by_name: actorName,
+        p_variant_id: selectedVariantId,
       });
 
       if (rpcError) {
@@ -151,6 +185,10 @@ export default function AddStockModal({
             received_at: receivedAtIso,
             addition_id: rpcResult?.addition_id ?? null,
             new_available: rpcResult?.new_available ?? null,
+            // Phase Inventory-Variants-1B3 — null on base-product additions.
+            variant_id: selectedVariantId,
+            variant_label: selectedVariant?.variant_label ?? null,
+            variant_sku: selectedVariant?.sku ?? null,
           },
         });
       } catch (auditErr) {
@@ -219,6 +257,50 @@ export default function AddStockModal({
               الكمية المتاحة حاليًا: {selectedItem.available ?? 0}
             </p>
           </div>
+
+          {/* Phase Inventory-Variants-1B3 — optional variant picker.
+              Hidden when the product has no active variants. Default
+              is "بدون متغير" so the legacy base-product flow is
+              preserved byte-for-byte. */}
+          {variants.length > 0 && (
+            <div>
+              <label className="block text-sm font-semibold mb-1.5">اللون / المتغير</label>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedVariantId(null)}
+                  className={`px-3 py-1.5 rounded-xl border text-xs font-semibold ${
+                    selectedVariantId === null
+                      ? 'border-emerald-600 bg-emerald-50 text-emerald-700'
+                      : 'border-[hsl(var(--border))] bg-white text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted))]'
+                  }`}
+                >
+                  بدون متغير — المنتج الأساسي
+                </button>
+                {variants.map((v) => (
+                  <button
+                    key={v.id}
+                    type="button"
+                    onClick={() => setSelectedVariantId(v.id)}
+                    className={`px-3 py-1.5 rounded-xl border text-xs font-semibold ${
+                      selectedVariantId === v.id
+                        ? 'border-emerald-600 bg-emerald-50 text-emerald-700'
+                        : 'border-[hsl(var(--border))] bg-white text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted))]'
+                    }`}
+                  >
+                    {v.variant_label}
+                  </button>
+                ))}
+              </div>
+              {selectedVariant && (
+                <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1.5">
+                  المتاح للمتغير: {formatNumber(selectedVariant.available)} · المحجوز:{' '}
+                  {formatNumber(selectedVariant.reserved)} · قابل للبيع:{' '}
+                  {formatNumber(variantSellableQty(selectedVariant))}
+                </p>
+              )}
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <div>

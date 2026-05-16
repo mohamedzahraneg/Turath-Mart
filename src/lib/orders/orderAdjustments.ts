@@ -109,6 +109,21 @@ export interface AdjustmentLine {
   /** Phase Inventory-Order-Identity-1 — frozen `turath_masr_inventory.sku`
    *  snapshot. Display-only here; future stock RPCs read `inventory_id`. */
   sku?: string | null;
+  /** Phase Inventory-Variants-1B3 — canonical variant id snapshot.
+   *  Copied from the source order line on returns; resolved from the
+   *  picked card + colour on replacements. `null` when the line is at
+   *  base-product scope (no variant chosen on the original order, or
+   *  the variant was unbaselined per `isVariantBaselined`). The
+   *  return/exchange stock clients pass this to the RPC so the
+   *  inbound/outbound delta lands on the variant row when present. */
+  variant_id?: string | null;
+  /** Phase Inventory-Variants-1B3 — frozen variant label (Arabic
+   *  display string, e.g. "بني"). Audit-only here; the RPC reads
+   *  `variant_id`. */
+  variant_label?: string | null;
+  /** Phase Inventory-Variants-1B3 — frozen variant sku snapshot.
+   *  Audit-only here. */
+  variant_sku?: string | null;
   /** Display label (Arabic). */
   label?: string;
   /** Colour / variant if relevant. */
