@@ -223,11 +223,21 @@ function mapInventoryRow(r: InventoryRowDb): InventoryItem {
 export default function InventoryPage() {
   const { user, profileFullName } = useAuth();
   const perms = usePermissions();
-  const isAdmin = perms.isAdmin;
-  // Phase Inventory-Additions-Log-1 — stock additions require
-  // manager-or-above per the RPC's auth check. We mirror that on the
-  // client so the buttons hide for read-only viewers.
-  const canAddStock = perms.isManagerOrAbove;
+  // Phase Permissions-Audit-Phase-1 — both the edit-inventory-item
+  // gate (previously `perms.isAdmin`) and the add-stock gate
+  // (previously `perms.isManagerOrAbove`) now route through the
+  // canonical `'edit_inventory'` permission key. That key already
+  // exists in PERMISSION_CATALOG and is grantable per-user via the
+  // /roles admin UI, so an admin can extend (or revoke) inventory
+  // write access without changing role defaults. `perms.can(…)`
+  // respects `customPermissions` overrides — the previous role-only
+  // booleans ignored them, which is what this fix addresses.
+  //
+  // The downstream prop names on `<InventoryDrawer>` (`isAdmin`,
+  // `canAddStock`) are deliberately preserved so this PR stays
+  // localised to inventory/page.tsx — the drawer simply receives
+  // the new unified value through the existing prop API.
+  const canEditInventory = perms.isAdmin || perms.can('edit_inventory');
   const actorName: string | null = profileFullName ?? null;
 
   const [items, setItems] = useState<InventoryItem[]>([]);
@@ -697,7 +707,7 @@ export default function InventoryPage() {
 
   const handleRestore = useCallback(
     async (item: InventoryItem) => {
-      if (!isAdmin) return;
+      if (!canEditInventory) return;
       try {
         const supabase = createClient();
         const res = await supabase
@@ -731,7 +741,7 @@ export default function InventoryPage() {
         console.error('[inventory] restore failed', err);
       }
     },
-    [loadAll, drawerItem, isAdmin]
+    [loadAll, drawerItem, canEditInventory]
   );
 
   // ── Derived view state ────────────────────────────────────────────────
@@ -884,8 +894,12 @@ export default function InventoryPage() {
           onAdd={handleAdd}
           onRefresh={handleRefresh}
           onExport={items.length > 0 ? handleExport : null}
-          onRecordMovement={canAddStock && items.length > 0 ? handleRecordGlobalMovement : null}
-          onRecordStockCount={canAddStock && items.length > 0 ? handleRecordGlobalStockCount : null}
+          onRecordMovement={
+            canEditInventory && items.length > 0 ? handleRecordGlobalMovement : null
+          }
+          onRecordStockCount={
+            canEditInventory && items.length > 0 ? handleRecordGlobalStockCount : null
+          }
           refreshing={refreshing}
         />
 
@@ -948,7 +962,7 @@ export default function InventoryPage() {
           <InventoryCardGrid
             items={filtered}
             withdrawnByName={withdrawnByName}
-            canAddStock={canAddStock}
+            canAddStock={canEditInventory}
             onView={handleView}
             onEdit={handleEdit}
             onArchive={handleArchive}
@@ -959,7 +973,7 @@ export default function InventoryPage() {
           <InventoryTable
             items={filtered}
             withdrawnByName={withdrawnByName}
-            canAddStock={canAddStock}
+            canAddStock={canEditInventory}
             onView={handleView}
             onEdit={handleEdit}
             onArchive={handleArchive}
@@ -1024,8 +1038,8 @@ export default function InventoryPage() {
         <InventoryDrawer
           item={drawerItem}
           withdrawn={withdrawnByName[drawerItem.name.trim()] || 0}
-          isAdmin={isAdmin}
-          canAddStock={canAddStock}
+          isAdmin={canEditInventory}
+          canAddStock={canEditInventory}
           onClose={() => setDrawerItem(null)}
           onEdit={(item) => {
             setDrawerItem(null);

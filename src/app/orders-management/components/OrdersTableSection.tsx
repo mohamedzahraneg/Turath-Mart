@@ -34,7 +34,8 @@ const OrderDetailModal = dynamic(() => import('./OrderDetailModal'), { ssr: fals
 const AuditLogModal = dynamic(() => import('./AuditLogModal'), { ssr: false });
 import { createClient } from '@/lib/supabase/client';
 import { useAuth, getPermissionsForRoleId } from '@/contexts/AuthContext';
-import { canBulkManageOrders, isAdminRole } from '@/lib/constants/roles';
+import { usePermissions } from '@/hooks/usePermissions';
+import { canBulkManageOrders } from '@/lib/constants/roles';
 // Phase Inventory-Reservations-1C — release reservations when an
 // order is cancelled / archived from the table. Pulled from the
 // shared client helper so the gating (skip if delivered) matches
@@ -496,13 +497,15 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
       perms.includes('delete_orders')
     );
   })();
-  // Phase Orders-Dashboard-Admin-Gate-1 — the delegate stats
-  // collapsible (إحصائيات المندوبين والتوريدات) is admin-only for
-  // now. The variable name is preserved so a future expansion to a
-  // dedicated permission only needs to tweak this expression.
-  // Currently admin-only; can be expanded later to a dedicated
-  // analytics permission.
-  const canViewDelegates = isAdminRole(currentRoleId);
+  // Phase Permissions-Audit-Phase-1 — delegate stats collapsible
+  // (إحصائيات المندوبين والتوريدات) now routes through the canonical
+  // `'view_delegates'` permission so per-user `customPermissions`
+  // overrides are respected. Admin retains visibility via the
+  // `perms.isAdmin` short-circuit; existing role defaults grant
+  // `view_delegates` to r1 (ALL_PERMISSIONS) and r3 (SHIPPING_SUPERVISOR)
+  // per DEFAULT_ROLES — no new key, no role-default changes.
+  const perms = usePermissions();
+  const canViewDelegates = perms.isAdmin || perms.can('view_delegates');
 
   useEffect(() => {
     const t = window.setTimeout(() => {

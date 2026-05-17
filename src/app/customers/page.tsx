@@ -128,8 +128,13 @@ type PageSize = 10 | 20 | 50 | 100;
 
 export default function CustomersPage() {
   const perms = usePermissions();
-  const canExport = perms.isAdmin;
-  const canCreate = perms.isAdmin;
+  // Phase Permissions-Audit-Phase-1 — both gates now route through
+  // the canonical permission catalog so per-user `customPermissions`
+  // overrides set via /roles are honoured (previously these checked
+  // `perms.isAdmin` only, which bypasses custom overrides). Existing
+  // keys reused; no new permission key introduced.
+  const canExport = perms.isAdmin || perms.can('export_reports');
+  const canCreate = perms.isAdmin || perms.can('manage_customers');
 
   const [customers, setCustomers] = useState<CustomerRow[]>([]);
   const [orders, setOrders] = useState<OrderRow[]>([]);
