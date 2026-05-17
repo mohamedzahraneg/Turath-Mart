@@ -526,25 +526,37 @@ export default function DelegatesPage() {
   const { user, profileFullName, currentRoleId } = useAuth();
   // Phase 23F — capability gates restructured around three concepts:
   //   • canManageDelegates  → add / edit / activate / deactivate
-  //                           delegate profiles. Admin only.
+  //                           delegate profiles.
   //   • canManageDelegateFinance → settlements / custody / expenses
   //                           add / edit / void. Admin only at
   //                           BOTH the UI gate and the underlying
   //                           RLS layer.
   //   • canExportDelegateStatement → CSV export of the per-delegate
-  //                           account statement. Admin only because
-  //                           the CSV carries the financial movement
-  //                           detail; the printable view is the
-  //                           read-only export path for shipping
-  //                           supervisor.
+  //                           account statement.
   //
   // Phase 23A-Fix2 / 23B / 23C / 23D / 23E gates are subsumed by
   // these three. r3 (shipping supervisor) gets `view_delegates` from
-  // the permissions module so they reach the page; the three gates
-  // below stay false for them, matching the read-only contract.
-  const canManageDelegates = perms.isAdmin;
+  // the permissions module so they reach the page.
+  //
+  // Phase Permissions-Audit-Phase-3A — `canManageDelegates` and
+  // `canExportDelegateStatement` now route through the canonical
+  // permission catalog so per-user `customPermissions` overrides
+  // (admin-editable via /roles) are respected. `manage_shipping` is
+  // the matching catalog key for delegate operational management;
+  // `export_reports` is the catalog key for the CSV export. Both
+  // keys pre-exist in PERMISSION_CATALOG — no new keys introduced.
+  //
+  // `canManageDelegateFinance` and `canManageDelegateDocuments` are
+  // intentionally LEFT on the role-only `perms.isAdmin` gate: the
+  // first is strictly financial and is gated admin-only at the
+  // matching RLS layer (no catalog key cleanly maps to "delegate
+  // finance"); the second is enforced admin-only by the
+  // `documents_admin_*` storage + table policies, so the UI mirror
+  // must stay admin-only too. Surfacing a new catalog key for
+  // either is out of scope for this phase.
+  const canManageDelegates = perms.isAdmin || perms.can('manage_shipping');
   const canManageDelegateFinance = perms.isAdmin;
-  const canExportDelegateStatement = perms.isAdmin;
+  const canExportDelegateStatement = perms.isAdmin || perms.can('export_reports');
   // Phase 23I — document upload / replace / archive is admin-only
   // (matches the `documents_admin_*` storage + table policies). r3
   // (shipping supervisor) sees the documents tab via the new
