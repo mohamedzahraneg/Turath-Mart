@@ -576,6 +576,32 @@ export async function GET(request: Request) {
   const compareRange = computeCompareRange(range);
   const supabase = await buildSupabaseClient();
 
+  // Phase Permissions-Audit-Phase-4A — admin-only gate.
+  //
+  // The UI consumer of this endpoint (`<OrdersDashboard>`) is already
+  // mounted admin-only since PR #131. This server-side check closes
+  // the leak path: a non-admin operator could previously call
+  // `fetch('/api/orders/operations-summary?…')` directly from
+  // DevTools and receive the full analytics payload (KPI totals,
+  // collection figures, recent activity, needs-action queue). The
+  // route is now fail-closed:
+  //   • No session  → 401 (the SSR Supabase client otherwise returns
+  //                  empty queries silently, which made the leak
+  //                  invisible).
+  //   • Non-admin   → 403.
+  //   • is_admin()  RPC error → 403 (fail-closed).
+  //   • Admin (r1)  → 200 with the existing payload — unchanged.
+  // Uses the existing `public.is_admin()` SECURITY DEFINER helper;
+  // no new SQL, no new permission key.
+  const { data: userResult, error: userErr } = await supabase.auth.getUser();
+  if (userErr || !userResult?.user) {
+    return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
+  }
+  const { data: isAdmin, error: adminErr } = await supabase.rpc('is_admin');
+  if (adminErr || isAdmin !== true) {
+    return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+  }
+
   try {
     const [statusCounts, currentKpis, previousKpis, recentActivity, needsAction] =
       await Promise.all([
