@@ -506,6 +506,13 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
   // per DEFAULT_ROLES — no new key, no role-default changes.
   const perms = usePermissions();
   const canViewDelegates = perms.isAdmin || perms.can('view_delegates');
+  // Phase Orders-Admin-Actions-1 — strict admin-only gate for the
+  // red trash/cancel button on each row + the bulk cancel button.
+  // The handlers also re-check this so the JSX hide isn't the only
+  // line of defence. Note: the existing `canManageOrders` boolean
+  // (loose union of role helpers / permissions) stays untouched —
+  // it still gates non-cancel actions like edit / status update.
+  const canUseAdminActions = perms.isAdmin;
 
   useEffect(() => {
     const t = window.setTimeout(() => {
@@ -951,6 +958,13 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
   };
 
   const handleBulkDelete = async () => {
+    // Phase Orders-Admin-Actions-1 — strict admin-only guard. Stops a
+    // non-admin from reaching the cancel/archive path even if they
+    // somehow trigger this handler (DevTools, stale state, etc.).
+    if (!perms.isAdmin) {
+      toast.error('هذه العملية مخصصة للمدير فقط');
+      return;
+    }
     if (selectedRows.size === 0) return;
     const confirmed = window.confirm(
       `هل تريد إلغاء / أرشفة ${selectedRows.size} طلب؟\nسيتم نقل الطلبات إلى حالة ملغي ولن يتم حذف بياناتها أو سجلاتها.`
@@ -1014,6 +1028,14 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
   };
 
   const handleSingleDelete = async (order: Order) => {
+    // Phase Orders-Admin-Actions-1 — strict admin-only guard mirrors
+    // the JSX hide on the trash button. Defence-in-depth — the
+    // existing `canManageOrders` toast below stays for any other
+    // callers, but the admin check fires first.
+    if (!perms.isAdmin) {
+      toast.error('هذه العملية مخصصة للمدير فقط');
+      return;
+    }
     if (!canManageOrders) {
       toast.error('ليس لديك صلاحية إلغاء الطلب');
       return;
@@ -1522,13 +1544,16 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
               >
                 تصدير المحدد
               </button>
-              <button
-                className="bg-red-500/80 hover:bg-red-600 text-white text-xs px-3 py-1.5 rounded-lg transition-colors font-medium"
-                onClick={handleBulkDelete}
-                title="إلغاء / أرشفة الطلبات المحددة"
-              >
-                إلغاء / أرشفة المحدد
-              </button>
+              {/* Phase Orders-Admin-Actions-1 — bulk cancel is strict admin only. */}
+              {canUseAdminActions && (
+                <button
+                  className="bg-red-500/80 hover:bg-red-600 text-white text-xs px-3 py-1.5 rounded-lg transition-colors font-medium"
+                  onClick={handleBulkDelete}
+                  title="إلغاء / أرشفة الطلبات المحددة"
+                >
+                  إلغاء / أرشفة المحدد
+                </button>
+              )}
               <button
                 className="bg-white/20 hover:bg-white/30 text-white text-xs px-3 py-1.5 rounded-lg transition-colors font-medium"
                 onClick={() => setSelectedRows(new Set())}
@@ -1845,7 +1870,8 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
                           >
                             <History size={14} />
                           </button>
-                          {canManageOrders && (
+                          {/* Phase Orders-Admin-Actions-1 — strict admin only. */}
+                          {canUseAdminActions && (
                             <button
                               onClick={() => handleSingleDelete(order)}
                               className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"
