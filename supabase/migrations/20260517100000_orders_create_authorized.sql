@@ -83,7 +83,11 @@ AS $$
     WHERE p.id = auth.uid()
     LIMIT 1
   )
-  SELECT COALESCE('create_orders' = ANY((SELECT effective_perms FROM eff)), false);
+  SELECT EXISTS (
+    SELECT 1
+    FROM eff
+    WHERE 'create_orders' = ANY(effective_perms)
+  );
 $$;
 
 REVOKE ALL ON FUNCTION public.can_create_orders() FROM PUBLIC;
