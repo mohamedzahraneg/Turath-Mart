@@ -154,8 +154,15 @@ function hasOperationalActivity(o: {
   scheduled_delivery_date?: string | null;
   scheduledDeliveryDate?: string | null;
 }): boolean {
+  // Phase Orders-Admin-Actions-1-Fix — fail-closed. Anything that
+  // isn't an explicit `'new'` (including empty / null / undefined
+  // from a partial prop or a brief mount-race window before the
+  // parent's DB refetch lands) counts as activity and locks the
+  // address. The original `s && s !== 'new'` returned false for
+  // empty s, leaving the picker editable on a delivered order
+  // whose `liveOrder.status` had not yet been populated.
   const s = (o.status ?? '').trim().toLowerCase();
-  if (s && s !== 'new') return true;
+  if (s !== 'new') return true;
   const dn = (o.delegate_name ?? o.delegateName ?? '').toString().trim();
   if (dn) return true;
   const at = (o.assigned_to ?? '').toString().trim();
