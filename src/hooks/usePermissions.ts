@@ -33,6 +33,23 @@ import {
 // equality is stable across renders unless those actually change.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Phase Permissions-Audit-Phase-2 — the five role-only helpers
+// below are marked `@deprecated` because they derive solely from
+// `currentRoleId` and ignore `customPermissions`. UI action gates
+// must respect per-user `customPermissions` overrides (admin-editable
+// via the /roles Users tab); these booleans cannot. The canonical
+// gating expression elsewhere in the codebase is:
+//
+//   perms.isAdmin || perms.can('<existing_permission_key>')
+//
+// `isAdmin` is intentionally NOT deprecated — it represents
+// "is the system administrator (role r1)" which is a pure role
+// concept, not a permission gate. Likewise `can`, `canAccessPath`,
+// `effectivePermissions`, `roleId`, and `loading` remain stable.
+//
+// This phase is documentation-only — no runtime behaviour changes.
+// Existing callers continue to compile and run. New callers should
+// pick the canonical pattern above.
 export interface PermissionFlags {
   /** Raw role id from the database (e.g. 'r1'). */
   roleId: string | null;
@@ -40,15 +57,50 @@ export interface PermissionFlags {
   effectivePermissions: string[];
   /** True iff the user is the system administrator (r1). */
   isAdmin: boolean;
-  /** True iff the user is r1 or r2. */
+  /**
+   * True iff the user is r1 or r2.
+   *
+   * @deprecated Role-only helper. Does not respect customPermissions.
+   * For UI action gates, use `perms.isAdmin || perms.can('<existing_permission_key>')`
+   * with an existing key from PERMISSION_CATALOG.
+   */
   isManagerOrAbove: boolean;
-  /** True iff the user is in r1..r4 (matches RLS can_edit_orders). */
+  /**
+   * True iff the user is in r1..r4 (matches RLS `can_edit_orders`).
+   *
+   * @deprecated Role-only helper. Does not respect customPermissions.
+   * For UI action gates, use `perms.isAdmin || perms.can('edit_orders')`
+   * (existing key in PERMISSION_CATALOG). The role-only set here is
+   * preserved for parity with the matching SQL helper and must not
+   * be consumed for visibility/action gates.
+   */
   canEditOrders: boolean;
-  /** True iff the user can create new orders. */
+  /**
+   * True iff the user can create new orders.
+   *
+   * @deprecated Role-only helper. Does not respect customPermissions.
+   * For UI action gates, use `perms.isAdmin || perms.can('create_orders')`
+   * (existing key in PERMISSION_CATALOG).
+   */
   canCreateOrders: boolean;
-  /** True iff the user can delete orders (admin only). */
+  /**
+   * True iff the user can delete orders (admin only).
+   *
+   * @deprecated Role-only helper. Does not respect customPermissions.
+   * For UI action gates, use `perms.isAdmin || perms.can('delete_orders')`
+   * (existing key in PERMISSION_CATALOG).
+   */
   canDeleteOrders: boolean;
-  /** True iff the user can use admin-only financial fields like extra fees. */
+  /**
+   * True iff the user can use admin-only financial fields like extra fees.
+   *
+   * @deprecated Role-only helper. Does not respect customPermissions.
+   * For UI action gates, use `perms.isAdmin || perms.can('<existing_permission_key>')`
+   * with an existing key from PERMISSION_CATALOG. Note: no dedicated
+   * catalog key matches the historical "admin financial fields"
+   * semantics today — callers needing strict admin-only behaviour
+   * should use `perms.isAdmin` directly.
+   */
   canUseAdminOnlyFinancialFields: boolean;
   /** Generic per-permission lookup. */
   can: (permission: string) => boolean;
