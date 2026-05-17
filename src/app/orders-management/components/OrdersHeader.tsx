@@ -34,17 +34,27 @@ interface Props {
 
 // Phase Orders-Mobile-Quick-Filters-1 — chip set updated:
 //   • Removed 'أمس' (yesterday) — operators reported it was rarely used.
-//   • Added 'الكل' (all) at the end so a single click clears the date
-//     range filter and lists every order. The 'all' preset returns
-//     empty `from`/`to` from `rangeForPreset`; OrdersTableSection's
-//     date helpers translate empty strings into "no date filter" so
-//     the DB query drops the `created_at` `gte`/`lt` clauses entirely.
+//   • Added 'الكل' (all) so a single click clears the date filter
+//     and lists every order. The 'all' preset returns empty
+//     `from`/`to` from `rangeForPreset`; OrdersTableSection's date
+//     helpers translate empty strings into "no date filter" so the
+//     DB query drops the `created_at` `gte`/`lt` clauses entirely.
+//
+// Phase Orders-CustomDate-Chip-1 — added 'مخصص' (custom) to the
+// chip list. Clicking it triggers `onPresetChange('custom')`, which
+// seeds today/today via `rangeForPreset('custom')`; the operator
+// then refines via inline "من" / "إلى" date inputs that render
+// *inside* the dashed filter bar only while `preset === 'custom'`.
+// Editing either input flips through `onCustomRange` (which sets
+// preset='custom' page-side), so the chip stays highlighted. Any
+// other preset click swaps the range and hides the date inputs.
 const SMART_FILTER_PRESETS: ReadonlyArray<{ key: DateRangePreset; label: string }> = [
   { key: 'today', label: 'اليوم' },
   { key: 'this_week', label: 'هذا الأسبوع' },
   { key: 'this_month', label: 'هذا الشهر' },
   { key: 'previous_month', label: 'الشهر السابق' },
   { key: 'all', label: 'الكل' },
+  { key: 'custom', label: 'مخصص' },
 ];
 
 export default function OrdersHeader({
@@ -56,14 +66,21 @@ export default function OrdersHeader({
   onRefresh,
 }: Props) {
   const [showModal, setShowModal] = useState(false);
-  // Phase Orders-Mobile-Quick-Filters-1 — gate "طلب جديد" to roles
-  // that can actually create orders (r1/r2/r5/r6 per
-  // `canCreateOrders` in src/lib/constants/roles.ts). Shipping roles
-  // (r3/r4) and any custom permission set without `create_orders` no
-  // longer see the button, so the AddOrderModal cannot be opened
-  // from this page for them. The modal is dynamic-imported, so the
-  // chunk also isn't fetched for non-eligible roles.
+  // Phase Orders-CreatePerm-Fix-1 — gate "طلب جديد" through the
+  // canonical permission catalog, not the divergent
+  // `perms.canCreateOrders` boolean (which only consults the role
+  // helper in `roles.ts` and ignores `customPermissions`). The
+  // pattern below — `isAdmin OR has the specific permission key` —
+  // is the project-wide convention for action gates (see
+  // OrderDetailModal canEditOrder, EditOrderModal canEdit,
+  // UsersTab canManageStaff). It correctly honours per-user
+  // `customPermissions` overrides set by an admin from `/roles`,
+  // and falls back to `DEFAULT_ROLES` defaults when no custom set
+  // is assigned. No new permission key is introduced; `create_orders`
+  // is already registered in PERMISSION_CATALOG and surfaced in the
+  // /roles admin UI.
   const perms = usePermissions();
+  const canCreateOrder = perms.isAdmin || perms.can('create_orders');
   return (
     <>
       <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between" dir="rtl">
@@ -119,6 +136,41 @@ export default function OrdersHeader({
                 {p.label}
               </button>
             ))}
+            {/* Phase Orders-CustomDate-Chip-1 — custom date inputs
+                are visually attached to the "مخصص" chip: they only
+                mount while `preset === 'custom'`, so other presets
+                see a clean chip row. `w-full` makes the inputs flow
+                onto a new row inside the same dashed container,
+                giving a clear "this is what مخصص expands to" affordance
+                without introducing a separate UI block elsewhere on
+                the page. Edits flow through the existing
+                `onCustomRange` callback (no new state in this
+                component, no new callbacks). */}
+            {preset === 'custom' && (
+              <div className="w-full flex flex-wrap items-center justify-center gap-2 pt-1.5">
+                <label className="flex items-center gap-1.5 text-xs font-semibold text-[hsl(var(--foreground))]">
+                  <Calendar size={12} className="text-[hsl(var(--muted-foreground))]" />
+                  <span>من</span>
+                  <input
+                    type="date"
+                    value={dateFrom}
+                    onChange={(e) => onCustomRange(e.target.value, dateTo)}
+                    className="text-xs bg-white border border-[hsl(var(--border))] rounded-lg px-2 py-1 font-mono focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30"
+                    aria-label="من تاريخ"
+                  />
+                </label>
+                <label className="flex items-center gap-1.5 text-xs font-semibold text-[hsl(var(--foreground))]">
+                  <span>إلى</span>
+                  <input
+                    type="date"
+                    value={dateTo}
+                    onChange={(e) => onCustomRange(dateFrom, e.target.value)}
+                    className="text-xs bg-white border border-[hsl(var(--border))] rounded-lg px-2 py-1 font-mono focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30"
+                    aria-label="إلى تاريخ"
+                  />
+                </label>
+              </div>
+            )}
           </div>
         </div>
 
@@ -130,14 +182,12 @@ export default function OrdersHeader({
             anchored to the right edge on small screens; desktop
             keeps the original inline order via the parent row. */}
         <div className="order-3 xl:order-1 flex flex-wrap items-center justify-end gap-2 min-w-0">
-          {/* Phase Orders-Mobile-Quick-Filters-1 — "طلب جديد" gated
-              by the existing `canCreateOrders` permission. r1 (admin),
-              r2 (system supervisor), r5 (CS manager), r6 (CS) keep
-              the button; shipping roles r3/r4 and any custom
-              permission set lacking `create_orders` no longer see
-              it. The modal cannot be opened from this page for those
-              roles because the trigger isn't mounted. */}
-          {perms.canCreateOrders && (
+          {/* Phase Orders-CreatePerm-Fix-1 — "طلب جديد" gated by the
+              canonical `create_orders` permission via the existing
+              catalog (`hasPermission` → respects `customPermissions`
+              overrides). Same pattern used by OrderDetailModal +
+              EditOrderModal for their edit gates. */}
+          {canCreateOrder && (
             <button
               type="button"
               onClick={() => setShowModal(true)}
@@ -147,24 +197,12 @@ export default function OrdersHeader({
               <span>طلب جديد</span>
             </button>
           )}
-          <div className="flex items-center gap-2 rounded-xl border border-[hsl(var(--border))] bg-white px-2.5 py-1.5">
-            <Calendar size={14} className="text-[hsl(var(--muted-foreground))]" />
-            <input
-              type="date"
-              value={dateFrom}
-              onChange={(e) => onCustomRange(e.target.value, dateTo)}
-              className="text-xs bg-transparent border-0 focus:outline-none font-mono"
-              aria-label="من تاريخ"
-            />
-            <span className="text-[hsl(var(--muted-foreground))]">-</span>
-            <input
-              type="date"
-              value={dateTo}
-              onChange={(e) => onCustomRange(dateFrom, e.target.value)}
-              className="text-xs bg-transparent border-0 focus:outline-none font-mono"
-              aria-label="إلى تاريخ"
-            />
-          </div>
+          {/* Phase Orders-CustomDate-Chip-1 — the always-visible
+              date-range box that used to live here has moved into
+              the dashed filter bar above and only renders while
+              `preset === 'custom'`. The actions row now carries
+              just the create-order trigger (when permitted) and the
+              refresh button. */}
           <button
             type="button"
             onClick={onRefresh}
@@ -177,11 +215,12 @@ export default function OrdersHeader({
       </div>
 
       {/* AddOrderModal is only ever mounted when the trigger button
-          was clicked, which itself only renders for `canCreateOrders`
-          roles. Defensive null-check duplicates the permission gate
-          so an out-of-band setState (e.g. dev-tools or future code
-          path) cannot bypass it. */}
-      {showModal && perms.canCreateOrders && <AddOrderModal onClose={() => setShowModal(false)} />}
+          was clicked, which itself only renders for callers that
+          satisfy `canCreateOrder`. Defensive double-guard with the
+          same `canCreateOrder` value so an out-of-band setState
+          (e.g. dev-tools or future code path) cannot bypass the
+          permission gate. */}
+      {showModal && canCreateOrder && <AddOrderModal onClose={() => setShowModal(false)} />}
     </>
   );
 }
