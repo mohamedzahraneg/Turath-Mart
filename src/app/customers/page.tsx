@@ -100,9 +100,17 @@ interface DashboardKpiCardProps {
   label: string;
   value: string | number;
   tone: 'blue' | 'emerald' | 'amber' | 'red' | 'violet' | 'slate';
+  /** Phase CS-Smart-Cards-1 — optional subtitle rendered below the
+   *  value. Use derived ratios from existing kpis (no new fetches). */
+  hint?: string;
+  /** Phase CS-Smart-Cards-1 — when true, the card draws an additional
+   *  tone-coloured ring and bumps the icon badge tint so an
+   *  attention-worthy metric (e.g. open complaints > 0) reads at a
+   *  glance. */
+  emphasis?: boolean;
 }
 
-function DashboardKpiCard({ icon, label, value, tone }: DashboardKpiCardProps) {
+function DashboardKpiCard({ icon, label, value, tone, hint, emphasis }: DashboardKpiCardProps) {
   const toneClass: Record<DashboardKpiCardProps['tone'], string> = {
     blue: 'bg-blue-50 text-blue-600',
     emerald: 'bg-emerald-50 text-emerald-600',
@@ -111,13 +119,42 @@ function DashboardKpiCard({ icon, label, value, tone }: DashboardKpiCardProps) {
     violet: 'bg-violet-50 text-violet-600',
     slate: 'bg-slate-100 text-slate-700',
   };
+  const toneClassEmphasis: Record<DashboardKpiCardProps['tone'], string> = {
+    blue: 'bg-blue-100 text-blue-700',
+    emerald: 'bg-emerald-100 text-emerald-700',
+    amber: 'bg-amber-100 text-amber-700',
+    red: 'bg-red-100 text-red-700',
+    violet: 'bg-violet-100 text-violet-700',
+    slate: 'bg-slate-200 text-slate-800',
+  };
+  const ringClass: Record<DashboardKpiCardProps['tone'], string> = {
+    blue: 'ring-1 ring-blue-200',
+    emerald: 'ring-1 ring-emerald-200',
+    amber: 'ring-1 ring-amber-200',
+    red: 'ring-1 ring-red-200',
+    violet: 'ring-1 ring-violet-200',
+    slate: 'ring-1 ring-slate-200',
+  };
+  const badgeTone = emphasis ? toneClassEmphasis[tone] : toneClass[tone];
+  const cardEmphasisClass = emphasis ? ringClass[tone] : '';
   return (
-    <div className="bg-white rounded-2xl border border-[hsl(var(--border))] p-4 flex items-center justify-between gap-3">
-      <div>
-        <p className="text-xs font-semibold text-[hsl(var(--muted-foreground))] mb-1">{label}</p>
-        <p className="text-2xl font-extrabold text-[hsl(var(--foreground))]">{value}</p>
+    <div
+      className={`bg-white rounded-2xl border border-[hsl(var(--border))] p-3 sm:p-4 flex items-start justify-between gap-3 min-h-[88px] ${cardEmphasisClass}`}
+    >
+      <div className="min-w-0 flex-1 flex flex-col justify-between">
+        <p className="text-xs font-semibold text-[hsl(var(--muted-foreground))] mb-1 truncate">
+          {label}
+        </p>
+        <p className="text-2xl font-extrabold text-[hsl(var(--foreground))] leading-tight">
+          {value}
+        </p>
+        {hint && (
+          <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-1 truncate">{hint}</p>
+        )}
       </div>
-      <div className={`w-12 h-12 rounded-xl ${toneClass[tone]} flex items-center justify-center`}>
+      <div
+        className={`shrink-0 w-10 h-10 sm:w-11 sm:h-11 rounded-xl ${badgeTone} flex items-center justify-center`}
+      >
         {icon}
       </div>
     </div>
@@ -407,59 +444,76 @@ export default function CustomersPage() {
           </div>
         )}
 
+        {/* Phase CS-Smart-Cards-1 — derive subtitle ratios + emphasis
+            flags from the existing kpis / taskBuckets / duplicate count
+            so each card surfaces a small piece of context. No new
+            fetches; nothing here invents a metric. */}
         {/* KPI grid — primary row */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
           <DashboardKpiCard
             icon={<Users size={22} />}
             label="إجمالي العملاء"
             value={kpis.totalCustomers.toLocaleString('en-US')}
             tone="violet"
+            hint={`${kpis.activeCustomers.toLocaleString('en-US')} نشط خلال 90 يومًا`}
           />
           <DashboardKpiCard
             icon={<UserIcon size={22} />}
             label="العملاء النشطون"
             value={kpis.activeCustomers.toLocaleString('en-US')}
             tone="blue"
+            hint={
+              kpis.totalCustomers > 0
+                ? `${Math.round((kpis.activeCustomers / kpis.totalCustomers) * 100)}% من الإجمالي`
+                : 'لا يوجد عملاء بعد'
+            }
           />
           <DashboardKpiCard
             icon={<Truck size={22} />}
             label="الطلبات الجارية"
             value={kpis.inFlightOrders.toLocaleString('en-US')}
             tone="emerald"
+            hint="قيد التنفيذ"
           />
           <DashboardKpiCard
             icon={<AlertCircle size={22} />}
             label="الشكاوى المفتوحة"
             value={kpis.openComplaints.toLocaleString('en-US')}
-            tone="amber"
+            tone={kpis.openComplaints > 0 ? 'red' : 'amber'}
+            hint={kpis.openComplaints > 0 ? 'بحاجة إلى المتابعة' : 'لا توجد شكاوى مفتوحة'}
+            emphasis={kpis.openComplaints > 0}
           />
         </div>
         {/* KPI grid — secondary row (rates + delegate-notes + Phase 24B
             duplicate counter) */}
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-2 sm:gap-3">
           <DashboardKpiCard
             icon={<CheckCircle size={22} />}
             label="نسبة استلام العميل"
             value={fmtRate(kpis.receiptRate)}
             tone="emerald"
+            hint="من الطلبات النهائية"
           />
           <DashboardKpiCard
             icon={<RotateCcw size={22} />}
             label="المرتجعات"
             value={fmtMoney(kpis.returnedAmount)}
             tone="amber"
+            hint="إجمالي آخر 365 يومًا"
           />
           <DashboardKpiCard
             icon={<XCircle size={22} />}
             label="الإلغاء"
             value={fmtMoney(kpis.cancelledAmount)}
             tone="red"
+            hint="إجمالي آخر 365 يومًا"
           />
           <DashboardKpiCard
             icon={<Megaphone size={22} />}
             label="ملاحظات المناديب"
             value={kpis.delegateNotesCount.toLocaleString('en-US')}
             tone="slate"
+            hint="آخر 90 يومًا"
           />
           {/* Phase 24B — duplicates KPI. Same shape as the others; the
               count is the number of NORMALISED phones that appear on
@@ -469,6 +523,8 @@ export default function CustomersPage() {
             label="عملاء مكررين"
             value={duplicatePhoneCount.toLocaleString('en-US')}
             tone="amber"
+            hint={duplicatePhoneCount > 0 ? 'يحتاجون دمج' : 'لا يوجد تكرار ظاهر'}
+            emphasis={duplicatePhoneCount > 0}
           />
         </div>
 
@@ -476,30 +532,36 @@ export default function CustomersPage() {
             open) sit alongside the duplicates KPI in the secondary
             section. We render them as their own row so the primary
             customer KPIs stay visually prominent above the fold. */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-3">
           <DashboardKpiCard
             icon={<Clock size={22} />}
             label="مهام اليوم"
             value={taskBuckets.todayCount.toLocaleString('en-US')}
             tone="amber"
+            hint={`من ${taskBuckets.openCount.toLocaleString('en-US')} مهمة مفتوحة`}
           />
           <DashboardKpiCard
             icon={<AlertTriangle size={22} />}
             label="مهام متأخرة"
             value={taskBuckets.overdueCount.toLocaleString('en-US')}
             tone="red"
+            hint={taskBuckets.overdueCount > 0 ? 'بحاجة إلى متابعة' : 'لا توجد متأخرات'}
+            emphasis={taskBuckets.overdueCount > 0}
           />
           <DashboardKpiCard
             icon={<ClipboardCheck size={22} />}
             label="مهام مفتوحة"
             value={taskBuckets.openCount.toLocaleString('en-US')}
             tone="blue"
+            hint="قيد التنفيذ"
           />
           <DashboardKpiCard
             icon={<Flame size={22} />}
             label="مهام عاجلة"
             value={taskBuckets.urgentActiveCount.toLocaleString('en-US')}
             tone="red"
+            hint={taskBuckets.urgentActiveCount > 0 ? 'الأولوية القصوى' : 'لا توجد مهام عاجلة'}
+            emphasis={taskBuckets.urgentActiveCount > 0}
           />
         </div>
 

@@ -175,7 +175,13 @@ export default function ReturnsExchangesPage() {
 
   return (
     <AppLayout>
-      <div className="p-5 md:p-7 space-y-5" dir="rtl">
+      {/* Phase Returns-Exchanges-Mobile-1 — drop the page-level
+          horizontal padding so AppLayout's responsive `px-4 lg:px-6
+          xl:px-8 2xl:px-10` becomes the single source of truth. On
+          mobile this reclaims ~40 px of viewport width per side that
+          was previously wasted as a nested gutter. Other pages in
+          this codebase already follow this pattern. */}
+      <div className="space-y-5 sm:py-2" dir="rtl">
         {/* Header */}
         <header className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
@@ -198,7 +204,7 @@ export default function ReturnsExchangesPage() {
         </header>
 
         {/* Filters */}
-        <section className="bg-white rounded-2xl border border-[hsl(var(--border))] p-4 flex flex-wrap items-center gap-2">
+        <section className="bg-white rounded-2xl border border-[hsl(var(--border))] p-3 sm:p-4 flex flex-wrap items-center gap-2">
           <div className="relative flex-1 min-w-[220px]">
             <Search
               size={14}
