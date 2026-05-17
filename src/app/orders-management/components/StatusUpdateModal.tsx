@@ -319,9 +319,20 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
   // Live preview text — empty until all three components are set.
   const schedulePreview = formatSchedulePreviewAr(scheduleDate, scheduleFrom, scheduleTo);
 
+  // Phase Orders-Delivered-Readonly-1 — once an order is delivered no
+  // direct status change is allowed from this modal. The modal still
+  // opens so operators can inspect the current status / history, but
+  // both the submit button and the handler are gated. Returns and
+  // exchanges remain available through the existing adjustment flow.
+  const isDeliveredOrder = isDeliveredStatus(order.status);
+
   const onSubmit = async (data: StatusFormData) => {
     if (!canUpdate) {
       toast.error('ليس لديك صلاحية تحديث حالة الأوردر');
+      return;
+    }
+    if (isDeliveredOrder) {
+      toast.error('لا يمكن تعديل الطلب بعد التسليم. استخدم مسار المرتجعات/الاستبدالات عند الحاجة.');
       return;
     }
 
@@ -785,6 +796,20 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
                 </span>
               </div>
 
+              {/* Phase Orders-Delivered-Readonly-1 — delivered orders
+                  surface a read-only banner. The radio grid below stays
+                  visible (so operators can see the current status), but
+                  the submit button is disabled and the handler refuses
+                  on submit. */}
+              {isDeliveredOrder && (
+                <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                  <AlertTriangle size={14} className="text-amber-600 mt-0.5 shrink-0" />
+                  <span className="text-xs text-amber-700 font-semibold leading-snug">
+                    لا يمكن تعديل الطلب بعد التسليم. استخدم مسار المرتجعات/الاستبدالات عند الحاجة.
+                  </span>
+                </div>
+              )}
+
               {/* Status selector */}
               <div>
                 <label className="label-text">الحالة الجديدة *</label>
@@ -1162,8 +1187,8 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
               </button>
               <button
                 type="submit"
-                disabled={isSubmitting}
-                className={`flex-1 justify-center ${isDestructive ? 'btn-danger' : 'btn-primary'}`}
+                disabled={isSubmitting || isDeliveredOrder}
+                className={`flex-1 justify-center ${isDestructive ? 'btn-danger' : 'btn-primary'} ${isDeliveredOrder ? 'opacity-60 cursor-not-allowed' : ''}`}
               >
                 {isSubmitting ? (
                   <>

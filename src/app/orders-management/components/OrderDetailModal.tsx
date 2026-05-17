@@ -829,7 +829,13 @@ export default function OrderDetailModal({ order, onClose }: Props) {
               updated_at: new Date().toISOString(),
             })
             .eq('id', childOrderId)
-            .neq('status', 'cancelled');
+            .neq('status', 'cancelled')
+            // Phase Orders-Delivered-Readonly-1 — belt-and-suspenders:
+            // never cascade-cancel a delivered child order. Frontend
+            // gates already block the human transition into a delivered
+            // child, but a database-level filter here makes the
+            // adjustment-cascade path defensive too.
+            .neq('status', 'delivered');
           if (childCancelErr) {
             console.warn('[OrderDetailModal] cascade-cancel child order failed:', childCancelErr);
           } else {
