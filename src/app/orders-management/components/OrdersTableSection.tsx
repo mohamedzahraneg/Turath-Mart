@@ -1953,17 +1953,29 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
             <h3 className="text-base font-bold text-[hsl(var(--foreground))] mb-4">
               تحديث حالة {selectedRows.size} أوردر
             </h3>
-            <div className="grid grid-cols-2 gap-2 mb-4">
-              {Object.entries(STATUS_MAP).map(([key, val]) => (
-                <button
-                  key={key}
-                  className={`flex items-center gap-2 p-3 rounded-xl border cursor-pointer transition-all ${bulkNewStatus === key ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/5' : 'border-[hsl(var(--border))] hover:border-gray-400'}`}
-                  onClick={() => setBulkNewStatus(key)}
-                >
-                  <span className={`badge ${val.cls} text-[11px]`}>{val.label}</span>
-                </button>
-              ))}
+            <div className="grid grid-cols-2 gap-2 mb-2">
+              {/* Phase Inventory-Returns-Stock-1 — `returned` is intentionally
+                  filtered out here. Marking an order as returned must go
+                  through the OrderAdjustmentModal / customers/returns-exchanges
+                  flow so applyReturnStockEffects fires `inventory_apply_movement`
+                  with `return_in` and restores stock on the matching variant.
+                  STATUS_MAP still carries `returned` so existing returned-status
+                  rows render correctly in the table and the filter dropdown. */}
+              {Object.entries(STATUS_MAP)
+                .filter(([key]) => key !== 'returned')
+                .map(([key, val]) => (
+                  <button
+                    key={key}
+                    className={`flex items-center gap-2 p-3 rounded-xl border cursor-pointer transition-all ${bulkNewStatus === key ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/5' : 'border-[hsl(var(--border))] hover:border-gray-400'}`}
+                    onClick={() => setBulkNewStatus(key)}
+                  >
+                    <span className={`badge ${val.cls} text-[11px]`}>{val.label}</span>
+                  </button>
+                ))}
             </div>
+            <p className="text-[10px] text-[hsl(var(--muted-foreground))] mb-4">
+              المرتجعات والاستبدالات تتم من مسار المرتجعات/الاستبدالات لضمان رجوع المخزون بشكل صحيح.
+            </p>
             <div className="flex gap-2">
               <button
                 className="flex-1 bg-[hsl(var(--primary))] text-white py-2.5 rounded-xl font-bold text-sm hover:opacity-90 transition-opacity"

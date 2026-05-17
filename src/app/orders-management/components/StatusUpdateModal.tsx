@@ -60,6 +60,16 @@ interface StatusFormData {
   reason: string;
 }
 
+// Phase Inventory-Returns-Stock-1 — `returned` is intentionally absent
+// from the direct status options. Marking an order as returned must go
+// through the OrderAdjustmentModal / customers/returns-exchanges flow
+// so the existing applyReturnStockEffects path (kind=return_full /
+// return_partial, state=completed) fires `inventory_apply_movement`
+// with `return_in` and the stock is restored on the matching variant.
+// Direct status flips here bypassed that and left orders like #2605171
+// stuck with `available` decremented and no `return_in` ledger row.
+// STATUS_BADGE_MAP below keeps the `returned` colour so historical
+// rows still render correctly in the timeline / filter.
 const STATUS_OPTIONS = [
   { value: 'new', label: 'جديد', color: 'blue' },
   { value: 'preparing', label: 'جاري التجهيز للشحن', color: 'amber' },
@@ -67,7 +77,6 @@ const STATUS_OPTIONS = [
   { value: 'shipping', label: 'جاري الشحن', color: 'orange' },
   { value: 'delivered', label: 'تم التسليم', color: 'green' },
   { value: 'cancelled', label: 'ملغي', color: 'red' },
-  { value: 'returned', label: 'مرتجع', color: 'gray' },
 ];
 
 const STATUS_BADGE_MAP: Record<string, string> = {
@@ -797,6 +806,10 @@ export default function StatusUpdateModal({ order, onClose, onUpdate }: Props) {
                     </label>
                   ))}
                 </div>
+                <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-2">
+                  المرتجعات والاستبدالات تتم من مسار المرتجعات/الاستبدالات لضمان رجوع المخزون بشكل
+                  صحيح.
+                </p>
               </div>
 
               {/* Reason — required for cancelled/returned */}
