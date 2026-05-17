@@ -42,6 +42,10 @@ import { canBulkManageOrders } from '@/lib/constants/roles';
 // EditOrderModal and StatusUpdateModal exactly.
 import { writeStaffAuditLog } from '@/lib/security/staffAudit';
 import { isDeliveredStatus } from '@/lib/inventory/orderReservationClient';
+// Phase Orders-Delivered-Readonly-1 — strip the structured checkout
+// block from `notes` so the row card doesn't surface the hardcoded
+// "تفاصيل المعاينة والدفع:" prefix as if it were a user note.
+import { stripCheckoutDetailsBlock } from '@/lib/orders/checkoutDetails';
 // Phase 25A — surface a small badge next to the order status when one
 // or more return / exchange adjustments are open against the order.
 import {
@@ -966,20 +970,35 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
       return;
     }
     if (selectedRows.size === 0) return;
+    // Phase Orders-Delivered-Readonly-1 — drop delivered rows from
+    // the bulk cancel before confirming. Surface a single skip toast
+    // so the operator knows which rows the action didn't touch.
+    const requestedIds = Array.from(selectedRows);
+    const statusLookup = new Map(allOrders.map((o) => [o.id, o.status]));
+    const deliveredSkippedCount = requestedIds.filter((id) =>
+      isDeliveredStatus(statusLookup.get(id) ?? null)
+    ).length;
+    const eligibleIds = requestedIds.filter(
+      (id) => !isDeliveredStatus(statusLookup.get(id) ?? null)
+    );
+    if (eligibleIds.length === 0) {
+      toast.error(
+        'كل الطلبات المحددة مُسلَّمة — لا يمكن إلغاؤها مباشرة. استخدم مسار المرتجعات/الاستبدالات.'
+      );
+      return;
+    }
+    if (deliveredSkippedCount > 0) {
+      toast.warning(
+        `تم تخطي ${deliveredSkippedCount} طلب مُسلَّم — استخدم مسار المرتجعات/الاستبدالات عند الحاجة.`
+      );
+    }
     const confirmed = window.confirm(
-      `هل تريد إلغاء / أرشفة ${selectedRows.size} طلب؟\nسيتم نقل الطلبات إلى حالة ملغي ولن يتم حذف بياناتها أو سجلاتها.`
+      `هل تريد إلغاء / أرشفة ${eligibleIds.length} طلب؟\nسيتم نقل الطلبات إلى حالة ملغي ولن يتم حذف بياناتها أو سجلاتها.`
     );
     if (!confirmed) return;
     try {
       const supabase = createClient();
-      const idsToUpdate = Array.from(selectedRows);
-      // Phase Inventory-Reservations-1C — snapshot per-row status
-      // BEFORE the bulk update so we can skip release for any row
-      // that was already 'delivered'. We trust the local
-      // `allOrders` cache; rows missing from it (unlikely on the
-      // current page) fall through to "release anyway" — release is
-      // idempotent and a no-op when there are no active rows.
-      const statusLookup = new Map(allOrders.map((o) => [o.id, o.status]));
+      const idsToUpdate = eligibleIds;
       const updatePayload: Record<string, unknown> = {
         status: 'cancelled',
         updated_at: new Date().toISOString(),
@@ -992,7 +1011,7 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
         .update(updatePayload)
         .in('id', idsToUpdate);
       if (error) throw error;
-      toast.success(`تم إلغاء / أرشفة ${selectedRows.size} طلب`);
+      toast.success(`تم إلغاء / أرشفة ${idsToUpdate.length} طلب`);
       setSelectedRows(new Set());
       loadOrders();
       window.dispatchEvent(new CustomEvent('turath_masr_orders_updated'));
@@ -1034,6 +1053,14 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
     // callers, but the admin check fires first.
     if (!perms.isAdmin) {
       toast.error('هذه العملية مخصصة للمدير فقط');
+      return;
+    }
+    // Phase Orders-Delivered-Readonly-1 — delivered orders cannot be
+    // directly cancelled / archived. Post-delivery handling must go
+    // through the existing return / exchange adjustment workflow so
+    // inventory and customer-side records stay consistent.
+    if (isDeliveredStatus(order.status)) {
+      toast.error('لا يمكن تعديل الطلب بعد التسليم. استخدم مسار المرتجعات/الاستبدالات عند الحاجة.');
       return;
     }
     if (!canManageOrders) {
@@ -1087,11 +1114,32 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
     if (selectedRows.size === 0) return;
     try {
       const supabase = createClient();
-      const idsToUpdate = Array.from(selectedRows);
+      const requestedIds = Array.from(selectedRows);
       // Phase Inventory-Reservations-1C — snapshot statuses before
       // the bulk update so we can release reservations for rows
       // transitioning to 'cancelled' from a non-delivered state.
       const statusLookup = new Map(allOrders.map((o) => [o.id, o.status]));
+      // Phase Orders-Delivered-Readonly-1 — exclude delivered rows
+      // from any bulk status flip. Post-delivery handling must go
+      // through the adjustment workflow; surface a skip toast so the
+      // operator knows which rows the action didn't touch.
+      const deliveredSkippedCount = requestedIds.filter((id) =>
+        isDeliveredStatus(statusLookup.get(id) ?? null)
+      ).length;
+      const idsToUpdate = requestedIds.filter(
+        (id) => !isDeliveredStatus(statusLookup.get(id) ?? null)
+      );
+      if (idsToUpdate.length === 0) {
+        toast.error(
+          'كل الطلبات المحددة مُسلَّمة — لا يمكن تعديلها مباشرة. استخدم مسار المرتجعات/الاستبدالات.'
+        );
+        return;
+      }
+      if (deliveredSkippedCount > 0) {
+        toast.warning(
+          `تم تخطي ${deliveredSkippedCount} طلب مُسلَّم — استخدم مسار المرتجعات/الاستبدالات عند الحاجة.`
+        );
+      }
       // Add updated_by traceability for the orders_editor_update RLS policy.
       const updatePayload: Record<string, unknown> = { status: newStatus };
       if (user?.id) {
@@ -1103,7 +1151,7 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
         .in('id', idsToUpdate);
       if (error) throw error;
       const statusLabel = STATUS_MAP[newStatus]?.label || newStatus;
-      toast.success(`تم تحديث ${selectedRows.size} أوردر إلى: ${statusLabel}`);
+      toast.success(`تم تحديث ${idsToUpdate.length} أوردر إلى: ${statusLabel}`);
 
       // Phase Inventory-Reservations-1C — when the bulk transition
       // is to 'cancelled', release reservations for every row that
@@ -1727,14 +1775,24 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
                           <p className="text-[11px] text-[hsl(var(--muted-foreground))] font-mono">
                             {order.phone}
                           </p>
-                          {order.notes && (
-                            <p
-                              className="text-[10px] text-amber-600 truncate max-w-[160px]"
-                              title={order.notes}
-                            >
-                              ملاحظة: {order.notes}
-                            </p>
-                          )}
+                          {/* Phase Orders-Delivered-Readonly-1 — strip the
+                              structured checkout block from the persisted
+                              `notes` field so the card only shows the
+                              operator-authored note. Without this, every
+                              order surfaces the hardcoded
+                              `تفاصيل المعاينة والدفع:` prefix even when
+                              nobody typed a note. */}
+                          {(() => {
+                            const displayNotes = stripCheckoutDetailsBlock(order.notes).trim();
+                            return displayNotes ? (
+                              <p
+                                className="text-[10px] text-amber-600 truncate max-w-[160px]"
+                                title={displayNotes}
+                              >
+                                ملاحظة: {displayNotes}
+                              </p>
+                            ) : null;
+                          })()}
                         </div>
                       </td>
                       {/* المنتجات */}
@@ -1870,8 +1928,11 @@ export default function OrdersTableSection(props: OrdersTableSectionProps = {}) 
                           >
                             <History size={14} />
                           </button>
-                          {/* Phase Orders-Admin-Actions-1 — strict admin only. */}
-                          {canUseAdminActions && (
+                          {/* Phase Orders-Admin-Actions-1 — strict admin only.
+                              Phase Orders-Delivered-Readonly-1 — also hidden
+                              on delivered orders; post-delivery handling
+                              must go through the adjustment workflow. */}
+                          {canUseAdminActions && !isDeliveredStatus(order.status) && (
                             <button
                               onClick={() => handleSingleDelete(order)}
                               className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-500 transition-colors"

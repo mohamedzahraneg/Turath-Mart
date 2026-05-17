@@ -312,6 +312,12 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
   // Computed from the prop (best-effort for the UI disabled state); the
   // load-bearing check lives inside handleSave against the live DB row.
   const addressLocked = hasOperationalActivity(order);
+  // Phase Orders-Delivered-Readonly-1 — delivered orders open in
+  // read-only mode. Every editable control is gated through
+  // `isDeliveredOrder`; handleSave re-checks against the live DB row
+  // so a stale prop can't be the bypass route. Returns / exchanges
+  // remain available via the existing OrderAdjustmentModal flow.
+  const isDeliveredOrder = isDeliveredStatus(order.status);
 
   const [freeShipping, setFreeShipping] = useState(order.shippingFee === 0);
   const [expressShipping, setExpressShipping] = useState(order.expressShipping === true);
@@ -555,6 +561,18 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
       if (fetchErr || !liveRow) {
         console.error('[edit-order] fetch failed:', fetchErr);
         toast.error('تعذر قراءة بيانات الطلب الحالية. حاول مرة أخرى.');
+        return;
+      }
+
+      // Phase Orders-Delivered-Readonly-1 — load-bearing guard. The
+      // form opens read-only on delivered orders, but a DevTools
+      // bypass can still call this handler. Refuse the save when the
+      // live row shows delivered status and route the operator to the
+      // adjustment workflow instead.
+      if (isDeliveredStatus(liveRow.status)) {
+        toast.error(
+          'لا يمكن تعديل الطلب بعد التسليم. استخدم مسار المرتجعات/الاستبدالات عند الحاجة.'
+        );
         return;
       }
 
@@ -1150,329 +1168,352 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-5 space-y-4 scrollbar-thin">
-          <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
-            <h4 className="text-xs font-bold text-[hsl(var(--muted-foreground))]">بيانات العميل</h4>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Field label="اسم العميل *" value={customerName} onChange={setCustomerName} />
-              <Field label="رقم الهاتف *" value={phone} onChange={setPhone} dir="ltr" />
-              <Field label="رقم هاتف إضافي" value={phone2} onChange={setPhone2} dir="ltr" />
+          {/* Phase Orders-Delivered-Readonly-1 — read-only banner +
+              pointer-events lock on a delivered order. The save button
+              is also disabled and the handler refuses on submit. */}
+          {isDeliveredOrder && (
+            <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+              <AlertTriangle size={16} className="text-amber-600 mt-0.5 shrink-0" />
+              <span className="text-xs text-amber-700 font-semibold leading-snug">
+                لا يمكن تعديل الطلب بعد التسليم. استخدم مسار المرتجعات/الاستبدالات عند الحاجة.
+              </span>
             </div>
-            {/* Phase Orders-Edit-Address-Shipping-1 — coverage-aware
+          )}
+          <fieldset
+            disabled={isDeliveredOrder}
+            className={isDeliveredOrder ? 'space-y-4 opacity-60 pointer-events-none' : 'space-y-4'}
+          >
+            <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
+              <h4 className="text-xs font-bold text-[hsl(var(--muted-foreground))]">
+                بيانات العميل
+              </h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Field label="اسم العميل *" value={customerName} onChange={setCustomerName} />
+                <Field label="رقم الهاتف *" value={phone} onChange={setPhone} dir="ltr" />
+                <Field label="رقم هاتف إضافي" value={phone2} onChange={setPhone2} dir="ltr" />
+              </div>
+              {/* Phase Orders-Edit-Address-Shipping-1 — coverage-aware
                 cascade. Filters governorate/area/neighborhood to
                 active coverage, surfaces a legacy-mismatch banner
                 when the saved address doesn't map to a covered path,
                 and drives the shipping fee resolution in the section
                 below. */}
-            {/* Phase Orders-Admin-Actions-1 — disable the address picker
+              {/* Phase Orders-Admin-Actions-1 — disable the address picker
                 once the order has had any operational handling. The
                 save handler also re-checks against the live row so this
                 isn't only a visual lock. */}
-            <AddressCoveragePicker
-              value={addressValue}
-              onChange={setAddressValue}
-              onStatusChange={setCoverageStatus}
-              disabled={addressLocked}
-            />
-            {addressLocked && (
-              <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-2">
-                لا يمكن تعديل العنوان بعد بدء التعامل على الطلب.
-              </p>
-            )}
-          </section>
+              <AddressCoveragePicker
+                value={addressValue}
+                onChange={setAddressValue}
+                onStatusChange={setCoverageStatus}
+                disabled={addressLocked}
+              />
+              {addressLocked && (
+                <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-2">
+                  لا يمكن تعديل العنوان بعد بدء التعامل على الطلب.
+                </p>
+              )}
+            </section>
 
-          <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
-            <OrderLinesEditor
-              lines={lines}
-              productCards={productCards}
-              inventoryItems={inventoryItems}
-              onLinesChange={setLines}
-              requireAtLeastOne={true}
-              renderHeader={true}
-            />
-          </section>
+            <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
+              <OrderLinesEditor
+                lines={lines}
+                productCards={productCards}
+                inventoryItems={inventoryItems}
+                onLinesChange={setLines}
+                requireAtLeastOne={true}
+                renderHeader={true}
+              />
+            </section>
 
-          <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
-            <h4 className="text-xs font-bold text-[hsl(var(--muted-foreground))]">الشحن</h4>
-            <div className="flex flex-wrap gap-3">
-              <label className="flex items-center gap-2 text-sm cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={freeShipping}
-                  onChange={(e) => setFreeShipping(e.target.checked)}
-                />
-                شحن مجاني
-              </label>
-              <label className="flex items-center gap-2 text-sm cursor-pointer opacity-70">
-                <input
-                  type="checkbox"
-                  checked={expressShipping}
-                  disabled
-                  onChange={(e) => setExpressShipping(e.target.checked)}
-                />
-                شحن سريع (يتم تعديله من المنشئ فقط حاليًا)
-              </label>
-            </div>
-            {/* Phase Orders-Edit-Address-Shipping-1 — region-aware
+            <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
+              <h4 className="text-xs font-bold text-[hsl(var(--muted-foreground))]">الشحن</h4>
+              <div className="flex flex-wrap gap-3">
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={freeShipping}
+                    onChange={(e) => setFreeShipping(e.target.checked)}
+                  />
+                  شحن مجاني
+                </label>
+                <label className="flex items-center gap-2 text-sm cursor-pointer opacity-70">
+                  <input
+                    type="checkbox"
+                    checked={expressShipping}
+                    disabled
+                    onChange={(e) => setExpressShipping(e.target.checked)}
+                  />
+                  شحن سريع (يتم تعديله من المنشئ فقط حاليًا)
+                </label>
+              </div>
+              {/* Phase Orders-Edit-Address-Shipping-1 — region-aware
                 fee preview. Hidden when free-shipping overrides the
                 resolved fee, and while the coverage hierarchy is
                 still loading (`fee === null`). The delta row only
                 appears when the resolved fee differs from the saved
                 one, so non-address edits stay quiet. */}
-            {!freeShipping && coverageStatus.fee !== null && (
-              <div className="space-y-1">
-                <div className="text-xs flex items-center justify-between">
-                  <span className="text-[hsl(var(--muted-foreground))]">سعر الشحن حسب المنطقة</span>
-                  <span className="font-mono font-semibold" dir="ltr">
-                    {coverageStatus.fee.fee.toLocaleString('en-US')} ج.م
-                  </span>
-                </div>
-                {shippingFeeDelta !== 0 && (
+              {!freeShipping && coverageStatus.fee !== null && (
+                <div className="space-y-1">
                   <div className="text-xs flex items-center justify-between">
-                    <span className="text-[hsl(var(--muted-foreground))]">فرق الشحن</span>
-                    <span
-                      className={`font-mono font-semibold ${shippingFeeDelta > 0 ? 'text-rose-700' : 'text-emerald-700'}`}
-                      dir="ltr"
-                    >
-                      {shippingFeeDelta > 0 ? '+' : ''}
-                      {shippingFeeDelta.toLocaleString('en-US')} ج.م
+                    <span className="text-[hsl(var(--muted-foreground))]">
+                      سعر الشحن حسب المنطقة
+                    </span>
+                    <span className="font-mono font-semibold" dir="ltr">
+                      {coverageStatus.fee.fee.toLocaleString('en-US')} ج.م
                     </span>
                   </div>
-                )}
-                {coverageStatus.fee.source !== 'none' && (
-                  <p className="text-[11px] text-[hsl(var(--muted-foreground))]">
-                    {coverageStatus.fee.label}
-                  </p>
-                )}
-              </div>
-            )}
-          </section>
+                  {shippingFeeDelta !== 0 && (
+                    <div className="text-xs flex items-center justify-between">
+                      <span className="text-[hsl(var(--muted-foreground))]">فرق الشحن</span>
+                      <span
+                        className={`font-mono font-semibold ${shippingFeeDelta > 0 ? 'text-rose-700' : 'text-emerald-700'}`}
+                        dir="ltr"
+                      >
+                        {shippingFeeDelta > 0 ? '+' : ''}
+                        {shippingFeeDelta.toLocaleString('en-US')} ج.م
+                      </span>
+                    </div>
+                  )}
+                  {coverageStatus.fee.source !== 'none' && (
+                    <p className="text-[11px] text-[hsl(var(--muted-foreground))]">
+                      {coverageStatus.fee.label}
+                    </p>
+                  )}
+                </div>
+              )}
+            </section>
 
-          <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
-            <div className="flex items-center gap-1.5">
-              <Wrench size={13} className="text-[hsl(var(--primary))]" />
-              <h4 className="text-xs font-bold">المعاينة والتركيب</h4>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              {(
-                [
-                  { key: 'none', label: 'بدون معاينة' },
-                  { key: 'preview_only', label: 'معاينة بدون تركيب' },
-                  { key: 'preview_with_installation', label: 'معاينة مع تركيب' },
-                ] as const
-              ).map((opt) => (
-                <button
-                  type="button"
-                  key={opt.key}
-                  onClick={() => setPreviewMode(opt.key)}
-                  className={`text-xs px-3 py-2 rounded-xl border font-semibold transition-colors ${
-                    previewMode === opt.key
-                      ? 'bg-[hsl(var(--primary))] text-white border-[hsl(var(--primary))]'
-                      : 'bg-white border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/30'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-            {previewMode === 'preview_with_installation' && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <select
-                  className="input-field"
-                  value={installationTarget ?? ''}
-                  onChange={(e) =>
-                    setInstallationTarget(
-                      e.target.value === 'mosque' || e.target.value === 'customer'
-                        ? (e.target.value as InstallationTarget)
-                        : null
-                    )
-                  }
-                >
-                  <option value="">اختر هدف التركيب</option>
-                  <option value="mosque">مسجد (مجاني)</option>
-                  <option value="customer">عملاء</option>
-                </select>
-                {installationTarget === 'customer' && (
+            <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
+              <div className="flex items-center gap-1.5">
+                <Wrench size={13} className="text-[hsl(var(--primary))]" />
+                <h4 className="text-xs font-bold">المعاينة والتركيب</h4>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                {(
+                  [
+                    { key: 'none', label: 'بدون معاينة' },
+                    { key: 'preview_only', label: 'معاينة بدون تركيب' },
+                    { key: 'preview_with_installation', label: 'معاينة مع تركيب' },
+                  ] as const
+                ).map((opt) => (
+                  <button
+                    type="button"
+                    key={opt.key}
+                    onClick={() => setPreviewMode(opt.key)}
+                    className={`text-xs px-3 py-2 rounded-xl border font-semibold transition-colors ${
+                      previewMode === opt.key
+                        ? 'bg-[hsl(var(--primary))] text-white border-[hsl(var(--primary))]'
+                        : 'bg-white border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))]/30'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              {previewMode === 'preview_with_installation' && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <select
                     className="input-field"
-                    value={installationPayer}
-                    onChange={(e) => setInstallationPayer(e.target.value as InstallationPayer)}
+                    value={installationTarget ?? ''}
+                    onChange={(e) =>
+                      setInstallationTarget(
+                        e.target.value === 'mosque' || e.target.value === 'customer'
+                          ? (e.target.value as InstallationTarget)
+                          : null
+                      )
+                    }
                   >
-                    <option value="customer">على العميل</option>
-                    <option value="factory">على المصنع</option>
+                    <option value="">اختر هدف التركيب</option>
+                    <option value="mosque">مسجد (مجاني)</option>
+                    <option value="customer">عملاء</option>
                   </select>
-                )}
-              </div>
-            )}
-          </section>
-
-          <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
-            <h4 className="text-xs font-bold text-[hsl(var(--muted-foreground))]">الخصم</h4>
-            {!discountEnabled ? (
-              <button
-                type="button"
-                onClick={() => setDiscountEnabled(true)}
-                className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-rose-200 bg-rose-50/50 px-4 py-2 text-sm font-bold text-rose-700 hover:bg-rose-50"
-              >
-                <span className="text-lg leading-none">+</span>
-                إضافة خصم
-              </button>
-            ) : (
-              <div className="space-y-3">
-                <div className="flex gap-2">
-                  {(
-                    [
-                      { key: 'fixed', label: 'قيمة ثابتة' },
-                      { key: 'percent', label: 'نسبة مئوية' },
-                    ] as const
-                  ).map((opt) => (
-                    <button
-                      type="button"
-                      key={opt.key}
-                      onClick={() => setDiscountType(opt.key)}
-                      className={`flex-1 rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${
-                        discountType === opt.key
-                          ? 'border-rose-400 bg-white text-rose-800'
-                          : 'border-rose-200 bg-rose-50/70 text-rose-600 hover:bg-white'
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div>
-                    <label className="label-text">
-                      {discountType === 'percent' ? 'نسبة الخصم (%)' : 'قيمة الخصم (ج.م)'}
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      max={discountType === 'percent' ? 100 : undefined}
-                      dir="ltr"
-                      className="input-field text-center font-mono"
-                      value={discountValue}
-                      onChange={(e) => setDiscountValue(Math.max(0, Number(e.target.value) || 0))}
-                    />
-                  </div>
-                  <div>
-                    <label className="label-text">سبب الخصم</label>
-                    <input
+                  {installationTarget === 'customer' && (
+                    <select
                       className="input-field"
-                      value={discountReason}
-                      onChange={(e) => setDiscountReason(e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <label className="label-text">تم الخصم بواسطة</label>
-                    <input
-                      className="input-field bg-slate-50"
-                      value={discountBy}
-                      onChange={(e) => setDiscountBy(e.target.value)}
-                      readOnly
-                    />
-                  </div>
+                      value={installationPayer}
+                      onChange={(e) => setInstallationPayer(e.target.value as InstallationPayer)}
+                    >
+                      <option value="customer">على العميل</option>
+                      <option value="factory">على المصنع</option>
+                    </select>
+                  )}
                 </div>
-                {discountType === 'percent' && normalizedDiscountValue > 0 && (
-                  <p className="text-xs text-rose-800">
-                    سيتم خصم{' '}
-                    <span className="font-bold font-mono" dir="ltr">
-                      {appliedDiscount.toLocaleString('en-US')} ج.م
-                    </span>{' '}
-                    من إجمالي{' '}
-                    <span className="font-bold font-mono" dir="ltr">
-                      {grossTotal.toLocaleString('en-US')} ج.م
-                    </span>
-                  </p>
-                )}
+              )}
+            </section>
+
+            <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
+              <h4 className="text-xs font-bold text-[hsl(var(--muted-foreground))]">الخصم</h4>
+              {!discountEnabled ? (
                 <button
                   type="button"
-                  onClick={() => {
-                    setDiscountEnabled(false);
-                    setDiscountValue(0);
-                    setDiscountReason('');
-                  }}
-                  className="text-xs font-bold text-rose-700 underline-offset-2 hover:underline"
+                  onClick={() => setDiscountEnabled(true)}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-rose-200 bg-rose-50/50 px-4 py-2 text-sm font-bold text-rose-700 hover:bg-rose-50"
                 >
-                  إلغاء الخصم
+                  <span className="text-lg leading-none">+</span>
+                  إضافة خصم
                 </button>
-              </div>
-            )}
-          </section>
-
-          <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
-            <div className="flex items-center gap-1.5">
-              <Wallet size={13} className="text-[hsl(var(--primary))]" />
-              <h4 className="text-xs font-bold">الدفع</h4>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <select
-                className="input-field"
-                value={paymentStatus}
-                onChange={(e) => setPaymentStatus(e.target.value as PaymentStatus)}
-              >
-                <option value="unpaid">غير مدفوع</option>
-                <option value="paid">مدفوع بالكامل</option>
-                <option value="partial">مدفوع جزئيًا</option>
-              </select>
-              {paymentStatus !== 'unpaid' && (
-                <>
-                  <select
-                    className="input-field"
-                    value={paymentMethod}
-                    onChange={(e) => setPaymentMethod(e.target.value)}
-                  >
-                    <option value="">اختر وسيلة الدفع</option>
-                    {PAYMENT_METHOD_OPTIONS.map((opt) => (
-                      <option key={opt} value={opt}>
-                        {opt}
-                      </option>
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex gap-2">
+                    {(
+                      [
+                        { key: 'fixed', label: 'قيمة ثابتة' },
+                        { key: 'percent', label: 'نسبة مئوية' },
+                      ] as const
+                    ).map((opt) => (
+                      <button
+                        type="button"
+                        key={opt.key}
+                        onClick={() => setDiscountType(opt.key)}
+                        className={`flex-1 rounded-xl border px-3 py-2 text-xs font-bold transition-colors ${
+                          discountType === opt.key
+                            ? 'border-rose-400 bg-white text-rose-800'
+                            : 'border-rose-200 bg-rose-50/70 text-rose-600 hover:bg-white'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
                     ))}
-                  </select>
-                  <Field label="مدفوع إلى" value={paidTo} onChange={setPaidTo} />
-                  {paymentStatus === 'partial' && (
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div>
-                      <label className="label-text">المبلغ المدفوع</label>
+                      <label className="label-text">
+                        {discountType === 'percent' ? 'نسبة الخصم (%)' : 'قيمة الخصم (ج.م)'}
+                      </label>
                       <input
                         type="number"
                         min={0}
+                        max={discountType === 'percent' ? 100 : undefined}
                         dir="ltr"
                         className="input-field text-center font-mono"
-                        value={paidAmount}
-                        onChange={(e) => setPaidAmount(Math.max(0, Number(e.target.value) || 0))}
+                        value={discountValue}
+                        onChange={(e) => setDiscountValue(Math.max(0, Number(e.target.value) || 0))}
                       />
                     </div>
+                    <div>
+                      <label className="label-text">سبب الخصم</label>
+                      <input
+                        className="input-field"
+                        value={discountReason}
+                        onChange={(e) => setDiscountReason(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="label-text">تم الخصم بواسطة</label>
+                      <input
+                        className="input-field bg-slate-50"
+                        value={discountBy}
+                        onChange={(e) => setDiscountBy(e.target.value)}
+                        readOnly
+                      />
+                    </div>
+                  </div>
+                  {discountType === 'percent' && normalizedDiscountValue > 0 && (
+                    <p className="text-xs text-rose-800">
+                      سيتم خصم{' '}
+                      <span className="font-bold font-mono" dir="ltr">
+                        {appliedDiscount.toLocaleString('en-US')} ج.م
+                      </span>{' '}
+                      من إجمالي{' '}
+                      <span className="font-bold font-mono" dir="ltr">
+                        {grossTotal.toLocaleString('en-US')} ج.م
+                      </span>
+                    </p>
                   )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDiscountEnabled(false);
+                      setDiscountValue(0);
+                      setDiscountReason('');
+                    }}
+                    className="text-xs font-bold text-rose-700 underline-offset-2 hover:underline"
+                  >
+                    إلغاء الخصم
+                  </button>
+                </div>
+              )}
+            </section>
+
+            <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">
+              <div className="flex items-center gap-1.5">
+                <Wallet size={13} className="text-[hsl(var(--primary))]" />
+                <h4 className="text-xs font-bold">الدفع</h4>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <select
+                  className="input-field"
+                  value={paymentStatus}
+                  onChange={(e) => setPaymentStatus(e.target.value as PaymentStatus)}
+                >
+                  <option value="unpaid">غير مدفوع</option>
+                  <option value="paid">مدفوع بالكامل</option>
+                  <option value="partial">مدفوع جزئيًا</option>
+                </select>
+                {paymentStatus !== 'unpaid' && (
+                  <>
+                    <select
+                      className="input-field"
+                      value={paymentMethod}
+                      onChange={(e) => setPaymentMethod(e.target.value)}
+                    >
+                      <option value="">اختر وسيلة الدفع</option>
+                      {PAYMENT_METHOD_OPTIONS.map((opt) => (
+                        <option key={opt} value={opt}>
+                          {opt}
+                        </option>
+                      ))}
+                    </select>
+                    <Field label="مدفوع إلى" value={paidTo} onChange={setPaidTo} />
+                    {paymentStatus === 'partial' && (
+                      <div>
+                        <label className="label-text">المبلغ المدفوع</label>
+                        <input
+                          type="number"
+                          min={0}
+                          dir="ltr"
+                          className="input-field text-center font-mono"
+                          value={paidAmount}
+                          onChange={(e) => setPaidAmount(Math.max(0, Number(e.target.value) || 0))}
+                        />
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-1">
+              <h4 className="text-xs font-bold text-slate-700">ملخص الأسعار بعد التعديل</h4>
+              <Row label="إجمالي المنتجات" value={`${subtotal.toLocaleString('en-US')} ج.م`} />
+              <Row label="مصاريف الشحن" value={`${shippingFee.toLocaleString('en-US')} ج.م`} />
+              {installationCharge > 0 && (
+                <Row
+                  label="تركيب الحامل"
+                  value={`${installationCharge.toLocaleString('en-US')} ج.م`}
+                />
+              )}
+              <Row label="الإجمالي قبل الخصم" value={`${grossTotal.toLocaleString('en-US')} ج.م`} />
+              {appliedDiscount > 0 && (
+                <Row label="الخصم" value={`- ${appliedDiscount.toLocaleString('en-US')} ج.م`} />
+              )}
+              <Row
+                label="الإجمالي النهائي"
+                value={`${grandTotal.toLocaleString('en-US')} ج.م`}
+                emphasis
+              />
+              {paymentStatus !== 'unpaid' && (
+                <>
+                  <Row
+                    label="المدفوع"
+                    value={`${effectivePaidAmount.toLocaleString('en-US')} ج.م`}
+                  />
+                  <Row label="المتبقي" value={`${remainingAmount.toLocaleString('en-US')} ج.م`} />
                 </>
               )}
-            </div>
-          </section>
-
-          <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-1">
-            <h4 className="text-xs font-bold text-slate-700">ملخص الأسعار بعد التعديل</h4>
-            <Row label="إجمالي المنتجات" value={`${subtotal.toLocaleString('en-US')} ج.م`} />
-            <Row label="مصاريف الشحن" value={`${shippingFee.toLocaleString('en-US')} ج.م`} />
-            {installationCharge > 0 && (
-              <Row
-                label="تركيب الحامل"
-                value={`${installationCharge.toLocaleString('en-US')} ج.م`}
-              />
-            )}
-            <Row label="الإجمالي قبل الخصم" value={`${grossTotal.toLocaleString('en-US')} ج.م`} />
-            {appliedDiscount > 0 && (
-              <Row label="الخصم" value={`- ${appliedDiscount.toLocaleString('en-US')} ج.م`} />
-            )}
-            <Row
-              label="الإجمالي النهائي"
-              value={`${grandTotal.toLocaleString('en-US')} ج.م`}
-              emphasis
-            />
-            {paymentStatus !== 'unpaid' && (
-              <>
-                <Row label="المدفوع" value={`${effectivePaidAmount.toLocaleString('en-US')} ج.م`} />
-                <Row label="المتبقي" value={`${remainingAmount.toLocaleString('en-US')} ج.م`} />
-              </>
-            )}
-          </section>
+            </section>
+          </fieldset>
         </div>
 
         {/* Footer */}
@@ -1488,8 +1529,9 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
           <button
             type="button"
             onClick={() => void handleSave()}
-            disabled={submitting}
-            className="px-5 py-2 rounded-xl text-sm font-bold bg-[hsl(var(--primary))] text-white hover:opacity-90 disabled:opacity-40 flex items-center gap-1.5"
+            disabled={submitting || isDeliveredOrder}
+            className={`px-5 py-2 rounded-xl text-sm font-bold bg-[hsl(var(--primary))] text-white hover:opacity-90 disabled:opacity-40 flex items-center gap-1.5 ${isDeliveredOrder ? 'cursor-not-allowed' : ''}`}
+            title={isDeliveredOrder ? 'لا يمكن تعديل الطلب بعد التسليم' : undefined}
           >
             <Save size={14} />
             {submitting ? 'جارٍ الحفظ...' : 'حفظ التعديلات'}
