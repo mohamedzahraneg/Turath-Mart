@@ -26,20 +26,22 @@ import {
 } from 'lucide-react';
 
 import { InventoryThumbnail, inventoryThumbnailUrl } from '@/lib/inventory/InventoryThumbnail';
+import type { ProductDisplayQuantities } from '@/lib/inventory/displayQuantities';
 import {
   formatDate,
   formatMoney,
   formatNumber,
   productLifecycle,
   productStatus,
-  sellableQty,
   type InventoryItem,
   type LifecycleStatus,
 } from '@/lib/inventory/inventoryStats';
 
 interface Props {
   items: InventoryItem[];
-  withdrawnByName: Record<string, number>;
+  // Phase Inventory-Display-Unify-1 — per-product display map keyed by
+  // inventory id. Same source the card grid and drawer Summary read.
+  displayByInventoryId: Record<string, ProductDisplayQuantities>;
   canAddStock: boolean;
   onView: (item: InventoryItem) => void;
   onEdit: (item: InventoryItem) => void;
@@ -68,7 +70,7 @@ const HEADERS = [
 
 export default function InventoryTable({
   items,
-  withdrawnByName,
+  displayByInventoryId,
   canAddStock,
   onView,
   onEdit,
@@ -97,7 +99,11 @@ export default function InventoryTable({
           </thead>
           <tbody className="divide-y divide-[hsl(var(--border))]">
             {items.map((item) => {
-              const withdrawn = withdrawnByName[item.name.trim()] || 0;
+              const display = displayByInventoryId[item.id];
+              const available = display?.available ?? item.available ?? 0;
+              const reserved = display?.reserved ?? item.reserved ?? 0;
+              const sellable = display?.sellable ?? Math.max(0, available - reserved);
+              const withdrawn = display?.withdrawn ?? 0;
               const status = productStatus(item);
               const lifecycle = productLifecycle(item);
               const isArchived = lifecycle === 'archived';
@@ -183,26 +189,24 @@ export default function InventoryTable({
                             : 'text-emerald-700'
                       }
                     >
-                      {formatNumber(item.available || 0)}
+                      {formatNumber(available)}
                     </span>
                   </td>
                   <td className="px-4 py-3 font-mono whitespace-nowrap">
-                    {(item.reserved ?? 0) > 0 ? (
+                    {reserved > 0 ? (
                       <span className="text-purple-700 font-semibold">
-                        {formatNumber(item.reserved ?? 0)}
+                        {formatNumber(reserved)}
                       </span>
                     ) : (
                       <span className="text-[hsl(var(--muted-foreground))]">0</span>
                     )}
                   </td>
                   <td className="px-4 py-3 font-mono font-bold whitespace-nowrap">
-                    {(item.reserved ?? 0) > 0 ? (
-                      <span className="text-[hsl(var(--primary))]">
-                        {formatNumber(sellableQty(item))}
-                      </span>
+                    {reserved > 0 ? (
+                      <span className="text-[hsl(var(--primary))]">{formatNumber(sellable)}</span>
                     ) : (
                       <span className="text-[hsl(var(--muted-foreground))]">
-                        {formatNumber(item.available || 0)}
+                        {formatNumber(available)}
                       </span>
                     )}
                   </td>

@@ -24,19 +24,22 @@ import {
 } from 'lucide-react';
 
 import { InventoryThumbnail, inventoryThumbnailUrl } from '@/lib/inventory/InventoryThumbnail';
+import type { ProductDisplayQuantities } from '@/lib/inventory/displayQuantities';
 import {
   formatMoney,
   formatNumber,
   productLifecycle,
   productStatus,
-  sellableQty,
   type InventoryItem,
   type LifecycleStatus,
 } from '@/lib/inventory/inventoryStats';
 
 interface Props {
   items: InventoryItem[];
-  withdrawnByName: Record<string, number>;
+  // Phase Inventory-Display-Unify-1 — per-product display map keyed by
+  // inventory id. Aggregates variants when present, otherwise base
+  // fields; withdrawn comes from the `order_out` movement ledger.
+  displayByInventoryId: Record<string, ProductDisplayQuantities>;
   canAddStock: boolean;
   onView: (item: InventoryItem) => void;
   onEdit: (item: InventoryItem) => void;
@@ -47,7 +50,7 @@ interface Props {
 
 export default function InventoryCardGrid({
   items,
-  withdrawnByName,
+  displayByInventoryId,
   canAddStock,
   onView,
   onEdit,
@@ -58,15 +61,19 @@ export default function InventoryCardGrid({
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4" dir="rtl">
       {items.map((item) => {
-        const withdrawn = withdrawnByName[item.name.trim()] || 0;
+        const display = displayByInventoryId[item.id];
+        const available = display?.available ?? item.available ?? 0;
+        const reserved = display?.reserved ?? item.reserved ?? 0;
+        const sellable = display?.sellable ?? Math.max(0, available - reserved);
+        const withdrawn = display?.withdrawn ?? 0;
         const status = productStatus(item);
         const lifecycle = productLifecycle(item);
         const isArchived = lifecycle === 'archived';
-        const totalEverHandled = (item.available || 0) + withdrawn;
+        const totalEverHandled = available + withdrawn;
         const progressPct =
           totalEverHandled > 0
-            ? Math.max(0, Math.min(100, Math.round((item.available / totalEverHandled) * 100)))
-            : item.available > 0
+            ? Math.max(0, Math.min(100, Math.round((available / totalEverHandled) * 100)))
+            : available > 0
               ? 100
               : 0;
 
@@ -155,7 +162,7 @@ export default function InventoryCardGrid({
                         : 'text-emerald-700'
                   }`}
                 >
-                  {formatNumber(item.available || 0)}
+                  {formatNumber(available)}
                 </p>
               </div>
             </div>
@@ -180,14 +187,17 @@ export default function InventoryCardGrid({
               </div>
               {/* Phase Inventory-Reservations-1 — show محجوز / للبيع
                   only on rows that actually have a non-zero reserved
-                  count. Hides cleanly pre-migration. */}
-              {(item.reserved ?? 0) > 0 && (
+                  count. Hides cleanly pre-migration.
+                  Phase Inventory-Display-Unify-1 — reads aggregated
+                  reserved/sellable from displayByInventoryId so colour
+                  reservations are visible product-level too. */}
+              {reserved > 0 && (
                 <div className="flex items-center justify-between mt-0.5 text-[10px]">
                   <span className="text-purple-700 font-semibold">
-                    محجوز: {formatNumber(item.reserved ?? 0)}
+                    محجوز: {formatNumber(reserved)}
                   </span>
                   <span className="text-[hsl(var(--primary))] font-semibold">
-                    للبيع: {formatNumber(sellableQty(item))}
+                    للبيع: {formatNumber(sellable)}
                   </span>
                 </div>
               )}
