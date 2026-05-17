@@ -122,6 +122,12 @@ interface EditableOrder {
   total: number;
   status: string;
   notes?: string;
+  // Phase Orders-Admin-Actions-1 — optional signals the parent may
+  // forward so the address-lock helper can run at render time. Both
+  // are also re-checked from the live row inside handleSave so the
+  // handler can't be bypassed via stale props.
+  delegateName?: string | null;
+  scheduledDeliveryDate?: string | null;
   lines?: Array<{
     productType?: string;
     label?: string;
@@ -132,6 +138,31 @@ interface EditableOrder {
     flashlightPrice?: number;
     total: number;
   }>;
+}
+
+// Phase Orders-Admin-Actions-1 — once the order has had any operational
+// handling, the shipping address must not be edited. The signals here
+// are deliberately conservative: only orders that are strictly `new`
+// AND have neither a delegate nor a scheduled delivery date are
+// editable. The same helper runs against the live DB row inside the
+// save handler so a stale prop can't be the bypass route.
+function hasOperationalActivity(o: {
+  status?: string | null;
+  delegate_name?: string | null;
+  delegateName?: string | null;
+  assigned_to?: string | null;
+  scheduled_delivery_date?: string | null;
+  scheduledDeliveryDate?: string | null;
+}): boolean {
+  const s = (o.status ?? '').trim().toLowerCase();
+  if (s && s !== 'new') return true;
+  const dn = (o.delegate_name ?? o.delegateName ?? '').toString().trim();
+  if (dn) return true;
+  const at = (o.assigned_to ?? '').toString().trim();
+  if (at) return true;
+  const sd = (o.scheduled_delivery_date ?? o.scheduledDeliveryDate ?? '').toString().trim();
+  if (sd) return true;
+  return false;
 }
 
 interface EditOrderModalProps {
@@ -269,6 +300,11 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
     legacyMismatch: false,
     ready: false,
   });
+  // Phase Orders-Admin-Actions-1 — address can only be edited while the
+  // order is strictly `new` AND has no delegate / no scheduled delivery.
+  // Computed from the prop (best-effort for the UI disabled state); the
+  // load-bearing check lives inside handleSave against the live DB row.
+  const addressLocked = hasOperationalActivity(order);
 
   const [freeShipping, setFreeShipping] = useState(order.shippingFee === 0);
   const [expressShipping, setExpressShipping] = useState(order.expressShipping === true);
@@ -499,16 +535,35 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
       }
 
       // Refetch live row so the diff is against current server state.
+      // Phase Orders-Admin-Actions-1 — also pull `delegate_name`,
+      // `assigned_to`, and `scheduled_delivery_date` so the
+      // address-lock guard below can run against fresh DB state.
       const { data: liveRow, error: fetchErr } = await supabase
         .from('turath_masr_orders')
         .select(
-          'id, order_num, customer, phone, phone2, region, district, neighborhood, address, products, quantity, subtotal, shipping_fee, extra_shipping_fee, total, status, notes, lines'
+          'id, order_num, customer, phone, phone2, region, district, neighborhood, address, products, quantity, subtotal, shipping_fee, extra_shipping_fee, total, status, notes, lines, delegate_name, assigned_to, scheduled_delivery_date'
         )
         .eq('id', order.id)
         .single();
       if (fetchErr || !liveRow) {
         console.error('[edit-order] fetch failed:', fetchErr);
         toast.error('تعذر قراءة بيانات الطلب الحالية. حاول مرة أخرى.');
+        return;
+      }
+
+      // Phase Orders-Admin-Actions-1 — address-lock guard. If the
+      // operator changed any address field AND the live row shows the
+      // order has had operational handling, refuse the save with the
+      // same Arabic message shown under the disabled picker. Non-
+      // address edits (notes, lines, prices, etc.) continue to flow
+      // through if the address remains identical to the live row.
+      const liveAddressChanged =
+        addressValue.governorate !== (liveRow.region ?? '') ||
+        addressValue.area !== (liveRow.district ?? '') ||
+        addressValue.neighborhood !== (liveRow.neighborhood ?? '') ||
+        addressValue.detailedAddress !== (liveRow.address ?? '');
+      if (liveAddressChanged && hasOperationalActivity(liveRow)) {
+        toast.error('لا يمكن تعديل العنوان بعد بدء التعامل على الطلب.');
         return;
       }
 
@@ -1101,11 +1156,21 @@ export default function EditOrderModal({ order, onClose, onSaved }: EditOrderMod
                 when the saved address doesn't map to a covered path,
                 and drives the shipping fee resolution in the section
                 below. */}
+            {/* Phase Orders-Admin-Actions-1 — disable the address picker
+                once the order has had any operational handling. The
+                save handler also re-checks against the live row so this
+                isn't only a visual lock. */}
             <AddressCoveragePicker
               value={addressValue}
               onChange={setAddressValue}
               onStatusChange={setCoverageStatus}
+              disabled={addressLocked}
             />
+            {addressLocked && (
+              <p className="text-[10px] text-[hsl(var(--muted-foreground))] mt-2">
+                لا يمكن تعديل العنوان بعد بدء التعامل على الطلب.
+              </p>
+            )}
           </section>
 
           <section className="rounded-2xl border border-[hsl(var(--border))] p-4 space-y-3">

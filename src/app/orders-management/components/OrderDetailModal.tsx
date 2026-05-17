@@ -1353,7 +1353,13 @@ export default function OrderDetailModal({ order, onClose }: Props) {
         {/* Tabs */}
         <div className="border-b border-[hsl(var(--border))] px-4 py-3">
           <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
-            {TABS.map((tab) => (
+            {/* Phase Orders-Admin-Actions-1 — `tab-chat` (محادثة الطلب) and
+                `tab-history` (سجل الحالات) are strict admin-only. CS-side
+                conversations remain available via /crm/customer/<phone> and
+                /customers/returns-exchanges; non-admins see the other 3 tabs. */}
+            {TABS.filter(
+              (tab) => perms.isAdmin || (tab.id !== 'tab-chat' && tab.id !== 'tab-history')
+            ).map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
@@ -1364,7 +1370,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 }`}
               >
                 <span>{tab.label}</span>
-                {tab.id === 'tab-history' && timelineItems.length > 0 && (
+                {perms.isAdmin && tab.id === 'tab-history' && timelineItems.length > 0 && (
                   <span className="mr-1.5 inline-flex min-w-5 justify-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">
                     {timelineItems.length}
                   </span>
@@ -1972,12 +1978,15 @@ export default function OrderDetailModal({ order, onClose }: Props) {
               another order with the same customer phone. Two sub-tabs
               isolate the support thread from the delegate thread,
               matching the customer-side /track/t/[token] UX. */}
-          {activeTab === 'tab-chat' && (
+          {/* Phase Orders-Admin-Actions-1 — defence-in-depth: even if a
+              stale `activeTab` survives a role change, non-admin sees no
+              chat / history content. */}
+          {perms.isAdmin && activeTab === 'tab-chat' && (
             <OrderChatTab orderNum={liveOrder.orderNum} customerPhone={liveOrder.phone} />
           )}
 
           {/* History Tab */}
-          {activeTab === 'tab-history' && (
+          {perms.isAdmin && activeTab === 'tab-history' && (
             <div className="space-y-3 fade-in">
               <p className="text-sm text-[hsl(var(--muted-foreground))] mb-4">
                 سجل موحد يبدأ من إنشاء الطلب ويجمع الحالات والتسويات والملاحظات المهمة.
