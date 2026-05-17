@@ -40,6 +40,10 @@ import { useAuth } from '@/contexts/AuthContext';
 import { usePermissions } from '@/hooks/usePermissions';
 import { createClient } from '@/lib/supabase/client';
 import {
+  calculateProductDisplayQuantities,
+  type ProductDisplayQuantities,
+} from '@/lib/inventory/displayQuantities';
+import {
   computeStats,
   exportAdditionsCsv,
   exportInventoryCsv,
@@ -104,9 +108,18 @@ interface InventoryRowDb {
   reserved?: number | null;
 }
 
-interface OrderProductsRow {
-  products: string | null;
+// Phase Inventory-Display-Unify-1 — narrow shapes for the two new
+// best-effort fetches that back the per-product display map.
+interface DisplayVariantRow {
+  inventory_id: string | null;
+  available: number | null;
+  reserved: number | null;
   status: string | null;
+}
+
+interface DisplayMovementRow {
+  inventory_id: string | null;
+  quantity_delta: number | null;
 }
 
 interface CategoryRowDb {
@@ -242,7 +255,15 @@ export default function InventoryPage() {
 
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [categoryRows, setCategoryRows] = useState<Category[]>([]);
-  const [withdrawnByName, setWithdrawnByName] = useState<Record<string, number>>({});
+  // Phase Inventory-Display-Unify-1 — per-product display quantities
+  // (available / reserved / sellable / withdrawn) keyed by inventory
+  // id. Variant-aggregated when the product has any active variant;
+  // base-derived otherwise. Withdrawn is sourced from the
+  // `order_out` movement ledger, not from text-parsing
+  // `turath_masr_orders.products`.
+  const [displayByInventoryId, setDisplayByInventoryId] = useState<
+    Record<string, ProductDisplayQuantities>
+  >({});
   const [globalAdditions, setGlobalAdditions] = useState<InventoryAdditionWithProduct[] | null>(
     null
   );
@@ -339,11 +360,16 @@ export default function InventoryPage() {
         invError = invNew.error;
       }
 
+      // Phase Inventory-Display-Unify-1 — keep the mapped items in a
+      // local so the new variant/movement passes can derive the
+      // display map without waiting for the React setState round-trip.
+      let mappedItems: InventoryItem[] = [];
       if (invError) {
         setLoadError('تعذر تحميل بيانات المخزن');
         setItems([]);
       } else {
-        setItems(invRows.map(mapInventoryRow));
+        mappedItems = invRows.map(mapInventoryRow);
+        setItems(mappedItems);
       }
 
       // 2. Categories — best-effort. Missing-table is silent (the
@@ -516,49 +542,62 @@ export default function InventoryPage() {
         setGlobalStockCounts(mapped);
       }
 
-      // 3. Orders → withdrawn map (preserved from prior phase).
-      const ordRes = await supabase.from('turath_masr_orders').select('products, status');
-      if (!ordRes.error && ordRes.data) {
-        const orderRows = ordRes.data as OrderProductsRow[];
-        const map: Record<string, number> = {};
-        for (const o of orderRows) {
-          const status = (o.status || '').toLowerCase();
-          if (
-            status === 'cancelled' ||
-            status === 'returned' ||
-            status === 'ملغي' ||
-            status === 'مرتجع'
-          ) {
-            continue;
+      // 3. Phase Inventory-Display-Unify-1 — build the per-product
+      //    display-quantities map. Replaces the previous best-effort
+      //    text parse of `turath_masr_orders.products` (which never
+      //    matched colour-suffixed product strings, so `المسحوب`
+      //    collapsed to 0 for every variant-tracked product). Now:
+      //      • variant-aware available / reserved / sellable comes from
+      //        `turath_masr_inventory_variants`
+      //      • withdrawn comes from the same `order_out` movement
+      //        ledger that the per-product Movements tab already shows
+      //    Both fetches are best-effort: a transient error simply
+      //    leaves the affected map empty and the helper falls back to
+      //    the base item fields, matching pre-migration behaviour.
+      const variantsByInventoryId: Record<
+        string,
+        { available: number; reserved: number; status: string }[]
+      > = {};
+      const variantRes = await supabase
+        .from('turath_masr_inventory_variants')
+        .select('inventory_id, available, reserved, status');
+      if (!variantRes.error && variantRes.data) {
+        for (const v of variantRes.data as DisplayVariantRow[]) {
+          if (!v.inventory_id) continue;
+          if (!variantsByInventoryId[v.inventory_id]) {
+            variantsByInventoryId[v.inventory_id] = [];
           }
-          if (!o.products) continue;
-          const parts = o.products.split(/[,+]/).map((s) => s.trim());
-          for (const part of parts) {
-            if (!part) continue;
-            let name = part;
-            let qty = 1;
-            const paren = part.match(/(.*?)\s*\(\s*(\d+)\s*\)/);
-            const xForm = part.match(/(.*?)\s*([x×*]\s*(\d+)|(\d+)\s*[x×*])$/i);
-            if (paren) {
-              name = paren[1].trim();
-              qty = parseInt(paren[2], 10) || 1;
-            } else if (xForm) {
-              name = xForm[1].trim();
-              qty = parseInt(xForm[3] || xForm[4], 10) || 1;
-            } else {
-              const trail = part.match(/(.*?)\s*(\d+)$/);
-              if (trail) {
-                name = trail[1].trim();
-                qty = parseInt(trail[2], 10) || 1;
-              }
-            }
-            const key = name.trim();
-            if (!key) continue;
-            map[key] = (map[key] || 0) + qty;
-          }
+          variantsByInventoryId[v.inventory_id].push({
+            available: Number(v.available ?? 0),
+            reserved: Number(v.reserved ?? 0),
+            status: v.status ?? 'active',
+          });
         }
-        setWithdrawnByName(map);
       }
+
+      const withdrawnByInventoryId: Record<string, number> = {};
+      const movRes2 = await supabase
+        .from('turath_masr_inventory_movements')
+        .select('inventory_id, quantity_delta')
+        .eq('movement_type', 'order_out');
+      if (!movRes2.error && movRes2.data) {
+        for (const m of movRes2.data as DisplayMovementRow[]) {
+          if (!m.inventory_id) continue;
+          const delta = Math.abs(Number(m.quantity_delta ?? 0));
+          withdrawnByInventoryId[m.inventory_id] =
+            (withdrawnByInventoryId[m.inventory_id] || 0) + delta;
+        }
+      }
+
+      const displayMap: Record<string, ProductDisplayQuantities> = {};
+      for (const item of mappedItems) {
+        displayMap[item.id] = calculateProductDisplayQuantities(
+          { available: item.available, reserved: item.reserved },
+          variantsByInventoryId[item.id] ?? [],
+          withdrawnByInventoryId[item.id] ?? 0
+        );
+      }
+      setDisplayByInventoryId(displayMap);
     } catch {
       setLoadError('تعذر تحميل بيانات المخزن');
     } finally {
@@ -760,8 +799,8 @@ export default function InventoryPage() {
     [items]
   );
   const stats = useMemo(
-    () => computeStats(nonArchivedItems, withdrawnByName),
-    [nonArchivedItems, withdrawnByName]
+    () => computeStats(nonArchivedItems, displayByInventoryId),
+    [nonArchivedItems, displayByInventoryId]
   );
 
   // Phase Inventory-Reservations-1 — show the "محجوز للطلبات" KPI +
@@ -961,7 +1000,7 @@ export default function InventoryPage() {
         ) : view === 'cards' ? (
           <InventoryCardGrid
             items={filtered}
-            withdrawnByName={withdrawnByName}
+            displayByInventoryId={displayByInventoryId}
             canAddStock={canEditInventory}
             onView={handleView}
             onEdit={handleEdit}
@@ -972,7 +1011,7 @@ export default function InventoryPage() {
         ) : (
           <InventoryTable
             items={filtered}
-            withdrawnByName={withdrawnByName}
+            displayByInventoryId={displayByInventoryId}
             canAddStock={canEditInventory}
             onView={handleView}
             onEdit={handleEdit}
@@ -1037,7 +1076,14 @@ export default function InventoryPage() {
       {drawerItem && (
         <InventoryDrawer
           item={drawerItem}
-          withdrawn={withdrawnByName[drawerItem.name.trim()] || 0}
+          displayQty={
+            displayByInventoryId[drawerItem.id] ??
+            calculateProductDisplayQuantities(
+              { available: drawerItem.available, reserved: drawerItem.reserved },
+              [],
+              0
+            )
+          }
           isAdmin={canEditInventory}
           canAddStock={canEditInventory}
           onClose={() => setDrawerItem(null)}

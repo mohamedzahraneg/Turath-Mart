@@ -44,6 +44,7 @@ import {
 
 import { createClient } from '@/lib/supabase/client';
 import { InventoryThumbnail, inventoryThumbnailUrl } from '@/lib/inventory/InventoryThumbnail';
+import type { ProductDisplayQuantities } from '@/lib/inventory/displayQuantities';
 import {
   formatDate,
   formatMoney,
@@ -51,7 +52,6 @@ import {
   MOVEMENT_TYPE_LABELS_AR,
   productLifecycle,
   productStatus,
-  sellableQty,
   type InventoryAddition,
   type InventoryItem,
   type InventoryMovement,
@@ -65,7 +65,11 @@ type Tab = 'summary' | 'colors' | 'movements' | 'additions' | 'stockCount' | 'or
 
 interface Props {
   item: InventoryItem;
-  withdrawn: number;
+  // Phase Inventory-Display-Unify-1 — unified per-product quantities
+  // (variant-aggregated when variants exist, else base; withdrawn from
+  // the `order_out` movement ledger). Replaces the legacy text-parsed
+  // `withdrawn: number` prop.
+  displayQty: ProductDisplayQuantities;
   isAdmin: boolean;
   canAddStock: boolean;
   onClose: () => void;
@@ -85,7 +89,7 @@ interface Props {
 
 export default function InventoryDrawer({
   item,
-  withdrawn,
+  displayQty,
   isAdmin,
   canAddStock,
   onClose,
@@ -100,7 +104,7 @@ export default function InventoryDrawer({
   const [activeTab, setActiveTab] = useState<Tab>('summary');
   const status = productStatus(item);
   const lifecycle = productLifecycle(item);
-  const inventoryValue = (item.available || 0) * (item.price || 0);
+  const inventoryValue = displayQty.available * (item.price || 0);
 
   return (
     <div
@@ -191,7 +195,7 @@ export default function InventoryDrawer({
           {activeTab === 'summary' && (
             <SummaryTab
               item={item}
-              withdrawn={withdrawn}
+              displayQty={displayQty}
               status={status}
               lifecycle={lifecycle}
               inventoryValue={inventoryValue}
@@ -248,7 +252,7 @@ export default function InventoryDrawer({
 
 function SummaryTab({
   item,
-  withdrawn,
+  displayQty,
   status,
   lifecycle,
   inventoryValue,
@@ -257,7 +261,7 @@ function SummaryTab({
   onRecordMovement,
 }: {
   item: InventoryItem;
-  withdrawn: number;
+  displayQty: ProductDisplayQuantities;
   status: ReturnType<typeof productStatus>;
   lifecycle: LifecycleStatus;
   inventoryValue: number;
@@ -268,8 +272,8 @@ function SummaryTab({
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <Stat label="المتاح" value={formatNumber(item.available || 0)} tone={statusTone(status)} />
-        <Stat label="المسحوب" value={formatNumber(withdrawn)} tone="neutral" />
+        <Stat label="المتاح" value={formatNumber(displayQty.available)} tone={statusTone(status)} />
+        <Stat label="المسحوب" value={formatNumber(displayQty.withdrawn)} tone="neutral" />
         <Stat label="الحد الأدنى" value={formatNumber(item.minStock || 0)} tone="neutral" />
       </div>
 
@@ -284,14 +288,17 @@ function SummaryTab({
         {/* Phase Inventory-Reservations-1 — show reserved + sellable
             only when the product actually has a non-zero reservation.
             Keeps the drawer compact pre-migration and on rows with no
-            active orders. */}
-        {(item.reserved ?? 0) > 0 && (
+            active orders.
+            Phase Inventory-Display-Unify-1 — values come from
+            displayQty so colour-level reservations are reflected at
+            the product summary level. */}
+        {displayQty.reserved > 0 && (
           <>
             <Row
               label="محجوز للطلبات"
               value={
                 <span className="text-purple-700 font-semibold">
-                  {formatNumber(item.reserved ?? 0)}
+                  {formatNumber(displayQty.reserved)}
                 </span>
               }
             />
@@ -299,7 +306,7 @@ function SummaryTab({
               label="المتاح للبيع"
               value={
                 <span className="text-[hsl(217,80%,30%)] font-semibold">
-                  {formatNumber(sellableQty(item))}
+                  {formatNumber(displayQty.sellable)}
                 </span>
               }
             />

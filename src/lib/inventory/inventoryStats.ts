@@ -14,11 +14,15 @@
 //   • `Category` shape + DB-backed category helpers.
 //   • CSV export gains `الحالة` / `سبب الأرشفة` / `تاريخ الأرشفة`.
 //
-// `withdrawn` numbers on this page are still derived at runtime from
-// `turath_masr_orders.products` because the `withdrawn` column on
-// `turath_masr_inventory` is unused by the app (always 0). That derivation
-// stays in `page.tsx` for now — Phase 4 (movement ledger) replaces it.
+// Phase Inventory-Display-Unify-1 — `computeStats` now consumes the
+// per-product display map from `displayQuantities.ts` rather than the
+// brittle name-keyed `withdrawnByName` (which was always 0 for
+// variant-tracked products) and the base `available/reserved` columns
+// (which drift for variant products). The KPI cards therefore match
+// what the operator sees on each card / drawer Summary.
 // ─────────────────────────────────────────────────────────────────────────────
+
+import type { ProductDisplayQuantities } from './displayQuantities';
 
 export type LifecycleStatus = 'active' | 'inactive' | 'archived';
 
@@ -279,9 +283,14 @@ export function matchesStatus(item: InventoryItem, filter: StatusFilter): boolea
   }
 }
 
+// Phase Inventory-Display-Unify-1 — KPI totals now derive each per-product
+// quantity from the same display map the card / drawer Summary read,
+// so that "إجمالي المسحوب" and "المحجوز" KPIs stay consistent with what
+// the operator sees on each product card. Missing map entries fall back
+// to the base item fields (for non-variant products and pre-fetch frames).
 export function computeStats(
   items: InventoryItem[],
-  realWithdrawnByName: Record<string, number>
+  displayByInventoryId: Record<string, ProductDisplayQuantities>
 ): InventoryStats {
   let totalAvailable = 0;
   let totalWithdrawn = 0;
@@ -292,11 +301,12 @@ export function computeStats(
   let totalSellable = 0;
 
   for (const item of items) {
-    const available = item.available || 0;
-    const withdrawn = realWithdrawnByName[item.name.trim()] || 0;
+    const display = displayByInventoryId[item.id];
+    const available = display?.available ?? item.available ?? 0;
+    const reserved = display?.reserved ?? item.reserved ?? 0;
+    const sellable = display?.sellable ?? Math.max(0, available - reserved);
+    const withdrawn = display?.withdrawn ?? 0;
     const price = item.price || 0;
-    const reserved = item.reserved || 0;
-    const sellable = Math.max(0, available - reserved);
 
     totalAvailable += available;
     totalWithdrawn += withdrawn;
