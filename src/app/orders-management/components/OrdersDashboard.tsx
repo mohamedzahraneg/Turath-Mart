@@ -47,6 +47,12 @@ export type DateRangePreset =
   | 'this_week'
   | 'this_month'
   | 'previous_month'
+  // Phase Orders-Mobile-Quick-Filters-1 — "show all orders, no date
+  // restriction". `rangeForPreset('all')` returns empty `from`/`to`
+  // strings; `OrdersTableSection`'s date helpers treat empty inputs
+  // as "no filter" so the DB query drops the `created_at` `gte`/`lt`
+  // clauses and lists every order subject to other active filters.
+  | 'all'
   | 'custom';
 
 export interface DateRange {
@@ -92,6 +98,11 @@ export function rangeForPreset(preset: DateRangePreset, now: Date = new Date()):
       const end = new Date(today.getFullYear(), today.getMonth(), 0);
       return { from: toIsoDate(start), to: toIsoDate(end), preset };
     }
+    case 'all':
+      // Empty strings — OrdersTableSection's date helpers translate
+      // these into null filter values, dropping the `created_at`
+      // `gte`/`lt` clauses from the DB query entirely.
+      return { from: '', to: '', preset };
     case 'custom':
       return { from: toIsoDate(today), to: toIsoDate(today), preset };
   }
