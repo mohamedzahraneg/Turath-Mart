@@ -1257,7 +1257,7 @@ function AdditionsTab({
 interface LinkedOrder {
   id: string;
   order_num: string | null;
-  customer_name: string | null;
+  customer: string | null;
   status: string | null;
   total: number | null;
   created_at: string | null;
@@ -1286,7 +1286,7 @@ function OrdersTab({ item }: { item: InventoryItem }) {
         }
         const { data, error: err } = await supabase
           .from('turath_masr_orders')
-          .select('id, order_num, customer_name, status, total, created_at, products')
+          .select('id, order_num, customer, status, total, created_at, products')
           .ilike('products', `%${safeName}%`)
           .order('created_at', { ascending: false })
           .limit(10);
@@ -1349,9 +1349,7 @@ function OrdersTab({ item }: { item: InventoryItem }) {
             {orders.map((o) => (
               <tr key={o.id} className="hover:bg-[hsl(var(--muted))]/30">
                 <td className="px-3 py-2 font-mono text-xs">{o.order_num || '—'}</td>
-                <td className="px-3 py-2 text-xs truncate max-w-[140px]">
-                  {o.customer_name || '—'}
-                </td>
+                <td className="px-3 py-2 text-xs truncate max-w-[140px]">{o.customer || '—'}</td>
                 <td className="px-3 py-2 text-xs">{o.status || '—'}</td>
                 <td className="px-3 py-2 font-mono text-xs">{formatMoney(Number(o.total ?? 0))}</td>
                 <td className="px-3 py-2 text-xs text-[hsl(var(--muted-foreground))] whitespace-nowrap">
