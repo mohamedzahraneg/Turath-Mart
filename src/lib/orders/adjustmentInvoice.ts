@@ -454,7 +454,8 @@ export function generateAdjustmentInvoiceHTML(payload: AdjustmentInvoicePayload)
     ${operationalLine}
     <footer>
       <div>أنشأ هذه التسوية: <strong>${escapeHtml(payload.staffName)}</strong></div>
-      <div>Turath Masr — تراث مصر</div>
+      <div>تراث — إحدى شركات إحياء جروب</div>
+      <div style="direction:ltr;font-family:'Inter','Segoe UI',system-ui,sans-serif;color:#9ca3af;margin-top:2px;">Turath — Part of Ehyaa Group</div>
     </footer>
   </div>
 </body>

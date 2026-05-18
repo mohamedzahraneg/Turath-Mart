@@ -71,6 +71,14 @@ import {
   parseCheckoutDetailsFromNotes,
   stripCheckoutDetailsBlock,
 } from '@/lib/orders/checkoutDetails';
+// Phase Order-Documents-1 — pure HTML / WhatsApp builders shared with
+// the customer-facing /track/t/<token> page.
+import {
+  buildInvoiceHtml,
+  buildWhatsAppMessage,
+  type InvoiceInput,
+  type WhatsAppInput,
+} from '@/lib/orders/documentTemplates';
 // Phase 26D-1 — staff audit log on adjustment decisions + child order
 // + auto-created complaint.
 import { writeStaffAuditLog } from '@/lib/security/staffAudit';
@@ -194,6 +202,9 @@ function getTrackingLink(order: { orderNum: string; trackingToken?: string | nul
     : `${base}/track/${order.orderNum}`;
 }
 
+// Legacy fingerprint kept verbatim so admins who saved the unmodified
+// old default get auto-upgraded to the new rich helper template
+// (compared by trim-equality in handleSendWhatsApp). Never rendered.
 const DEFAULT_WA_TEMPLATE = `مرحبا {customerName}،
 تم استلام طلبك رقم {orderNum} بإجمالي {total} ج.م.
 يمكنك تتبع شحنتك عبر الرابط: {trackingLink}
@@ -550,13 +561,51 @@ export default function OrderDetailModal({ order, onClose }: Props) {
   }, [auditLogs, liveOrder, customerNotes]);
 
   const buildWAMessage = () => {
-    return waTemplate
-      .replace('{customerName}', liveOrder.customer)
-      .replace('{orderNum}', liveOrder.orderNum)
-      .replace('{total}', liveOrder.total.toLocaleString('en-US'))
-      .replace('{trackingLink}', trackingLink)
-      .replace('{delegate}', liveOrder.delegate || 'المندوب')
-      .replace('{status}', statusInfo.label);
+    // Phase Order-Documents-1 — rich WhatsApp message via the shared
+    // helper. The admin's saved `settings_whatsapp_template` (if any)
+    // is passed through as `templateOverride`, so the legacy
+    // placeholder set ({customerName}, {orderNum}, {total},
+    // {trackingLink}, {delegate}, {status}) keeps working byte-for-
+    // byte. When no override is set the helper emits the new
+    // professional default including products / address / schedule /
+    // public note / support contact.
+    const waInput: WhatsAppInput = {
+      orderNum: liveOrder.orderNum,
+      customerName: liveOrder.customer,
+      statusLabel: statusInfo.label,
+      total: liveOrder.total,
+      remaining: checkoutDetails?.payment?.remaining_amount ?? null,
+      paymentMethod: checkoutDetails?.payment?.method ?? null,
+      lines: (liveOrder.lines ?? []).map((line) => ({
+        label: line.includeFlashlight ? `${line.label} + كشاف` : line.label,
+        color: line.color ?? null,
+        quantity: line.quantity,
+      })),
+      address: {
+        region: liveOrder.region,
+        district: liveOrder.district ?? null,
+        neighborhood: liveOrder.neighborhood ?? null,
+        address: liveOrder.address,
+      },
+      schedule: liveOrder.scheduledDeliveryDate
+        ? {
+            date: liveOrder.scheduledDeliveryDate,
+            formatted: `${formatScheduleDateAr(liveOrder.scheduledDeliveryDate)}${
+              liveOrder.scheduledDeliveryFrom && liveOrder.scheduledDeliveryTo
+                ? ` — ${formatTime12hAr(liveOrder.scheduledDeliveryFrom)} إلى ${formatTime12hAr(
+                    liveOrder.scheduledDeliveryTo
+                  )}`
+                : ''
+            }`,
+          }
+        : null,
+      publicNote: printableNotes && printableNotes.trim() ? printableNotes.trim() : null,
+      trackingUrl: trackingLink,
+      templateOverride:
+        waTemplate && waTemplate.trim() !== DEFAULT_WA_TEMPLATE.trim() ? waTemplate : null,
+      delegateName: liveOrder.delegate ?? null,
+    };
+    return buildWhatsAppMessage(waInput);
   };
 
   const handleSendWhatsApp = () => {
@@ -1140,119 +1189,75 @@ export default function OrderDetailModal({ order, onClose }: Props) {
       toast.error('يرجى السماح بالنوافذ المنبثقة في إعدادات المتصفح');
       return;
     }
-    const warrantyRow =
-      liveOrder.warranty && liveOrder.warranty !== 'بدون ضمان'
-        ? `<tr><td colspan="3">فترة الضمان</td><td>—</td><td>${liveOrder.warranty}</td></tr>`
-        : '';
-
-    const productRows =
-      liveOrder.lines && liveOrder.lines.length > 0
-        ? liveOrder.lines
-            .map((line) => {
-              // Phase Egress-Fix1 — resolve through helper so this
-              // path handles legacy data URLs, the inventory-thumbnail
-              // pointer, and the storage proxy uniformly.
-              const imgUrl = resolveLineImageUrl(line);
-              const imgHtml = imgUrl
-                ? `<img src="${imgUrl}" alt="${line.label}" style="width:40px;height:40px;object-fit:cover;border-radius:6px;border:1px solid #e5e7eb;" />`
-                : `<span style="font-size:24px;">${line.emoji || '📦'}</span>`;
-              const noteHtml = line.note
-                ? `<br/><span style="font-size:11px;color:#d97706;font-style:italic;">ملاحظة: ${line.note}</span>`
-                : '';
-              const colorHtml = line.color ? ` (${line.color})` : '';
-              const flashHtml = line.includeFlashlight ? ' + كشاف' : '';
-              return `<tr>
-            <td style="display:flex;align-items:center;gap:10px;padding:10px 12px;">
-              ${imgHtml}
-              <div>
-                <strong>${line.label}${colorHtml}${flashHtml}</strong>${noteHtml}
-              </div>
-            </td>
-            <td>${line.quantity}</td>
-            <td>${line.unitPrice.toLocaleString('en-US')} ج.م</td>
-            <td>${line.total.toLocaleString('en-US')} ج.م</td>
-          </tr>`;
-            })
-            .join('')
-        : `<tr><td>${liveOrder.products}</td><td>${liveOrder.quantity}</td><td>—</td><td>${liveOrder.subtotal.toLocaleString('en-US')} ج.م</td></tr>`;
-
-    win.document.write(`
-      <!DOCTYPE html>
-      <html dir="rtl" lang="ar">
-      <head>
-        <meta charset="UTF-8" />
-        <title>فاتورة - ${liveOrder.orderNum}</title>
-        <style>
-          * { margin: 0; padding: 0; box-sizing: border-box; }
-          body { font-family: 'Segoe UI', Tahoma, Arial, sans-serif; direction: rtl; background: #fff; color: #1a1a1a; }
-          .invoice-wrap { max-width: 700px; margin: 0 auto; padding: 20px; }
-          .inv-header { background: #1e3a5f; color: white; padding: 24px; text-align: center; border-radius: 12px 12px 0 0; }
-          .inv-header h1 { font-size: 26px; font-weight: 800; }
-          .inv-header p { font-size: 13px; opacity: 0.8; margin-top: 4px; }
-          .inv-body { border: 2px solid #e5e7eb; border-top: none; border-radius: 0 0 12px 12px; padding: 24px; }
-          .inv-meta { display: flex; justify-content: space-between; border-bottom: 1px solid #e5e7eb; padding-bottom: 16px; margin-bottom: 16px; }
-          .inv-meta div p:first-child { font-size: 11px; color: #6b7280; margin-bottom: 4px; }
-          .inv-meta div p:last-child { font-weight: 700; font-size: 14px; }
-          .section-title { font-size: 11px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
-          .customer-info { margin-bottom: 16px; }
-          .customer-info p { font-size: 14px; margin-bottom: 4px; }
-          .customer-info .name { font-size: 18px; font-weight: 700; }
-          table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
-          th { background: #f3f4f6; padding: 10px 12px; text-align: right; font-size: 12px; font-weight: 700; color: #374151; }
-          td { padding: 10px 12px; border-bottom: 1px solid #f3f4f6; font-size: 13px; vertical-align: middle; }
-          .total-row { background: #eff6ff; }
-          .total-row td { font-weight: 700; font-size: 16px; color: #1e3a5f; }
-          .warranty-row { background: #f0fdf4; }
-          .warranty-row td { color: #166534; font-weight: 600; }
-          .tracking-box { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 12px; margin-bottom: 16px; }
-          .tracking-box p { font-size: 12px; color: #1e40af; }
-          .tracking-box a { font-size: 13px; color: #1d4ed8; font-weight: 700; word-break: break-all; }
-          .footer { text-align: center; font-size: 12px; color: #9ca3af; margin-top: 20px; padding-top: 16px; border-top: 1px solid #e5e7eb; }
-          @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
-        </style>
-      </head>
-      <body>
-        <div class="invoice-wrap">
-          <div class="inv-header">
-            <h1>Turath Masr</h1>
-            <p>فاتورة ضريبية مبسطة</p>
-          </div>
-          <div class="inv-body">
-            <div class="inv-meta">
-              <div><p>رقم الفاتورة</p><p>${liveOrder.orderNum}</p></div>
-              <div><p>تاريخ الإصدار</p><p>${liveOrder.day} ${liveOrder.date}</p></div>
-              <div><p>الوقت</p><p>${liveOrder.time}</p></div>
-            </div>
-            <div class="customer-info">
-              <p class="section-title">بيانات العميل</p>
-              <p class="name">${liveOrder.customer}</p>
-              <p>${liveOrder.phone}${liveOrder.phone2 ? ' / ' + liveOrder.phone2 : ''}</p>
-              <p>${liveOrder.region}${liveOrder.district ? ' - ' + liveOrder.district : ''}${liveOrder.neighborhood ? ' - ' + liveOrder.neighborhood : ''} — ${liveOrder.address}</p>
-            </div>
-            <div class="tracking-box">
-              <p>رابط تتبع الشحنة:</p>
-              <a href="${trackingLink}">${trackingLink}</a>
-            </div>
-            <p class="section-title">المنتجات</p>
-            <table>
-              <thead><tr><th>المنتج</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr></thead>
-              <tbody>
-                ${productRows}
-                <tr><td>${shippingLabel}</td><td>—</td><td>—</td><td>${liveOrder.shippingFee.toLocaleString('en-US')} ج.م</td></tr>
-                ${extraFee > 0 ? `<tr><td>مصاريف شحن إضافية</td><td>—</td><td>—</td><td>${extraFee.toLocaleString('en-US')} ج.م</td></tr>` : ''}
-                ${checkoutLines.map((line) => `<tr><td colspan="4">${line}</td></tr>`).join('')}
-                ${warrantyRow}
-                <tr class="total-row"><td colspan="3"><strong>الإجمالي الكلي</strong></td><td><strong>${liveOrder.total.toLocaleString('en-US')} ج.م</strong></td></tr>
-              </tbody>
-            </table>
-            ${printableNotes ? `<p style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px;font-size:13px;"><strong>ملاحظات:</strong> ${printableNotes}</p>` : ''}
-            <div class="footer">شكرا لثقتك في Turath Masr — للاستفسار: info@turath_masr.com</div>
-          </div>
-        </div>
-        <script>window.onload = function(){ window.print(); }<\/script>
-      </body>
-      </html>
-    `);
+    // Phase Order-Documents-1 — shared pure builder. The admin
+    // popup keeps its existing mechanic (open → document.write →
+    // auto-print) but the HTML body comes from a single source of
+    // truth used by the customer track page too.
+    const warrantyText =
+      liveOrder.warranty && liveOrder.warranty !== 'بدون ضمان' ? liveOrder.warranty : null;
+    const statusLabel = STATUS_BADGE_MAP[liveOrder.status]?.label || liveOrder.status;
+    const scheduledFormatted = liveOrder.scheduledDeliveryDate
+      ? `${formatScheduleDateAr(liveOrder.scheduledDeliveryDate)}${
+          liveOrder.scheduledDeliveryFrom && liveOrder.scheduledDeliveryTo
+            ? ` — ${formatTime12hAr(liveOrder.scheduledDeliveryFrom)} إلى ${formatTime12hAr(
+                liveOrder.scheduledDeliveryTo
+              )}`
+            : ''
+        }`
+      : null;
+    const invoiceInput: InvoiceInput = {
+      orderNum: liveOrder.orderNum,
+      createdAt: `${liveOrder.date}${liveOrder.time ? ' ' + liveOrder.time : ''}`,
+      statusLabel,
+      customer: {
+        name: liveOrder.customer,
+        phone: liveOrder.phone,
+        phone2: liveOrder.phone2 ?? null,
+      },
+      address: {
+        region: liveOrder.region,
+        district: liveOrder.district ?? null,
+        neighborhood: liveOrder.neighborhood ?? null,
+        address: liveOrder.address,
+      },
+      lines: (liveOrder.lines ?? []).map((line) => {
+        // Runtime JSONB carries optional `sku` even though the typed
+        // OrderLine interface doesn't surface it. Read defensively.
+        const sku = (line as unknown as { sku?: string | null }).sku ?? null;
+        return {
+          label: line.includeFlashlight ? `${line.label} + كشاف` : line.label,
+          color: line.color ?? null,
+          sku,
+          quantity: line.quantity,
+          unitPrice: line.unitPrice,
+          total: line.total,
+          imageUrl: resolveLineImageUrl(line),
+        };
+      }),
+      pricing: {
+        subtotal: liveOrder.subtotal,
+        shippingFee: liveOrder.shippingFee,
+        extraShippingFee: extraFee > 0 ? extraFee : null,
+        discount:
+          checkoutDetails?.discount?.amount && checkoutDetails.discount.amount > 0
+            ? checkoutDetails.discount.amount
+            : null,
+        total: liveOrder.total,
+        paid: checkoutDetails?.payment?.paid_amount ?? null,
+        remaining: checkoutDetails?.payment?.remaining_amount ?? null,
+        paymentMethod: checkoutDetails?.payment?.method ?? null,
+        paymentStatus: checkoutDetails?.payment?.status ?? null,
+      },
+      schedule: scheduledFormatted
+        ? { date: liveOrder.scheduledDeliveryDate, formatted: scheduledFormatted }
+        : null,
+      delegateName: liveOrder.delegate ?? null,
+      trackingUrl: trackingLink,
+      publicNote: printableNotes && printableNotes.trim() ? printableNotes.trim() : null,
+      warrantyText,
+      audience: 'admin',
+    };
+    win.document.write(buildInvoiceHtml(invoiceInput));
     win.document.close();
     toast.success('جاري فتح نافذة الطباعة / PDF...');
   };
@@ -2080,7 +2085,8 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                 className="border-2 border-[hsl(var(--border))] rounded-2xl overflow-hidden"
               >
                 <div className="bg-[hsl(var(--primary))] text-white p-6 text-center">
-                  <h2 className="text-2xl font-bold">Turath Masr</h2>
+                  <h2 className="text-2xl font-bold">تراث</h2>
+                  <p className="text-blue-200 text-xs mt-0.5">إحدى شركات إحياء جروب</p>
                   <p className="text-blue-200 text-sm mt-1">فاتورة ضريبية مبسطة</p>
                 </div>
 
@@ -2257,7 +2263,7 @@ export default function OrderDetailModal({ order, onClose }: Props) {
                   </div>
 
                   <p className="text-center text-xs text-[hsl(var(--muted-foreground))] pt-2">
-                    شكرا لثقتك في Turath Masr — للاستفسار: info@turath_masr.com
+                    شكرًا لتعاملكم مع تراث — إحدى شركات إحياء جروب — للاستفسار: info@turath_masr.com
                   </p>
                 </div>
               </div>
