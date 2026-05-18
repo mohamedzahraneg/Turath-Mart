@@ -30,6 +30,16 @@ import {
 import { createClient } from '@/lib/supabase/client';
 // Phase Egress-Fix1 — unified line-image URL resolution.
 import { resolveLineImageUrl } from '@/lib/orders/lineImage';
+// Phase Order-Documents-1 — shared pure HTML builders. Same helper
+// used by the admin OrderDetailModal popup and the token-keyed
+// /track/t/<token> route.
+import {
+  buildInvoiceHtml,
+  buildWarrantyCertificateHtml,
+  type InvoiceInput,
+  type WarrantyInput,
+} from '@/lib/orders/documentTemplates';
+import { stripCheckoutDetailsBlock } from '@/lib/orders/checkoutDetails';
 
 interface TrackingOrder {
   orderNum: string;
@@ -1252,212 +1262,61 @@ function StarRating({ rating }: { rating: number }) {
 
 // ─── Invoice PDF Generator ────────────────────────────────────────────────────
 function generateInvoiceHTML(order: TrackingOrder): string {
-  const trackingLink = `${typeof window !== 'undefined' ? window.location.origin : 'https://turath_masr.com'}/track/${order.orderNum}`;
-  const subtotal = order.subtotal ?? order.total;
-  const shippingFee = order.shippingFee ?? 0;
-
-  const productRows =
-    order.lines && order.lines.length > 0
-      ? order.lines
-          .map((line) => {
-            // Phase Egress-Fix1 — resolve through helper.
-            const imgUrl = resolveLineImageUrl(line);
-            const imgHtml = imgUrl
-              ? `<img src="${imgUrl}" alt="${line.label}" style="width:40px;height:40px;object-fit:cover;border-radius:6px;border:1px solid #e5e7eb;" />`
-              : `<span style="font-size:24px;">${line.emoji || '📦'}</span>`;
-            const noteHtml = line.note
-              ? `<br/><span style="font-size:11px;color:#d97706;font-style:italic;">ملاحظة: ${line.note}</span>`
-              : '';
-            const colorHtml = line.color ? ` (${line.color})` : '';
-            const flashHtml = line.includeFlashlight ? ' + كشاف' : '';
-            return `<tr>
-          <td style="display:flex;align-items:center;gap:10px;padding:10px 12px;">
-            ${imgHtml}
-            <div><strong>${line.label}${colorHtml}${flashHtml}</strong>${noteHtml}</div>
-          </td>
-          <td>${line.quantity}</td>
-          <td>${line.unitPrice.toLocaleString('en-US')} ج.م</td>
-          <td>${line.total.toLocaleString('en-US')} ج.م</td>
-        </tr>`;
-          })
-          .join('')
-      : `<tr><td>${order.products}</td><td>${order.quantity}</td><td>—</td><td>${subtotal.toLocaleString('en-US')} ج.م</td></tr>`;
-
-  const warrantyRow =
-    order.warranty && order.warranty !== 'بدون ضمان'
-      ? `<tr class="warranty-row"><td colspan="3">فترة الضمان</td><td>—</td><td>${order.warranty}</td></tr>`
-      : '';
-
-  return `<!DOCTYPE html>
-<html dir="rtl" lang="ar">
-<head>
-  <meta charset="UTF-8" />
-  <title>فاتورة - ${order.orderNum}</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: 'Segoe UI', Tahoma, Arial, sans-serif; direction: rtl; background: #fff; color: #1a1a1a; }
-    .invoice-wrap { max-width: 700px; margin: 0 auto; padding: 20px; }
-    .inv-header { background: #1e3a5f; color: white; padding: 24px; text-align: center; border-radius: 12px 12px 0 0; }
-    .inv-header h1 { font-size: 26px; font-weight: 800; }
-    .inv-header p { font-size: 13px; opacity: 0.8; margin-top: 4px; }
-    .inv-body { border: 2px solid #e5e7eb; border-top: none; border-radius: 0 0 12px 12px; padding: 24px; }
-    .inv-meta { display: flex; justify-content: space-between; border-bottom: 1px solid #e5e7eb; padding-bottom: 16px; margin-bottom: 16px; }
-    .inv-meta div p:first-child { font-size: 11px; color: #6b7280; margin-bottom: 4px; }
-    .inv-meta div p:last-child { font-weight: 700; font-size: 14px; }
-    .section-title { font-size: 11px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
-    .customer-info { margin-bottom: 16px; }
-    .customer-info p { font-size: 14px; margin-bottom: 4px; }
-    .customer-info .name { font-size: 18px; font-weight: 700; }
-    table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
-    th { background: #f3f4f6; padding: 10px 12px; text-align: right; font-size: 12px; font-weight: 700; color: #374151; }
-    td { padding: 10px 12px; border-bottom: 1px solid #f3f4f6; font-size: 13px; vertical-align: middle; }
-    .total-row { background: #eff6ff; }
-    .total-row td { font-weight: 700; font-size: 16px; color: #1e3a5f; }
-    .warranty-row { background: #f0fdf4; }
-    .warranty-row td { color: #166534; font-weight: 600; }
-    .tracking-box { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 12px; margin-bottom: 16px; }
-    .tracking-box p { font-size: 12px; color: #1e40af; }
-    .tracking-box a { font-size: 13px; color: #1d4ed8; font-weight: 700; word-break: break-all; }
-    .footer { text-align: center; font-size: 12px; color: #9ca3af; margin-top: 20px; padding-top: 16px; border-top: 1px solid #e5e7eb; }
-    @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
-  </style>
-</head>
-<body>
-  <div class="invoice-wrap">
-    <div class="inv-header">
-      <h1>Turath Masr</h1>
-      <p>فاتورة ضريبية مبسطة</p>
-    </div>
-    <div class="inv-body">
-      <div class="inv-meta">
-        <div><p>رقم الفاتورة</p><p>${order.orderNum}</p></div>
-        <div><p>تاريخ الإصدار</p><p>${order.date}</p></div>
-        <div><p>الوقت</p><p>${order.time}</p></div>
-      </div>
-      <div class="customer-info">
-        <p class="section-title">بيانات العميل</p>
-        <p class="name">${order.customer}</p>
-        <p>${order.phone}</p>
-        <p>${order.region}${order.district ? ' - ' + order.district : ''}${order.neighborhood ? ' - ' + order.neighborhood : ''} — ${order.address}</p>
-      </div>
-      <div class="tracking-box">
-        <p>رابط تتبع الشحنة:</p>
-        <a href="${trackingLink}">${trackingLink}</a>
-      </div>
-      <p class="section-title">المنتجات</p>
-      <table>
-        <thead><tr><th>المنتج</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr></thead>
-        <tbody>
-          ${productRows}
-          ${shippingFee > 0 ? `<tr><td>تكلفة الشحن</td><td>—</td><td>—</td><td>${shippingFee.toLocaleString('en-US')} ج.م</td></tr>` : ''}
-          ${warrantyRow}
-          <tr class="total-row"><td colspan="3"><strong>الإجمالي الكلي</strong></td><td><strong>${order.total.toLocaleString('en-US')} ج.م</strong></td></tr>
-        </tbody>
-      </table>
-      ${order.notes ? `<p style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px;font-size:13px;"><strong>ملاحظات:</strong> ${order.notes}</p>` : ''}
-      <div class="footer">شكرا لثقتك في Turath Masr — للاستفسار: info@turath_masr.com</div>
-    </div>
-  </div>
-  <script>window.onload = function(){ window.print(); }<\/script>
-</body>
-</html>`;
+  const origin = typeof window !== 'undefined' ? window.location.origin : 'https://turathmasr.com';
+  const trackingLink = `${origin}/track/${order.orderNum}`;
+  const stripped = stripCheckoutDetailsBlock(order.notes ?? null).trim();
+  const warrantyText = order.warranty && order.warranty !== 'بدون ضمان' ? order.warranty : null;
+  const input: InvoiceInput = {
+    orderNum: order.orderNum,
+    createdAt: `${order.date} ${order.time}`,
+    statusLabel: order.status,
+    customer: { name: order.customer, phone: order.phone },
+    address: {
+      region: order.region,
+      district: order.district ?? null,
+      neighborhood: order.neighborhood ?? null,
+      address: order.address,
+    },
+    lines: (order.lines ?? []).map((line) => ({
+      label: line.includeFlashlight ? `${line.label} + كشاف` : line.label,
+      color: line.color ?? null,
+      sku: null,
+      quantity: line.quantity,
+      unitPrice: line.unitPrice,
+      total: line.total,
+      imageUrl: resolveLineImageUrl(line),
+    })),
+    pricing: {
+      subtotal: order.subtotal ?? order.total,
+      shippingFee: order.shippingFee ?? 0,
+      total: order.total,
+    },
+    trackingUrl: trackingLink,
+    publicNote: stripped || null,
+    warrantyText,
+    audience: 'customer',
+  };
+  return buildInvoiceHtml(input);
 }
 
 // ─── Warranty Certificate Generator ──────────────────────────────────────────
 function generateWarrantyCertHTML(order: TrackingOrder): string {
-  const productNames =
-    order.lines && order.lines.length > 0
-      ? order.lines
-          .map((l) => `${l.label}${l.color ? ` (${l.color})` : ''} × ${l.quantity}`)
-          .join('، ')
-      : order.products;
-
-  const issueDate = order.date;
-  const warrantyPeriod = order.warranty || '6 أشهر';
-
-  return `<!DOCTYPE html>
-<html dir="rtl" lang="ar">
-<head>
-  <meta charset="UTF-8" />
-  <title>شهادة ضمان - ${order.orderNum}</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: 'Segoe UI', Tahoma, Arial, sans-serif; direction: rtl; background: #f8f9fa; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
-    .cert-wrap { max-width: 680px; width: 100%; background: white; border-radius: 20px; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,0.15); }
-    .cert-header { background: linear-gradient(135deg, #1e3a5f 0%, #2d5a8e 50%, #1e3a5f 100%); padding: 40px 32px; text-align: center; position: relative; }
-    .cert-header::before { content: ''; position: absolute; inset: 0; background: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.05'%3E%3Cpath d='M30 3 L35 20 L53 20 L39 31 L44 48 L30 38 L16 48 L21 31 L7 20 L25 20z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E"); }
-    .cert-badge { width: 80px; height: 80px; background: rgba(255,255,255,0.15); border: 3px solid rgba(255,255,255,0.4); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; font-size: 36px; }
-    .cert-header h1 { color: white; font-size: 28px; font-weight: 800; letter-spacing: 1px; }
-    .cert-header p { color: rgba(255,255,255,0.75); font-size: 14px; margin-top: 6px; }
-    .cert-body { padding: 36px 32px; }
-    .cert-title { text-align: center; margin-bottom: 28px; }
-    .cert-title h2 { font-size: 22px; font-weight: 700; color: #1e3a5f; }
-    .cert-title p { color: #6b7280; font-size: 14px; margin-top: 4px; }
-    .cert-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
-    .cert-field { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 16px; }
-    .cert-field label { font-size: 11px; color: #94a3b8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 4px; }
-    .cert-field span { font-size: 15px; font-weight: 700; color: #1e293b; }
-    .warranty-highlight { background: linear-gradient(135deg, #f0fdf4, #dcfce7); border: 2px solid #86efac; border-radius: 16px; padding: 20px; text-align: center; margin-bottom: 24px; }
-    .warranty-highlight .period { font-size: 36px; font-weight: 900; color: #166534; }
-    .warranty-highlight .label { font-size: 14px; color: #15803d; margin-top: 4px; }
-    .products-box { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 12px; padding: 16px; margin-bottom: 24px; }
-    .products-box h3 { font-size: 13px; font-weight: 700; color: #1e40af; margin-bottom: 8px; }
-    .products-box p { font-size: 14px; color: #1e3a5f; line-height: 1.6; }
-    .cert-footer { background: #f8fafc; border-top: 2px dashed #e2e8f0; padding: 20px 32px; text-align: center; }
-    .cert-footer p { font-size: 12px; color: #94a3b8; line-height: 1.6; }
-    .cert-footer strong { color: #1e3a5f; }
-    .seal { display: inline-flex; align-items: center; gap: 8px; background: #1e3a5f; color: white; padding: 8px 20px; border-radius: 50px; font-size: 13px; font-weight: 700; margin-top: 12px; }
-    @media print { body { background: white; padding: 0; } .cert-wrap { box-shadow: none; border-radius: 0; } }
-  </style>
-</head>
-<body>
-  <div class="cert-wrap">
-    <div class="cert-header">
-      <div class="cert-badge">🛡️</div>
-      <h1>Turath Masr</h1>
-      <p>شركة زهران للشحن والتوصيل</p>
-    </div>
-    <div class="cert-body">
-      <div class="cert-title">
-        <h2>شهادة ضمان المنتج</h2>
-        <p>هذه الشهادة تُثبت حق العميل في الضمان الرسمي</p>
-      </div>
-      <div class="warranty-highlight">
-        <div class="period">${warrantyPeriod}</div>
-        <div class="label">مدة الضمان المعتمدة</div>
-      </div>
-      <div class="cert-grid">
-        <div class="cert-field">
-          <label>رقم الطلب</label>
-          <span>${order.orderNum}</span>
-        </div>
-        <div class="cert-field">
-          <label>تاريخ الإصدار</label>
-          <span>${issueDate}</span>
-        </div>
-        <div class="cert-field">
-          <label>اسم العميل</label>
-          <span>${order.customer}</span>
-        </div>
-        <div class="cert-field">
-          <label>رقم الهاتف</label>
-          <span>${order.phone}</span>
-        </div>
-      </div>
-      <div class="products-box">
-        <h3>المنتجات المشمولة بالضمان</h3>
-        <p>${productNames}</p>
-      </div>
-    </div>
-    <div class="cert-footer">
-      <p>يشمل الضمان عيوب الصناعة والمواد فقط. لا يشمل الكسر أو سوء الاستخدام.</p>
-      <p>للتواصل بخصوص الضمان: <strong>info@turath_masr.com</strong></p>
-      <div class="seal">✅ شهادة ضمان رسمية معتمدة</div>
-    </div>
-  </div>
-  <script>window.onload = function(){ window.print(); }<\/script>
-</body>
-</html>`;
+  const warrantyText = order.warranty && order.warranty !== 'بدون ضمان' ? order.warranty : '';
+  if (!warrantyText) return '';
+  const input: WarrantyInput = {
+    orderNum: order.orderNum,
+    createdAt: `${order.date} ${order.time}`,
+    customer: { name: order.customer, phone: order.phone ?? null },
+    lines: (order.lines ?? []).map((line) => ({
+      label: line.includeFlashlight ? `${line.label} + كشاف` : line.label,
+      color: line.color ?? null,
+      sku: null,
+      quantity: line.quantity,
+    })),
+    warrantyText,
+    audience: 'customer',
+  };
+  return buildWarrantyCertificateHtml(input);
 }
 
 export default function TrackingPage({ params }: { params: Promise<{ orderId: string }> }) {
@@ -1828,8 +1687,8 @@ export default function TrackingPage({ params }: { params: Promise<{ orderId: st
                 <Truck size={20} className="text-amber-300" />
               </div>
               <div>
-                <h1 className="font-bold text-lg leading-tight text-white">تراث مصر</h1>
-                <p className="text-amber-300 text-xs">Turath Masr — تتبع شحنتك</p>
+                <h1 className="font-bold text-lg leading-tight text-white">تراث</h1>
+                <p className="text-amber-300 text-xs">إحدى شركات إحياء جروب — تتبع شحنتك</p>
               </div>
             </div>
             <button
